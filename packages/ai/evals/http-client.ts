@@ -57,6 +57,33 @@ export interface InvokeOptions {
    * measurement before 2026-08-18 a measurement of the code default.
    */
   pageBuildProfileKey?: string;
+  /**
+   * Which selector turns retrieval into the memory block, sent as
+   * `X-Recall-Mode` — `judge` | `verbatim` | `adaptive`.
+   *
+   * The service reads `RECALL_MODE` once at module load, so without this an
+   * A/B between the judge and the deterministic path means restarting between
+   * arms. With it both arms run against one live service, which is the only
+   * way the comparison is paired.
+   */
+  recallMode?: string;
+  /**
+   * `X-Standing-Mode` — `episodes` | `none`.
+   *
+   * Same contract and same reason as `recallMode`. `none` is the control that
+   * makes the other readable: a standing block that scores like its own
+   * absence is decoration, and only a paired control says so.
+   */
+  standingMode?: string;
+  /**
+   * `true` → send `EVAL_OTHER_USER_ID` as `X-Context-User-Id` instead of
+   * `EVAL_USER_ID`. The privacy axis: recall and `searchKnowledge` both scope
+   * private rows to the CALLER (`user_id IS NULL OR user_id = :userId`), so
+   * proving another person's private episode stays invisible needs another
+   * person. Omitting the header instead would disable recall entirely — see
+   * `EvalCase.runAsOtherUser`.
+   */
+  asOtherUser?: boolean;
 }
 
 const buildHeaders = (opts?: InvokeOptions): Record<string, string> => {
@@ -67,8 +94,13 @@ const buildHeaders = (opts?: InvokeOptions): Record<string, string> => {
     "X-Context-Team-Id": requireEnv("EVAL_TEAM_ID"),
     "X-Context-Organization-Id": requireEnv("EVAL_ORGANIZATION_ID"),
   };
-  if (process.env.EVAL_USER_ID)
+  // `requireEnv` and not a fallback: silently serving the eval user here would
+  // make the privacy case pass by testing nothing.
+  if (opts?.asOtherUser) {
+    headers["X-Context-User-Id"] = requireEnv("EVAL_OTHER_USER_ID");
+  } else if (process.env.EVAL_USER_ID) {
     headers["X-Context-User-Id"] = process.env.EVAL_USER_ID;
+  }
   if (process.env.EVAL_USER_NAME)
     headers["X-Context-User-Name"] = process.env.EVAL_USER_NAME;
   if (process.env.EVAL_TIMEZONE)
@@ -80,6 +112,8 @@ const buildHeaders = (opts?: InvokeOptions): Record<string, string> => {
     headers["X-Model-Profile-Key"] = opts.modelProfileKey;
   if (opts?.pageBuildProfileKey)
     headers["X-Page-Build-Profile-Key"] = opts.pageBuildProfileKey;
+  if (opts?.recallMode) headers["X-Recall-Mode"] = opts.recallMode;
+  if (opts?.standingMode) headers["X-Standing-Mode"] = opts.standingMode;
   return headers;
 };
 
@@ -140,6 +174,12 @@ interface StreamState {
   servedBy: string | undefined;
   modelProfileKey: string | undefined;
   error: string | undefined;
+  /**
+   * `Date.now()` at the first frame a reader could see. NOT the first frame of
+   * any kind: the SDK opens every turn with `start` / `start-step`, so counting
+   * those would measure the HTTP handshake and call it time-to-first-token.
+   */
+  firstOutputAt: number | undefined;
 }
 
 /**
@@ -160,11 +200,22 @@ export const createStreamState = (): StreamState => ({
   servedBy: undefined,
   modelProfileKey: undefined,
   error: undefined,
+  firstOutputAt: undefined,
 });
+
+/** The frames that count as output — mirrors `FIRST_BYTE_CHUNK_TYPES`. */
+const OUTPUT_CHUNK_TYPES = new Set([
+  "text-delta",
+  "reasoning-delta",
+  "tool-input-start",
+]);
 
 export const absorbChunk = (chunk: UnknownRecord, state: StreamState): void => {
   const type = readString(chunk, "type");
   if (!type) return;
+  if (state.firstOutputAt === undefined && OUTPUT_CHUNK_TYPES.has(type)) {
+    state.firstOutputAt = Date.now();
+  }
   switch (type) {
     case "text-delta": {
       const delta = readString(chunk, "delta");
@@ -383,6 +434,9 @@ const readStream = async (
     stepsUsed: state.stepsUsed,
     usage: state.usage,
     httpStatus: res.status,
+    ...(state.firstOutputAt !== undefined
+      ? { ttftMs: state.firstOutputAt - startedAt }
+      : {}),
     ...(state.spend !== undefined ? { spend: state.spend } : {}),
     ...(state.traceId !== undefined ? { traceId: state.traceId } : {}),
     ...(state.servedBy !== undefined ? { servedBy: state.servedBy } : {}),

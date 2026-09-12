@@ -96,9 +96,29 @@ export interface GraphEpisode {
   anchorLabels: string[];
 }
 
+/** One anchor's own lines — its header plus its links / recent activity. */
+export interface GraphAnchorLines {
+  recordId: string;
+  matchType: RecordAnchor["matchType"];
+  lines: string[];
+}
+
 export interface GraphNeighborhood {
   /** Pre-rendered lines for the judge prompt (empty string = nothing). */
   rendered: string;
+  /**
+   * The same lines, still grouped by the anchor that produced them.
+   *
+   * `rendered` is their join and stays the judge's input — the judge applies
+   * its own genuine-reference test over the whole block, so it does not need
+   * the grouping. The deterministic selector has no such test, and rebuilds it
+   * from evidence instead: it keeps an anchor's lines only when a SECOND
+   * signal corroborates the lexical match (see `buildVerbatimBlock`), which
+   * needs to know which lines belong to which anchor and how that anchor
+   * matched. Parsing that back out of the joined string would be a bug
+   * waiting for the first record label containing a newline.
+   */
+  perAnchor: GraphAnchorLines[];
   /**
    * Active episodes anchored on the matched records, WITH their summaries —
    * injected as first-class judge candidates so an episode about a record
@@ -245,8 +265,9 @@ export const gatherGraphNeighborhood = async (input: {
     .sort((a, b) => b.rankScore - a.rankScore)
     .slice(0, MAX_EPISODES);
 
-  const lines: string[] = [];
+  const perAnchor: GraphAnchorLines[] = [];
   input.anchors.forEach((anchor, i) => {
+    const lines: string[] = [];
     lines.push(`- ${anchor.label} (record:${anchor.recordId})`);
     // Positional: this anchor's own query result, already capped at
     // MAX_LINKS_PER_ANCHOR — no cross-anchor filtering left to do.
@@ -284,9 +305,15 @@ export const gatherGraphNeighborhood = async (input: {
         `  · recent: ${recent.map((e) => `${e.type} ${day(e.recordedAt)}`).join(", ")} (record:${anchor.recordId})`,
       );
     }
+    perAnchor.push({
+      recordId: anchor.recordId,
+      matchType: anchor.matchType,
+      lines,
+    });
   });
   return {
-    rendered: lines.join("\n"),
+    rendered: perAnchor.flatMap((a) => a.lines).join("\n"),
+    perAnchor,
     episodes: topEpisodes.map(({ rankScore: _rankScore, ...ep }) => ep),
   };
 };

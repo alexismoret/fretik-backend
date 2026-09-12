@@ -19,7 +19,10 @@ import {
   aiEpisodes,
   aiMemories,
   aiMessages,
+  workflowRuns,
+  workflows,
 } from "@fretik/shared/db/schema";
+import { createMemory } from "@fretik/shared/services/ai-memory/create";
 import { deleteMemoryVectorsBulk } from "@fretik/shared/services/ai-memory/vector-refresh";
 import { bulkDeleteCollectionRecords } from "@fretik/shared/services/collection-records/bulk-delete";
 import { deleteRecordCardVectors } from "@fretik/shared/services/collection-records/card-vectors";
@@ -277,15 +280,44 @@ export const makeContradictionPair = async (
   };
 };
 
-/** Purge whatever a previous repeat promoted, so the dedup gate starts clean. */
-const clearLearned = async (fx: ChainFixtures): Promise<void> => {
+/**
+ * `learned/` memories this suite is responsible for, BY PROVENANCE.
+ *
+ * Not by the supplier's name. The promoter is told to generalize, so a correct
+ * promotion often reads "Pour chaque commande, l'équipe achats envoie le bon de
+ * commande en double exemplaire signé" — the rule, with no entity in it. A
+ * name filter leaves those behind, and the next case's recall then finds a
+ * `memory:learned/…` it never wrote: measured 2026-09-11,
+ * `chain-oneoff-not-durable` went to **0/30** that way, one case failing on the
+ * previous case's residue.
+ *
+ * `Sources: episode:<id>` cannot be reworded, so this catches every promotion
+ * made from an episode anchored on the fixture record — and leaves alone the
+ * `learned/` memory another suite deliberately parks here (the P5.1 acceptance
+ * residue), which cites episodes anchored elsewhere.
+ */
+const suiteLearnedMemoryIds = async (fx: ChainFixtures): Promise<string[]> => {
+  const edges = await db.query.aiEpisodeRecords.findMany({
+    where: { recordId: fx.calliopeId },
+    columns: { episodeId: true },
+  });
+  const ours = new Set(edges.map((e) => e.episodeId));
   const rows = await db.query.aiMemories.findMany({
     where: { teamId: fx.teamId, path: { like: "learned/%" } },
     columns: { id: true, content: true },
   });
-  const ids = rows
-    .filter((m) => m.content.includes("Calliope"))
+  return rows
+    .filter(
+      (m) =>
+        m.content.includes(RECORD_LABEL.split(" ")[0] ?? "") ||
+        [...ours].some((id) => m.content.includes(id)),
+    )
     .map((m) => m.id);
+};
+
+/** Purge whatever a previous repeat promoted, so the dedup gate starts clean. */
+const clearLearned = async (fx: ChainFixtures): Promise<void> => {
+  const ids = await suiteLearnedMemoryIds(fx);
   if (ids.length === 0) return;
   await deleteMemoryVectorsBulk(ids);
   await db.delete(aiMemories).where(inArray(aiMemories.id, ids));
@@ -295,8 +327,10 @@ const clearLearned = async (fx: ChainFixtures): Promise<void> => {
 export const makeConventionCluster = async (
   fx: ChainFixtures,
 ): Promise<string[]> => {
-  await clearAnchoredEpisodes(fx);
+  // `clearLearned` FIRST: it reads the provenance off the episodes, and
+  // `clearAnchoredEpisodes` cascades their `ai_episode_records` rows away.
   await clearLearned(fx);
+  await clearAnchoredEpisodes(fx);
   const texts = [
     "Commande passée à Calliope Verre : le bon de commande a été envoyé en double exemplaire signé, comme pour chaque commande.",
     "Nouvelle commande Calliope Verre : envoi du bon de commande en double exemplaire signé, procédure habituelle de l'équipe achats.",
@@ -346,12 +380,177 @@ export const waitForMemoryVectors = async (
   return false;
 };
 
+/**
+ * The convention a workflow run has to start knowing.
+ *
+ * A run has nobody typing, so nothing in it names this memory: what retrieval
+ * matches on is the workflow's own name and goal. The marker is therefore a
+ * phrase the GOAL does not contain — "contrôle qualité photo" against a goal
+ * about handling a supplier delivery. A marker echoing the goal would make the
+ * case pass on lexical overlap and prove nothing about the substitution.
+ */
+export const WORKFLOW_MEMORY_PATH = "team/processes/chain-eval-reception.md";
+/** What the index actually prints: it renders a tree, so `team/` is a heading. */
+export const WORKFLOW_MEMORY_LEAF = "processes/chain-eval-reception.md";
+/**
+ * Deliberately absent from the workflow's goal, so retrieval cannot pass on
+ * lexical overlap. NOT asserted on any more: the goal escalates to the recall
+ * judge, which summarises content rather than copying it, so a case keyed on
+ * this phrase measured the judge's word choice (30/30 then 0/10 across two
+ * days, no source change). `chain-workflow-turn-one` asserts the memory's PATH.
+ */
+const WORKFLOW_MEMORY_MARK = "contrôle qualité photo";
+export const WORKFLOW_NAME = "Réception fournisseur";
+const WORKFLOW_CONVERSATION_TITLE = "[chain-eval] run réception fournisseur";
+export const WORKFLOW_GOAL =
+  "Traiter une réception de marchandise fournisseur de bout en bout : contrôle à l'arrivée, écarts éventuels, mise à jour de la fiche du fournisseur.";
+const WORKFLOW_MEMORY_CONTENT = `Toute réception de marchandise se clôture par un ${WORKFLOW_MEMORY_MARK} des colis, archivé avec le bon de livraison.\n\n**When to apply:** à chaque réception, sans exception.\n**What to do:** photographier les colis à l'arrivée et joindre les clichés au bon de livraison avant de clore la réception.`;
+
+/**
+ * Write it if absent, then block until it is RETRIEVABLE — same race, same
+ * reason as `waitForMemoryVectors`: the row exists before its vector does, and
+ * a case that skips the wait measures the embedding queue.
+ */
+export const ensureWorkflowConventionMemory = async (
+  fx: ChainFixtures,
+): Promise<void> => {
+  const scopeKey = {
+    organizationId: fx.organizationId,
+    teamId: fx.teamId,
+    userId: fx.userId,
+  };
+  const existing = await db.query.aiMemories.findFirst({
+    where: { teamId: fx.teamId, scope: "team", path: WORKFLOW_MEMORY_PATH },
+    columns: { id: true },
+  });
+  if (!existing) {
+    await createMemory({
+      rawPath: `/memories/team/${WORKFLOW_MEMORY_PATH}`,
+      content: WORKFLOW_MEMORY_CONTENT,
+      scopeKey,
+      actor: { userId: fx.userId, actor: "human" },
+    });
+  }
+
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    const row = await db.query.aiMemories.findFirst({
+      where: { teamId: fx.teamId, scope: "team", path: WORKFLOW_MEMORY_PATH },
+      columns: { id: true },
+    });
+    if (row) {
+      const vectors = await db.query.aiVectors.findMany({
+        where: { sourceType: "memories", sourceId: row.id },
+        columns: { id: true },
+        limit: 1,
+      });
+      if (vectors.length > 0) return;
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  throw new Error(
+    `${WORKFLOW_MEMORY_PATH} never became retrievable — the embedding never landed`,
+  );
+};
+
+/**
+ * A real workflow + run + conversation, ready for one turn.
+ *
+ * Mirrors `createWorkflowRun` minus the Trigger.dev dispatch: the e2e case
+ * drives the turn itself over `/internal/trigger/runs/:runId/turn`, which is
+ * the same route the orchestrator calls. Everything else has to be genuine —
+ * the run row is the turn handler's only source of scope.
+ *
+ * The playbook has ONE task and asks for the procedure in writing. A run that
+ * never read the team's memory can complete that task perfectly and never
+ * mention a photo; a run that read it cannot omit it.
+ */
+export interface WorkflowRunFixture {
+  runId: string;
+  workflowId: string;
+  conversationId: string;
+}
+
+export const makeWorkflowRun = async (
+  fx: ChainFixtures,
+): Promise<WorkflowRunFixture> => {
+  await ensureWorkflowConventionMemory(fx);
+
+  const [conv] = await db
+    .insert(aiConversations)
+    .values({
+      organizationId: fx.organizationId,
+      teamId: fx.teamId,
+      userId: fx.userId,
+      agentType: "workflow",
+      title: WORKFLOW_CONVERSATION_TITLE,
+    })
+    .returning({ id: aiConversations.id });
+  if (!conv) throw new Error("fixture: failed to insert workflow conversation");
+
+  const [wf] = await db
+    .insert(workflows)
+    .values({
+      organizationId: fx.organizationId,
+      teamId: fx.teamId,
+      userId: fx.userId,
+      name: WORKFLOW_NAME,
+      description: "Fixture du chain-eval — ne pas utiliser.",
+      status: "active",
+      triggerType: "manual",
+      playbook: {
+        goal: WORKFLOW_GOAL,
+        tasks: [
+          {
+            key: "redige-procedure",
+            title: "Rédiger la procédure de réception",
+            description: "",
+            instructions:
+              "Rédige, en quelques lignes, la procédure de réception de marchandise que l'équipe doit suivre, en respectant les conventions déjà enregistrées par l'équipe. N'utilise aucun outil : réponds directement, puis clôture la tâche.",
+          },
+        ],
+      },
+    })
+    .returning({ id: workflows.id });
+  if (!wf) throw new Error("fixture: failed to insert workflow");
+
+  const [run] = await db
+    .insert(workflowRuns)
+    .values({
+      workflowId: wf.id,
+      organizationId: fx.organizationId,
+      teamId: fx.teamId,
+      actingUserId: fx.userId,
+      triggeredByUserId: fx.userId,
+      status: "queued",
+      triggerType: "manual",
+      triggerPayload: { source: "chain-eval" },
+      conversationId: conv.id,
+      taskStates: [
+        {
+          key: "redige-procedure",
+          title: "Rédiger la procédure de réception",
+          description: "",
+          instructions:
+            "Rédige, en quelques lignes, la procédure de réception de marchandise que l'équipe doit suivre, en respectant les conventions déjà enregistrées par l'équipe. N'utilise aucun outil : réponds directement, puis clôture la tâche.",
+          status: "pending",
+        },
+      ],
+      isTest: true,
+    })
+    .returning({ id: workflowRuns.id });
+  if (!run) throw new Error("fixture: failed to insert workflow run");
+
+  return { runId: run.id, workflowId: wf.id, conversationId: conv.id };
+};
+
 /** Two unrelated one-offs about the same entity — no rule hides in them. */
 export const makeOneOffCluster = async (
   fx: ChainFixtures,
 ): Promise<string[]> => {
-  await clearAnchoredEpisodes(fx);
+  // Same order, same reason as `makeConventionCluster`.
   await clearLearned(fx);
+  await clearAnchoredEpisodes(fx);
   const texts = [
     "La facture CV-2291 de Calliope Verre a été payée le 12 du mois.",
     "Correction d'une faute de frappe dans l'adresse de livraison de Calliope Verre.",
@@ -374,10 +573,28 @@ export const cleanupChainFixtures = async (
 ): Promise<void> => {
   const convIds = (
     await db.query.aiConversations.findMany({
-      where: { teamId: scope.teamId, title: CONVERSATION_TITLE },
+      where: {
+        teamId: scope.teamId,
+        title: { in: [CONVERSATION_TITLE, WORKFLOW_CONVERSATION_TITLE] },
+      },
       columns: { id: true },
     })
   ).map((c) => c.id);
+
+  // The e2e case's workflow + its runs. Runs first: a run row outliving its
+  // workflow is what the stall sweeper would pick up.
+  const wfIds = (
+    await db.query.workflows.findMany({
+      where: { teamId: scope.teamId, name: WORKFLOW_NAME },
+      columns: { id: true },
+    })
+  ).map((w) => w.id);
+  if (wfIds.length > 0) {
+    await db
+      .delete(workflowRuns)
+      .where(inArray(workflowRuns.workflowId, wfIds));
+    await db.delete(workflows).where(inArray(workflows.id, wfIds));
+  }
 
   const type = await db.query.collections.findFirst({
     where: { teamId: scope.teamId, key: TYPE_KEY },
@@ -429,14 +646,30 @@ export const cleanupChainFixtures = async (
       .where(inArray(aiConversations.id, convIds));
   }
 
-  // Promotions this suite's episodes may have produced.
+  // Promotions this suite's episodes may have produced, plus the convention
+  // the workflow case seeds by PATH (it is human-authored, not promoted, so
+  // the `learned/` sweep would never reach it).
+  //
+  // BY PROVENANCE as well as by name — see `suiteLearnedMemoryIds`. A
+  // correctly generalized promotion carries no entity name, and one left
+  // behind here is the next RUN's contamination rather than the next case's.
+  // `episodeIds` is read above, before those rows are deleted.
   const learned = await db.query.aiMemories.findMany({
     where: { teamId: scope.teamId, path: { like: "learned/%" } },
     columns: { id: true, content: true },
   });
   const stale = learned
-    .filter((m) => m.content.includes(RECORD_LABEL.split(" ")[0] ?? ""))
+    .filter(
+      (m) =>
+        m.content.includes(RECORD_LABEL.split(" ")[0] ?? "") ||
+        episodeIds.some((id) => m.content.includes(id)),
+    )
     .map((m) => m.id);
+  const convention = await db.query.aiMemories.findFirst({
+    where: { teamId: scope.teamId, scope: "team", path: WORKFLOW_MEMORY_PATH },
+    columns: { id: true },
+  });
+  if (convention) stale.push(convention.id);
   if (stale.length > 0) {
     await deleteMemoryVectorsBulk(stale);
     await db.delete(aiMemories).where(inArray(aiMemories.id, stale));

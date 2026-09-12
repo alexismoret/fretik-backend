@@ -7,17 +7,19 @@ import {
   isImageMime,
 } from "@fretik/shared/file-types";
 import { renderSnapshot } from "@fretik/shared/lib/chat-file-snapshot";
-import { signSandboxJwt } from "@fretik/shared/lib/external-apps/sandbox-jwt";
+import { buildMemoryIndexManifest } from "@fretik/shared/services/ai-memory/list-index";
 import { describeTeamSchema } from "@fretik/shared/services/collections/describe-team-schema";
+import { listStandingEpisodes } from "@fretik/shared/services/episodes/list-standing";
 import { listConnections } from "@fretik/shared/services/external-apps/connections/list";
 import { isMcpConnection } from "@fretik/shared/services/external-apps/mcp/connection-kind";
 import { listEnabledSkillsForTeam } from "@fretik/shared/services/skills/list-enabled-for-team";
 import { and, eq, inArray, ne } from "drizzle-orm";
-import { writeSandboxAuthFile } from "../../lib/conversation-storage";
 import { withSoftTimeout } from "../../lib/stream-errors";
 import { buildChatbotContextManifest } from "../../services/chatbot-context/build-manifest";
 import { formatTeamCollectionsBlock } from "../chatbot/team-collections-block";
 import type { ExternalAppConnectionLite } from "./runtime-context";
+import type { StandingMode } from "./standing-memory";
+import { renderStandingEpisodes, STANDING_MODE } from "./standing-memory";
 
 /**
  * Per-turn system-prompt fragment assembly shared by BOTH agent handlers
@@ -40,81 +42,188 @@ export interface ContextFragments {
   chatbotContextManifest?: string;
   teamCollectionsBlock?: string;
   enabledSkillsBlock?: string;
+  memoryIndexBlock?: string;
+  /**
+   * `<standing_memory>` — whichever arm served it. One slot for both
+   * implementations so an A/B between them is about CONTENT and nothing else.
+   */
+  standingMemoryBlock?: string;
+}
+
+/** What serves `<standing_memory>` for one turn. */
+export interface StandingOptions {
+  mode: StandingMode;
+  /**
+   * Read the memory surfaces at all. `false` on a workflow's later turns,
+   * which carry their memory in the turn-1 steering message and were, until
+   * now, reading the index and the block on every turn only to discard them.
+   */
+  memory?: boolean;
 }
 
 /**
- * The three purely scope-based fragments (persistent-context manifest, team
- * objects catalogue, enabled skills), built in parallel behind the same
- * soft-timeouts as the historical chatbot inline version. `undefined`
- * fields render as their prompt placeholders.
+ * Fallback when the memory index times out.
+ *
+ * The empty case renders as "No memories yet — feel free to start writing",
+ * which is a claim, not a blank: the agent reads it as fact and tells the user
+ * the team has no memories. A slow query must say "unknown", never "none" —
+ * the same rule `ATTACHED_FILES_UNAVAILABLE` exists for.
+ */
+export const MEMORY_INDEX_UNAVAILABLE =
+  "_The memory index could not be loaded for this turn. Memories may still exist — search with `searchKnowledge` before telling the user there are none._";
+
+/**
+ * `<standing_memory>` for one turn: the recent-episode index, or nothing.
+ *
+ * Soft-fails to `""`. The block is a convenience on a turn that may not need
+ * it at all; it must never be the reason a turn fails.
+ */
+const readStandingBlock = async (
+  scope: FragmentScope,
+  opts: StandingOptions,
+): Promise<string> => {
+  if (opts.mode === "none") return "";
+  // Needs a reader: the block carries the caller's own private episodes, so
+  // there is no such thing as a system-scope rendering of it.
+  if (scope.userId === undefined) return "";
+  try {
+    return renderStandingEpisodes(
+      await listStandingEpisodes({
+        organizationId: scope.organizationId,
+        teamId: scope.teamId,
+        userId: scope.userId,
+      }),
+    );
+  } catch (error: unknown) {
+    console.warn(
+      `${scope.logPrefix} listStandingEpisodes failed, continuing without the standing block:`,
+      error instanceof Error ? error.message : error,
+    );
+    return "";
+  }
+};
+
+/**
+ * The purely scope-based fragments (persistent-context manifest, team
+ * objects catalogue, enabled skills, memory index), built in parallel behind
+ * the same soft-timeouts as the historical chatbot inline version.
+ * `undefined` fields render as their prompt placeholders.
  */
 export const assembleContextFragments = async (
   scope: FragmentScope,
+  /** Whether `<standing_memory>` is served, and whether memory is read at all. */
+  standing: StandingOptions = { mode: STANDING_MODE },
 ): Promise<ContextFragments> => {
-  const [chatbotContextManifest, teamCollectionsBlock, enabledSkillsBlock] =
-    await Promise.all([
-      withSoftTimeout(
-        buildChatbotContextManifest({
-          userId: scope.userId,
-          teamId: scope.teamId,
-          organizationId: scope.organizationId,
-        }).catch((error: unknown) => {
-          // Never let a missing/corrupt manifest block a turn.
+  const wantsMemory = standing.memory ?? true;
+  const [
+    chatbotContextManifest,
+    teamCollectionsBlock,
+    enabledSkillsBlock,
+    memoryIndexBlock,
+    standingMemoryBlock,
+  ] = await Promise.all([
+    withSoftTimeout(
+      buildChatbotContextManifest({
+        userId: scope.userId,
+        teamId: scope.teamId,
+        organizationId: scope.organizationId,
+      }).catch((error: unknown) => {
+        // Never let a missing/corrupt manifest block a turn.
+        console.warn(
+          `${scope.logPrefix} buildChatbotContextManifest failed, continuing without persistent context:`,
+          error,
+        );
+        return {
+          manifest: "",
+          totalChars: 0,
+          fileCount: 0,
+          inlinedFileCount: 0,
+        };
+      }),
+      4000,
+      { manifest: "", totalChars: 0, fileCount: 0, inlinedFileCount: 0 },
+      "context-manifest",
+    ),
+    // Compact `- key (type)` catalogue for the dynamic suffix.
+    // Redis-cached (30 min TTL) so the per-turn cost is one HGET.
+    withSoftTimeout(
+      describeTeamSchema({
+        organizationId: scope.organizationId,
+        teamId: scope.teamId,
+      })
+        .then((types) => formatTeamCollectionsBlock(types))
+        .catch((error: unknown) => {
           console.warn(
-            `${scope.logPrefix} buildChatbotContextManifest failed, continuing without persistent context:`,
-            error,
+            `${scope.logPrefix} describeTeamSchema failed, continuing without team objects:`,
+            error instanceof Error ? error.message : error,
           );
-          return {
-            manifest: "",
-            totalChars: 0,
-            fileCount: 0,
-            inlinedFileCount: 0,
-          };
+          return "";
         }),
-        4000,
-        { manifest: "", totalChars: 0, fileCount: 0, inlinedFileCount: 0 },
-        "context-manifest",
-      ),
-      // Compact `- key (type)` catalogue for the dynamic suffix.
-      // Redis-cached (30 min TTL) so the per-turn cost is one HGET.
-      withSoftTimeout(
-        describeTeamSchema({
-          organizationId: scope.organizationId,
-          teamId: scope.teamId,
-        })
-          .then((types) => formatTeamCollectionsBlock(types))
-          .catch((error: unknown) => {
+      3000,
+      "",
+      "team-objects",
+    ),
+    // Team-filtered L1 skills listing — disabled skills never reach the
+    // prompt (the agent has no path to invoke them).
+    withSoftTimeout(
+      listEnabledSkillsForTeam(scope.teamId)
+        .then((skills) =>
+          skills
+            .map((skill) => `- **${skill.name}** — ${skill.description}`)
+            .join("\n"),
+        )
+        .catch((error: unknown) => {
+          console.warn(
+            `${scope.logPrefix} listEnabledSkillsForTeam failed, continuing without skills catalogue:`,
+            error instanceof Error ? error.message : error,
+          );
+          return "";
+        }),
+      3000,
+      "",
+      "enabled-skills",
+    ),
+    // The memory INDEX — paths and sizes of everything under
+    // `/memories/{user,team}/`, no content. It answers the one question
+    // per-turn recall cannot: what does this team know AT ALL. Recall is
+    // query-shaped, so a memory only surfaces when the message happens to
+    // match it; the agent had no way to learn that a process file exists
+    // for a task it was about to do by hand, and `<memory_protocol>`'s
+    // "search before writing" advice pointed at a tool the agent had no
+    // reason to reach for. One indexed SELECT, self-capping at 80 files
+    // (see `buildMemoryIndexManifest`), and it runs in this batch — so it
+    // costs nothing on the critical path.
+    scope.userId === undefined || !wantsMemory
+      ? Promise.resolve("")
+      : withSoftTimeout(
+          buildMemoryIndexManifest({
+            organizationId: scope.organizationId,
+            teamId: scope.teamId,
+            userId: scope.userId,
+          }).catch((error: unknown) => {
             console.warn(
-              `${scope.logPrefix} describeTeamSchema failed, continuing without team objects:`,
+              `${scope.logPrefix} buildMemoryIndexManifest failed, continuing without the memory index:`,
               error instanceof Error ? error.message : error,
             );
-            return "";
+            return MEMORY_INDEX_UNAVAILABLE;
           }),
-        3000,
-        "",
-        "team-objects",
-      ),
-      // Team-filtered L1 skills listing — disabled skills never reach the
-      // prompt (the agent has no path to invoke them).
-      withSoftTimeout(
-        listEnabledSkillsForTeam(scope.teamId)
-          .then((skills) =>
-            skills
-              .map((skill) => `- **${skill.name}** — ${skill.description}`)
-              .join("\n"),
-          )
-          .catch((error: unknown) => {
-            console.warn(
-              `${scope.logPrefix} listEnabledSkillsForTeam failed, continuing without skills catalogue:`,
-              error instanceof Error ? error.message : error,
-            );
-            return "";
-          }),
-        3000,
-        "",
-        "enabled-skills",
-      ),
-    ]);
+          3000,
+          MEMORY_INDEX_UNAVAILABLE,
+          "memory-index",
+        ),
+    // `<standing_memory>` — the one memory block that is not retrieved. It
+    // answers what no query-shaped arm can: a question that names nothing.
+    // One indexed query (or one primary-key lookup in `digest` mode), in this
+    // batch, so it costs nothing on the critical path.
+    wantsMemory
+      ? withSoftTimeout(
+          readStandingBlock(scope, standing),
+          3000,
+          "",
+          "standing-memory",
+        )
+      : Promise.resolve(""),
+  ]);
 
   return {
     chatbotContextManifest:
@@ -125,18 +234,33 @@ export const assembleContextFragments = async (
       teamCollectionsBlock.length > 0 ? teamCollectionsBlock : undefined,
     enabledSkillsBlock:
       enabledSkillsBlock.length > 0 ? enabledSkillsBlock : undefined,
+    memoryIndexBlock:
+      memoryIndexBlock.length > 0 ? memoryIndexBlock : undefined,
+    standingMemoryBlock:
+      standingMemoryBlock.length > 0 ? standingMemoryBlock : undefined,
   };
 };
 
 /**
- * Per-turn external-app setup — moved verbatim from `handlers/chatbot.ts`.
- * Two things happen, both soft-failing so a failure never blocks the turn:
+ * Per-turn external-app setup — the active external-app connections the
+ * caller can see, surfaced via the `{{externalAppsBlock}}` prompt line +
+ * runtime ctx. Soft-fails so a failure never blocks the turn.
  *
- *  (1) Load the active external-app connections the caller can see —
- *      surfaced via the `{{externalAppsBlock}}` prompt line + runtime ctx.
- *  (2) Mint a fresh sandbox JWT (HS256, 1 h TTL) and write it to
- *      `/workspace/.fretik/auth.json` so `fretik_apps` calls authenticate
- *      this turn. Skipped when `SANDBOX_JWT_SECRET` is unset.
+ * The per-turn sandbox JWT (`/workspace/.fretik/auth.json`, which
+ * `fretik_apps` reads to authenticate) is NOT minted here. It used to be,
+ * and that made this function acquire the conversation's E2B sandbox —
+ * `writeSandboxFile` → `acquireSandbox` → `Sandbox.connect`, an HTTP
+ * round-trip that RESUMES a paused sandbox — on EVERY turn, including the
+ * ones that never execute code, in series ahead of recall. It also
+ * contradicted `runChatbotTurn`'s own contract ("a turn that never runs
+ * code skips sandbox acquisition entirely"), which was true of context
+ * hydration and quietly false because of this write.
+ *
+ * The JWT now rides `ensureSandboxAuthFile`, called from
+ * `prepareSandboxForCode` — the single funnel `python` / `bash` go through,
+ * and the only way `fretik_apps` is reachable at all. It is written there
+ * against a sandbox the tool has just acquired anyway, so the cost is one
+ * extra file write on turns that run code and ZERO on turns that don't.
  *
  * No-op (returns empty) without a conversationId / userId.
  */
@@ -145,7 +269,6 @@ export const loadExternalApps = async (params: {
   organizationId: string;
   teamId: string;
   userId: string | undefined;
-  turnId: string | undefined;
   logPrefix: string;
 }): Promise<{
   externalAppConnections: ExternalAppConnectionLite[] | undefined;
@@ -246,39 +369,6 @@ export const loadExternalApps = async (params: {
       console.warn(
         `${params.logPrefix} listConnections failed, proceeding without external apps:`,
         error instanceof Error ? error.message : error,
-      );
-    }
-
-    const sandboxJwtSecret = Bun.env.SANDBOX_JWT_SECRET;
-    const backendUrl = Bun.env.FRETIK_BACKEND_INTERNAL_URL;
-    if (
-      sandboxJwtSecret !== undefined &&
-      sandboxJwtSecret !== "" &&
-      backendUrl !== undefined &&
-      backendUrl !== ""
-    ) {
-      try {
-        const jwt = await signSandboxJwt({
-          conversationId: params.conversationId,
-          teamId: params.teamId,
-          userId: params.userId,
-          organizationId: params.organizationId,
-          turnId: params.turnId ?? params.conversationId,
-        });
-        await writeSandboxAuthFile(params.conversationId, {
-          jwt,
-          backendUrl,
-          turnId: params.turnId ?? params.conversationId,
-        });
-      } catch (error) {
-        console.warn(
-          `${params.logPrefix} writeSandboxAuthFile failed — fretik_apps calls will fail until next turn:`,
-          error instanceof Error ? error.message : error,
-        );
-      }
-    } else if (externalAppConnections && externalAppConnections.length > 0) {
-      console.warn(
-        `${params.logPrefix} external-app connections exist but SANDBOX_JWT_SECRET/FRETIK_BACKEND_INTERNAL_URL is missing — fretik_apps calls will fail`,
       );
     }
   }

@@ -160,6 +160,32 @@ export type AgentRuntimeContext = {
    */
   activeMemoryBlock?: string;
   /**
+   * Rendered `{{memoryIndex}}` fragment — the paths and sizes of everything
+   * under `/memories/{user,team}/`, no content. Built by
+   * `assembleContextFragments` from one indexed SELECT, so it is present on
+   * every turn regardless of what the message asks, which is the point:
+   * `activeMemoryBlock` is query-shaped and only surfaces a memory the
+   * message happens to match, while this says what the team knows AT ALL.
+   * Undefined when the scope has no acting user or the lookup soft-failed.
+   */
+  memoryIndexBlock?: string;
+  /**
+   * Rendered `{{standingMemory}}` fragment — what the team has been doing
+   * lately, the one memory block that is NOT retrieved.
+   *
+   * `activeMemoryBlock` is query-shaped and `memoryIndexBlock` lists paths
+   * without content; this carries content the team already established, present
+   * whether or not the message matches anything. It is what a question that
+   * names NOTHING has to stand on — every retrieval arm is query-shaped, so
+   * "où on en est ?" reaches none of them.
+   *
+   * Served by one of two arms (`STANDING_MODE`, or `X-Standing-Mode` per
+   * request on `/invoke`): the deterministic episode index, or the generated
+   * team digest. Both cost one indexed query in the pre-turn batch. Undefined
+   * when there is nothing recent, or the read soft-failed.
+   */
+  standingMemoryBlock?: string;
+  /**
    * Rendered `{{availableCapabilities}}` fragment — one workflow card when an
    * existing workflow already produces what this turn asks for. Built by the
    * same `runUnifiedRecall` call as `activeMemoryBlock`, but on a separate,

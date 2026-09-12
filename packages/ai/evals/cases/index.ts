@@ -22,6 +22,7 @@ import { fileAttachmentsSuite } from "./file-attachments";
 import { instructionFollowingSuite } from "./instruction-following";
 import { longContextSuite } from "./long-context";
 import { memorySuite } from "./memory";
+import { memoryRecallSuite } from "./memory-recall";
 import { multiStepSuite } from "./multi-step";
 import { multimodalSuite } from "./multimodal";
 import { pagesSuite } from "./pages";
@@ -42,6 +43,7 @@ export const allSuites: EvalSuite[] = [
   fileAttachmentsSuite,
   bashExecutionSuite,
   memorySuite,
+  memoryRecallSuite,
   dispatchAgentSuite,
   doctrineSuite,
   toolPortabilitySuite,

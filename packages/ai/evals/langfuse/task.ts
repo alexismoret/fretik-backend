@@ -85,6 +85,9 @@ export const buildExperimentTask = (opts?: RunCaseOptions): ExperimentTask => {
       text: result.invoke.text,
       passed: result.passed,
       latencyMs: result.invoke.latencyMs,
+      ...(result.invoke.ttftMs !== undefined
+        ? { ttftMs: result.invoke.ttftMs }
+        : {}),
       ...(result.invoke.error !== undefined
         ? { error: result.invoke.error }
         : {}),

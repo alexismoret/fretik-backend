@@ -312,6 +312,33 @@ const ensureActivityRecord = async (
   return recordId;
 };
 
+const FRENCH_MONTHS = [
+  "janvier",
+  "février",
+  "mars",
+  "avril",
+  "mai",
+  "juin",
+  "juillet",
+  "août",
+  "septembre",
+  "octobre",
+  "novembre",
+  "décembre",
+];
+
+/**
+ * A date comfortably in the past, written the way a person would.
+ *
+ * 45 days: far enough that no timezone or run-length edge can make it read as
+ * today or tomorrow, close enough that the episode still looks like recent
+ * business rather than history.
+ */
+const pastDueDate = (): string => {
+  const d = new Date(Date.now() - 45 * 24 * 60 * 60 * 1000);
+  return `${d.getDate().toString()} ${FRENCH_MONTHS[d.getMonth()] ?? ""} ${d.getFullYear().toString()}`;
+};
+
 const makeEpisode = async (
   scope: { organizationId: string; teamId: string },
   title: string,
@@ -382,17 +409,25 @@ export const makeConsolidationCluster = async (
   if (kind === "reanchor") {
     // A future-framed plan whose date is now past (vs <today>), plus a sibling
     // stating the outcome → REVISE the stale one (temporal re-anchoring).
+    //
+    // RELATIVE, and it has to be: the date used to be "30 juin 2026" in the
+    // text. That reads as past today and read as FUTURE for the first half of
+    // 2026 — the same fixture measuring the opposite claim depending on when
+    // the suite ran — and the gap it tests widens by a day every day. Same
+    // reasoning as `evals/recall/fixtures.ts`, where a hard-coded date is "a
+    // case that starts failing on a Tuesday".
+    const due = pastDueDate();
     return [
       await makeEpisode(
         scope,
         "[memory_eval] Meridian — livraison commande urgente (échéance)",
-        "Commande urgente CMD-2027 passée à Meridian Textiles : la livraison est ATTENDUE pour le 30 juin 2026. À suivre de près d'ici là.",
+        `Commande urgente CMD-2027 passée à Meridian Textiles : la livraison est ATTENDUE pour le ${due}. À suivre de près d'ici là.`,
         meridianId,
       ),
       await makeEpisode(
         scope,
         "[memory_eval] Meridian — livraison CMD-2027 effectuée",
-        "La commande urgente CMD-2027 de Meridian Textiles, dont la livraison ÉTAIT attendue pour le 30 juin 2026, a finalement bien été livrée et est conforme aux attentes. Le point de suivi antérieur qui l'annonçait comme encore à venir est donc dépassé.",
+        `La commande urgente CMD-2027 de Meridian Textiles, dont la livraison ÉTAIT attendue pour le ${due}, a finalement bien été livrée et est conforme aux attentes. Le point de suivi antérieur qui l'annonçait comme encore à venir est donc dépassé.`,
         meridianId,
       ),
     ];
@@ -658,12 +693,19 @@ export const makePromotionCluster = async (
     };
   }
   // dedup — the durable fact is already stored; the gate must not duplicate it.
+  // The episodes are built FIRST because the seeded memory has to carry the
+  // provenance a real promotion carries. The gate reads `Sources: episode:<uuid>`
+  // back to decide a stored fact is about THIS subject, so a fixture stamping
+  // `episode:seed` would be seeding a memory the gate is right to ignore — the
+  // case would measure the filter instead of the dedup.
+  const episodeIds = await durableEpisodes();
   const botUserId = await getTeamBotUserId(fx.teamId);
   const path = `${LEARNED_PREFIX}meridian-bon-de-commande.md`;
   await createMemory({
     rawPath: `/memories/team/${path}`,
-    content:
-      "Meridian Textiles exige un bon de commande signé par un responsable avant toute expédition.\n\n**When to apply:** toute commande passée à Meridian Textiles.\n**What to do:** faire signer le bon de commande par un responsable avant de lancer la production ou l'expédition.\n\nSources: episode:seed",
+    content: `Meridian Textiles exige un bon de commande signé par un responsable avant toute expédition.\n\n**When to apply:** toute commande passée à Meridian Textiles.\n**What to do:** faire signer le bon de commande par un responsable avant de lancer la production ou l'expédition.\n\nSources: ${episodeIds
+      .map((id) => `episode:${id}`)
+      .join(", ")}`,
     scopeKey: {
       organizationId: fx.organizationId,
       teamId: fx.teamId,
@@ -671,7 +713,7 @@ export const makePromotionCluster = async (
     },
     actor: { userId: botUserId, actor: "agent" },
   });
-  return { episodeIds: await durableEpisodes(), seededMemoryPath: path };
+  return { episodeIds, seededMemoryPath: path };
 };
 
 export const ensureMemoryFixtures = async (

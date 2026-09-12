@@ -84,7 +84,6 @@ const promoteResponseSchema = z.object({
   updated: z.number(),
   noop: z.number(),
 });
-
 /** Fan out one idempotent per-team job per active team. Called by the cron. */
 export const runDreamingSweep = async (): Promise<{ teams: number }> => {
   const teams = await listDreamingTeams();
@@ -298,10 +297,13 @@ export const runEagerConsolidation = async (
 export const startDreamingWorker = (): Worker<DreamingJobData> => {
   const worker = new Worker<DreamingJobData>(
     MEMORY_DREAMING_QUEUE,
-    (job: Job<DreamingJobData>) =>
-      "episodeId" in job.data
-        ? runEagerConsolidation(job.data)
-        : runDreamingTeam(job.data),
+    // `episodeId` narrows eager consolidation, which is the only shape
+    // carrying one; everything else is a nightly team sweep.
+    (job: Job<DreamingJobData>) => {
+      const data = job.data;
+      if ("episodeId" in data) return runEagerConsolidation(data);
+      return runDreamingTeam(data);
+    },
     { connection: createWorkerConnection(), concurrency: TEAM_CONCURRENCY },
   );
   worker.on("failed", (job, err) => {

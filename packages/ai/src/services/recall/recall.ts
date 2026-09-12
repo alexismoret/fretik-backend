@@ -7,9 +7,24 @@ import { getActiveSpanId, startObservation } from "@langfuse/tracing";
 import { generateText } from "ai";
 import { langfuseEnabled, telemetryFor } from "../../lib/langfuse";
 import { resolveMemoryModel } from "../../lib/model-registry/team-model";
+import {
+  formatTimings,
+  recordTimingsOnTrace,
+  type StageTimings,
+  timeStage,
+} from "../../lib/turn-timings";
 import { searchRAG } from "../search";
-import { gatherGraphNeighborhood, type GraphNeighborhood } from "./graph";
+import {
+  asOfLine,
+  type Candidate,
+  metadataString,
+  type RecallGathered,
+  type RecallSearchHit,
+  renderCandidates,
+} from "./candidates";
+import { gatherGraphNeighborhood } from "./graph";
 import { RECALL_JUDGE_SYSTEM_PROMPT } from "./prompt";
+import { buildVerbatimBlock, shouldEscalateToJudge } from "./verbatim";
 
 /**
  * Unified pre-turn recall (P5) — the evolution of Active Memory.
@@ -57,6 +72,42 @@ const RECENT_ASSISTANT_TURN_MAX_CHARS = 180;
 const RECALL_TIMEOUT_MS = 15_000;
 
 /**
+ * Which selector turns the gather into the block.
+ *
+ * `adaptive` is the default, and it is the default on evidence rather than on
+ * argument. Build the deterministic block, serve it when retrieval was
+ * confident, hand the turn to the judge when it was not. Measured on the recall
+ * suite at ten repeats: 23/23, the same score as `judge`, with the judge
+ * running on 43 % of turns and recall's median falling from 2 246 ms to
+ * 1 398 ms.
+ *
+ * `verbatim` never calls the judge and scores 17/23. What it loses is exactly
+ * one family — abstention, refusing a candidate that scores well but does not
+ * answer the message — and that is the judge job with no deterministic
+ * substitute (the distributions overlap; see `JUDGE_ESCALATION_BEST_SCORE`).
+ * Escalating on a weak gather buys the family back on the minority of turns
+ * where the question arises.
+ *
+ * `judge` is the pass this module was built around, kept as the rollback: one
+ * env var restores the previous behaviour exactly, with no deploy.
+ */
+export type RecallMode = "judge" | "verbatim" | "adaptive";
+
+export const isRecallMode = (raw: string): raw is RecallMode =>
+  raw === "judge" || raw === "verbatim" || raw === "adaptive";
+
+/**
+ * The PROCESS default, read once at module load — which is why switching modes
+ * needs a restart, not a turn. `OPERATIONS.md` claimed "takes effect on the
+ * next turn" until 2026-09-10; it never did. A caller that needs to compare two
+ * modes against one live service passes `modeOverride` instead.
+ */
+const RECALL_MODE: RecallMode = (() => {
+  const raw = process.env.RECALL_MODE;
+  return raw !== undefined && isRecallMode(raw) ? raw : "adaptive";
+})();
+
+/**
  * Budget for the deterministic arms (anchor funnel, then graph SQL).
  * These are indexed set-based queries that normally run in tens of ms; the
  * race only fires on a genuinely degraded DB, where dropping the graph arm
@@ -74,6 +125,15 @@ const CACHE_MAX_ENTRIES = 500;
 /** Deterministic anchors seeding the graph arm. */
 const MAX_ANCHORS = 3;
 /**
+ * Span budget for the anchor funnel on THIS path, well under the resolver's
+ * 150. Each span is one more row in the `unnest` join driving the funnel's
+ * lexical stages, and a chat message long enough to generate 150 of them is
+ * prose — its entity-bearing n-grams sit in the first tokens, not the
+ * hundredth window. The resolver keeps the wide budget: it runs in the
+ * background, where coverage outranks milliseconds.
+ */
+const RECALL_MAX_ANCHOR_SPANS = 60;
+/**
  * Graph-arm precision gate. The funnel's FTS stage matches spans against
  * the records' FIELD text, so a common phrase from the message ("de
  * prospection") hits every record whose fields contain it — fine for the
@@ -89,8 +149,6 @@ const anchorIsPrecise = (a: RecordAnchor): boolean =>
 const KNOWLEDGE_TOP_K = 10;
 /** Top-K for the documents sweep. */
 const DOCUMENTS_TOP_K = 5;
-/** Per-candidate clip — keeps the judge prompt ≤ ~12k chars worst case. */
-const CANDIDATE_MAX_CHARS = 700;
 /**
  * TRIED AND REVERTED (2026-08): a relevance gate dropping candidates below a
  * query-relative rerank floor before the judge. It removed 48% of candidates
@@ -167,6 +225,17 @@ export interface UnifiedRecallParams {
   recentTail: string;
   abortSignal?: AbortSignal;
   /**
+   * Whether the caller will READ `capabilityBlock`. Default true.
+   *
+   * `false` skips the whole capability arm — a hybrid search plus a rerank
+   * call over `workflows` + `pages`, whose only consumer is that block. The
+   * workflow turn-one path has never read it, so until 2026-09-11 every
+   * workflow run paid for one and threw it away. Not derived from
+   * `agentType`: that is telemetry, and deriving logic from it is how a
+   * "metadata only" field stops being metadata.
+   */
+  needsCapabilityBlock?: boolean;
+  /**
    * Skip the in-memory result cache — EVAL/BENCH ONLY. The cache absorbs
    * same-turn retries in prod; eval repeats of one message need fresh
    * gather+judge passes to measure stability.
@@ -178,7 +247,75 @@ export interface UnifiedRecallParams {
    * the `active-memory` code default (a `fixed` tier) always wins.
    */
   judgeProfileKey?: string;
+  /**
+   * Serve this turn under a specific selector — EVAL/BENCH ONLY.
+   *
+   * `RECALL_MODE` is a process-wide default read at module load, so an A/B
+   * between the judge and the deterministic path used to mean restarting the
+   * service between arms — which makes a paired, same-session comparison
+   * impossible and invites comparing two runs taken minutes apart against a
+   * moving corpus. This lets one live service answer both arms.
+   *
+   * Part of the cache key: two arms asking the same question within the 15 s
+   * TTL must not serve each other's block.
+   */
+  modeOverride?: RecallMode;
+  /**
+   * Report the stage timings this pass measured — EVAL/BENCH ONLY.
+   *
+   * The gather already times its arms and the turn already times gather vs
+   * judge; both only reach a log line. A harness that wants those numbers as
+   * DATA (per-arm p50s, the gather WAIT under a prefetch) would otherwise have
+   * to scrape stdout.
+   */
+  onTimings?: (timings: StageTimings) => void;
+  /**
+   * A gather already in flight for THIS message, from `prefetchRecallGather`.
+   *
+   * The gather depends on nothing the route computes: the user's message text
+   * and its attachments are in the request body, and the scope is on the
+   * session. Everything the route does before the turn starts — saving the
+   * message, mentions, the turn log, loading history, resolving the model — is
+   * eleven serial database and Redis round trips that the three retrieval arms
+   * could have been running underneath.
+   *
+   * Passing the promise in lets the caller start it at the top of the route and
+   * collect it here, so the gather is finished (or nearly) by the time anything
+   * needs the block. `recentTail` is NOT an input to it — only
+   * `buildJudgeInput` reads that, and it is assembled after the await.
+   */
+  gatherPromise?: Promise<RecallGathered>;
 }
+
+/**
+ * Start the gather for a message before the turn is set up.
+ *
+ * Soft-fails to an empty gather rather than rejecting: the promise may sit
+ * unawaited for the length of the route prelude, and an unhandled rejection
+ * there would take down the process for something the recall contract says must
+ * never break a turn.
+ *
+ * Returns `null` for the messages `runUnifiedRecall` would skip anyway, so a
+ * "ok merci" does not spend three retrieval arms on nothing.
+ */
+export const prefetchRecallGather = (
+  params: UnifiedRecallParams,
+): Promise<RecallGathered> | null => {
+  if (isTrivialMessage(params.userMessage, params.attachedFiles)) return null;
+  return gatherRecallCandidates(params).catch((err: unknown) => {
+    console.warn(
+      "[recall] prefetched gather failed, falling back to empty:",
+      err instanceof Error ? err.message : err,
+    );
+    return {
+      anchors: [],
+      knowledgeResults: [],
+      documentResults: [],
+      graph: null,
+      capabilityResults: [],
+    };
+  });
+};
 
 export interface UnifiedRecallResult {
   /**
@@ -209,7 +346,7 @@ const cacheKey = (params: UnifiedRecallParams): string => {
   const filesPart = params.attachedFiles
     .map((f) => `${f.filename}|${f.mimeType}`)
     .join(",");
-  return `${params.teamId}:${params.userId ?? "system"}:${params.userMessage.slice(0, 200)}:${filesPart}`;
+  return `${params.teamId}:${params.userId ?? "system"}:${params.modeOverride ?? RECALL_MODE}:${params.userMessage.slice(0, 200)}:${filesPart}`;
 };
 
 const purgeExpired = (now: number): void => {
@@ -270,124 +407,126 @@ const buildRecallQuery = (params: UnifiedRecallParams): string => {
   return parts.join(" — ");
 };
 
-interface Candidate {
-  /** Provenance marker the judge copies verbatim, e.g. `(episode:<id>)`. */
-  marker: string;
-  content: string;
-}
-
-/** `metadata` is `unknown` on candidates — read one string field safely. */
-const metadataString = (metadata: unknown, key: string): string | null => {
-  if (typeof metadata !== "object" || metadata === null) return null;
-  const value: unknown = Reflect.get(metadata, key);
-  return typeof value === "string" ? value : null;
-};
-
-/**
- * `As of YYYY-MM-DD` prefix for a dated candidate — the judge carries it into
- * the bullet so the agent can date the fact and pick the freshest of two
- * conflicting candidates. Empty when the candidate has no date.
- */
-const asOfLine = (isoDate: string | null): string =>
-  isoDate ? `As of ${isoDate.slice(0, 10)}\n` : "";
-
-const renderCandidates = (title: string, candidates: Candidate[]): string => {
-  if (candidates.length === 0) return "";
-  const body = candidates
-    .map((c) => `${c.marker}\n${c.content.slice(0, CANDIDATE_MAX_CHARS)}`)
-    .join("\n\n");
-  return `## ${title}\n\n${body}\n\n`;
-};
-
-/** Minimal structural view of a search hit — what the assembly reads. */
-export interface RecallSearchHit {
-  sourceType: string;
-  sourceId: string;
-  content: string;
-  metadata: unknown;
-  /** Cohere relevance ∈ [0,1]; null when the rerank stage was skipped. */
-  rerankScore?: number | null;
-}
-
-export interface RecallGathered {
-  anchors: RecordAnchor[];
-  knowledgeResults: RecallSearchHit[];
-  documentResults: RecallSearchHit[];
-  graph: GraphNeighborhood | null;
-  /** Capability channel — NEVER passed to the judge (see `CAPABILITY_TOP_K`). */
-  capabilityResults: RecallSearchHit[];
-}
-
 /**
  * The parallel gather — every provenance arm, each soft-failing to empty.
  * Exported (with `buildJudgeInput`) so the recall bench/evals exercise the
  * exact production pipeline around a controlled judge call.
  */
+export type { RecallGathered, RecallSearchHit } from "./candidates";
+
 export const gatherRecallCandidates = async (
   params: UnifiedRecallParams,
 ): Promise<RecallGathered> => {
   const query = buildRecallQuery(params);
-  const [anchors, knowledge, documents, capabilities] = await Promise.all([
-    withArmBudget<RecordAnchor[]>(
+  const timings: StageTimings = {};
+
+  // The anchor → graph chain is started HERE, before the `Promise.all`, and
+  // joined as one of its members. It used to run as an arm and then have the
+  // graph hop awaited AFTER the batch settled, which serialised two bounded
+  // stages that depend on nothing the RAG arms produce: worst case the
+  // deterministic side alone could spend `ARM_TIMEOUT_MS` twice (5 s) before
+  // the judge was even asked. Chained, it overlaps the three searches and the
+  // gather costs `max(arms)` instead of `max(arms) + graph`.
+  const anchorsPromise = withArmBudget<RecordAnchor[]>(
+    timeStage(
+      timings,
+      "anchor",
       anchorTextToRecords({
         teamId: params.teamId,
         text: params.userMessage,
         maxAnchors: MAX_ANCHORS,
+        maxSpans: RECALL_MAX_ANCHOR_SPANS,
       }),
-      [],
-      "anchor",
     ),
-    searchRAG({
-      query,
-      teamId: params.teamId,
-      organizationId: params.organizationId,
-      userId: params.userId,
-      filters: { sourceTypes: ["memories", "episodes", "records"] },
-      topK: KNOWLEDGE_TOP_K,
-      // The judge is the precision filter; skip the multi-query
-      // reformulation latency (~1-3s) on this pre-turn hot path.
-      skipMultiQuery: true,
-    }).catch(() => ({ results: [] })),
-    searchRAG({
-      query,
-      teamId: params.teamId,
-      organizationId: params.organizationId,
-      userId: params.userId,
-      filters: { sourceTypes: ["documents"] },
-      topK: DOCUMENTS_TOP_K,
-      skipMultiQuery: true,
-    }).catch(() => ({ results: [] })),
-    // Capability arm. Free in wall-clock terms — the arms already race in
-    // parallel and the reranker has no concurrency cap — and deliberately
-    // kept out of the judge's pool. Workflows and pages share one pool and one
-    // gate: they answer the same question in two shapes — something that
-    // already produces this exists, either by running or by being opened.
-    searchRAG({
-      query,
-      teamId: params.teamId,
-      organizationId: params.organizationId,
-      userId: params.userId,
-      filters: { sourceTypes: ["workflows", "pages"] },
-      topK: CAPABILITY_TOP_K,
-      skipMultiQuery: true,
-    }).catch(() => ({ results: [] })),
-  ]);
-
-  // Graph neighborhood needs the anchors — second (still bounded) hop.
-  const graph = await withArmBudget(
-    gatherGraphNeighborhood({
-      anchors: anchors.filter(anchorIsPrecise),
-      userId: params.userId,
-    }),
-    null,
-    "graph",
+    [],
+    "anchor",
   );
+  const graphPromise = anchorsPromise.then((anchors) =>
+    withArmBudget(
+      timeStage(
+        timings,
+        "graph",
+        gatherGraphNeighborhood({
+          anchors: anchors.filter(anchorIsPrecise),
+          userId: params.userId,
+        }),
+      ),
+      null,
+      "graph",
+    ),
+  );
+
+  const [anchors, graph, knowledge, documents, capabilities] =
+    await Promise.all([
+      anchorsPromise,
+      graphPromise,
+      timeStage(
+        timings,
+        "knowledge",
+        searchRAG({
+          query,
+          teamId: params.teamId,
+          organizationId: params.organizationId,
+          userId: params.userId,
+          filters: { sourceTypes: ["memories", "episodes", "records"] },
+          topK: KNOWLEDGE_TOP_K,
+          // The judge is the precision filter; skip the multi-query
+          // reformulation latency (~1-3s) on this pre-turn hot path.
+          skipMultiQuery: true,
+        }).catch(() => ({ results: [] })),
+      ),
+      timeStage(
+        timings,
+        "documents",
+        searchRAG({
+          query,
+          teamId: params.teamId,
+          organizationId: params.organizationId,
+          userId: params.userId,
+          filters: { sourceTypes: ["documents"] },
+          topK: DOCUMENTS_TOP_K,
+          skipMultiQuery: true,
+        }).catch(() => ({ results: [] })),
+      ),
+      // Capability arm. Free in wall-clock terms — the arms already race in
+      // parallel and the reranker has no concurrency cap — and deliberately
+      // kept out of the judge's pool. Workflows and pages share one pool and
+      // one gate: they answer the same question in two shapes — something
+      // that already produces this exists, either by running or by being
+      // opened.
+      //
+      // The three searches keep their own `rerank` calls rather than being
+      // fused into one over the union. Their `sourceTypes` are DISJOINT, so
+      // the calls are not redundant work — a cross-encoder scores each
+      // (query, document) pair independently, and merging them would trade
+      // three parallel calls of ≤50 documents for one serial call of ≤150,
+      // i.e. roughly triple the rerank compute on the critical path to save
+      // two round-trips that overlap anyway. What WAS redundant is the
+      // embedding: all three arms embed the same `query` string, and
+      // `getCachedOrEmbedBatch` now collapses those into one request.
+      params.needsCapabilityBlock === false
+        ? Promise.resolve({ results: [] })
+        : timeStage(
+            timings,
+            "capabilities",
+            searchRAG({
+              query,
+              teamId: params.teamId,
+              organizationId: params.organizationId,
+              userId: params.userId,
+              filters: { sourceTypes: ["workflows", "pages"] },
+              topK: CAPABILITY_TOP_K,
+              skipMultiQuery: true,
+            }).catch(() => ({ results: [] })),
+          ),
+    ]);
 
   recordCandidateScores(
     knowledge.results,
     documents.results,
     capabilities.results,
   );
+  console.info(`[recall] gather ${formatTimings(timings)}`);
 
   return {
     anchors,
@@ -517,7 +656,14 @@ const HANDLE_PREFIX: Record<string, string> = {
   document: "D",
 };
 
-/** Allocates one stable handle per real provenance, and remembers the mapping. */
+/**
+ * Allocates one stable handle per real provenance, and remembers the mapping.
+ *
+ * The failure it prevents is silent: an agent calling its tools with an id a
+ * model invented. A second consumer copying the scheme rather than calling
+ * this would drift from it, so it stays one function — it had exactly such a
+ * consumer (the team digest) until that was deleted on 2026-09-11.
+ */
 const makeHandleAllocator = (): {
   handleFor: (kind: string, id: string) => string;
   handles: Map<string, string>;
@@ -547,6 +693,9 @@ const makeHandleAllocator = (): {
 export const expandHandles = (
   text: string,
   handles: Map<string, string>,
+  // Two callers now, and the log line is read by whoever is debugging one of
+  // them — "[recall] judge cited" sent a digest problem looking at recall.
+  source = "[recall] judge",
 ): string =>
   text.replace(
     /\((memory|episode|record|document):([^)]*)\)/g,
@@ -554,7 +703,7 @@ export const expandHandles = (
       const real = handles.get(`${kind}:${raw.trim()}`);
       if (real !== undefined) return `(${real})`;
       console.warn(
-        `[recall] judge cited an unknown handle ${kind}:${raw.slice(0, 24)} — dropped`,
+        `${source} cited an unknown handle ${kind}:${raw.slice(0, 24)} — dropped`,
       );
       return "";
     },
@@ -710,14 +859,65 @@ export const runUnifiedRecall = async (
   if (cached && cached.expires > now) return cached.result;
 
   let result: UnifiedRecallResult | null = null;
+  const turnTimings: StageTimings = {};
   try {
-    const gathered = await gatherRecallCandidates(params);
-    const judgeInput = buildJudgeInput(params, gathered);
-    // Judge-free channel: computed before the judge runs and kept whatever it
-    // decides, so a verdict of NONE still surfaces an existing workflow.
+    // `gather` measures the wait, not the work: when the caller prefetched, the
+    // arms have been running since the top of the route and this reads back
+    // what is left of them — which is the number that matters for TTFT.
+    const gathered = await timeStage(
+      turnTimings,
+      "gather",
+      params.gatherPromise ?? gatherRecallCandidates(params),
+    );
+    // Capability channel: computed before either selector runs and kept
+    // whatever it decides, so a verdict of NONE still surfaces an existing
+    // workflow.
     const capabilityBlock = buildCapabilityBlock(gathered) ?? undefined;
     let block: string | null = null;
     let recalledEpisodeIds: string[] = [];
+
+    // The deterministic selection is computed in BOTH non-judge modes, because
+    // in `adaptive` it is also the escalation signal: whether the judge runs is
+    // read off the same pass that would otherwise have produced the block.
+    const mode = params.modeOverride ?? RECALL_MODE;
+    const selection = mode === "judge" ? null : buildVerbatimBlock(gathered);
+    const escalate =
+      mode === "judge" ||
+      (mode === "adaptive" &&
+        selection !== null &&
+        shouldEscalateToJudge(selection));
+
+    if (selection !== null) {
+      console.info(
+        `[recall] mode=${mode} escalate=${escalate.toString()} best=${selection.ambiguity.bestScore?.toFixed(3) ?? "none"} uncorroboratedAnchors=${selection.ambiguity.uncorroboratedAnchors.toString()} nearTies=${selection.ambiguity.nearTies.toString()} greyZone=${selection.ambiguity.greyZone.toString()} clipped=${selection.ambiguity.clippedCandidates.toString()} chars=${(selection.block ?? "").length.toString()}`,
+      );
+    }
+
+    if (selection !== null && !escalate) {
+      block = selection.block;
+      recalledEpisodeIds = selection.recalledEpisodeIds;
+      if (recalledEpisodeIds.length > 0) {
+        void stampEpisodeRecall(recalledEpisodeIds).catch((err: unknown) => {
+          console.warn(
+            "[recall] episode stamp failed:",
+            err instanceof Error ? err.message : err,
+          );
+        });
+      }
+      result =
+        block === null && capabilityBlock === undefined
+          ? null
+          : {
+              block: block ?? "",
+              recalledEpisodeIds,
+              ...(capabilityBlock !== undefined ? { capabilityBlock } : {}),
+            };
+      if (cache.size >= CACHE_MAX_ENTRIES) purgeExpired(now);
+      cache.set(key, { result, expires: now + CACHE_TTL_MS });
+      return result;
+    }
+
+    const judgeInput = buildJudgeInput(params, gathered);
 
     if (!judgeInput.empty) {
       const signals: AbortSignal[] = [AbortSignal.timeout(RECALL_TIMEOUT_MS)];
@@ -735,15 +935,19 @@ export const runUnifiedRecall = async (
           params.judgeProfileKey,
         )
       ).model;
-      const judged = await generateText({
-        model: judgeModel,
-        instructions: RECALL_JUDGE_SYSTEM_PROMPT,
-        prompt: judgeInput.prompt,
-        temperature: JUDGE_TEMPERATURE,
-        maxOutputTokens: JUDGE_MAX_OUTPUT_TOKENS,
-        abortSignal: judgeAbort,
-        telemetry: telemetryFor("active-memory"),
-      });
+      const judged = await timeStage(
+        turnTimings,
+        "judge",
+        generateText({
+          model: judgeModel,
+          instructions: RECALL_JUDGE_SYSTEM_PROMPT,
+          prompt: judgeInput.prompt,
+          temperature: JUDGE_TEMPERATURE,
+          maxOutputTokens: JUDGE_MAX_OUTPUT_TOKENS,
+          abortSignal: judgeAbort,
+          telemetry: telemetryFor("active-memory"),
+        }),
+      );
 
       if (judged.finishReason === "length") {
         // Reasoning ate the whole output budget — the gate below turns
@@ -796,6 +1000,24 @@ export const runUnifiedRecall = async (
       err instanceof Error ? err.message : String(err),
     );
     result = null;
+  }
+
+  // One line per recall, on the success AND failure paths. `gather` is the
+  // whole parallel batch (its own per-arm breakdown is logged by
+  // `gatherRecallCandidates`); `judge` is the LLM call, absent when the
+  // candidates were empty or the message was skipped.
+  console.info(
+    `[recall] agent=${params.agentType} ${formatTimings(turnTimings)} block=${result?.block ? "yes" : "no"}`,
+  );
+  recordTimingsOnTrace("recall-timings", turnTimings);
+  // Same numbers as data, for a harness that scores them instead of reading
+  // them. Never allowed to affect the turn.
+  if (params.onTimings) {
+    try {
+      params.onTimings({ ...turnTimings });
+    } catch {
+      // Swallow — telemetry never breaks a turn.
+    }
   }
 
   if (cache.size >= CACHE_MAX_ENTRIES) purgeExpired(now);

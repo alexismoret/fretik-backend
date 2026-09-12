@@ -182,6 +182,45 @@ describe("buildSteeringMessage (per-turn, at the tail)", () => {
     expect(later).not.toContain("<active_memory>");
   });
 
+  test("turn 1 carries the memory index and the standing block too", () => {
+    // A run executes a repeatable process, and the block that says whether the
+    // team already wrote that process down is the INDEX — recall is
+    // query-shaped and only fires when the goal happens to name it. Until now
+    // the workflow path read both surfaces on every turn and discarded them.
+    const first = buildSteeringMessage({
+      run: run(),
+      turnIndex: 1,
+      currentDate: "d",
+      activeMemoryBlock: "FACT: the ops mailbox is ops@acme.test",
+      memoryIndexBlock:
+        "<memory_index>\n/memories/team/  processes/reception.md 1.2K\n</memory_index>",
+      standingMemoryBlock:
+        "- As of 2026-09-08 — Contrat Nordwind : remise de 8 % (episode:019f0000-0000-7000-8000-000000000001)",
+      nudge: false,
+      wrapUp: false,
+    });
+    // The index arrives already tagged by `buildMemoryIndexManifest`; the
+    // standing block arrives bare and is tagged here. Double-tagging the
+    // first would give the model two opening tags for one block.
+    expect(first).toContain("<memory_index>");
+    expect(first).not.toContain("<memory_index>\n<memory_index>");
+    expect(first).toContain("processes/reception.md");
+    expect(first).toContain(
+      "<standing_memory>\n- As of 2026-09-08 — Contrat Nordwind",
+    );
+    expect(first).toContain("</standing_memory>");
+
+    const later = buildSteeringMessage({
+      run: run(),
+      turnIndex: 2,
+      currentDate: "d",
+      nudge: false,
+      wrapUp: false,
+    });
+    expect(later).not.toContain("<memory_index>");
+    expect(later).not.toContain("<standing_memory>");
+  });
+
   test("announces the trigger on turn 1, continues on later turns", () => {
     const first = buildSteeringMessage({
       run: run(),

@@ -17,6 +17,8 @@
 import db from "@fretik/shared/db";
 import {
   aiConversations,
+  collectionRecords,
+  collections,
   member,
   organization,
   team,
@@ -37,6 +39,14 @@ export interface MemoryTestFixture {
    * an existing turn without spinning up the full chatbot pipeline.
    */
   createConversation: (args?: { userId?: string }) => Promise<string>;
+  /**
+   * A record in a lazily-created collection of this workspace — what an
+   * episode anchors ON, and therefore the only way a test can express
+   * "about the same subject". Only the registry columns are written: the
+   * per-collection `data.coll_<id>` extension table is the record services'
+   * business, and nothing that joins by id reads it.
+   */
+  createRecord: (label?: string) => Promise<string>;
   /** Removes the org + cascades everything created under it. */
   cleanup: () => Promise<void>;
 }
@@ -128,6 +138,40 @@ export const createMemoryTestFixture = async (): Promise<MemoryTestFixture> => {
     return row.id;
   };
 
+  // One collection per fixture, built on first use: a test that never anchors
+  // anything should not pay for a collection, and two records in the SAME
+  // collection is what makes them siblings rather than two universes.
+  let collectionId: string | null = null;
+  const ensureCollection = async (): Promise<string> => {
+    if (collectionId) return collectionId;
+    const [row] = await db
+      .insert(collections)
+      .values({
+        organizationId: org.id,
+        teamId: t.id,
+        key: `eval_coll_${suffix}`,
+        label: `Collection ${suffix}`,
+      })
+      .returning({ id: collections.id });
+    if (!row) throw new Error("fixture: failed to insert collection");
+    collectionId = row.id;
+    return row.id;
+  };
+
+  const createRecord: MemoryTestFixture["createRecord"] = async (label) => {
+    const [row] = await db
+      .insert(collectionRecords)
+      .values({
+        organizationId: org.id,
+        teamId: t.id,
+        collectionId: await ensureCollection(),
+        label: label ?? `Record ${tag()}`,
+      })
+      .returning({ id: collectionRecords.id });
+    if (!row) throw new Error("fixture: failed to insert collection record");
+    return row.id;
+  };
+
   const cleanup = async () => {
     // Cascading delete — every FK to organization is set to ON
     // DELETE CASCADE, so this single statement clears: team,
@@ -146,6 +190,7 @@ export const createMemoryTestFixture = async (): Promise<MemoryTestFixture> => {
     teamId: t.id,
     userIds: [userA.id, userB.id],
     createConversation,
+    createRecord,
     cleanup,
   };
 };

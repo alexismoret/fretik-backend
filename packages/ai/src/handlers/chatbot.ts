@@ -110,6 +110,12 @@ import {
   buildConversationAttachedFilesBlock,
   loadExternalApps,
 } from "../agents/shared/fragments";
+import type { StandingMode } from "../agents/shared/standing-memory";
+import {
+  isStandingMode,
+  STANDING_MODE,
+  standingBlockFor,
+} from "../agents/shared/standing-memory";
 import { subscribeAbort } from "../lib/abort-subscriber";
 import { flushLangfuse, langfuseEnabled } from "../lib/langfuse";
 import { deleteScore, recordScore } from "../lib/langfuse-scores";
@@ -140,6 +146,14 @@ import {
   withSoftTimeout,
 } from "../lib/stream-errors";
 import { withNamedTrace } from "../lib/trace-tool";
+import {
+  formatTimings,
+  markSince,
+  recordTimingsOnTrace,
+  tapFirstChunk,
+  timeStage,
+  type StageTimings,
+} from "../lib/turn-timings";
 import { forgetTurnUsage, readTurnUsage } from "../lib/turn-usage";
 import { uuidv7TimestampMs } from "../lib/uuidv7-time";
 import { dropNonTerminalErrorFrames } from "../lib/wire-errors";
@@ -157,7 +171,11 @@ import {
 } from "../services/native-input";
 import {
   buildRecallRecentTail,
+  isRecallMode,
+  prefetchRecallGather,
   runUnifiedRecall,
+  type RecallGathered,
+  type RecallMode,
 } from "../services/recall/recall";
 import type { HonoInternalAppType } from "../types/hono";
 import {
@@ -706,6 +724,49 @@ interface RunChatbotTurnParams {
   agentSet?: AgentSet<ChatbotCallOptions, ChatbotTools>;
   modelProfile?: ModelProfile;
   /**
+   * A recall gather the caller started before the turn was set up, so the
+   * retrieval arms ran underneath the route's serial prelude instead of after
+   * it. See `prefetchRecallGather`. Absent on the internal `/invoke` path,
+   * which has no prelude to hide behind.
+   */
+  prefetchedGather?: Promise<RecallGathered> | null;
+  /**
+   * When the HTTP request arrived, and what its serial prelude cost.
+   *
+   * TTFT is measured from the ROUTE, not from here: everything the prelude
+   * does — persisting the message, binding files, two conversation events, the
+   * read marker, the stream claim, the turn log, the history read, the model
+   * resolution — happens before this function is called and is invisible to
+   * `preTurnTotal`. A turn optimised against `preTurnTotal` alone can get
+   * slower for the user while the number it reports improves.
+   *
+   * Absent on `/invoke`, which has no prelude — its `[ttft]` line omits the
+   * label rather than reporting a zero it did not measure.
+   */
+  routeStartedAt?: number;
+  preludeTimings?: StageTimings;
+  /**
+   * Serve this turn's recall under a specific selector — set by `/invoke` from
+   * `X-Recall-Mode`, never reachable from `/stream`.
+   *
+   * The judge-vs-deterministic question is answered by scoring ANSWERS, which
+   * means running the same cases through the real turn twice. `RECALL_MODE` is
+   * a process default read at module load, so without this the two arms need a
+   * service restart between them — and two runs taken minutes apart against a
+   * live corpus are not a paired comparison.
+   */
+  recallMode?: RecallMode;
+  /**
+   * Serve `<standing_memory>` from a specific arm — set by `/invoke` from
+   * `X-Standing-Mode`, never reachable from `/stream`.
+   *
+   * Same reason as `recallMode`: whether a standing block earns its place is
+   * answered by scoring ANSWERS with it and without it, and `STANDING_MODE` is
+   * a process default read at module load. Without this the arms are a restart
+   * apart, which against a live corpus is not a paired comparison.
+   */
+  standingMode?: StandingMode;
+  /**
    * Thinking depth for this turn, already resolved and validated by the
    * caller (`effectiveReasoningLevel`): the user's pick in the prompt
    * bar, else the team's stored default for this model. Absent → the
@@ -773,7 +834,6 @@ const loadChatbotExternalApps = (
     organizationId: params.callOptions.organizationId,
     teamId: params.callOptions.teamId,
     userId: params.callOptions.userId,
-    turnId: params.callOptions.traceId,
     logPrefix: params.logPrefix,
   });
 
@@ -788,10 +848,6 @@ const loadChatbotExternalApps = (
 const buildTurnCallOptions = async (
   params: RunChatbotTurnParams,
   filenames: string[],
-  externalApps: {
-    externalAppConnections: ChatbotCallOptions["externalAppConnections"];
-    externalAppsBlock: string | undefined;
-  },
 ): Promise<ChatbotCallOptions> => {
   // Captured in a const so the truthiness narrowing survives into the
   // `propagateAttributes` callback closure below (a const can't change, so
@@ -806,37 +862,60 @@ const buildTurnCallOptions = async (
   // HANG backstops, not latency caps). The two history-dependent fragments
   // (attached files, active-memory recall) stay here and run in the same
   // parallel batch.
-  const [attachedFilesBlock, activeMemoryRecall, fragments, toolPolicies] =
-    await Promise.all([
-      // Conversation-scoped, NOT last-message-scoped: a file part that the
-      // active profile can't ingest natively is dropped from the history by
-      // `prepareModelMessages` (and native ones past the recency cap with
-      // it), so this block is the ONLY thing that keeps an earlier turn's
-      // attachment knowable. Scoping it to the last user message made every
-      // such file vanish on turn 2 — the agent then reports it has no files
-      // while they sit readable in `attachments/`. Same builder the workflow
-      // handler uses.
+  // Whether `<standing_memory>` is served this turn. Per request, so the
+  // rollback can be exercised without a restart — same contract as
+  // `recallMode`.
+  const standingMode = params.standingMode ?? STANDING_MODE;
+
+  // Every stage below is timed into one record and logged as a single
+  // key=value line (see `lib/turn-timings.ts`). These run in parallel, so the
+  // labels do NOT sum to `preTurnTotal` — the slowest one is what TTFT pays.
+  const timings: StageTimings = {};
+  const startedAt = Date.now();
+
+  const [
+    attachedFilesBlock,
+    activeMemoryRecall,
+    fragments,
+    toolPolicies,
+    externalApps,
+  ] = await Promise.all([
+    // Conversation-scoped, NOT last-message-scoped: a file part that the
+    // active profile can't ingest natively is dropped from the history by
+    // `prepareModelMessages` (and native ones past the recency cap with
+    // it), so this block is the ONLY thing that keeps an earlier turn's
+    // attachment knowable. Scoping it to the last user message made every
+    // such file vanish on turn 2 — the agent then reports it has no files
+    // while they sit readable in `attachments/`. Same builder the workflow
+    // handler uses.
+    timeStage(
+      timings,
+      "attachedFiles",
       withSoftTimeout(
         buildConversationAttachedFilesBlock(params.conversationId),
         4000,
         ATTACHED_FILES_UNAVAILABLE,
         "attached-files",
       ),
-      activeMemoryInputs && activeMemoryUserId
-        ? // Sibling trace linked to the conversation's session: the pre-turn
-          // recall judge runs before `execute`, so it can't nest under
-          // `chatbot-turn` — `propagateAttributes` keeps it navigable per
-          // session instead of producing an orphan trace.
-          propagateAttributes(
-            {
-              traceName: "active-memory-recall",
-              ...(params.conversationId !== undefined
-                ? { sessionId: params.conversationId }
-                : {}),
-              userId: activeMemoryUserId,
-              tags: [`team:${params.callOptions.teamId}`],
-            },
-            () =>
+    ),
+    activeMemoryInputs && activeMemoryUserId
+      ? // Sibling trace linked to the conversation's session: the pre-turn
+        // recall judge runs before `execute`, so it can't nest under
+        // `chatbot-turn` — `propagateAttributes` keeps it navigable per
+        // session instead of producing an orphan trace.
+        propagateAttributes(
+          {
+            traceName: "active-memory-recall",
+            ...(params.conversationId !== undefined
+              ? { sessionId: params.conversationId }
+              : {}),
+            userId: activeMemoryUserId,
+            tags: [`team:${params.callOptions.teamId}`],
+          },
+          () =>
+            timeStage(
+              timings,
+              "recall",
               withSoftTimeout(
                 runUnifiedRecall({
                   userMessage: activeMemoryInputs.userMessage,
@@ -847,34 +926,73 @@ const buildTurnCallOptions = async (
                   userId: activeMemoryUserId,
                   conversationId: params.conversationId,
                   agentType: "chatbot",
+                  // Started at the top of the route when there was one — the
+                  // arms have been running through the whole prelude and this
+                  // collects what is left of them.
+                  ...(params.prefetchedGather
+                    ? { gatherPromise: params.prefetchedGather }
+                    : {}),
+                  // Eval seam. `bypassCache` rides with it: two arms asking
+                  // the same question seconds apart must each pay their own
+                  // pass, or the second one scores the first one's block.
+                  ...(params.recallMode
+                    ? { modeOverride: params.recallMode, bypassCache: true }
+                    : {}),
                 }),
-                // ABOVE the recall's own 15s judge budget (RECALL_TIMEOUT_MS)
-                // + RAG headroom — only fires on a true RAG hang, never on a
-                // normal (multi-second) judge generation.
+                // ABOVE the recall's own 15s judge budget
+                // (RECALL_TIMEOUT_MS) + RAG headroom — only fires on a true
+                // RAG hang, never on a normal (multi-second) judge
+                // generation.
                 18000,
                 null,
                 "active-memory",
               ),
-          )
-        : Promise.resolve(null),
-      assembleContextFragments({
-        organizationId: params.callOptions.organizationId,
-        teamId: params.callOptions.teamId,
-        userId: params.callOptions.userId,
-        logPrefix: params.logPrefix,
-      }),
+            ),
+        )
+      : Promise.resolve(null),
+    timeStage(
+      timings,
+      "contextFragments",
+      assembleContextFragments(
+        {
+          organizationId: params.callOptions.organizationId,
+          teamId: params.callOptions.teamId,
+          userId: params.callOptions.userId,
+          logPrefix: params.logPrefix,
+        },
+        { mode: standingMode },
+      ),
+    ),
+    timeStage(
+      timings,
+      "toolPolicies",
       getTeamToolPolicies(params.callOptions.teamId),
-    ]);
+    ),
+    // External apps joined this batch rather than running ahead of it. It
+    // used to be awaited BEFORE `buildTurnCallOptions`, in series, because
+    // it also minted the sandbox JWT — that write is now lazy (see
+    // `loadExternalApps`), leaving a plain `listConnections` with no reason
+    // to block anything.
+    timeStage(timings, "externalApps", loadChatbotExternalApps(params)),
+  ]);
 
+  timings["preTurnTotal"] = Date.now() - startedAt;
   console.info(
     `${params.logPrefix} contextManifestChars=${(fragments.chatbotContextManifest ?? "").length.toString()} activeMemory=${activeMemoryRecall ? "hit" : "miss"} teamCollectionsChars=${(fragments.teamCollectionsBlock ?? "").length.toString()} enabledSkillsChars=${(fragments.enabledSkillsBlock ?? "").length.toString()}`,
   );
+  console.info(`${params.logPrefix} [pre-turn] ${formatTimings(timings)}`);
+  recordTimingsOnTrace("pre-turn", timings);
 
   return {
     ...params.callOptions,
     attachedFilesBlock:
       attachedFilesBlock.length > 0 ? attachedFilesBlock : undefined,
     chatbotContextManifest: fragments.chatbotContextManifest,
+    memoryIndexBlock: fragments.memoryIndexBlock,
+    standingMemoryBlock: standingBlockFor(
+      fragments.standingMemoryBlock,
+      activeMemoryRecall?.block,
+    ),
     activeMemoryBlock: activeMemoryRecall?.block,
     availableCapabilitiesBlock: activeMemoryRecall?.capabilityBlock,
     teamCollectionsBlock: fragments.teamCollectionsBlock,
@@ -1035,23 +1153,31 @@ export const runChatbotTurn = async (
   // `prepareSandboxForCode` — so a turn that never runs code skips
   // sandbox acquisition entirely. Chat attachments + outputs come back
   // automatically when the storage façade restores from S3 on first
-  // sandbox access.
-
-  // External apps: active connections (surfaced to the agent) + a fresh
-  // per-turn sandbox JWT for `fretik_apps`. See loadExternalApps.
-  const externalApps = await loadChatbotExternalApps(params);
+  // sandbox access. That claim used to be false: the external-app setup
+  // minted the sandbox JWT eagerly and acquired the sandbox to write it,
+  // in series, ahead of everything. The JWT now rides
+  // `prepareSandboxForCode` too, so the sentence holds again.
 
   // Assemble the per-turn system-prompt fragments + external apps into
   // the final call options handed to the agent. See buildTurnCallOptions.
-  const callOptionsWithFiles = await buildTurnCallOptions(
-    params,
-    filenames,
-    externalApps,
+  // The turn's setup, end to end: the parallel batch plus the two Redis round
+  // trips after it. `preTurnTotal` covers only the batch and closes before the
+  // rest, so this stretch of the path had no number of its own.
+  const setupTimings: StageTimings = {};
+  const setupStartedAt = Date.now();
+
+  const callOptionsWithFiles = await timeStage(
+    setupTimings,
+    "preTurn",
+    buildTurnCallOptions(params, filenames),
   );
 
   // User-initiated Stop plumbing (Phase 12). See setupAbortChannel.
-  const { abortController, releaseAbortSubscriber } =
-    await setupAbortChannel(params);
+  const { abortController, releaseAbortSubscriber } = await timeStage(
+    setupTimings,
+    "abortChannel",
+    setupAbortChannel(params),
+  );
 
   // Serving set + profile for this turn (see RunChatbotTurnParams).
   // Resolved ONCE here so every consumer below — compaction threshold,
@@ -1069,7 +1195,11 @@ export const runChatbotTurn = async (
   const escalatedAfterMidstreamError =
     params.agentSet === undefined &&
     params.conversationId !== undefined &&
-    (await consumeMidstreamErrorMarker(params.conversationId));
+    (await timeStage(
+      setupTimings,
+      "midstreamMarker",
+      consumeMidstreamErrorMarker(params.conversationId),
+    ));
   if (escalatedAfterMidstreamError) {
     console.warn(
       `${params.logPrefix} prior turn died mid-stream — escalating to fallback model`,
@@ -1097,6 +1227,37 @@ export const runChatbotTurn = async (
     params.reasoningLevel === undefined
       ? undefined
       : reasoningParamForProfile(modelProfile, params.reasoningLevel);
+
+  markSince(setupTimings, "setupTotal", setupStartedAt);
+  console.info(`${params.logPrefix} [setup] ${formatTimings(setupTimings)}`);
+
+  /**
+   * The turn's headline latency number, emitted when the first frame a reader
+   * could see reaches the wire.
+   *
+   * Once per turn, whichever stream produces that frame — the primary, the
+   * fallback model, or the dead-step continuation all pass this same callback
+   * to `tapFirstChunk`, and the flag here is what makes "first" mean the turn
+   * rather than the stream. `firstByte` is measured from ROUTE ENTRY on
+   * `/stream`; `/invoke` has no prelude and reports from its own start, with
+   * the `prelude` label absent rather than zeroed.
+   */
+  let ttftEmitted = false;
+  const emitTtft = (): void => {
+    if (ttftEmitted) return;
+    ttftEmitted = true;
+    const startedAt = params.routeStartedAt ?? setupStartedAt;
+    const ttft: StageTimings = {
+      ...(params.preludeTimings
+        ? { prelude: params.preludeTimings["preludeTotal"] ?? 0 }
+        : {}),
+      preTurn: setupTimings["preTurn"] ?? 0,
+      setup: setupTimings["setupTotal"] ?? 0,
+    };
+    markSince(ttft, "firstByte", startedAt);
+    console.info(`${params.logPrefix} [ttft] ${formatTimings(ttft)}`);
+    recordTimingsOnTrace("ttft", ttft);
+  };
 
   // C4 turn-robustness state. `onError` (sync, fires on the wire when the
   // stream errors) and the recovery seam inside `execute` below reach the
@@ -1562,25 +1723,28 @@ export const runChatbotTurn = async (
           });
           writer.merge(
             dropChunksAfterAbort(
-              toUIMessageStream<ChatbotTools>({
-                stream: fallbackResult.stream,
-                // uuid v7 wire ids — persisted verbatim by `saveMessages`
-                // so DB ids ≡ stream ids (stable Vue keys across reloads).
-                generateMessageId: randomUUIDv7,
-                onError: recordStreamError,
-                messageMetadata: ({ part }) => {
-                  if (part.type !== "finish") return undefined;
-                  // Failover (zombie or transparent) always serves the fallback
-                  // agent — flagged for the eval harness.
-                  return buildTurnMessageMetadata(
-                    part,
-                    "fallback",
-                    modelProfile.key,
-                    getActiveTraceId(),
-                    readTurnUsage(usageKey),
-                  );
-                },
-              }),
+              tapFirstChunk(
+                toUIMessageStream<ChatbotTools>({
+                  stream: fallbackResult.stream,
+                  // uuid v7 wire ids — persisted verbatim by `saveMessages`
+                  // so DB ids ≡ stream ids (stable Vue keys across reloads).
+                  generateMessageId: randomUUIDv7,
+                  onError: recordStreamError,
+                  messageMetadata: ({ part }) => {
+                    if (part.type !== "finish") return undefined;
+                    // Failover (zombie or transparent) always serves the fallback
+                    // agent — flagged for the eval harness.
+                    return buildTurnMessageMetadata(
+                      part,
+                      "fallback",
+                      modelProfile.key,
+                      getActiveTraceId(),
+                      readTurnUsage(usageKey),
+                    );
+                  },
+                }),
+                emitTtft,
+              ),
               abortController.signal,
             ),
           );
@@ -1672,21 +1836,24 @@ export const runChatbotTurn = async (
           });
           writer.merge(
             dropChunksAfterAbort(
-              toUIMessageStream<ChatbotTools>({
-                stream: contResult.stream,
-                generateMessageId: randomUUIDv7,
-                onError: recordStreamError,
-                messageMetadata: ({ part }) => {
-                  if (part.type !== "finish") return undefined;
-                  return buildTurnMessageMetadata(
-                    part,
-                    servedBy,
-                    modelProfile.key,
-                    getActiveTraceId(),
-                    readTurnUsage(usageKey),
-                  );
-                },
-              }),
+              tapFirstChunk(
+                toUIMessageStream<ChatbotTools>({
+                  stream: contResult.stream,
+                  generateMessageId: randomUUIDv7,
+                  onError: recordStreamError,
+                  messageMetadata: ({ part }) => {
+                    if (part.type !== "finish") return undefined;
+                    return buildTurnMessageMetadata(
+                      part,
+                      servedBy,
+                      modelProfile.key,
+                      getActiveTraceId(),
+                      readTurnUsage(usageKey),
+                    );
+                  },
+                }),
+                emitTtft,
+              ),
               abortController.signal,
             ),
           );
@@ -1745,51 +1912,69 @@ export const runChatbotTurn = async (
       // active span — every model + tool call then nests under ONE trace
       // per turn. Run directly when Langfuse is unconfigured.
       const turnBody = async (): Promise<void> => {
-        const historyForModel = await compactConversation(params.history, {
-          // Threshold follows the SERVING model's context window — the
-          // profile resolved above (header override or `chat` binding).
-          profile: modelProfile,
-          // Summariser honours the team's workhorse pick (C8b).
-          teamId: params.callOptions.teamId,
-          onProgress: (event) => {
-            // The shared `id` makes consecutive writes UPDATE the
-            // single existing data part on the client (started → done
-            // / failed) instead of stacking three separate cards.
-            // The frontend renders this part as a UChatTool with a
-            // loader while phase==='running' and transitions to a
-            // success / failure state on the final write.
-            if (event.phase === "started") {
+        // The last two stretches before a token can be produced, and the two
+        // the pre-turn instrumentation could not see: `buildTurnCallOptions`
+        // has already returned by here, so `preTurnTotal` stops short of both.
+        // Compaction is usually a token count and a fast path, but summarises
+        // with an LLM above the threshold; `prepareModelMessages` can reach S3
+        // for natively-ingested attachments. Neither had a number.
+        const bodyTimings: StageTimings = {};
+        const historyForModel = await timeStage(
+          bodyTimings,
+          "compaction",
+          compactConversation(params.history, {
+            // Threshold follows the SERVING model's context window — the
+            // profile resolved above (header override or `chat` binding).
+            profile: modelProfile,
+            // Summariser honours the team's workhorse pick (C8b).
+            teamId: params.callOptions.teamId,
+            onProgress: (event) => {
+              // The shared `id` makes consecutive writes UPDATE the
+              // single existing data part on the client (started → done
+              // / failed) instead of stacking three separate cards.
+              // The frontend renders this part as a UChatTool with a
+              // loader while phase==='running' and transitions to a
+              // success / failure state on the final write.
+              if (event.phase === "started") {
+                writer.write({
+                  type: "data-compaction",
+                  id: COMPACTION_PART_ID,
+                  data: { phase: "running", tokensBefore: event.tokensBefore },
+                });
+                return;
+              }
+              if (event.phase === "succeeded") {
+                writer.write({
+                  type: "data-compaction",
+                  id: COMPACTION_PART_ID,
+                  data: {
+                    phase: "done",
+                    tokensBefore: event.tokensBefore,
+                    tokensAfter: event.tokensAfter,
+                    reductionPct: event.reductionPct,
+                  },
+                });
+                return;
+              }
+              // failed
               writer.write({
                 type: "data-compaction",
                 id: COMPACTION_PART_ID,
-                data: { phase: "running", tokensBefore: event.tokensBefore },
+                data: { phase: "failed", tokensBefore: event.tokensBefore },
               });
-              return;
-            }
-            if (event.phase === "succeeded") {
-              writer.write({
-                type: "data-compaction",
-                id: COMPACTION_PART_ID,
-                data: {
-                  phase: "done",
-                  tokensBefore: event.tokensBefore,
-                  tokensAfter: event.tokensAfter,
-                  reductionPct: event.reductionPct,
-                },
-              });
-              return;
-            }
-            // failed
-            writer.write({
-              type: "data-compaction",
-              id: COMPACTION_PART_ID,
-              data: { phase: "failed", tokensBefore: event.tokensBefore },
-            });
-          },
-        });
+            },
+          }),
+        );
 
-        const { result, servedBy, retried, modelMessages } =
-          await streamChatbotWithFallback({
+        // `streamText` returns as soon as the stream is open, so this measures
+        // preparing the messages (native-input policy, S3 for attachments the
+        // profile ingests natively) plus opening the provider call — the last
+        // thing standing between the user and a first token, not the
+        // generation itself.
+        const { result, servedBy, retried, modelMessages } = await timeStage(
+          bodyTimings,
+          "streamSetup",
+          streamChatbotWithFallback({
             history: historyForModel,
             callOptions: callOptionsWithFiles,
             agentSet,
@@ -1797,7 +1982,12 @@ export const runChatbotTurn = async (
             abortSignal: abortController.signal,
             onStepFinish: onTurnStep,
             reasoningOverride,
-          });
+          }),
+        );
+        console.info(
+          `${params.logPrefix} [turn-body] ${formatTimings(bodyTimings)}`,
+        );
+        recordTimingsOnTrace("turn-body", bodyTimings);
         // Pre-stream recovery telemetry (the mid-stream paths set their own
         // `recoveryKind` via runFallbackModel / the structured-error branch).
         servedByTurn = servedBy;
@@ -1826,29 +2016,32 @@ export const runChatbotTurn = async (
         // tool calls, RAG hits, latency, cost — lives in Langfuse.
         writer.merge(
           dropChunksAfterAbort(
-            toUIMessageStream<ChatbotTools>({
-              stream: result.stream,
-              generateMessageId: randomUUIDv7,
-              // A provider `error` part (e.g. empty pool) surfaces through
-              // the INNER stream's onError, not the outer one — route it to
-              // the same mapper so both surfaces agree on the wire frame.
-              onError: recordStreamError,
-              messageMetadata: ({ part }) => {
-                if (part.type !== "finish") return undefined;
-                // `servedBy` reports which agent answered under which profile;
-                // the eval harness reads it over SSE so a silent failover to
-                // the fallback model is flagged, not scored as the candidate.
-                // `getActiveTraceId()` is this turn's active span, sent live AND
-                // persisted so the feedback control scores the right trace.
-                return buildTurnMessageMetadata(
-                  part,
-                  servedBy,
-                  modelProfile.key,
-                  getActiveTraceId(),
-                  readTurnUsage(usageKey),
-                );
-              },
-            }),
+            tapFirstChunk(
+              toUIMessageStream<ChatbotTools>({
+                stream: result.stream,
+                generateMessageId: randomUUIDv7,
+                // A provider `error` part (e.g. empty pool) surfaces through
+                // the INNER stream's onError, not the outer one — route it to
+                // the same mapper so both surfaces agree on the wire frame.
+                onError: recordStreamError,
+                messageMetadata: ({ part }) => {
+                  if (part.type !== "finish") return undefined;
+                  // `servedBy` reports which agent answered under which profile;
+                  // the eval harness reads it over SSE so a silent failover to
+                  // the fallback model is flagged, not scored as the candidate.
+                  // `getActiveTraceId()` is this turn's active span, sent live AND
+                  // persisted so the feedback control scores the right trace.
+                  return buildTurnMessageMetadata(
+                    part,
+                    servedBy,
+                    modelProfile.key,
+                    getActiveTraceId(),
+                    readTurnUsage(usageKey),
+                  );
+                },
+              }),
+              emitTtft,
+            ),
             abortController.signal,
           ),
         );
@@ -2272,6 +2465,12 @@ chatbotRoutes.use("/stream", chatbotRateLimitMiddleware);
  * possible because nothing outside that closure holds a reference.
  */
 chatbotRoutes.post("/stream", async (c) => {
+  // TTFT starts HERE. Everything below this line and above `runChatbotTurn` is
+  // serial I/O the user waits through, and until now none of it was measured:
+  // `[pre-turn]` opens at `buildTurnCallOptions`, several round trips later.
+  const routeStartedAt = Date.now();
+  const preludeTimings: StageTimings = {};
+
   const user = c.get("user");
   const team = c.get("team");
   const organization = c.get("organization");
@@ -2298,11 +2497,15 @@ chatbotRoutes.post("/stream", async (c) => {
     reasoningLevel,
   } = parsed.data;
 
-  const conversation = await getConversation({
-    id: conversationId,
-    teamId: team.id,
-    userId: user.id,
-  });
+  const conversation = await timeStage(
+    preludeTimings,
+    "getConversation",
+    getConversation({
+      id: conversationId,
+      teamId: team.id,
+      userId: user.id,
+    }),
+  );
   if (!conversation) {
     return throwHttpError(404, notFound("Conversation not found"));
   }
@@ -2311,53 +2514,117 @@ chatbotRoutes.post("/stream", async (c) => {
   // attributed to its human author. This happens BEFORE the activation
   // gate so a human-to-human aside is still stored and seen by the others.
   const lastUser = [...messages].reverse().find((m) => m.role === "user");
+
+  // Retrieval starts HERE, ahead of everything the turn still has to set up.
+  //
+  // The gather depends on the message text, its attachments and the session's
+  // scope — all three are already in hand — and on nothing produced below.
+  // Everything between this line and `runChatbotTurn` is serial I/O: saving the
+  // message, binding its files, two conversation events, the read marker,
+  // mentions, the stream claim, the turn log, thirty messages of history, the
+  // model resolution. Ten round trips the three retrieval arms can run
+  // underneath instead of after.
+  //
+  // Fire-and-collect, never awaited here: `prefetchRecallGather` swallows its
+  // own failures, and `runUnifiedRecall` reads the promise back through
+  // `gatherPromise`. A turn that never reaches recall (the activation gate
+  // below, a 409 on the stream claim) simply drops it.
+  //
+  // One deliberate difference from the text the turn later sees: in a
+  // conversation with two or more participants `buildSpeakerContext` prefixes
+  // user messages with `[Name]: `, and that happens far below this line. The
+  // arms therefore retrieve against the message WITHOUT the speaker label,
+  // which is the more faithful query anyway — a colleague's name is noise to
+  // an embedding of "what is the Nordwind delivery cadence". Solo
+  // conversations, the overwhelming majority, are byte-identical either way.
+  const prefetchedGather =
+    lastUser && organization
+      ? prefetchRecallGather({
+          userMessage: uiMessageText(lastUser),
+          attachedFiles: extractLastUserFileFilenames([lastUser]).map(
+            (filename) => ({
+              filename,
+              mimeType: inferMimeTypeFromFilename(filename),
+            }),
+          ),
+          // Judge-only, and assembled after the await in `runUnifiedRecall`
+          // from the history this has not waited for.
+          recentTail: "",
+          teamId: team.id,
+          organizationId: organization.id,
+          userId: user.id,
+          conversationId,
+          agentType: "chatbot",
+        })
+      : null;
+
   if (lastUser) {
-    const savedUserMessage = await saveMessage({
-      conversationId,
-      role: "user",
-      parts: lastUser.parts,
-      metadata: lastUser.metadata,
-      authorId: user.id,
-      // Keep the client's wire id (uuid via the frontend's `generateId`)
-      // so the bubble the sender already rendered survives rehydration
-      // with the same Vue key. A duplicate POST converges by upsert.
-      id: isUuid(lastUser.id) ? lastUser.id : undefined,
-    });
+    const savedUserMessage = await timeStage(
+      preludeTimings,
+      "saveMessage",
+      saveMessage({
+        conversationId,
+        role: "user",
+        parts: lastUser.parts,
+        metadata: lastUser.metadata,
+        authorId: user.id,
+        // Keep the client's wire id (uuid via the frontend's `generateId`)
+        // so the bubble the sender already rendered survives rehydration
+        // with the same Vue key. A duplicate POST converges by upsert.
+        id: isUuid(lastUser.id) ? lastUser.id : undefined,
+      }),
+    );
     // Bind every `ai_chat_files` row that was created in the draft
     // (messageId = NULL) to the message we just persisted. The orphan
     // reaper keys off `messageId IS NULL` to reap abandoned drafts —
     // flipping this field here removes those rows from its scan.
     if (savedUserMessage) {
       const attachedFilenames = extractLastUserFileFilenames([lastUser]);
-      await linkChatFilesToMessage(
-        conversationId,
-        attachedFilenames,
-        savedUserMessage.id,
+      await timeStage(
+        preludeTimings,
+        "linkFiles",
+        linkChatFilesToMessage(
+          conversationId,
+          attachedFilenames,
+          savedUserMessage.id,
+        ),
       );
       // Surface the new user message to other connected viewers right away
       // — covers human-to-human asides that never start an assistant turn,
       // and lets viewers paint the sender's bubble before the answer streams.
-      await publishConversationEvent(conversationId, {
-        type: "message-added",
-        messageId: savedUserMessage.id,
-        role: "user",
-        authorId: user.id,
-      });
+      await timeStage(
+        preludeTimings,
+        "publishAdded",
+        publishConversationEvent(conversationId, {
+          type: "message-added",
+          messageId: savedUserMessage.id,
+          role: "user",
+          authorId: user.id,
+        }),
+      );
     }
   }
 
   // The sender has, by definition, just read the conversation — clear their
   // own unread / action-required state.
-  await markConversationRead({ conversationId, userId: user.id });
+  await timeStage(
+    preludeTimings,
+    "markRead",
+    markConversationRead({ conversationId, userId: user.id }),
+  );
 
   // Pull @mentioned teammates into the conversation and notify them.
   if (mentionedUserIds && mentionedUserIds.length > 0) {
-    const mentioned = await applyMentions({
-      conversationId,
-      teamId: team.id,
-      byUserId: user.id,
-      mentionedUserIds,
-    });
+    const mentioned = await timeStage(
+      preludeTimings,
+      "mentions",
+      applyMentions({
+        conversationId,
+        teamId: team.id,
+        byUserId: user.id,
+        mentionedUserIds,
+      }),
+    );
     void notifyMentionedMembers({
       mentioned,
       conversationId,
@@ -2389,7 +2656,11 @@ chatbotRoutes.post("/stream", async (c) => {
   // the GET /:id/stream reconnection path instead of running two
   // turns in parallel.
   const streamId = randomUUIDv7();
-  const claimed = await setConversationActiveStream(conversationId, streamId);
+  const claimed = await timeStage(
+    preludeTimings,
+    "claimStream",
+    setConversationActiveStream(conversationId, streamId),
+  );
   if (!claimed) {
     return c.json(
       {
@@ -2405,22 +2676,30 @@ chatbotRoutes.post("/stream", async (c) => {
   // instant, so any viewer invited by `turn-started` attaches successfully
   // — there is no setup window where an attach finds nothing (the old
   // buffer registered seconds into the turn and early attachers 204'd).
-  await openTurnLog(streamId);
+  await timeStage(preludeTimings, "openTurnLog", openTurnLog(streamId));
 
   // Announce the turn to every connected viewer so non-senders fan-in to
   // the same turn log (live multi-user streaming) and their send button
   // gates while it runs. `byUserId` lets the sender's own client skip the
   // fan-in (it is already streaming via this POST).
-  await publishConversationEvent(conversationId, {
-    type: "turn-started",
-    streamId,
-    byUserId: user.id,
-  });
+  await timeStage(
+    preludeTimings,
+    "publishStarted",
+    publishConversationEvent(conversationId, {
+      type: "turn-started",
+      streamId,
+      byUserId: user.id,
+    }),
+  );
 
   // Load last N messages from DB for the agent's memory window. 30 is
   // the Phase 8 default — compaction collapses the older portion when
   // the total exceeds 12K tokens.
-  const history = await loadConversationForAgent(conversationId, 30);
+  const history = await timeStage(
+    preludeTimings,
+    "loadHistory",
+    loadConversationForAgent(conversationId, 30),
+  );
 
   // Attribute speakers when the conversation is collaborative (≥2 members).
   // Solo conversations are left untouched — see buildSpeakerContext.
@@ -2452,7 +2731,11 @@ chatbotRoutes.post("/stream", async (c) => {
     profileKey: flagshipKey,
     fellBack,
     storedReasoningLevel,
-  } = await resolveTeamFlagship(team.id, conversation.modelProfileKey);
+  } = await timeStage(
+    preludeTimings,
+    "resolveFlagship",
+    resolveTeamFlagship(team.id, conversation.modelProfileKey),
+  );
   if (fellBack && conversation.modelProfileKey) {
     console.warn(
       `[chatbot] conversation ${conversationId} pinned model "${conversation.modelProfileKey}" is not a selectable flagship — using default`,
@@ -2460,10 +2743,16 @@ chatbotRoutes.post("/stream", async (c) => {
   }
   const profile = resolveChatModelForProfile(flagshipKey).profile;
 
+  markSince(preludeTimings, "preludeTotal", routeStartedAt);
+  console.info(`[chatbot] [prelude] ${formatTimings(preludeTimings)}`);
+
   return runChatbotTurn({
     conversationId,
     history: speakerHistory,
     callOptions,
+    prefetchedGather,
+    routeStartedAt,
+    preludeTimings,
     resumableStreamId: streamId,
     logPrefix: "[chatbot]",
     agentSet: getChatbotAgentSet(flagshipKey),
@@ -3033,6 +3322,39 @@ chatbotInternalRoutes.post("/invoke", async (c) => {
     }
   }
 
+  // Third eval seam, same rules again: which SELECTOR turns retrieval into the
+  // memory block. `RECALL_MODE` is a process default read at module load, so
+  // comparing the judge against the deterministic path otherwise means
+  // restarting the service between arms — and two runs taken minutes apart
+  // against a live corpus are not a paired comparison. Read here so it can
+  // never reach /stream; unknown values refused rather than silently served.
+  const recallModeHeader = c.req.header("X-Recall-Mode");
+  if (recallModeHeader !== undefined && !isRecallMode(recallModeHeader)) {
+    return c.json(
+      {
+        code: "UNKNOWN_RECALL_MODE",
+        message: `Unknown recall mode: "${recallModeHeader}" (expected judge | verbatim | adaptive)`,
+      },
+      400,
+    );
+  }
+  const recallMode: RecallMode | undefined = recallModeHeader;
+
+  // Same contract, same reason, for the standing block: `digest` (the
+  // generated summary) vs `episodes` (the deterministic index) vs `none` (the
+  // control arm, which is what makes the other two measurable at all).
+  const standingModeHeader = c.req.header("X-Standing-Mode");
+  if (standingModeHeader !== undefined && !isStandingMode(standingModeHeader)) {
+    return c.json(
+      {
+        code: "UNKNOWN_STANDING_MODE",
+        message: `Unknown standing mode: "${standingModeHeader}" (expected episodes | none)`,
+      },
+      400,
+    );
+  }
+  const standingMode: StandingMode | undefined = standingModeHeader;
+
   // D.3 warning: `messages` is silently ignored when `conversationId`
   // is set (the history is loaded from DB instead). Alert the caller
   // via log so this isn't a silent footgun. Not rejected to preserve
@@ -3077,6 +3399,8 @@ chatbotInternalRoutes.post("/invoke", async (c) => {
     callOptions,
     agentSet,
     modelProfile,
+    recallMode,
+    standingMode,
     // Server-to-server channel: deliver real tool inputs (see
     // RunChatbotTurnParams.scrubSensitiveInputs).
     scrubSensitiveInputs: false,

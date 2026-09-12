@@ -15,6 +15,9 @@
  */
 
 import db from "@fretik/shared/db";
+import { assembleContextFragments } from "../../src/agents/shared/fragments";
+import { STANDING_MODE } from "../../src/agents/shared/standing-memory";
+import { recallForWorkflowTurnOne } from "../../src/agents/workflow/turn-one-memory";
 import { consolidateEpisodes } from "../../src/services/memory/consolidate-episodes";
 import { distillConversation } from "../../src/services/memory/distill-conversation";
 import { promoteEpisodes } from "../../src/services/memory/promote-episodes";
@@ -22,10 +25,16 @@ import { runUnifiedRecall } from "../../src/services/recall/recall";
 import { textIncludes } from "../text-match";
 import {
   type ChainFixtures,
+  ensureWorkflowConventionMemory,
   makeContradictionPair,
   makeConventionCluster,
   makeOneOffCluster,
+  makeWorkflowRun,
   waitForMemoryVectors,
+  WORKFLOW_GOAL,
+  WORKFLOW_MEMORY_LEAF,
+  WORKFLOW_MEMORY_PATH,
+  WORKFLOW_NAME,
 } from "./fixtures";
 
 export interface ChainCaseResult {
@@ -38,11 +47,105 @@ export interface ChainCaseResult {
 export interface ChainEvalCase {
   id: string;
   description: string;
+  /**
+   * Needs a LIVE `@fretik/ai` service and `TRIGGER_CALLBACK_KEY` — opt-in with
+   * `--e2e`, because every other case in this suite runs in-process and a
+   * missing service would otherwise read as a pipeline failure.
+   */
+  e2e?: boolean;
   run: (fx: ChainFixtures) => Promise<ChainCaseResult>;
 }
 
 /** Typography-insensitive — see `evals/text-match.ts` for why that matters. */
 const has = textIncludes;
+
+/**
+ * The `learned/` memories THIS promotion wrote, by provenance.
+ *
+ * Not by entity name, which is what these cases used and what took
+ * `chain-convention-promoted` to 27/30 at N=30 while the promoter was working
+ * perfectly on all thirty. Its prompt says "Keep it generic — no
+ * episode-specific one-off details", so it sometimes writes "Pour chaque
+ * commande, l'équipe achats envoie le bon de commande en double exemplaire
+ * signé" — the rule, correctly generalized, with the supplier's name nowhere
+ * in it. A filter on the name then finds nothing and the case fails for the
+ * promoter doing its job BEST.
+ *
+ * Worse in the mirror case: `chain-oneoff-not-durable` asserts NO memory was
+ * written, so an over-generalized one-off that happens not to name the entity
+ * passed a guard that exists to catch exactly that.
+ *
+ * `Sources: episode:<id>` is stamped by the writer on every promotion and
+ * cannot be reworded, so it identifies the rows regardless of what the model
+ * decided to call them.
+ */
+const writtenFrom = (
+  memories: { path: string; content: string }[],
+  episodeIds: string[],
+): { path: string; content: string }[] =>
+  memories.filter((m) => episodeIds.some((id) => m.content.includes(id)));
+
+/**
+ * Drive ONE workflow turn over the route the Trigger.dev orchestrator calls.
+ *
+ * Not a mock of it — the whole point of the e2e case is that nothing between
+ * the run row and the model is stubbed. The response is SSE; the turn's
+ * verdict arrives as the `result` event, and heartbeats stream until it does.
+ */
+const runWorkflowTurn = async (
+  runId: string,
+): Promise<{ status: string; detail: string }> => {
+  const base = process.env.AI_SERVICE_URL ?? "";
+  const key = process.env.TRIGGER_CALLBACK_KEY ?? "";
+  if (!base || !key) {
+    return {
+      status: "failed",
+      detail: "AI_SERVICE_URL / TRIGGER_CALLBACK_KEY manquants pour --e2e",
+    };
+  }
+  const res = await fetch(`${base}/internal/trigger/runs/${runId}/turn`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Trigger-Key": key },
+    body: JSON.stringify({ turnIndex: 1, wrapUp: false }),
+  });
+  if (!res.ok || !res.body) {
+    return { status: "failed", detail: `HTTP ${res.status.toString()}` };
+  }
+  const text = await res.text();
+  // Last `result` frame wins; the stream also carries heartbeats and deltas.
+  const frames = text.split("\n\n").filter((f) => f.includes("event: result"));
+  const last = frames.at(-1);
+  if (!last) return { status: "failed", detail: "aucun événement result" };
+  const dataLine = last
+    .split("\n")
+    .find((l) => l.startsWith("data: "))
+    ?.slice(6);
+  if (!dataLine) return { status: "failed", detail: "result sans data" };
+  const parsed: unknown = JSON.parse(dataLine);
+  const status =
+    typeof parsed === "object" &&
+    parsed !== null &&
+    "status" in parsed &&
+    typeof parsed.status === "string"
+      ? parsed.status
+      : "unknown";
+  return { status, detail: dataLine.slice(0, 300) };
+};
+
+/** What the run actually wrote — assistant text only, tool parts dropped. */
+const assistantTextFor = async (conversationId: string): Promise<string> => {
+  const messages = await db.query.aiMessages.findMany({
+    where: { conversationId, role: "assistant" },
+    columns: { parts: true },
+  });
+  return messages
+    .flatMap((m) =>
+      m.parts.flatMap((p) =>
+        p.type === "text" && typeof p.text === "string" ? [p.text] : [],
+      ),
+    )
+    .join("\n");
+};
 
 /** The recall stage, run exactly as a turn would. */
 const recallFor = async (
@@ -176,16 +279,24 @@ export const CHAIN_CASES: ChainEvalCase[] = [
         where: { teamId: fx.teamId, path: { like: "learned/%" } },
         columns: { path: true, content: true },
       });
-      const mine = written.filter((m) => has(m.content, "Calliope"));
+      const mine = writtenFrom(written, episodeIds);
       for (const m of mine) lines.push(`${m.path}\n${m.content}`);
       if (result.added + result.updated === 0 || mine.length === 0) {
         failures.push(
           "promote: aucune mémoire learned/ écrite sur une convention récurrente",
         );
+      } else if (!mine.some((m) => has(m.content, "double exemplaire"))) {
+        // The rule itself, not the supplier's name — the promoter is told to
+        // generalize, so naming the entity is optional and the convention is
+        // not. Same marker the recall assertion below uses.
+        failures.push(
+          "promote: la mémoire écrite ne porte pas la convention (double exemplaire)",
+        );
       }
       // The write is fire-and-forget on the vector; wait for retrievability so
-      // this case measures the chain and not the embedding race.
-      if (!(await waitForMemoryVectors(fx.teamId, "Calliope"))) {
+      // this case measures the chain and not the embedding race. Keyed on a
+      // cited episode id for the same reason `writtenFrom` is.
+      if (!(await waitForMemoryVectors(fx.teamId, episodeIds[0] ?? "—"))) {
         failures.push("promote: la mémoire écrite n'a jamais été vectorisée");
       }
 
@@ -207,7 +318,7 @@ export const CHAIN_CASES: ChainEvalCase[] = [
   {
     id: "chain-oneoff-not-durable",
     description:
-      "Two unrelated one-off facts about the same entity must NOT become a durable team memory — and, above all, must not reach the assistant as a FACT. The over-generalization guard checked where it actually costs something.",
+      "Two unrelated one-off facts about the same entity must NOT become a durable team memory — and, if one ever is, must not reach the assistant as a FACT. The guard's teeth are at the promote stage; the recall check says the failure would have been felt, and both are scoped to what THIS cluster produced.",
     run: async (fx) => {
       const failures: string[] = [];
       const lines: string[] = [];
@@ -225,7 +336,10 @@ export const CHAIN_CASES: ChainEvalCase[] = [
         where: { teamId: fx.teamId, path: { like: "learned/%" } },
         columns: { path: true, content: true },
       });
-      const mine = written.filter((m) => has(m.content, "Calliope"));
+      // By provenance, not by entity name: the failure this guard exists to
+      // catch is an OVER-GENERALIZED one-off, and over-generalizing is exactly
+      // what drops the entity's name from the text. See `writtenFrom`.
+      const mine = writtenFrom(written, episodeIds);
       for (const m of mine) lines.push(`${m.path}\n${m.content}`);
       if (mine.length > 0) {
         failures.push(
@@ -238,9 +352,143 @@ export const CHAIN_CASES: ChainEvalCase[] = [
         "Je prépare une commande pour Calliope Verre, quelque chose à respecter ?",
       );
       lines.push(`[recall]\n${block || "NONE"}`);
-      if (block.includes("memory:learned/")) {
+      // The memories THIS cluster produced, not every `learned/` path in the
+      // block. `memory:learned/` as a whole was a proxy that held only while
+      // the team had no other promotions — and it stopped holding the day one
+      // was parked here deliberately (the P5.1 acceptance residue, about
+      // another supplier entirely), taking this case to 0/30 while the
+      // promoter was correctly writing nothing at all.
+      const leaked = mine.filter((m) => block.includes(`memory:${m.path}`));
+      if (leaked.length > 0) {
         failures.push(
-          "recall: une mémoire learned/ inventée remonte comme un fait",
+          `recall: ${leaked.map((m) => m.path).join(", ")} — une mémoire inventée sur des faits ponctuels remonte comme un fait`,
+        );
+      }
+      return { text: lines.join("\n\n"), failures };
+    },
+  },
+  {
+    id: "chain-workflow-turn-one",
+    description:
+      "A workflow run starts knowing the team's conventions. Nobody is typing, so nothing in the run names the memory — retrieval matches on the workflow's own name and goal, and the index lists the path. The two surfaces P2 put in turn 1's steering message, measured where they are produced rather than where they are formatted.",
+    run: async (fx) => {
+      const failures: string[] = [];
+      const lines: string[] = [];
+
+      await ensureWorkflowConventionMemory(fx);
+
+      // Surface 1 — the index. Names every memory, so the run can open one by
+      // path even when retrieval brought nothing back.
+      const fragments = await assembleContextFragments(
+        {
+          organizationId: fx.organizationId,
+          teamId: fx.teamId,
+          userId: fx.userId,
+          logPrefix: "[chain-eval]",
+        },
+        { mode: STANDING_MODE, memory: true },
+      );
+      const index = fragments.memoryIndexBlock ?? "";
+      lines.push(`[index]\n${index || "NONE"}`);
+      // The index renders a TREE, so the full path never appears contiguously
+      // — `team/` is a heading and the leaf sits under it. Assert the leaf.
+      if (!has(index, WORKFLOW_MEMORY_LEAF)) {
+        failures.push(`index: ${WORKFLOW_MEMORY_LEAF} n'est pas listé`);
+      }
+
+      // Surface 2 — recall, matched on the goal and nothing else. The marker
+      // is absent from the goal on purpose: passing on lexical overlap would
+      // prove nothing about the substitution.
+      const block =
+        (await recallForWorkflowTurnOne({
+          organizationId: fx.organizationId,
+          teamId: fx.teamId,
+          conversationId: fx.decisionConversationId,
+          actingUserId: fx.userId,
+          workflowName: WORKFLOW_NAME,
+          playbookGoal: WORKFLOW_GOAL,
+          triggerPayload: { source: "chain-eval" },
+          // N repeats of one case are N identical cache keys; without this the
+          // suite scores one recall call N times. See the option's own note.
+          bypassCache: true,
+        })) ?? "";
+      lines.push(`[recall/workflow]\n${block || "NONE"}`);
+      // Assert the PROVENANCE, not the phrasing.
+      //
+      // This goal escalates to the recall judge every time (measured
+      // 2026-09-12: `best=0.697`, `escalate=true` on every repeat), and the
+      // judge SUMMARISES content — it is told to copy each tag exactly, never
+      // each sentence. Keying on the marker "contrôle qualité photo" therefore
+      // measured one model's word choice: 30/30 on 2026-09-11, 0/10 on
+      // 2026-09-12 with no source change that could explain it, the judge
+      // having rewritten the same memory as "photographier les colis à
+      // l'arrivée…". The same mistake this suite already made once and fixed in
+      // 187d098 — score the claim, not the wording.
+      //
+      // The claim is "a goal that never names the convention brings the
+      // convention back". The memory's own path proves exactly that and is a
+      // tag the judge copies verbatim; `photograph` is the concept surviving
+      // any paraphrase of it.
+      if (block.length === 0) {
+        failures.push("recall: aucun bloc pour le tour 1 du run");
+      } else if (!has(block, WORKFLOW_MEMORY_PATH)) {
+        failures.push(
+          `recall: la convention (${WORKFLOW_MEMORY_PATH}) n'est pas remontée sur le goal du workflow`,
+        );
+      } else if (!has(block, "photograph")) {
+        failures.push(
+          "recall: le bloc cite la convention sans en rapporter le fond (photographier les colis)",
+        );
+      }
+
+      // A run with no acting user gets NO block — recall scopes private rows
+      // to the caller, and a team-wide block would be the leak. Paired with
+      // the assertion above, which a function returning nothing would satisfy.
+      const anonymous = await recallForWorkflowTurnOne({
+        organizationId: fx.organizationId,
+        teamId: fx.teamId,
+        conversationId: fx.decisionConversationId,
+        actingUserId: undefined,
+        workflowName: WORKFLOW_NAME,
+        playbookGoal: WORKFLOW_GOAL,
+        triggerPayload: { source: "chain-eval" },
+        bypassCache: true,
+      });
+      if (anonymous !== undefined) {
+        failures.push(
+          "recall: un run sans utilisateur a reçu un bloc — le scope privé n'est plus tenu",
+        );
+      }
+
+      return { text: lines.join("\n\n"), failures };
+    },
+  },
+  {
+    id: "chain-workflow-convention-applied",
+    e2e: true,
+    description:
+      "The run APPLIES the convention, not merely receives it. `chain-workflow-turn-one` proves the block is assembled; this drives a real turn through `/internal/trigger/runs/:runId/turn` — the same route the orchestrator calls — and reads what the run actually wrote. The distinction the package already draws between `evals:recall` (the block) and `memory-recall` (the answer).",
+    run: async (fx) => {
+      const failures: string[] = [];
+      const lines: string[] = [];
+
+      const { runId, conversationId } = await makeWorkflowRun(fx);
+      const result = await runWorkflowTurn(runId);
+      lines.push(`[turn] status=${result.status}`);
+      if (result.status === "failed") {
+        failures.push(`turn: le tour a échoué — ${result.detail}`);
+      }
+
+      const output = await assistantTextFor(conversationId);
+      lines.push(`[output]\n${output || "NONE"}`);
+      if (output.length === 0) {
+        failures.push("turn: le run n'a produit aucun texte");
+      } else if (!has(output, "photo")) {
+        // The convention is in the team's memory and nowhere in the playbook.
+        // A run that never read it writes a perfectly good reception procedure
+        // without a photo in it.
+        failures.push(
+          "output: la procédure rédigée n'applique pas la convention (contrôle qualité photo)",
         );
       }
       return { text: lines.join("\n\n"), failures };

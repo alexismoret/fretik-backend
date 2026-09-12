@@ -15,7 +15,11 @@
  *   bun run evals:recall -- --case rec-typo-record
  *   bun run evals:recall -- --repeats 5
  *   bun run evals:recall -- --run-name after-prompt-v4
- *   bun run evals:recall -- --cleanup       # tear the fixtures down
+ *   bun run evals:recall -- --mode judge    # judge | verbatim | adaptive
+ *   bun run evals:recall -- --prefetch      # the topology a real turn has
+ *   bun run evals:recall -- --scale 50000   # grow the corpus, then run
+ *   bun run evals:recall -- --cleanup-scale # drop the volume, keep the universe
+ *   bun run evals:recall -- --cleanup       # tear the fixtures down (scale too)
  *
  * Env (from `.env`): DATABASE_URL, OPENROUTER_API_KEY, LANGFUSE_*,
  * EVAL_TEAM_ID, EVAL_ORGANIZATION_ID, EVAL_USER_ID.
@@ -27,16 +31,24 @@ import type {
   RunEvaluator,
 } from "@langfuse/client";
 import { flushLangfuse, langfuseClient } from "../../src/lib/langfuse";
+import { ensureModelRegistryWarm } from "../../src/lib/model-registry/resolve";
+import type { StageTimings } from "../../src/lib/turn-timings";
 import {
+  isRecallMode,
+  prefetchRecallGather,
+  type RecallMode,
   runUnifiedRecall,
   type UnifiedRecallResult,
 } from "../../src/services/recall/recall";
 import { raceDeadline } from "../deadline";
+import { exitAfterFlush } from "../exit";
 import { RECALL_CASES, type RecallEvalCase } from "./cases";
 import {
   cleanupRecallFixtures,
+  cleanupScaleDistractors,
   ensureRecallFixtures,
   type RecallFixtures,
+  seedScaleDistractors,
 } from "./fixtures";
 
 const DATASET_NAME = "recall-eval";
@@ -69,11 +81,60 @@ if (flag("--cleanup")) {
   process.exit(0);
 }
 
+if (flag("--cleanup-scale")) {
+  await cleanupScaleDistractors(scope);
+  process.exit(0);
+}
+
+/**
+ * Corpus size to run against (`--scale N`). Tops the EVAL team's vector table
+ * up to N synthetic distractors before the suite runs, so "fast enough" becomes
+ * a claim about a SIZE. Recorded in the run metadata — a latency read without
+ * the corpus size behind it is not a measurement.
+ *
+ * ~250 MB of `ai_vectors` at 50 000. `--cleanup-scale` drops them.
+ */
+const scaleRaw = Number.parseInt(opt("--scale") ?? "", 10);
+const scale = Number.isFinite(scaleRaw) && scaleRaw > 0 ? scaleRaw : undefined;
+
 const repeatsRaw = Number.parseInt(opt("--repeats") ?? "", 10);
 const repeats =
   Number.isFinite(repeatsRaw) && repeatsRaw > 0 ? repeatsRaw : DEFAULT_REPEATS;
 /** Force the judge onto a registry profile — the model bake-off (20b vs 120b). */
 const judgeProfileKey = opt("--judge-profile");
+
+/**
+ * Which selector to score, per call rather than per process.
+ *
+ * `RECALL_MODE` in the environment still works, but it is read once at module
+ * load, so a run that set it could not say so in its own results: two runs in
+ * different modes were compared in the Langfuse UI as though they were
+ * comparable. The mode now travels with the call AND lands in the run metadata.
+ */
+const modeRaw = opt("--mode");
+if (modeRaw !== undefined && !isRecallMode(modeRaw)) {
+  console.error(
+    `--mode must be judge | verbatim | adaptive (got "${modeRaw}")`,
+  );
+  await exitAfterFlush(1);
+}
+const modeOverride: RecallMode | undefined =
+  modeRaw !== undefined && isRecallMode(modeRaw) ? modeRaw : undefined;
+
+/**
+ * Run each repeat the way a real turn does: start the gather first, let it run
+ * under a simulated prelude, then collect it.
+ *
+ * Without this the suite measures a topology production does not have. On
+ * `/stream` the arms are fired at the top of the route and have been running
+ * through a dozen serial round trips by the time anything needs the block, so
+ * what the turn pays is the WAIT, not the work. Measuring the un-prefetched
+ * cost overstates the turn's latency and — worse — hides whether a change moved
+ * the wait at all.
+ */
+const prefetch = flag("--prefetch");
+/** What the route's serial prelude costs, from the `[prelude]` line. */
+const PRELUDE_SIM_MS = 300;
 const onlyCase = opt("--case");
 const cases = onlyCase
   ? RECALL_CASES.filter((c) => c.id === onlyCase)
@@ -83,9 +144,33 @@ if (cases.length === 0) {
   process.exit(1);
 }
 
+// The live model registry is a DB-backed snapshot built lazily, and the only
+// thing that builds it in the service is `registryWarmMiddleware` on the HTTP
+// routes. An in-process eval crosses no route, so every `resolveModel` call
+// here hits an EMPTY snapshot and throws "No model profile for key <k> — no
+// live row describes it". Recall swallows that by design ("recall must never
+// break the main turn"), so the suite reports NONE on every case rather than
+// an error — 4/23, with nothing in the output naming the cause.
+//
+// Invisible until the model engine's v3 change removed the curated TypeScript
+// profiles: before it, a profile existed in code and an unwarmed process
+// resolved one anyway. The frozen baselines in RUNBOOK.md predate that change,
+// which is why they were reproducible then and are not now.
+await ensureModelRegistryWarm();
+
 console.log("[recall-eval] ensuring fixtures (idempotent)…");
 const fixtures: RecallFixtures = await ensureRecallFixtures(scope);
 console.log("[recall-eval] fixtures ready");
+
+// AFTER the universe exists: the distractors are perturbations of real vectors
+// from this team, so there has to be something to perturb. The ACTUAL total is
+// what lands in the metadata — asking for fewer than are already seeded does
+// not remove any, and a run labelled with what it requested rather than what it
+// measured is worse than an unlabelled one.
+const scaleTotal =
+  scale === undefined
+    ? undefined
+    : (await seedScaleDistractors(scope, scale)).total;
 
 /** Failure strings for ONE repeat ([] = pass). */
 const evaluateRepeat = (
@@ -148,6 +233,14 @@ interface RepeatOutcome {
   capability: string | null;
   failures: string[];
   latencyMs: number;
+  /**
+   * Recall's own split, straight from the service rather than scraped from its
+   * log line. Under `--prefetch`, `gatherMs` is the WAIT a turn pays, not the
+   * arms' cost — the number TTFT is made of. Absent when the pass was skipped
+   * (trivial message) or hung.
+   */
+  gatherMs?: number;
+  judgeMs?: number;
 }
 
 interface CaseOutcome {
@@ -156,6 +249,9 @@ interface CaseOutcome {
   passFraction: number;
   repeats: RepeatOutcome[];
   avgLatencyMs: number;
+  /** Median of the per-repeat gather waits; `judgeRate` = share that escalated. */
+  medianGatherMs: number;
+  judgeRate: number;
 }
 
 /**
@@ -179,19 +275,34 @@ const runCase = async (c: RecallEvalCase): Promise<CaseOutcome> => {
     // the watchdog's — recorded as a failure instead of crashing the suite.
     let result: UnifiedRecallResult | null = null;
     let hung: string | null = null;
+    let timings: StageTimings = {};
+    const params = {
+      organizationId: scope.organizationId,
+      teamId: scope.teamId,
+      userId: c.asUser === false ? undefined : scope.userId,
+      agentType: "chatbot",
+      userMessage: c.message,
+      attachedFiles: [],
+      recentTail: c.recentTail ?? "",
+      bypassCache: true,
+      judgeProfileKey,
+      ...(modeOverride ? { modeOverride } : {}),
+    };
+    // Under `--prefetch` the arms are started first and left to run for the
+    // length of a route prelude before anything collects them — the shape a
+    // real turn has. `gather` in the timings is then the WAIT, which is what
+    // TTFT actually pays, rather than the un-overlapped cost.
+    const gatherPromise = prefetch ? prefetchRecallGather(params) : null;
+    if (gatherPromise) await Bun.sleep(PRELUDE_SIM_MS);
     try {
       result = await raceDeadline(
         () =>
           runUnifiedRecall({
-            organizationId: scope.organizationId,
-            teamId: scope.teamId,
-            userId: c.asUser === false ? undefined : scope.userId,
-            agentType: "chatbot",
-            userMessage: c.message,
-            attachedFiles: [],
-            recentTail: c.recentTail ?? "",
-            bypassCache: true,
-            judgeProfileKey,
+            ...params,
+            ...(gatherPromise ? { gatherPromise } : {}),
+            onTimings: (t) => {
+              timings = t;
+            },
           }),
         REPEAT_DEADLINE_MS,
         `${c.id} repeat ${(i + 1).toString()}`,
@@ -204,9 +315,16 @@ const runCase = async (c: RecallEvalCase): Promise<CaseOutcome> => {
       capability: result?.capabilityBlock ?? null,
       failures: hung !== null ? [hung] : evaluateRepeat(c, fixtures, result),
       latencyMs: Date.now() - t0,
+      gatherMs: timings["gather"],
+      judgeMs: timings["judge"],
     });
   }
   const passCount = outcomes.filter((o) => o.failures.length === 0).length;
+  const gathers = outcomes
+    .map((o) => o.gatherMs)
+    .filter((ms): ms is number => ms !== undefined)
+    .sort((a, b) => a - b);
+  const judged = outcomes.filter((o) => o.judgeMs !== undefined).length;
   return {
     caseId: c.id,
     passed: passCount === outcomes.length,
@@ -215,6 +333,11 @@ const runCase = async (c: RecallEvalCase): Promise<CaseOutcome> => {
     avgLatencyMs: Math.round(
       outcomes.reduce((a, o) => a + o.latencyMs, 0) / outcomes.length,
     ),
+    // Median, not mean: one 5 s outlier in ten repeats moves a mean by 500 ms
+    // and says nothing about the turn a user gets.
+    medianGatherMs:
+      gathers.length > 0 ? (gathers[gathers.length >> 1] ?? 0) : 0,
+    judgeRate: outcomes.length > 0 ? judged / outcomes.length : 0,
   };
 };
 
@@ -292,6 +415,8 @@ const runAllLangfuse = async (): Promise<void> => {
           },
         ],
         avgLatencyMs: 0,
+        medianGatherMs: 0,
+        judgeRate: 0,
       };
       return empty;
     }
@@ -350,7 +475,15 @@ const runAllLangfuse = async (): Promise<void> => {
     data,
     task,
     maxConcurrency: 2,
-    metadata: { repeats },
+    // A run that cannot say which selector produced it is not comparable to
+    // another one, and the Langfuse UI will happily put them side by side.
+    metadata: {
+      repeats,
+      recallMode: modeOverride ?? process.env.RECALL_MODE ?? "adaptive",
+      prefetch,
+      ...(judgeProfileKey ? { judgeProfileKey } : {}),
+      ...(scaleTotal !== undefined ? { scale: scaleTotal } : {}),
+    },
     runEvaluators,
     evaluators: [
       // eslint-disable-next-line @typescript-eslint/require-await
@@ -370,6 +503,17 @@ const runAllLangfuse = async (): Promise<void> => {
           {
             name: "recall-latency-ms",
             value: out.avgLatencyMs,
+            dataType: "NUMERIC",
+          },
+          {
+            name: "recall-gather-ms",
+            value: out.medianGatherMs,
+            dataType: "NUMERIC",
+            comment: prefetch ? "wait, prefetched" : "unoverlapped cost",
+          },
+          {
+            name: "recall-judge-rate",
+            value: out.judgeRate,
             dataType: "NUMERIC",
           },
         ];
@@ -446,4 +590,4 @@ if (bimodal.length > 0) {
       .join(", ")}`,
   );
 }
-process.exit(passed === results.length ? 0 : 1);
+await exitAfterFlush(passed === results.length ? 0 : 1);

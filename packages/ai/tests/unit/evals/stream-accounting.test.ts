@@ -163,3 +163,46 @@ describe("what the turn says it spent", () => {
     expect(state.traceId).toBe("trace-1");
   });
 });
+
+/**
+ * TTFT is what the pre-turn work is optimised against, so the frame it is
+ * counted from decides whether the number means anything. The SDK opens EVERY
+ * turn with `start` and `start-step`, before the model has produced a thing —
+ * stamping those measures the HTTP handshake and reports it as the time to
+ * first token, which would make any pre-turn change look free.
+ */
+describe("eval stream accounting — time to first token", () => {
+  test("the SDK's opening frames do not count as output", () => {
+    const state = createStreamState();
+    absorbChunk({ type: "start" }, state);
+    absorbChunk({ type: "start-step" }, state);
+    expect(state.firstOutputAt).toBeUndefined();
+  });
+
+  test.each([["text-delta"], ["reasoning-delta"], ["tool-input-start"]])(
+    "%s is output",
+    (type) => {
+      const state = createStreamState();
+      absorbChunk({ type: "start" }, state);
+      absorbChunk({ type }, state);
+      expect(state.firstOutputAt).toBeGreaterThan(0);
+    },
+  );
+
+  test("the stamp is the FIRST output frame, not the last", () => {
+    const state = createStreamState();
+    absorbChunk({ type: "text-delta", delta: "a" }, state);
+    const first = state.firstOutputAt;
+    absorbChunk({ type: "text-delta", delta: "b" }, state);
+    expect(state.firstOutputAt).toBe(first);
+  });
+
+  test("a turn that never produces a visible frame leaves it undefined", () => {
+    // Undefined, never zero: a turn that died before output has no TTFT, and
+    // a zero would be averaged in as an infinitely fast one.
+    const state = createStreamState();
+    absorbChunk({ type: "start" }, state);
+    absorbChunk({ type: "error", errorText: "empty pool" }, state);
+    expect(state.firstOutputAt).toBeUndefined();
+  });
+});

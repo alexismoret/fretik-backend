@@ -46,6 +46,15 @@ export interface TaskOutput {
   text: string;
   passed: boolean;
   latencyMs: number;
+  /**
+   * Time to first token, client-side.
+   *
+   * `latencyMs` is the whole turn, which a longer answer inflates without
+   * anything having got slower — so it cannot see a pre-turn regression at all.
+   * This is the number the memory work is judged on. Absent when the turn
+   * produced no visible frame.
+   */
+  ttftMs?: number;
   error?: string;
   assertionResults: AssertionResult[];
   toolNames: string[];

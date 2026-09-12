@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   buildRecallRecentTail,
+  prefetchRecallGather,
   runUnifiedRecall,
 } from "../../../src/services/recall/recall";
 
@@ -143,5 +144,43 @@ describe("buildRecallRecentTail", () => {
       { role: "user", text: "u".repeat(220) },
     ]);
     expect(tail.length).toBeLessThanOrEqual(600);
+  });
+});
+
+/**
+ * `prefetchRecallGather` is the only part of recall that lives on the HTTP
+ * route rather than inside the service, which means the eval suites — all
+ * three of which call `runUnifiedRecall` in-process — never exercise it. These
+ * cover the two properties the route depends on and that nothing else checks:
+ * that a trivial message costs nothing, and that a promise left unawaited
+ * across the route's prelude cannot reject.
+ */
+describe("prefetchRecallGather", () => {
+  test("skips the same messages runUnifiedRecall would skip", () => {
+    expect(
+      prefetchRecallGather({
+        userMessage: "merci",
+        attachedFiles: [],
+        recentTail: "",
+        ...SCOPE,
+      }),
+    ).toBeNull();
+  });
+
+  test("an attachment makes even a one-word message worth gathering", () => {
+    // Pattern recall keys on filename/mimetype, so "ok" plus a file is not
+    // trivial. The promise is started here; the assertion is only that one
+    // exists, since the arms need a database this suite does not have.
+    const started = prefetchRecallGather({
+      userMessage: "ok",
+      attachedFiles: [{ filename: "devis.pdf", mimeType: "application/pdf" }],
+      recentTail: "",
+      ...SCOPE,
+    });
+    expect(started).not.toBeNull();
+    // Swallowed by construction — the route leaves this unawaited for the
+    // length of its prelude, and an unhandled rejection there would take the
+    // process down for something recall promises never to break.
+    expect(started).resolves.toBeDefined();
   });
 });

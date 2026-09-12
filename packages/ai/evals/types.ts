@@ -50,6 +50,19 @@ export interface InvokeResult {
   toolLatencyMs: number;
   modelLatencyMs: number;
   /**
+   * Time to first token, client-side: from the request leaving the harness to
+   * the first frame a reader could see (`text-delta`, `reasoning-delta` or
+   * `tool-input-start`).
+   *
+   * The one latency number a user actually experiences, and the only one no
+   * harness measured before 2026-09-10 — `latencyMs` is the whole turn, which
+   * a longer answer inflates without anything having got slower. Deliberately
+   * NOT counted from the SDK's opening `start` / `start-step` frames: those are
+   * emitted the instant the provider call opens and would report the HTTP
+   * handshake. Absent when the turn produced no visible frame at all.
+   */
+  ttftMs?: number;
+  /**
    * Number of agent-loop steps in the turn, counted from `start-step`
    * SSE frames. One step = one model generation (possibly with tool
    * calls). Feeds the `steps-used` mechanical score.
@@ -207,6 +220,15 @@ export const CAPABILITIES = [
   // a Langfuse score-config category, and score configs cannot be deleted.
   // Renaming it strands the old one and resets the capability's score trend.
   "objects",
+  // Pre-turn memory recall, graded on the ANSWER (`cases/memory-recall.ts`).
+  //
+  // Distinct from `evals:recall`, which grades the memory BLOCK: a block that
+  // cites the right ids and an answer that uses them are two different claims,
+  // and only the second is what a user experiences. It exists because the
+  // judge-vs-deterministic selector decision cannot be taken on block scores —
+  // dropping the LLM out of the selector is a bet about what the MAIN model
+  // does with the same candidates, so the arm that has to hold is this one.
+  "memory",
 ] as const;
 
 export type Capability = (typeof CAPABILITIES)[number];
@@ -242,6 +264,23 @@ export interface EvalCase {
   prompt: string;
   /** Optional per-case tags, surfaced as metadata on the Langfuse dataset item. */
   tags?: string[];
+  /**
+   * `true` → send `X-Context-User-Id: EVAL_OTHER_USER_ID` instead of
+   * `EVAL_USER_ID`: a DIFFERENT real member of the eval organization.
+   *
+   * This is the privacy axis, and it has to be another person rather than no
+   * person. `RecallEvalCase.asUser: false` (`evals/recall/cases.ts`) runs the
+   * block-level probe in system scope, which works there because that harness
+   * calls `runUnifiedRecall` directly. Through the real turn it does not:
+   * `buildTurnCallOptions` gates the whole recall branch on a caller id
+   * (`handlers/chatbot.ts`), so a userless turn gets NO memory block at all and
+   * every must-NOT assertion passes for the wrong reason. Measured 2026-09-10 —
+   * `mr-private-leak` was written that way first and could not fail.
+   *
+   * Refuses loudly when `EVAL_OTHER_USER_ID` is unset, rather than falling back
+   * to the eval user, because that fallback is the vacuous case again.
+   */
+  runAsOtherUser?: boolean;
   /**
    * Optional tool-calling efficiency envelope (informational scores only).
    * See `CaseBudget` + `evals/tool-efficiency.ts`.

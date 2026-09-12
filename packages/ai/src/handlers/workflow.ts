@@ -399,9 +399,13 @@ const executeTurn = async (params: {
     // above skips the reads entirely — but say so here too: this is the line
     // a reader checks to know what a later turn's steering message carries.
     memoryIndexBlock: isFirstTurn ? fragments.memoryIndexBlock : undefined,
-    standingMemoryBlock: isFirstTurn
-      ? fragments.standingMemoryBlock
-      : undefined,
+    // Same fallback rule as a chat turn, minus the placeholder: the steering
+    // message has no static scaffold to contradict, so a superseded block is
+    // simply absent rather than announced.
+    standingMemoryBlock:
+      isFirstTurn && (activeMemoryBlock ?? "").trim().length === 0
+        ? fragments.standingMemoryBlock
+        : undefined,
     nudge,
     wrapUp: params.wrapUp,
   });

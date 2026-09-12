@@ -114,6 +114,7 @@ import type { StandingMode } from "../agents/shared/standing-memory";
 import {
   isStandingMode,
   STANDING_MODE,
+  standingBlockFor,
 } from "../agents/shared/standing-memory";
 import { subscribeAbort } from "../lib/abort-subscriber";
 import { flushLangfuse, langfuseEnabled } from "../lib/langfuse";
@@ -988,7 +989,10 @@ const buildTurnCallOptions = async (
       attachedFilesBlock.length > 0 ? attachedFilesBlock : undefined,
     chatbotContextManifest: fragments.chatbotContextManifest,
     memoryIndexBlock: fragments.memoryIndexBlock,
-    standingMemoryBlock: fragments.standingMemoryBlock,
+    standingMemoryBlock: standingBlockFor(
+      fragments.standingMemoryBlock,
+      activeMemoryRecall?.block,
+    ),
     activeMemoryBlock: activeMemoryRecall?.block,
     availableCapabilitiesBlock: activeMemoryRecall?.capabilityBlock,
     teamCollectionsBlock: fragments.teamCollectionsBlock,

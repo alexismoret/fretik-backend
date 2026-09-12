@@ -1,5 +1,6 @@
 import type { StandingEpisodesResult } from "@fretik/shared/services/episodes/list-standing";
 import { encode } from "gpt-tokenizer/encoding/o200k_base";
+import { GRAPH_HEADING } from "../../services/recall/verbatim";
 
 /**
  * Rendering for `<standing_memory>` — the block a turn is shown without having
@@ -55,6 +56,54 @@ export const STANDING_MAX_TOKENS = 600;
  * number to raise.
  */
 export const STANDING_CLIP_CHARS = 150;
+
+/**
+ * What the slot says when retrieval answered this message instead.
+ *
+ * NOT `""` — an empty block renders as "Nothing recorded in the last few
+ * weeks.", which would be false: the window is full, it is just not what this
+ * turn should read. That exact lie is what `83aebef` was written to stop.
+ */
+export const STANDING_SUPERSEDED =
+  "_Not shown for this message — `<active_memory>` below was retrieved for it and supersedes this block._";
+
+/**
+ * The standing block is a FALLBACK for a message retrieval cannot answer, not
+ * a companion to one it can.
+ *
+ * The scaffold has said "when it disagrees with `<active_memory>`, the
+ * retrieved block wins" since the layer shipped, and nothing enforced it. What
+ * that bought, measured 2026-09-12 on `mr-broad` ("fais le point sur <named
+ * company>"): 29/30 with the block cut, 9/30 with it, the same graph-supplied
+ * link missing every time — while the failing runs spent 5-13 tool calls, so
+ * the agent was retrieving, not idling. Probing the two blocks for that message
+ * showed why they compete: they share NO episode, the standing block opens the
+ * prompt with a fresh, tidy, complete-looking status, and the reply gets
+ * composed from it.
+ *
+ * **The signal is the GRAPH section, not emptiness.** Gating on "the block came
+ * back non-empty" was tried first and cost the two cases this layer exists for:
+ * semantic search dredges the Nordwind contract up for "où on en est ?" often
+ * enough (6 of 10 repeats) that the fallback kept standing down on questions
+ * nothing had actually answered — `mr-contextless-status` 10/10 -> 4/10,
+ * `-brief` 10/10 -> 5/10, with the judge passing every time and only the
+ * "names 2 of 3 subjects" floor breaking. Presence is a noisy signal.
+ *
+ * The graph arm is not. Its anchors come from records NAMED in the message, so
+ * the section exists exactly when the message named something — measured
+ * 2026-09-12: present on every probe of "fais le point sur Nordwind GmbH",
+ * absent on all four probes of "où on en est ?". Read out of the rendered text
+ * rather than from a flag, because a graph section dropped under budget
+ * pressure is one the agent never sees, and a block it cannot see must not
+ * silence the one it can.
+ */
+export const standingBlockFor = (
+  rendered: string | undefined,
+  activeMemoryBlock: string | undefined,
+): string | undefined =>
+  (activeMemoryBlock ?? "").includes(GRAPH_HEADING)
+    ? STANDING_SUPERSEDED
+    : rendered;
 
 const countTokens = (text: string): number => encode(text).length;
 

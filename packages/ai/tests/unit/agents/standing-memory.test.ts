@@ -6,7 +6,10 @@ import {
   renderStandingEpisodes,
   STANDING_CLIP_CHARS,
   STANDING_MAX_TOKENS,
+  STANDING_SUPERSEDED,
+  standingBlockFor,
 } from "../../../src/agents/shared/standing-memory";
+import { GRAPH_HEADING } from "../../../src/services/recall/verbatim";
 
 /**
  * The rendering of a block served on every turn.
@@ -166,6 +169,48 @@ describe("budget", () => {
       result([episode("019f0000-0000-7000-8000-000000000005", "T", "S")]),
     );
     expect(complete).not.toContain("more in the last 30 days");
+  });
+});
+
+describe("the fallback rule", () => {
+  const rendered = "- As of 2026-09-10 — T : S (episode:abc)";
+
+  const graphBlock = `${GRAPH_HEADING}\n\n- Nordwind GmbH (record:x)\n`;
+
+  test("serves the block when retrieval came back with nothing", () => {
+    expect(standingBlockFor(rendered, undefined)).toBe(rendered);
+    expect(standingBlockFor(rendered, "")).toBe(rendered);
+    expect(standingBlockFor(rendered, "   \n ")).toBe(rendered);
+  });
+
+  test("stands down when the message named a record", () => {
+    expect(standingBlockFor(rendered, graphBlock)).toBe(STANDING_SUPERSEDED);
+  });
+
+  test("a NON-EMPTY block is not the signal — presence was tried and cost two cases", () => {
+    // Semantic search finds something for "où on en est ?" often enough that
+    // gating on emptiness stood the fallback down on the very questions it
+    // exists for: `mr-contextless-status` fell 10/10 -> 4/10. Only a named
+    // record silences it.
+    expect(standingBlockFor(rendered, "EPISODES:\n(episode:x)\n…")).toBe(
+      rendered,
+    );
+    expect(standingBlockFor(rendered, "FACTS — team memory:\n…")).toBe(
+      rendered,
+    );
+  });
+
+  test("stands down LOUDLY — silence here reads as an empty window", () => {
+    // The renderer turns `undefined` into "Nothing recorded in the last few
+    // weeks.", which is false when the block was withheld rather than empty.
+    // If this ever becomes `undefined`, the agent is told the team did nothing
+    // this month.
+    expect(standingBlockFor(rendered, graphBlock)).not.toBeUndefined();
+    expect(STANDING_SUPERSEDED).toContain("<active_memory>");
+  });
+
+  test("an empty window stays empty — the rule adds nothing", () => {
+    expect(standingBlockFor(undefined, undefined)).toBeUndefined();
   });
 });
 

@@ -125,6 +125,18 @@ const MAX_EPISODES = 2;
 const MAX_RECORDS = 2;
 
 /**
+ * One spelling — it is written into the block and matched back out of it.
+ *
+ * Exported because this section is also a SIGNAL: it exists only when the
+ * message named a record, so its presence in the rendered block is the
+ * machine-checkable answer to "did this message name something?".
+ * `standingBlockFor` gates on it. Read from the rendered text on purpose — a
+ * graph section dropped under budget pressure is one the agent never sees.
+ */
+export const GRAPH_HEADING =
+  "GRAPH — records named in the message, and what they link to:";
+
+/**
  * Documents do not enter the pre-turn block.
  *
  * They are the noisiest arm — the reverted relevance gate measured the
@@ -642,13 +654,38 @@ export const buildVerbatimBlock = (
       renderSection("EPISODES — past conversations:", episodes, budget),
       renderSection("RECORDS:", records, budget),
       renderSection("DOCUMENTS:", documents, budget),
+      // Trailing blank line like every other section — it used to be last, so
+      // one `\n` was enough and `assemble` trimmed it. Read first, it needs the
+      // separator; last, `trim()` still takes it back.
       graphLines.length > 0
-        ? `GRAPH — records named in the message, and what they link to:\n\n${graphLines.join("\n")}\n`
+        ? `${GRAPH_HEADING}\n\n${graphLines.join("\n")}\n\n`
         : "",
     ].filter((s) => s.length > 0);
 
+  // Drop order is not READING order, and conflating them cost a case.
+  //
+  // The graph section exists only when the message named a record, so when it
+  // is there it is the one section that is on-topic by construction — which is
+  // what the header promises with "most relevant first". Rendered last, it sat
+  // below sections that already read like a complete answer: measured
+  // 2026-09-12 on `mr-broad` ("fais le point sur <named company>"), the reply
+  // carried every figure from EPISODES and omitted the linked project from
+  // GRAPH in 21 runs out of 30, while spending 5-13 tool calls — the agent was
+  // reading, it just stopped above the bottom section.
+  //
+  // Only the reading order moves. Under budget pressure graph is still the
+  // first section dropped, for the reason the comment above gives.
+  const orderForReading = (parts: string[]): string[] => {
+    const graphAt = parts.findIndex((s) => s.startsWith(GRAPH_HEADING));
+    if (graphAt <= 0) return parts;
+    const graph = parts[graphAt];
+    return graph === undefined
+      ? parts
+      : [graph, ...parts.slice(0, graphAt), ...parts.slice(graphAt + 1)];
+  };
+
   const assemble = (parts: string[]): string =>
-    `${VERBATIM_HEADER}\n\n${parts.join("")}`.trim();
+    `${VERBATIM_HEADER}\n\n${orderForReading(parts).join("")}`.trim();
 
   // Spend the block's room before rationing it. The ladder descends only as
   // far as this selection actually needs: a two-candidate turn keeps both

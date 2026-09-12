@@ -285,6 +285,10 @@ export const BUILTIN_TOOL_POLICY_CATALOG: Record<
   ...inGroup("web", [
     readTool("searchWeb"),
     readTool("webFetch"),
+    // `webMap` was absent until 2026-09, so a team that blocked the web still
+    // had one door open. It reads a site's own `sitemap.xml`, which is as
+    // outbound as the other two.
+    readTool("webMap"),
     readTool("searchIcons"),
   ]),
 };

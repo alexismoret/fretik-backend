@@ -127,15 +127,23 @@ export const TOOL_ERROR_CODES = {
   MEMORY_INVALID_INPUT: "MEMORY_INVALID_INPUT",
   MEMORY_HTTP_ERROR: "MEMORY_HTTP_ERROR",
 
-  // Web (Tavily)
-  TAVILY_TIMEOUT: "TAVILY_TIMEOUT",
+  // Web. One timeout code for every provider: the model's recourse is the
+  // same whoever was slow — narrow the call or try a different route — and a
+  // vendor name in an error code is a rename waiting to happen (this one was
+  // `TAVILY_TIMEOUT` until 2026-09).
+  WEB_TIMEOUT: "WEB_TIMEOUT",
   WEB_FETCH_ERROR: "WEB_FETCH_ERROR",
   WEB_FETCH_EMPTY: "WEB_FETCH_EMPTY",
   WEB_SEARCH_ERROR: "WEB_SEARCH_ERROR",
   WEB_MAP_ERROR: "WEB_MAP_ERROR",
-  // Deployment has no Tavily API key. Defensive backstop: the web tools are
-  // pruned from every registry in that case (`pruneWebTools`), so the model
-  // normally never sees them.
+  // The site publishes no sitemap. Its own code, NOT an input-shape one: the
+  // call was well formed and re-sending it changes nothing. The recovery is a
+  // different tool (`searchWeb` restricted to the domain), and the loop guard
+  // must steer there rather than toward a corrected retry.
+  WEB_MAP_NO_SITEMAP: "WEB_MAP_NO_SITEMAP",
+  // Deployment has no API key for this tool's backend. Defensive backstop: an
+  // unconfigured tool is pruned from every registry (`pruneWebTools`), so the
+  // model normally never sees it.
   WEB_TOOLS_UNCONFIGURED: "WEB_TOOLS_UNCONFIGURED",
   // Egress hardening (web-egress.ts): scheme/private-IP/length vs domain policy.
   WEB_FETCH_BLOCKED_TARGET: "WEB_FETCH_BLOCKED_TARGET",

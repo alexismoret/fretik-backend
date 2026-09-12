@@ -93,7 +93,8 @@ export const buildCoreTools = (domainTools: SearchableToolRegistry) => ({
   searchWeb: buildChatbotTool({
     ...createWebSearchTool(),
     category: "core",
-    searchHint: "web tavily external regulation market news",
+    searchHint:
+      "web search external regulation market news academic sec filings",
   }),
   read: buildChatbotTool({
     ...createReadTool(),
@@ -217,11 +218,13 @@ export const buildCoreTools = (domainTools: SearchableToolRegistry) => ({
  *   services (field validation, typed table, `domain_events`). Bulk writes
  *   and type migrations go through the Python `collections` SDK (fretik_apps),
  *   not these tools.
- * - **webFetch**: pulls up to 5 public URLs as cleaned Markdown via
- *   Tavily `/extract`. Paired with the core `searchWeb` tool —
- *   search first, fetch specific hits second.
- * - **webMap**: lists a site's URLs (Tavily `/map`, no content) when
- *   the site is known but the page isn't — map, pick, then `webFetch`.
+ * - **webFetch**: reads up to 20 public URLs as Markdown through a
+ *   server-side headless browser, so JS-rendered pages work and the
+ *   request leaves the provider's egress rather than ours. Paired with
+ *   the core `searchWeb` tool — search first, read specific hits second.
+ * - **webMap**: lists a site's URLs from its own `sitemap.xml` (no
+ *   content, no vendor, no cost) when the site is known but the page
+ *   isn't — map, pick, then `webFetch`.
  * - **downloadDriveDocument**: pulls a Drive document's binary bytes
  *   into the conversation sandbox under `/workspace/drive/`. Use
  *   only when `searchKnowledge` (RAG) isn't enough — typically for
@@ -512,8 +515,9 @@ export const buildSubAgentTools = () => {
   const allCoreTools = buildCoreTools(domainTools);
   const { searchTools: _searchTools, ...coreWithoutSearch } = allCoreTools;
   // Sub-agents keep the web tools like everyone else; this only honours the
-  // operator's kill switch (and a missing Tavily key), which the chatbot
-  // applies per step and sub-agents would otherwise ignore entirely.
+  // operator's kill switch (and a missing key for a given tool's backend),
+  // which the chatbot applies per step and sub-agents would otherwise ignore
+  // entirely.
   return pruneWebToolsIfUnavailable({ ...coreWithoutSearch, ...domainTools });
 };
 

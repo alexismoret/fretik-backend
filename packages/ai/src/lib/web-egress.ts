@@ -1,4 +1,5 @@
 import { TOOL_ERROR_CODES } from "./tool-error-codes";
+import { isFetchConfigured, isSearchConfigured } from "./web/config";
 
 /**
  * Egress hardening for the chatbot's web tools (`webFetch` / `searchWeb`).
@@ -15,16 +16,21 @@ import { TOOL_ERROR_CODES } from "./tool-error-codes";
  *     (`AI_WEB_ALLOWED_DOMAINS`, which flips to deny-by-default when set).
  *     Both apply to fetch targets AND to discovered URLs (`isUrlDenied`), so
  *     search never surfaces a page the fetch path would refuse.
- *  3. A disable switch (`AI_WEB_TOOLS_ENABLED=false`) plus a missing Tavily
- *     key, either of which prunes the web tools from every registry
- *     (`pruneWebTools`) and from the chatbot's per-step tool list.
+ *  3. A disable switch (`AI_WEB_TOOLS_ENABLED=false`) plus a per-tool backend
+ *     key check, either of which prunes the affected web tools from every
+ *     registry (`pruneWebTools`) and from the chatbot's per-step tool list.
  *
- * Honesty note: Tavily fetches server-side, so SSRF-against-Fretik is already
- * near-nil. `assertFetchableTarget` matters mainly for a clean structured error
- * to the model, saving a wasted Tavily credit, and future-proofing a direct
- * fetch. The substantive operator controls are the denylist / allowlist /
- * disable. The residual exfil-via-injection risk in the open default is
- * accepted + documented (bounded to the team's own data by the C10 RLS role).
+ * Status note, updated 2026-09: this module is now LOAD-BEARING, which it was
+ * not before. Under the Tavily stack every page was fetched at the vendor, so
+ * `assertFetchableTarget` only bought a clean structured error and a saved
+ * credit. `webFetch` still runs at a vendor (Parallel's headless browser, on
+ * their egress), but `webMap` reads `robots.txt` and `sitemap.xml` from THIS
+ * process — so a redirect into a private address is now a real SSRF path, and
+ * `lib/web/http.ts` re-validates every hop through this module rather than
+ * trusting the first check. The substantive operator controls remain the
+ * denylist / allowlist / disable. The residual exfil-via-injection risk in the
+ * open default is accepted + documented (bounded to the team's own data by the
+ * C10 RLS role).
  */
 
 /** Structured egress-validation failure. Returned to the model, never thrown at it. */
@@ -252,10 +258,9 @@ export const isUrlDenied = (
 };
 
 /**
- * The web tools gated by `AI_WEB_TOOLS_ENABLED` and by the presence of a
- * Tavily key. Canonical list — the chatbot's `prepareStep` suppression and
- * the registry pruning below both read it, so a new web tool is gated in one
- * place.
+ * The web tools gated by `AI_WEB_TOOLS_ENABLED` and by their backend's key.
+ * Canonical list — the chatbot's `prepareStep` suppression and the registry
+ * pruning below both read it, so a new web tool is gated in one place.
  */
 export const WEB_TOOL_NAMES: ReadonlySet<string> = new Set([
   "searchWeb",
@@ -264,25 +269,37 @@ export const WEB_TOOL_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * True when the web tools should exist at all on this deployment: the
- * operator switch is on AND a Tavily key is configured (every web tool is
- * Tavily-backed; without a key they can only fail).
+ * Whether ONE web tool can run on this deployment.
+ *
+ * Availability is per tool since 2026-09, because the three no longer share a
+ * backend: `searchWeb` needs the configured search provider's key,
+ * `webFetch` needs Parallel's, and `webMap` needs nothing at all — it reads
+ * `robots.txt` and `sitemap.xml` directly. Under the old single-vendor gate a
+ * deployment with one key lost all three, which is exactly the degradation the
+ * split exists to avoid: a missing fetch key must not take search down with it.
  */
-export const areWebToolsAvailable = (): boolean =>
-  areWebToolsEnabled() && Boolean(process.env.TAVILY_API_KEY);
+export const isWebToolAvailable = (name: string): boolean => {
+  if (!areWebToolsEnabled()) return false;
+  if (name === "searchWeb") return isSearchConfigured();
+  if (name === "webFetch") return isFetchConfigured();
+  if (name === "webMap") return true;
+  return true;
+};
 
 /**
- * Return the registry unchanged when the web tools are available (the normal
- * case), and strip them ONLY when the operator disabled them or no Tavily key
- * is set. Applied to the registries built once at boot (sub-agents, workflow
- * runs), which install no `prepareStep`; the chatbot instead filters per step,
- * which also strips the tools from the prompt's catalogue.
+ * Strip the web tools whose backend this deployment cannot reach. Applied to
+ * the registries built once at boot (sub-agents, workflow runs), which install
+ * no `prepareStep`; the chatbot instead filters per step, which also strips the
+ * tools from the prompt's catalogue.
  */
 export const pruneWebToolsIfUnavailable = <T extends Record<string, unknown>>(
   registry: T,
 ): T => {
-  if (areWebToolsAvailable()) return registry;
+  const unavailable = [...WEB_TOOL_NAMES].filter(
+    (name) => !isWebToolAvailable(name),
+  );
+  if (unavailable.length === 0) return registry;
   const pruned = { ...registry };
-  for (const name of WEB_TOOL_NAMES) delete pruned[name];
+  for (const name of unavailable) delete pruned[name];
   return pruned;
 };

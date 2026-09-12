@@ -2,33 +2,32 @@ import { tool } from "ai";
 import { z } from "zod";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
 import { maybePersistLargeOutput } from "../lib/persisted-output";
-import {
-  extractUrls,
-  TavilyTimeoutError,
-  TavilyUnconfiguredError,
-} from "../lib/tavily";
 import { TOOL_ERROR_CODES } from "../lib/tool-error-codes";
+import {
+  fetchPages,
+  WebProviderUnconfiguredError,
+  WebTimeoutError,
+} from "../lib/web";
 import { assertFetchableTarget, WebEgressError } from "../lib/web-egress";
 
 /**
- * Domain tool (deferred) — fetch public URLs and return their cleaned
- * Markdown content.
+ * Domain tool (deferred) — fetch public URLs and return their content as
+ * Markdown.
  *
- * Backed by Tavily's `/extract` endpoint (see `lib/tavily.ts`). Unlike
- * Claude Code's `WebFetchTool` which pulls HTML via axios + parses
- * with turndown + runs a sub-LLM "apply prompt" pass, this tool is
- * one remote call and returns raw Markdown. The chatbot reads/
- * summarises the content itself in the next step — no hidden LLM
- * roundtrip.
+ * Backed by Parallel's `/v1/extract` (see `lib/web/parallel.ts`), which runs a
+ * server-side headless browser: client-rendered pages read like static ones,
+ * and the request leaves THEIR egress rather than our single datacenter IP,
+ * which is what keeps a hosted service from collecting blocks. Unlike Claude
+ * Code's `WebFetchTool` — axios, turndown, then a sub-LLM "apply prompt" pass —
+ * this is one remote call returning Markdown, and the chatbot reads it itself
+ * in the next step. No hidden LLM round-trip.
  *
- * Batching matters on cost: Tavily bills `/extract` per group of 5
- * URLs, so five pages in one call cost what one page costs.
+ * Batching matters on latency, not price: 20 URLs travel in one round-trip,
+ * billed per URL either way.
  *
- * Larger than the other domain tools (48K threshold vs 16K) because a
- * single article can easily fill 20-40 KB of Markdown and we would
- * otherwise persist almost every call into a `<persisted-output>`
- * envelope. Tuned to match the `webFetch` entry in
- * `keyDecisions.persistedOutputThreshold` (48K).
+ * Larger threshold than the other domain tools (48K vs 16K) because one article
+ * easily fills 20-40 KB of Markdown and we would otherwise persist almost every
+ * call into a `<persisted-output>` envelope.
  */
 
 const WEB_FETCH_PERSIST_THRESHOLD_CHARS = 48_000;
@@ -36,50 +35,63 @@ const WEB_FETCH_PERSIST_THRESHOLD_CHARS = 48_000;
 export const createWebFetchTool = () =>
   tool({
     description: [
-      "Fetch public URLs and return their cleaned Markdown content.",
+      "Read public web pages and return their content as Markdown.",
       "",
-      "Use it for the FULL content of pages you already know — a page the user referenced, a hit `searchWeb` returned, a URL `webMap` discovered. For discovery, search first: fetching candidate URLs one by one does not scale.",
+      "Use it for the FULL content of pages you already know — a page the user referenced, a hit `searchWeb` returned, a URL `webMap` discovered. For discovery, search first: fetching candidate URLs one by one does not scale. JavaScript-rendered pages are handled; you never need to ask for that.",
       "",
-      "Pass up to 5 `urls` in ONE call when you need several related pages — Tavily bills per group of 5, so five URLs together cost what one costs. Set `query` on long pages to get only the passages that answer it instead of the whole article. `depth: 'advanced'` is slower but reads JS-heavy pages.",
+      "Pass up to 20 `urls` in ONE call when you need several related pages — they travel together. Set `objective` (and `queries`) to get only the passages that answer your question instead of whole articles; set `full_content` when you need the page entire. `with_images` returns the page's images, which you can then show in a `::gallery`.",
       "",
-      "Returns `{ results: [{ url, title, content, favicon }], failed: [{ url, error }] }` — a partial success is normal, read what came back and do not retry a URL that failed twice. Large markdown may be auto-persisted: recover with `read(file_path)` or process with `python`.",
+      "Returns `{ results: [{ url, title, content, favicon, publishedDate, images? }], failed: [{ url, error, status? }] }` — a partial success is normal: read what came back and do not retry a URL that failed twice. A 403 means the site refuses automated reads; search for the same content elsewhere instead of retrying. Large markdown may be auto-persisted: recover with `read(file_path)` or process with `python`.",
     ].join("\n"),
     inputSchema: z.object({
       urls: z
         .array(z.url())
         .min(1)
-        .max(5)
+        .max(20)
         .describe(
-          "Public URLs to fetch (1-5). Batch related pages you will read together.",
+          "Public URLs to read (1-20). Batch related pages you will read together.",
         ),
-      query: z
+      objective: z
         .string()
         .optional()
         .describe(
-          "Return only the passages relevant to this question instead of the full page — prefer it on long articles and documentation",
+          "What you are trying to learn, in a sentence. Returns the passages that answer it instead of whole pages — prefer it on long articles and documentation.",
         ),
-      chunks_per_source: z
-        .number()
-        .int()
-        .min(1)
+      queries: z
+        .array(z.string().min(1))
         .max(5)
         .optional()
-        .describe("With `query`: passages returned per page (default 3)"),
-      depth: z
-        .enum(["basic", "advanced"])
+        .describe("Keyword queries sharpening `objective` when it is broad"),
+      full_content: z
+        .boolean()
         .optional()
         .describe(
-          "Extraction depth — 'basic' (default) is faster, 'advanced' is slower but better on JS-heavy or paywalled pages",
+          "Return each page whole instead of the passages matching `objective`. Use when you need structure or exhaustiveness, not an answer.",
+        ),
+      with_images: z
+        .boolean()
+        .optional()
+        .describe(
+          "Also return the images found on each page, with their captions. Set it whenever the subject is visual and you intend to show them.",
+        ),
+      fresh: z
+        .boolean()
+        .optional()
+        .describe(
+          "Force a live read instead of accepting recently cached content. Only for fast-moving facts — prices, availability, breaking news.",
         ),
     }),
-    execute: async ({ urls, query, chunks_per_source, depth }, options) => {
+    execute: async (
+      { urls, objective, queries, full_content, with_images, fresh },
+      options,
+    ) => {
       const ctx = getRuntimeContext(options);
       const { toolCallId } = options;
 
       // Egress hardening per URL: reject internal/private/non-http(s) targets
-      // and domains excluded by the deployment's denylist/allowlist before the
-      // Tavily call. A blocked URL joins `failed` instead of sinking the whole
-      // batch. The web stays open by default; see `lib/web-egress.ts`.
+      // and domains excluded by the deployment's policy before the provider
+      // call. A blocked URL joins `failed` instead of sinking the whole batch.
+      // The web stays open by default; see `lib/web-egress.ts`.
       const fetchable: string[] = [];
       const blocked: Array<{ url: string; error: string }> = [];
       for (const url of urls) {
@@ -103,23 +115,29 @@ export const createWebFetchTool = () =>
         };
       }
 
-      let result: Awaited<ReturnType<typeof extractUrls>>;
+      let result: Awaited<ReturnType<typeof fetchPages>>;
       try {
-        result = await extractUrls(fetchable, {
-          depth: depth ?? "basic",
-          ...(query === undefined ? {} : { query }),
-          ...(chunks_per_source === undefined
+        result = await fetchPages({
+          urls: fetchable,
+          ...(objective === undefined ? {} : { objective }),
+          ...(queries === undefined ? {} : { queries }),
+          ...(full_content === undefined ? {} : { fullContent: full_content }),
+          ...(with_images === undefined ? {} : { withImages: with_images }),
+          ...(fresh === undefined ? {} : { fresh }),
+          // Correlates this read with the searches of the same task, which the
+          // provider uses to rank excerpts. Never model-supplied.
+          ...(ctx.conversationId === undefined
             ? {}
-            : { chunksPerSource: chunks_per_source }),
+            : { sessionId: ctx.conversationId }),
         });
       } catch (err) {
-        if (err instanceof TavilyTimeoutError) {
+        if (err instanceof WebTimeoutError) {
           return {
             error: `webFetch timed out: ${err.message}`,
-            code: TOOL_ERROR_CODES.TAVILY_TIMEOUT,
+            code: TOOL_ERROR_CODES.WEB_TIMEOUT,
           };
         }
-        if (err instanceof TavilyUnconfiguredError) {
+        if (err instanceof WebProviderUnconfiguredError) {
           return {
             error: err.message,
             code: TOOL_ERROR_CODES.WEB_TOOLS_UNCONFIGURED,
@@ -141,12 +159,7 @@ export const createWebFetchTool = () =>
       }
 
       const payload = {
-        results: result.results.map((r) => ({
-          url: r.url,
-          title: r.title,
-          favicon: r.favicon,
-          content: r.content,
-        })),
+        results: result.results,
         ...(failed.length > 0 ? { failed } : {}),
       };
 

@@ -33,7 +33,7 @@ import {
   waitForMemoryVectors,
   WORKFLOW_GOAL,
   WORKFLOW_MEMORY_LEAF,
-  WORKFLOW_MEMORY_MARK,
+  WORKFLOW_MEMORY_PATH,
   WORKFLOW_NAME,
 } from "./fixtures";
 
@@ -413,11 +413,31 @@ export const CHAIN_CASES: ChainEvalCase[] = [
           bypassCache: true,
         })) ?? "";
       lines.push(`[recall/workflow]\n${block || "NONE"}`);
+      // Assert the PROVENANCE, not the phrasing.
+      //
+      // This goal escalates to the recall judge every time (measured
+      // 2026-09-12: `best=0.697`, `escalate=true` on every repeat), and the
+      // judge SUMMARISES content — it is told to copy each tag exactly, never
+      // each sentence. Keying on the marker "contrôle qualité photo" therefore
+      // measured one model's word choice: 30/30 on 2026-09-11, 0/10 on
+      // 2026-09-12 with no source change that could explain it, the judge
+      // having rewritten the same memory as "photographier les colis à
+      // l'arrivée…". The same mistake this suite already made once and fixed in
+      // 187d098 — score the claim, not the wording.
+      //
+      // The claim is "a goal that never names the convention brings the
+      // convention back". The memory's own path proves exactly that and is a
+      // tag the judge copies verbatim; `photograph` is the concept surviving
+      // any paraphrase of it.
       if (block.length === 0) {
         failures.push("recall: aucun bloc pour le tour 1 du run");
-      } else if (!has(block, WORKFLOW_MEMORY_MARK)) {
+      } else if (!has(block, WORKFLOW_MEMORY_PATH)) {
         failures.push(
-          `recall: la convention (${WORKFLOW_MEMORY_MARK}) n'est pas remontée sur le goal du workflow`,
+          `recall: la convention (${WORKFLOW_MEMORY_PATH}) n'est pas remontée sur le goal du workflow`,
+        );
+      } else if (!has(block, "photograph")) {
+        failures.push(
+          "recall: le bloc cite la convention sans en rapporter le fond (photographier les colis)",
         );
       }
 

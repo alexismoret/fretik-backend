@@ -392,7 +392,14 @@ export const waitForMemoryVectors = async (
 export const WORKFLOW_MEMORY_PATH = "team/processes/chain-eval-reception.md";
 /** What the index actually prints: it renders a tree, so `team/` is a heading. */
 export const WORKFLOW_MEMORY_LEAF = "processes/chain-eval-reception.md";
-export const WORKFLOW_MEMORY_MARK = "contrôle qualité photo";
+/**
+ * Deliberately absent from the workflow's goal, so retrieval cannot pass on
+ * lexical overlap. NOT asserted on any more: the goal escalates to the recall
+ * judge, which summarises content rather than copying it, so a case keyed on
+ * this phrase measured the judge's word choice (30/30 then 0/10 across two
+ * days, no source change). `chain-workflow-turn-one` asserts the memory's PATH.
+ */
+const WORKFLOW_MEMORY_MARK = "contrôle qualité photo";
 export const WORKFLOW_NAME = "Réception fournisseur";
 const WORKFLOW_CONVERSATION_TITLE = "[chain-eval] run réception fournisseur";
 export const WORKFLOW_GOAL =

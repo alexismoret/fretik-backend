@@ -454,13 +454,24 @@ being used as the reading order, which is not. With a tidy September status
 opening the prompt and the graph link at the very bottom, the reply got composed
 from the top.
 
-Two structural changes, measured one at a time:
+Two structural changes were measured, and only one survived:
 
 | change (cumulative)                                   | `mr-broad` |
 | ----------------------------------------------------- | ---------: |
 | baseline, block on                                    |       1/10 |
 | `<active_memory>` reads GRAPH first                   |       5/10 |
-| + standing block withheld when a GRAPH section exists |   **9/10** |
+| + standing block withheld when a GRAPH section exists |       9/10 |
+| − the GRAPH-first reorder, reverted                   |   **9/10** |
+
+**Section order is a zero-sum attention lever, and the reorder was billed to
+cases nobody was looking at.** Promoting GRAPH demotes everything under it. The
+full 15-case sweep found the invoice: `mr-document-top` and `mr-private-leak`
+both fell **10/10 → 5/10**, each on a POSITIVE regex — a figure that lives in a
+demoted section and stopped being read. Reverting the reorder while keeping the
+gate put both back to 10/10 and left `mr-broad` at 9/10, which is what the
+elimination argument predicted: withholding the standing block makes a
+named-record turn identical to the control arm, and the control arm scored those
+two cases 10/10. One change instead of two.
 
 **The gate's signal is the graph section, not emptiness — and that distinction
 cost a round.** Gating on "`<active_memory>` came back non-empty" was measured
@@ -478,8 +489,22 @@ Nordwind question produces one. Read out of the RENDERED block, deliberately —
 a graph section dropped for budget is one the agent never sees, and a block it
 cannot see must not silence the one it can.
 
-Final, n = 10 each, same service, 49/50: `mr-broad` **9/10**, the three
-contextless **10/10** each, `mr-greeting` **10/10**.
+Final state, gate only, n = 10 each, same service: `mr-broad` **9/10**,
+`mr-document-top` **10/10**, `mr-private-leak` **10/10**, the three contextless
+**10/10** each, `mr-greeting` **10/10**.
+
+**CLOSED at n = 30: `mr-broad` 29/30** — the same score the `none` control
+arm gave it, which is the point: a named-record turn is now that arm.
+
+**Run the WHOLE suite after touching a shared block — twice in one day that
+rule was the only thing standing between a plausible change and a silent
+regression.** The morning's prose fix escaped because the greeting fix had been
+signed off on the four cases that motivated it. The afternoon's reorder escaped
+five targeted cases and was caught only by the 15-case sweep. A sentence, a
+section order, or a gate in `<standing_memory>` / `<active_memory>` reaches
+every turn those blocks are rendered into; the subset that prompted the edit is
+never the population it affects. At 10 repeats × 15 cases that is one sequential
+run.
 
 **What this makes the layer.** It is now a FALLBACK rather than a companion:
 when the message names something, the turn is the `none` arm that scored

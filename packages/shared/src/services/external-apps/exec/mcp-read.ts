@@ -5,7 +5,8 @@ import { runApprovalGate } from "../../approvals/gate";
 import { canonicalHash } from "../../approvals/hash";
 import type { ExecContext, SandboxExecResponse } from "../../sandbox/types";
 import { resolveToolPolicy } from "../../tool-policies/resolve";
-import { getWorkflowAutonomyForConversation } from "../../workflows/get-run-autonomy";
+import { recordWorkflowExternalApps } from "../../workflows/record-external-apps";
+import { getWorkflowRunContext } from "../../workflows/run-context";
 import { resolveConnection } from "../connections/resolve";
 import { normalizeMcpResult } from "../mcp/normalize";
 import { getSnapshotForConnection } from "../mcp/snapshot-store";
@@ -74,7 +75,10 @@ export const dispatchMcpRead = async (
     };
   }
 
-  const autonomy = await getWorkflowAutonomyForConversation(ctx.conversationId);
+  const run = await getWorkflowRunContext(ctx.conversationId);
+  if (run) await recordWorkflowExternalApps(run, [connection]);
+
+  const autonomy = run?.autonomy ?? null;
   const level = resolveToolPolicy({
     kind: "read",
     defaultLevel: action.approvalDefault,

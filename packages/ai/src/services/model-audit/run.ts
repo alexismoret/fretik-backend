@@ -1,5 +1,9 @@
 import db from "@fretik/shared/db";
 import { teamAiSettings } from "@fretik/shared/db/schema";
+import {
+  AA_INDEX,
+  functionEligibility,
+} from "@fretik/shared/model-registry/eligibility";
 import { isModelFunctionKey } from "@fretik/shared/model-registry/functions";
 import {
   PROMOTION_PRICE_CAPS,
@@ -7,11 +11,16 @@ import {
 } from "@fretik/shared/model-registry/policy";
 import {
   getLiveRegistry,
+  getLiveStateSync,
   readAllLiveStateRows,
 } from "@fretik/shared/services/model-registry/live";
 import { z } from "zod";
 import { getEffectiveProfile } from "../../lib/model-registry/effective";
-import { selectableForFunction } from "../../lib/model-registry/functions";
+import {
+  ROLE_FUNCTION,
+  selectableForFunction,
+  signalsForProfile,
+} from "../../lib/model-registry/functions";
 import { ROLE_FALLBACK } from "../../lib/model-registry/resolve";
 import { ROLE_BINDINGS } from "../../lib/model-registry/role-bindings";
 
@@ -125,6 +134,24 @@ export const auditFindingSchema = z.discriminatedUnion("code", [
     functionKey: z.string(),
     profileKey: z.string(),
   }),
+  z.object({
+    code: z.literal("intelligence-index-drift"),
+    detail: z.string(),
+    /** What the floors in `eligibility.ts` are calibrated against. */
+    calibratedVersion: z.string(),
+    /** What the rows actually carry, most common first. */
+    gradedVersions: z.array(z.string()),
+    rowsAffected: z.number(),
+  }),
+  z.object({
+    code: z.literal("role-model-ineligible-for-function"),
+    detail: z.string(),
+    role: z.string(),
+    functionKey: z.string(),
+    profileKey: z.string(),
+    /** The rules it failed, already flattened to English. */
+    failed: z.array(z.string()),
+  }),
 ]);
 
 export type AuditFinding = z.infer<typeof auditFindingSchema>;
@@ -150,6 +177,10 @@ export const AUDIT_CHECK_LABELS: Record<AuditFinding["code"], string> = {
     "a team points a function at a model that no longer exists",
   "team-model-unusable":
     "a team points a function at a model it can no longer use",
+  "intelligence-index-drift":
+    "graded on a different Artificial Analysis index than the floors assume",
+  "role-model-ineligible-for-function":
+    "an internal role's own model is refused by its own function",
 };
 
 export const auditCountsSchema = z.object({
@@ -250,6 +281,79 @@ export const runModelAudit = async (): Promise<ModelAuditReport> => {
       code: "never-described-by-catalogue",
       profileKey: row.profileKey,
       detail: `${row.profileKey} has no catalogue description — its card shows a capitalised key and it can offer no thinking depth. Run the sync.`,
+    });
+  }
+
+  // The check that would have caught the collapse of 2026-09-07 the night it
+  // happened.
+  //
+  // Every intelligence floor in `eligibility.ts` is a share of the top of ONE
+  // Artificial Analysis index version. AA renumbers the whole fleet on a bump —
+  // v4.3 moved `deepseek-v4-flash` from 51.8 to 35 without anything about the
+  // model changing — so a floor calibrated against one version and applied to
+  // grades from another is not a strict rule, it is an arbitrary one. The rows
+  // carry the version they were graded on; nothing had ever compared it.
+  //
+  // Reported once for the fleet rather than once per row: the drift is a
+  // property of the calibration, and 139 identical findings would bury the
+  // checks below it.
+  const versions = new Map<string, number>();
+  for (const row of rows) {
+    const version = row.aaMetrics?.indexVersion;
+    if (version === undefined) continue;
+    versions.set(version, (versions.get(version) ?? 0) + 1);
+  }
+  const drifted = [...versions]
+    .filter(([version]) => version !== AA_INDEX.version)
+    .sort(([, a], [, b]) => b - a);
+  if (drifted.length > 0) {
+    const rowsAffected = drifted.reduce((total, [, count]) => total + count, 0);
+    const gradedVersions = drifted.map(([version]) => version);
+    findings.push({
+      code: "intelligence-index-drift",
+      calibratedVersion: AA_INDEX.version,
+      gradedVersions,
+      rowsAffected,
+      detail: `${rowsAffected.toString()} row(s) are graded on Artificial Analysis index v${gradedVersions.join(", v")} while every intelligence floor is calibrated against v${AA_INDEX.version} (top ${AA_INDEX.top.toString()}). The floors select a different set of models than they read as. Re-anchor \`AA_INDEX\` in @fretik/shared/model-registry/eligibility.`,
+    });
+  }
+
+  // A role whose own model its own function refuses.
+  //
+  // The invariant every floor is written to satisfy, checked against the LIVE
+  // rows rather than against a fixture: a threshold that excludes the default it
+  // was calibrated around is a threshold that is wrong.
+  //
+  // It reports a MIS-CALIBRATION, not an outage. `selectableForFunction` gives
+  // a model the product itself runs for a job an unconditional pass, so nobody
+  // loses a pick over this and the finding costs an operator a look rather than
+  // a team its assistant. That carve-out is also why the check has to exist: it
+  // is now the only thing that can see the disagreement at all, and a floor
+  // that has quietly drifted away from the fleet stops being visible the moment
+  // it stops hurting.
+  //
+  // `unknown` is deliberately not a finding — an ungraded model is a gap, and
+  // the engine already refuses to grant on one.
+  for (const binding of Object.values(ROLE_BINDINGS)) {
+    const fn = ROLE_FUNCTION[binding.role];
+    if (fn === "auto") continue;
+    const profile = getEffectiveProfile(binding.profileKey);
+    // Already reported as `role-model-undescribable` above; saying it twice
+    // would send a reader to the wrong fix.
+    if (profile === undefined) continue;
+    const live = getLiveStateSync(binding.profileKey);
+    const verdict = functionEligibility(
+      fn,
+      signalsForProfile(profile, live ?? undefined),
+    );
+    if (verdict.verdict !== "ineligible") continue;
+    findings.push({
+      code: "role-model-ineligible-for-function",
+      role: binding.role,
+      functionKey: fn,
+      profileKey: binding.profileKey,
+      failed: verdict.failed,
+      detail: `${binding.role} runs on "${binding.profileKey}", and the ${fn} rules refuse it: ${verdict.failed.join("; ")}. The pick still works — a model the product runs for a job is always offerable for it — so this is a floor that has drifted away from the fleet, not an outage. Re-read the number against the live row before moving it.`,
     });
   }
 

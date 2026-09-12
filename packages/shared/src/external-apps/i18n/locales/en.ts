@@ -105,6 +105,7 @@ export default {
         percent_complete: "Progress",
         assignees: "Assignees",
         checklist: "Checklist items",
+        references: "Linked documents",
         // Akanea WMS-specific field labels.
         warehouse_customer: "Warehouse customer",
         suppliers: "Suppliers",
@@ -120,6 +121,73 @@ export default {
         new_batch: "New batch",
         new_quantity: "New quantity (sale units)",
         new_expiry: "New expiry date",
+        // Pbyp-specific field labels.
+        collection: "Table",
+        row_count: "Rows",
+        reference: "Reference",
+        ids: "Identifiers",
+        number: "Number",
+        module: "Module",
+        incoterm: "Incoterm",
+        shipper: "Shipper",
+        consignee: "Consignee",
+        client_reference: "Client reference",
+        parcels: "Cargo lines",
+        shared_with: "Shared with",
+        comments: "Comments",
+        folder_type: "Folder type",
+        master_id: "Master folder",
+        order_ids: "Orders",
+        booking_number: "Booking number",
+        ship_name: "Vessel",
+        voyage_number: "Voyage number",
+        BL_number: "BL number",
+        LTA: "Air waybill",
+        ETD: "ETD",
+        ETA: "ETA",
+        containers: "Containers",
+        container_count: "Containers",
+        flights: "Flights",
+        validity_end_date: "Valid until",
+        quotes: "Charge lines",
+        target: "Target",
+        event_type_id: "Event type",
+        actual: "Actual",
+        total_quantity: "Total quantity",
+        order_id: "Order",
+        folder_id: "Folder",
+        object: "Object",
+        object_id: "Object id",
+        entity_id: "Entity",
+        access: "Access",
+        quotation_id: "Quotation",
+        quotation_status: "Status",
+        gateway_id: "Gateway",
+        external_reference: "Partner reference",
+        external_code: "Partner code",
+        gateway_type: "Partner",
+        scope: "Scope",
+        target_id: "Target id",
+        parcel_id: "Cargo line",
+        profile_id: "Profile",
+        booking_id: "Booking",
+        first_awb: "First AWB",
+        last_awb: "Last AWB",
+        airline_company: "Airline",
+        role_id: "Role",
+        agency_id: "Agency",
+        admin_email: "Administrator email",
+        address: "Address",
+        // SharePoint-specific field labels.
+        file_name: "File",
+        new_name: "New name",
+        version: "Version",
+        link_type: "Link permission",
+        link_scope: "Who can use the link",
+        expires_at: "Expires on",
+        role: "Access level",
+        values: "Values",
+        new_values: "New values",
       },
 
       values: {
@@ -267,6 +335,60 @@ export default {
         },
       },
 
+      sharepoint: {
+        create_folder: {
+          title: { default: 'Create SharePoint folder "{{name}}"' },
+        },
+        create_upload_session: {
+          title: {
+            default: 'Upload "{{name}}" to SharePoint',
+            replace:
+              'Upload "{{name}}" to SharePoint, replacing the existing file',
+          },
+        },
+        update_item: {
+          title: {
+            default: "Rename or move a SharePoint file",
+            rename: 'Rename a SharePoint file to "{{name}}"',
+            move: "Move a SharePoint file to another folder",
+            rename_move: 'Move a SharePoint file and rename it "{{name}}"',
+          },
+        },
+        delete_item: {
+          title: { default: "Delete a SharePoint file (to the recycle bin)" },
+        },
+        copy_item: {
+          title: { default: "Copy a SharePoint file to another folder" },
+        },
+        restore_version: {
+          title: {
+            default: "Restore version {{version}} of a SharePoint file",
+          },
+        },
+        create_share_link: {
+          title: {
+            default: "Create a SharePoint sharing link",
+            anonymous:
+              "Create a PUBLIC SharePoint link — anyone holding the URL can open it",
+          },
+        },
+        grant_item_access: {
+          title: { default: "Give {{recipients}} access to a SharePoint file" },
+        },
+        revoke_item_access: {
+          title: { default: "Revoke access to a SharePoint file" },
+        },
+        create_list_item: {
+          title: { default: "Add a row to a SharePoint list" },
+        },
+        update_list_item: {
+          title: { default: "Update a SharePoint list row" },
+        },
+        delete_list_item: {
+          title: { default: "Delete a SharePoint list row" },
+        },
+      },
+
       "imap-smtp": {
         send_email: {
           title: { default: "Send email to {{recipients}}" },
@@ -390,6 +512,87 @@ export default {
         },
         create_contact: {
           title: { default: 'Create contact "{{name}}"' },
+        },
+      },
+
+      pbyp: {
+        create_items: {
+          title: { default: "Create {{count}} row(s) in {{collection}}" },
+        },
+        update_items: {
+          title: { default: "Update {{count}} row(s) in {{collection}}" },
+        },
+        delete_items: {
+          title: { default: "Delete {{count}} row(s) from {{collection}}" },
+        },
+        create_order: {
+          title: { default: 'Create order "{{number}}"' },
+        },
+        create_folder: {
+          title: { default: "Create {{module}} {{type}} folder" },
+        },
+        create_sea_booking: {
+          title: { default: 'Create sea booking "{{number}}"' },
+        },
+        create_air_booking: {
+          title: { default: 'Create air booking "{{number}}"' },
+        },
+        create_quotation: {
+          title: { default: 'Create quotation "{{number}}"' },
+        },
+        add_event: {
+          title: { default: "Add an event on the {{target}}" },
+        },
+        set_parcels: {
+          title: { default: "Replace the cargo lines of the {{target}}" },
+        },
+        attach_order_to_folder: {
+          title: { default: "Link the order to the folder" },
+        },
+        detach_order_from_folder: {
+          title: { default: "Unlink the order from the folder" },
+        },
+        share_with_entity: {
+          title: { default: "Give entity {{entity_id}} access" },
+        },
+        revoke_share: {
+          title: { default: "Revoke entity {{entity_id}}'s access" },
+        },
+        archive: {
+          title: { default: "Cancel the {{object}}" },
+        },
+        set_quotation_status: {
+          title: { default: "Move the quotation to {{status}}" },
+        },
+        transfer_to_gateway: {
+          title: { default: "Send the {{object}} to a partner gateway" },
+        },
+        assign_containers: {
+          title: { default: "Stuff cargo into containers ({{count}} row(s))" },
+        },
+        unassign_parcel_container: {
+          title: { default: "Take a cargo line out of its container" },
+        },
+        activate_profile: {
+          title: { default: "Switch to profile {{profile_id}}" },
+        },
+        create_gateway: {
+          title: { default: 'Create the EDI gateway "{{code}}"' },
+        },
+        update_gateway: {
+          title: { default: 'Update the EDI gateway "{{code}}"' },
+        },
+        declare_tracking: {
+          title: { default: "Register the booking with carrier tracking" },
+        },
+        create_lta_stock: {
+          title: { default: "Reserve a range of air waybill numbers" },
+        },
+        invite_user: {
+          title: { default: "Invite {{email}}" },
+        },
+        create_client: {
+          title: { default: 'Create the client company "{{name}}"' },
         },
       },
 

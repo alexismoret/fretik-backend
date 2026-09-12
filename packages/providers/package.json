@@ -1,6 +1,6 @@
 {
   "name": "@fretik/providers",
-  "version": "0.7.23",
+  "version": "0.7.31",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,7 +12,8 @@
     "check": "bun run typecheck && bun run lint && bun run format:check",
     "test": "bun test --isolate --timeout=10000 tests/unit",
     "smoke": "bun src/index.ts",
-    "gen:sdk": "bun run scripts/generate-sdk.ts"
+    "gen:sdk": "bun run scripts/generate-sdk.ts",
+    "pbyp:schema": "bun run scripts/pbyp-refresh-schema.ts"
   },
   "exports": {
     ".": "./src/index.ts",
@@ -23,6 +24,8 @@
     "./imap-smtp": "./src/imap-smtp/index.ts",
     "./exchange": "./src/exchange/index.ts",
     "./front": "./src/front/index.ts",
+    "./pbyp": "./src/pbyp/index.ts",
+    "./sharepoint": "./src/sharepoint/index.ts",
     "./shiptify": "./src/shiptify/index.ts",
     "./teams": "./src/teams/index.ts"
   },

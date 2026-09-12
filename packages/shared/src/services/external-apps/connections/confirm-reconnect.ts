@@ -4,6 +4,8 @@ import {
   externalAppConnections,
   type ExternalAppConnection,
 } from "../../../db/schema";
+import { isRecord } from "../../../external-apps/json-access";
+import { normalizeNangoCredentials } from "../../../external-apps/normalize-nango-credentials";
 import { getProvider } from "../../../external-apps/registry";
 import { throwHttpError } from "../../../lib/errors";
 import { extractNangoErrorDetails } from "../../../lib/external-apps/extract-nango-error";
@@ -66,8 +68,12 @@ export const confirmReconnect = async (params: {
   const { nangoProviderConfigKey, nangoConnectionId } =
     requireNangoRef(current);
   const nango = getNangoClient();
+  let nangoConnection;
   try {
-    await nango.getConnection(nangoProviderConfigKey, nangoConnectionId);
+    nangoConnection = await nango.getConnection(
+      nangoProviderConfigKey,
+      nangoConnectionId,
+    );
   } catch (error) {
     return throwHttpError(400, {
       code: ERROR_CODES.EXTERNAL_APP_NANGO_VERIFY_FAILED,
@@ -81,6 +87,49 @@ export const confirmReconnect = async (params: {
   // off until the user flips it back to `active` from the settings UI.
   if (current.status === "disabled") {
     return current;
+  }
+
+  // A reconnect re-collects the whole credentials form, so a provider whose
+  // setup depends on a form field (Pbyp's profile) must re-run it: the user
+  // may well have reconnected precisely to switch that selection.
+  if (provider.onConnected !== undefined) {
+    const { credentials, connection_config: connectionConfig } =
+      normalizeNangoCredentials(
+        provider.manifest,
+        isRecord(nangoConnection.credentials)
+          ? nangoConnection.credentials
+          : {},
+        isRecord(nangoConnection.connection_config)
+          ? nangoConnection.connection_config
+          : {},
+      );
+    try {
+      await provider.onConnected({
+        credentials,
+        connection_config: connectionConfig,
+        options: isRecord(current.options) ? current.options : null,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const [errored] = await db
+        .update(externalAppConnections)
+        .set({
+          status: "error",
+          lastErrorMessage: message,
+          updatedAt: new Date(),
+        })
+        .where(eq(externalAppConnections.id, params.connectionId))
+        .returning();
+      await invalidateConnectionCaches({
+        connection: errored ?? current,
+        purgeAnswers: true,
+      });
+      return throwHttpError(400, {
+        code: ERROR_CODES.EXTERNAL_APP_NANGO_VERIFY_FAILED,
+        message: "The connection setup failed after reconnecting",
+        details: message,
+      });
+    }
   }
 
   const [row] = await db

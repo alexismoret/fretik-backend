@@ -1,11 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import type { CapabilitySignals } from "../../src/model-registry/eligibility";
+import type {
+  CapabilitySignals,
+  NumericSignal,
+} from "../../src/model-registry/eligibility";
 import {
   capabilitySignals,
   eligibleFunctions,
   functionEligibility,
+  functionFloor,
   signalsFromLive,
 } from "../../src/model-registry/eligibility";
+import type { ModelFunctionKey } from "../../src/model-registry/functions";
 import { MODEL_FUNCTION_KEYS } from "../../src/model-registry/functions";
 import { blendedPricePerMTok } from "../../src/model-registry/measures";
 import type {
@@ -22,26 +27,56 @@ import type {
  * regression cannot come back quietly.
  */
 
-/** Clears every floor by default, so each test states only what it is about. */
+/**
+ * Clears every floor by default, so each test states only what it is about.
+ *
+ * `vision` is the one exception and stays unanswered: its gate is a modality
+ * the other six say nothing about, so declaring one here would make every
+ * fixture claim it can see.
+ */
 const signals = (over: CapabilitySignals = {}): CapabilitySignals => ({
   intelligence: 40,
   contextTokens: 300_000,
-  tokensPerSecond: 60,
+  tokensPerSecond: 110,
   ttftP50Ms: 900,
-  blendedPricePerMTok: 1,
+  blendedPricePerMTok: 0.06,
   tools: true,
   ...over,
 });
 
+/**
+ * Read back off the rules rather than retyped, so these tests keep proving
+ * something after the next Artificial Analysis renumbering moves the floor.
+ * Spelling the number here is what made the v4.3 bump break six assertions
+ * about behaviour that had not changed.
+ *
+ * A missing floor is a FAILURE, not a zero: every assertion below is about
+ * where a boundary sits, so a silent 0 would turn each of them into a test that
+ * passes whatever the rules say.
+ */
+const floorOf = (fn: ModelFunctionKey, signal: NumericSignal): number => {
+  const floor = functionFloor(fn, signal);
+  if (floor === undefined) {
+    throw new Error(`${fn} sets no ${signal} floor — these tests assume one`);
+  }
+  return floor;
+};
+
+const INTELLIGENCE_ASSISTANT = floorOf("assistant", "intelligence");
+const CTX_ASSISTANT = floorOf("assistant", "contextTokens");
+
 describe("the three price-band mis-gradings", () => {
   test("zai-glm-5-3: the best index we track was shut out of the assistant", () => {
-    // Measured: intelligence 59.5 (the fleet's highest), 997 952 usable tokens,
-    // 129 tok/s, blended $1.49. The price bands put a mid-priced model in the
-    // middle band, so the strongest model we had was not offered for chat.
+    // Measured: 997 952 usable tokens, 129 tok/s, blended $1.49, and the
+    // fleet's highest index — 59.5 on AA v4.1, 44 after the v4.3 renumbering.
+    // The price bands put a mid-priced model in the middle band, so the
+    // strongest model we had was not offered for chat. This is ALSO why
+    // `assistant` carries no price ceiling: $1.49 is above the market's p75,
+    // and a ceiling there would re-create the defect on a different axis.
     expect(
       eligibleFunctions(
         signals({
-          intelligence: 59.5,
+          intelligence: 44,
           contextTokens: 997_952,
           tokensPerSecond: 129,
           blendedPricePerMTok: 1.49,
@@ -51,11 +86,12 @@ describe("the three price-band mis-gradings", () => {
   });
 
   test("zai-glm-5-3-flash: cheap is not the same as weak", () => {
-    // 57.5 intelligence, 997 952 tokens, $0.16 blended — graded "utility"
-    // purely because it is cheap, which said nothing about what it can do.
+    // 997 952 tokens, $0.16 blended, 42 on v4.3 (57.5 on v4.1) — graded
+    // "utility" purely because it is cheap, which said nothing about what it
+    // can do.
     const fns = eligibleFunctions(
       signals({
-        intelligence: 57.5,
+        intelligence: 42,
         contextTokens: 997_952,
         tokensPerSecond: 71,
         blendedPricePerMTok: 0.16,
@@ -89,7 +125,9 @@ describe("missing data is unknown, never false", () => {
     );
     expect(result.verdict).toBe("ineligible");
     expect(result.failed).toEqual(["contextTokens ≥ 200000"]);
-    expect(result.unknown).toEqual(["intelligence ≥ 45"]);
+    expect(result.unknown).toEqual([
+      `intelligence ≥ ${INTELLIGENCE_ASSISTANT}`,
+    ]);
   });
 
   test("an unknown alternative keeps an `any` rule open rather than failing it", () => {
@@ -124,27 +162,72 @@ describe("missing data is unknown, never false", () => {
   });
 });
 
+describe("the intelligence ladder", () => {
+  test("reads the same way in the rules as it does on screen", () => {
+    // Every surface that draws a job's capability bar reads `functionFloor`, so
+    // a hole in this ladder is not cosmetic: the picker's plot filled a missing
+    // floor with a guess of 20, which drew `quick-tasks` — the LOWEST bar in
+    // the set — as the strictest job on screen and put the model it runs on
+    // outside its own region.
+    const floors = ["assistant", "documents", "memory", "quick-tasks"].map(
+      (fn) => floorOf(fn as ModelFunctionKey, "intelligence"),
+    );
+    expect(floors).toEqual([...floors].sort((a, b) => b - a));
+    // `recall` and `memory` ask the same of a model's judgement; they differ on
+    // speed and latency, not on how clever the model has to be.
+    expect(floorOf("recall", "intelligence")).toBe(
+      floorOf("memory", "intelligence"),
+    );
+    // And memory genuinely asks MORE than the title generator does — a bad
+    // memory write persists, a bad title is one line.
+    expect(floorOf("memory", "intelligence")).toBeGreaterThan(
+      floorOf("quick-tasks", "intelligence"),
+    );
+  });
+
+  test("the quick-tasks floor sits under the model that job runs on", () => {
+    // `gpt-oss-20b` grades 6 on the v4.3 index and generates every conversation
+    // title in the product. A floor above it would be a rule contradicting a
+    // measurement we already have.
+    expect(floorOf("quick-tasks", "intelligence")).toBeLessThan(6);
+  });
+});
+
 describe("threshold edges", () => {
-  test("`atLeast` includes the boundary and `below` excludes it", () => {
-    expect(eligibleFunctions(signals({ intelligence: 45 }))).toContain(
-      "assistant",
-    );
-    expect(eligibleFunctions(signals({ intelligence: 44.9 }))).not.toContain(
-      "assistant",
-    );
-    // The quick-tasks price rule is `below` the market p25 ($0.13).
+  test("`atLeast` includes the boundary and a point below it does not", () => {
+    expect(
+      eligibleFunctions(signals({ intelligence: INTELLIGENCE_ASSISTANT })),
+    ).toContain("assistant");
+    expect(
+      eligibleFunctions(
+        signals({ intelligence: INTELLIGENCE_ASSISTANT - 0.1 }),
+      ),
+    ).not.toContain("assistant");
+  });
+
+  test("`atMost` includes the boundary — a ceiling is a limit, not a bound", () => {
+    // quick-tasks is `cheap AND (fast OR very cheap)`. At exactly the bargain
+    // rate ($0.065) a slow model still qualifies; a hair above it does not.
     expect(
       functionEligibility(
         "quick-tasks",
-        signals({ tokensPerSecond: 10, blendedPricePerMTok: 0.13 }),
-      ).verdict,
-    ).toBe("ineligible");
-    expect(
-      functionEligibility(
-        "quick-tasks",
-        signals({ tokensPerSecond: 10, blendedPricePerMTok: 0.129 }),
+        signals({ tokensPerSecond: 10, blendedPricePerMTok: 0.065 }),
       ).verdict,
     ).toBe("eligible");
+    expect(
+      functionEligibility(
+        "quick-tasks",
+        signals({ tokensPerSecond: 10, blendedPricePerMTok: 0.066 }),
+      ).verdict,
+    ).toBe("ineligible");
+    // And the hard cheapness bar the alternatives sit behind: above the market
+    // p25 ($0.13) nothing rescues it, however fast it is.
+    expect(
+      functionEligibility(
+        "quick-tasks",
+        signals({ tokensPerSecond: 400, blendedPricePerMTok: 0.2 }),
+      ).verdict,
+    ).toBe("ineligible");
   });
 
   test("recall reads first-token latency as a CEILING", () => {
@@ -166,17 +249,25 @@ describe("`unmet` — the failures, structured for a client to re-word", () => {
     expect(result.verdict).toBe("ineligible");
     expect(result.unmet).toHaveLength(result.failed.length);
     expect(result.unmet.map((requirement) => requirement.rules)).toEqual([
-      [{ kind: "atLeast", signal: "intelligence", value: 45 }],
-      [{ kind: "atLeast", signal: "contextTokens", value: 256_000 }],
+      [
+        {
+          kind: "atLeast",
+          signal: "intelligence",
+          value: INTELLIGENCE_ASSISTANT,
+        },
+      ],
+      [{ kind: "atLeast", signal: "contextTokens", value: CTX_ASSISTANT }],
     ]);
   });
 
   test("a failed `any` group is ONE requirement holding every alternative", () => {
-    // "fast OR cheap", satisfied neither way. Reported as two requirements it
-    // would tell a reader they must fix both, when either one would do.
+    // "fast OR very cheap", satisfied neither way, on a model that DOES clear
+    // the hard cheapness bar — so the `any` group is the only thing failing.
+    // Reported as two requirements it would tell a reader they must fix both,
+    // when either one would do.
     const result = functionEligibility(
       "quick-tasks",
-      signals({ tokensPerSecond: 10, blendedPricePerMTok: 5 }),
+      signals({ tokensPerSecond: 10, blendedPricePerMTok: 0.1 }),
     );
     expect(result.verdict).toBe("ineligible");
     expect(result.unmet).toHaveLength(1);
@@ -217,15 +308,28 @@ describe("`unmet` — the failures, structured for a client to re-word", () => {
 describe("every model the fleet is bound to is eligible for its own function", () => {
   /**
    * The invariant that keeps a rule honest: a threshold that excludes the
-   * default it was written around is a threshold that is wrong. Every figure
-   * below was read off `model_live_state` on 2026-08-30.
+   * default it was written around is a threshold that is wrong.
+   *
+   * Every non-intelligence figure was read off `model_live_state` on
+   * 2026-08-30. The intelligence column is the AA v4.3 grade, which is a
+   * DIFFERENT SCALE from the v4.1 one these rows carried until 2026-09-07:
+   * `deepseek-v4-flash` 51.8 → 35 and `gpt-oss-120b` 24.1 → 12 are AA's own
+   * published v4.3 figures, and the three Gemini rows are scaled from their
+   * v4.1 grades at the ratio those two establish, because AA grades Gemini
+   * under names our profile keys do not match.
+   *
+   * That last sentence is why this suite is not the real guarantee. It fixes
+   * the ARITHMETIC of the floors against known-shaped models; what fixes them
+   * against the fleet is `models:admin -- audit`, which runs the same rules
+   * over the live rows and reports any role whose own function refuses its own
+   * model. Run it after the next sync.
    */
   const FLEET = [
     {
       key: "deepseek-v4-flash",
       fns: ["assistant", "documents", "memory"],
       signals: signals({
-        intelligence: 51.8,
+        intelligence: 35,
         contextTokens: 997_952,
         tokensPerSecond: 50,
         ttftP50Ms: 678,
@@ -236,7 +340,7 @@ describe("every model the fleet is bound to is eligible for its own function", (
       key: "gpt-oss-120b",
       fns: ["memory", "recall", "quick-tasks"],
       signals: signals({
-        intelligence: 24.1,
+        intelligence: 12,
         contextTokens: 126_024,
         tokensPerSecond: 121,
         ttftP50Ms: 380,
@@ -247,7 +351,7 @@ describe("every model the fleet is bound to is eligible for its own function", (
       key: "gpt-oss-20b",
       fns: ["quick-tasks"],
       signals: signals({
-        intelligence: 15.2,
+        intelligence: 6,
         contextTokens: 129_024,
         tokensPerSecond: 67,
         ttftP50Ms: 408,
@@ -258,7 +362,7 @@ describe("every model the fleet is bound to is eligible for its own function", (
       key: "gemini-3.7-flash",
       fns: ["pages", "assistant", "documents"],
       signals: signals({
-        intelligence: 56,
+        intelligence: 40,
         contextTokens: 1_046_528,
         tokensPerSecond: 81,
         ttftP50Ms: 2218,
@@ -269,7 +373,7 @@ describe("every model the fleet is bound to is eligible for its own function", (
       key: "gemini-3.5-flash-lite",
       fns: ["vision"],
       signals: signals({
-        intelligence: 37.4,
+        intelligence: 27,
         contextTokens: 1_046_528,
         tokensPerSecond: 9,
         ttftP50Ms: 1092,
@@ -298,6 +402,55 @@ describe("every model the fleet is bound to is eligible for its own function", (
     ).toBe("eligible");
   });
 
+  test("the conversational speed floor leaves the same margin", () => {
+    // `deepseek-v4-flash` serves chat AND pre-extract at exactly 50 tok/s, so
+    // neither `assistant` nor `documents` may floor at 50 — the number the
+    // owner's "50-60 tok/s" brief asks for. 45 is the brief minus that margin.
+    for (const fn of ["assistant", "documents"] as const) {
+      expect(
+        functionEligibility(fn, signals({ tokensPerSecond: 45 })).verdict,
+      ).toBe("eligible");
+      expect(
+        functionEligibility(fn, signals({ tokensPerSecond: 44 })).verdict,
+      ).toBe("ineligible");
+    }
+  });
+
+  test("`memory` and `recall` refuse the model their own bindings refuse", () => {
+    // gpt-oss-20b is the title generator and nothing else: role-bindings.ts
+    // records it topping out at 15/16 on the recall suite with double the
+    // latency, and `memory-consolidate` picking 120b over it on judgement.
+    // Before this recalibration nothing in the rules said so, and a team could
+    // point its memory at it. The `working` intelligence floor is what does.
+    const gptOss20b = signals({
+      intelligence: 6,
+      contextTokens: 129_024,
+      tokensPerSecond: 67,
+      ttftP50Ms: 408,
+      blendedPricePerMTok: 0.038,
+    });
+    expect(functionEligibility("memory", gptOss20b).verdict).toBe("ineligible");
+    expect(functionEligibility("recall", gptOss20b).verdict).toBe("ineligible");
+  });
+
+  test("the volume price ceiling keeps an expensive model out of memory", () => {
+    // gemini-3.7-flash blends at $0.349 — fine for a page build, absurd for a
+    // write that fires on every turn.
+    expect(
+      functionEligibility("memory", signals({ blendedPricePerMTok: 0.349 }))
+        .verdict,
+    ).toBe("ineligible");
+    expect(
+      functionEligibility("recall", signals({ blendedPricePerMTok: 0.349 }))
+        .verdict,
+    ).toBe("ineligible");
+    // And is no obstacle at all to the functions that run once per turn.
+    expect(
+      functionEligibility("assistant", signals({ blendedPricePerMTok: 0.349 }))
+        .verdict,
+    ).toBe("eligible");
+  });
+
   test("vision refuses a model with no image modality, whatever else it has", () => {
     expect(
       functionEligibility(
@@ -319,7 +472,12 @@ describe("capabilitySignals", () => {
     ...over,
   });
 
-  test("speed and latency are the pool MEDIAN, not its best member", () => {
+  test("speed and latency describe the host a turn LANDS on — the pool's best", () => {
+    // Every vetted pool carries `sort: "throughput"`, so a request goes to the
+    // fastest host that will take it. Reading the median here is what let the
+    // model page show 300 tok/s beside a rule refusing the model for being
+    // under 45 — and it took `deepseek-v4-flash` out of both of its own
+    // functions on 2026-09-11.
     const derived = capabilitySignals({
       aa: null,
       pricing: { inputPerMTok: 1, outputPerMTok: 4 },
@@ -330,8 +488,48 @@ describe("capabilitySignals", () => {
         endpoint({ provider: "c", throughputP50: 300, latencyP50Ms: 200 }),
       ],
     });
-    expect(derived.tokensPerSecond).toBe(60);
-    expect(derived.ttftP50Ms).toBe(900);
+    expect(derived.tokensPerSecond).toBe(300);
+    expect(derived.ttftP50Ms).toBe(200);
+  });
+
+  test("one slow host in a fast pool does not decide the model's speed", () => {
+    // The shape the median got wrong: two quick hosts and three slow ones is a
+    // fast model with a long tail, not a slow one.
+    const derived = capabilitySignals({
+      aa: null,
+      pricing: { inputPerMTok: 1, outputPerMTok: 4 },
+      contextTokens: 300_000,
+      endpoints: [
+        endpoint({ provider: "a", throughputP50: 110 }),
+        endpoint({ provider: "b", throughputP50: 105 }),
+        endpoint({ provider: "c", throughputP50: 20 }),
+        endpoint({ provider: "d", throughputP50: 15 }),
+        endpoint({ provider: "e", throughputP50: 10 }),
+      ],
+    });
+    expect(derived.tokensPerSecond).toBe(110);
+    expect(
+      functionEligibility("assistant", {
+        ...derived,
+        intelligence: 40,
+        tools: true,
+      }).verdict,
+    ).toBe("eligible");
+  });
+
+  test("the price stays the MEDIAN — nothing sorts a pool by price", () => {
+    // The asymmetry is the point: a request is as likely to land on a dear host
+    // as a cheap one, so the middle is the honest expectation. Only the speed
+    // figures follow the routing order.
+    const derived = capabilitySignals({
+      aa: null,
+      pricing: { inputPerMTok: 1, outputPerMTok: 4 },
+      contextTokens: 300_000,
+      endpoints: [endpoint({ provider: "a" }), endpoint({ provider: "b" })],
+    });
+    expect(derived.blendedPricePerMTok).toBe(
+      blendedPricePerMTok({ inputPerMTok: 1, outputPerMTok: 4 }),
+    );
   });
 
   test("the blended price carries the cache rate", () => {

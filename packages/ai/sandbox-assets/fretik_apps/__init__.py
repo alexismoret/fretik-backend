@@ -9,6 +9,8 @@ from . import teams
 from . import front
 from . import shiptify
 from . import planner
+from . import sharepoint
 from . import akanea_wms
+from . import pbyp
 
-__all__ = ["ApprovalPending", "FretikActionError", "Operation", "run_plan", "collections", "outlook", "imap_smtp", "exchange", "teams", "front", "shiptify", "planner", "akanea_wms"]
+__all__ = ["ApprovalPending", "FretikActionError", "Operation", "run_plan", "collections", "outlook", "imap_smtp", "exchange", "teams", "front", "shiptify", "planner", "sharepoint", "akanea_wms", "pbyp"]

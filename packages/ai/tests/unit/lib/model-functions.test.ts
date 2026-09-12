@@ -5,6 +5,7 @@ import { boundProfileKeys } from "../../../src/lib/model-registry/bound-roles";
 import { getModelDisplayName } from "../../../src/lib/model-registry/display";
 import {
   FUNCTION_REPRESENTATIVE,
+  functionsForProfile,
   MODEL_FUNCTION_KEYS,
   ROLE_FUNCTION,
   selectableForFunction,
@@ -86,6 +87,51 @@ describe("recommendedProfileKeyForFunction", () => {
         `${fn}:${functionEligibility(fn, signalsForProfile(profile, undefined)).verdict}`,
       ).not.toBe(`${fn}:ineligible`);
     }
+    setLiveStateDouble();
+  });
+
+  test("a floor may never take a function's own model away from a team", () => {
+    // The state this makes unreachable, seen in production on 2026-09-11: the
+    // `assistant` throughput floor refused `deepseek-v4-flash` while every chat
+    // turn in the product ran on it, so two teams that had chosen it were
+    // silently served something else and the picker told them their model was
+    // not a valid assistant.
+    //
+    // Driven through a snapshot where the model measures FAR below the floor,
+    // rather than by moving the floor: the carve-out has to hold for whatever
+    // the next bad measurement is.
+    installBoundFleet();
+    const crawling = BOUND_ROWS.map((state) =>
+      state.profileKey === "deepseek-v4-flash"
+        ? {
+            ...state,
+            endpointStats: state.endpointStats.map((stat) => ({
+              ...stat,
+              throughputP50: 1,
+            })),
+          }
+        : state,
+    );
+    setLiveStateDouble(crawling);
+    const profile = boundProfile("deepseek-v4-flash");
+    const live = crawling.find(
+      (state) => state.profileKey === "deepseek-v4-flash",
+    );
+
+    // The rules still say no, and the audit still reports it — the number IS
+    // wrong and somebody should look at it.
+    expect(
+      functionEligibility("assistant", signalsForProfile(profile, live))
+        .verdict,
+    ).toBe("ineligible");
+    // The team keeps its model anyway.
+    expect(selectableForFunction(profile, "assistant", live)).toBe(true);
+    // And the card still claims the job it is doing.
+    expect(functionsForProfile(profile, live)).toContain("assistant");
+
+    // A model NOT bound to the function gets no such pass.
+    const other = boundProfile("gpt-oss-20b");
+    expect(selectableForFunction(other, "assistant")).toBe(false);
     setLiveStateDouble();
   });
 

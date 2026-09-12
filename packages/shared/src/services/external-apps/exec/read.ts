@@ -6,7 +6,8 @@ import { runApprovalGate } from "../../approvals/gate";
 import { canonicalHash } from "../../approvals/hash";
 import type { ExecContext, SandboxExecResponse } from "../../sandbox/types";
 import { resolveConnectionActionPolicy } from "../../tool-policies/resolve";
-import { getWorkflowAutonomyForConversation } from "../../workflows/get-run-autonomy";
+import { recordWorkflowExternalApps } from "../../workflows/record-external-apps";
+import { getWorkflowRunContext } from "../../workflows/run-context";
 import { resolveConnection } from "../connections/resolve";
 import { extractFrameworkArgs } from "./framework-args";
 import { dispatchMcpRead } from "./mcp-read";
@@ -66,7 +67,13 @@ export const dispatchRead = async (
     };
   }
 
-  const autonomy = await getWorkflowAutonomyForConversation(ctx.conversationId);
+  const run = await getWorkflowRunContext(ctx.conversationId);
+  // The workflow now knows it depends on this app — recorded on RESOLUTION, not
+  // on success, because the dependency is what the settings panel asks about
+  // and a denied approval or a blocked action does not make it go away.
+  if (run) await recordWorkflowExternalApps(run, [connection]);
+
+  const autonomy = run?.autonomy ?? null;
   const level = resolveConnectionActionPolicy({
     action: { name: resolved.action.name, kind: "read" },
     actionPolicies: connection.actionPolicies,

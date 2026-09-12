@@ -5,6 +5,7 @@ import {
   WorkflowFormFieldDescriptorSchema,
 } from "./workflow-forms";
 import {
+  eventSubscriptions,
   WORKFLOW_TRIGGER_TYPE_VALUES,
   WorkflowTriggerConfigSchema,
   workflowTriggerTypeSchema,
@@ -20,7 +21,7 @@ import {
  *   2. chatbot  — `describeTriggerConfigForAgent()` + the `get_trigger_catalog`
  *      action expose the same params to the agent;
  *   3. API      — `GET /workflows/trigger-catalog` serves `buildTriggerCatalog()`;
- *   4. backend  — the event matcher reads `triggerConfig.event.filter` (the flat
+ *   4. backend  — the event matcher reads each subscription's `filter` (the flat
  *      equality map the descriptors write into).
  *
  * The raw config Zod (`WorkflowCronConfigSchema` / `WorkflowEventConfigSchema` /
@@ -69,7 +70,12 @@ export const TriggerParameterOptionSchema = z.object({
 });
 
 export const TriggerParameterDescriptorSchema = z.object({
-  /** Dot-path into `triggerConfig`, e.g. "cron.pattern", "event.filter.folderId". */
+  /**
+   * Dot-path to the value. For a trigger KIND's own params it is rooted at
+   * `triggerConfig` ("cron.pattern"); for an event-type param it is rooted at
+   * ONE event subscription ("filter.folderId"), since an event trigger carries
+   * a list of them and each is filtered on its own.
+   */
   key: z.string(),
   kind: z.enum(TRIGGER_PARAMETER_KINDS),
   /** Stable i18n key — the frontend owns the English copy. */
@@ -108,7 +114,7 @@ export const WorkflowTriggerKindDescriptorSchema = z.object({
   /** cron → a Trigger.dev schedule is attached on activation. */
   requiresSchedule: z.boolean(),
   /** Base params. An event kind's contextual params come from the event-type
-   * descriptor selected in `event.type`. */
+   * descriptor of each event selected in `event.events`. */
   params: z.array(TriggerParameterDescriptorSchema),
   /** Seed config when the user first picks this kind (plain value — clone
    * before mutating on the backend). */
@@ -174,17 +180,17 @@ export const WORKFLOW_TRIGGER_KINDS: Record<
     requiresSchedule: false,
     params: [
       param({
-        key: "event.type",
+        key: "event.events",
         kind: "event_type",
         labelKey: "workflows.triggerParams.eventType",
         icon: "i-lucide-webhook",
         required: true,
-        agentHint: `Journal event type to match — one of ${WORKFLOW_TRIGGERABLE_EVENT_TYPES.join(", ")} or a connector.<app>.<kind> event.`,
+        agentHint: `The events to listen for, as a list of { type, filter? }. Each type is one of ${WORKFLOW_TRIGGERABLE_EVENT_TYPES.join(", ")} or a connector.<app>.<kind> event.`,
       }),
     ],
-    defaultConfig: { event: { type: "document.uploaded" } },
+    defaultConfig: { event: { events: [{ type: "document.uploaded" }] } },
     agentSummary:
-      "event — fires when a workspace event occurs. triggerConfig.event = { type (required), filter (payload equality, optional) }. Per-event-type filter keys are in the trigger catalog.",
+      "event — fires when a workspace event occurs. triggerConfig.event = { events: [{ type (required), filter (payload equality, optional) }] }, 1-20 entries, matched as an OR: any one of them starts a run. Subscribe to every event that carries the input the playbook needs — replacing an existing document emits document.revised, NOT document.uploaded, so a workflow meant to act on 'a document arrives' needs both. Two entries of the same type with different filters (two watched folders) are legitimate. Per-event-type filter keys are in the trigger catalog.",
   },
   form: {
     type: "form",
@@ -219,7 +225,8 @@ export const WorkflowEventTypeDescriptorSchema = z.object({
   icon: z.string(),
   labelKey: z.string(),
   /** Contextual filter params meaningful for THIS event type — each writes into
-   * `event.filter.<key>` and is matched by the flat sweep equality. */
+   * its own subscription's `filter.<key>` and is matched by the flat sweep
+   * equality. */
   params: z.array(TriggerParameterDescriptorSchema),
 });
 export type WorkflowEventTypeDescriptor = z.infer<
@@ -229,7 +236,7 @@ export type WorkflowEventTypeDescriptor = z.infer<
 /** Scaffolded (not yet wired) — record.* object-type filter. Declared so the
  * pattern is visible; needs `collectionKey` on the record.* payload to work. */
 const collectionFilterParam = param({
-  key: "event.filter.collectionKey",
+  key: "filter.collectionKey",
   kind: "collection",
   labelKey: "workflows.triggerParams.collection",
   icon: "i-lucide-shapes",
@@ -247,7 +254,7 @@ export const WORKFLOW_TRIGGERABLE_EVENT_DESCRIPTORS: WorkflowEventTypeDescriptor
       labelKey: "workflows.eventTypes.document_uploaded",
       params: [
         param({
-          key: "event.filter.folderId",
+          key: "filter.folderId",
           kind: "folder",
           labelKey: "workflows.triggerParams.folder",
           icon: "i-lucide-folder",
@@ -263,7 +270,7 @@ export const WORKFLOW_TRIGGERABLE_EVENT_DESCRIPTORS: WorkflowEventTypeDescriptor
       labelKey: "workflows.eventTypes.document_revised",
       params: [
         param({
-          key: "event.filter.folderId",
+          key: "filter.folderId",
           kind: "folder",
           labelKey: "workflows.triggerParams.folder",
           icon: "i-lucide-folder",
@@ -415,8 +422,10 @@ export const describeTriggerForCard = (
       return "someone runs it on demand";
     case "cron":
       return `a schedule (${triggerConfig.cron?.pattern ?? "not set yet"})`;
-    case "event":
-      return `an event in the workspace (${triggerConfig.event?.type ?? "not set yet"})`;
+    case "event": {
+      const types = eventSubscriptions(triggerConfig).map((s) => s.type);
+      return `an event in the workspace (${types.length > 0 ? types.join(" or ") : "not set yet"})`;
+    }
     case "form": {
       const fields = (triggerConfig.form?.fields ?? [])
         .map((field) => field.label)
@@ -445,7 +454,10 @@ export const describeTriggerConfigForAgent = (): string => {
     "triggerConfig shape depends on triggerType:",
     ...kinds,
     ...(eventParams.length
-      ? ["Event-type filter keys (write into event.filter):", ...eventParams]
+      ? [
+          "Event-type filter keys (write into each entry's own filter):",
+          ...eventParams,
+        ]
       : []),
     "Use action get_trigger_catalog for the full machine-readable catalog.",
   ].join("\n");

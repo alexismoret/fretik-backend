@@ -1,3 +1,4 @@
+import { AA_INDEX } from "@fretik/shared/model-registry/eligibility";
 import type {
   DynamicProfile,
   EndpointStat,
@@ -101,7 +102,139 @@ export const profileOf = (over: Partial<LiveModelState> = {}): ModelProfile => {
  */
 const DEEPSEEK_POOL = ["baseten", "fireworks", "venice", "deepinfra"];
 
-export const BOUND_ROWS: readonly LiveModelState[] = [
+/**
+ * The measured half of a bound row — price, grade and per-endpoint speed.
+ *
+ * It used to be absent, and every bound row carried the generic $0.40/$1.60
+ * placeholder with no grade and no throughput at all. That was invisible until
+ * the eligibility floors started reading price and speed: the invariant test
+ * that exists to prove "no function refuses its own default" was passing on a
+ * fleet whose prices were made up, so it could not have caught a ceiling set
+ * below the models it was written around.
+ *
+ * Prices are chosen to REPRODUCE the blended figure the sync measured on
+ * 2026-08-30 (`blendedPricePerMTok` weights input 0.97 and reads 75 % of it
+ * from cache), not copied off a rate card. Intelligence is the Artificial
+ * Analysis v4.3 grade — a different scale from the v4.1 one these models were
+ * first calibrated on, which is the whole reason the floors moved.
+ */
+interface Measured {
+  /** AA Intelligence Index v4.3. */
+  intelligence: number;
+  /** Pool-median decode, tok/s. */
+  tps: number;
+  /** Pool-median time to first token, ms. */
+  ttftMs: number;
+  pricing: { inputPerMTok: number; outputPerMTok: number; cacheRead: number };
+}
+
+const MEASURED: Record<string, Measured> = {
+  // blended $0.062, 50 tok/s, 678 ms. Serves chat, workflow, pre-extract,
+  // transform, compaction and three of the four memory writers — so it is the
+  // row that every conversational and memory floor is calibrated against.
+  "deepseek-v4-flash": {
+    intelligence: 35,
+    tps: 50,
+    ttftMs: 678,
+    pricing: { inputPerMTok: 0.17, outputPerMTok: 0.34, cacheRead: 0.017 },
+  },
+  // blended $0.099, 121 tok/s, 380 ms. The recall judge and the consolidator.
+  "gpt-oss-120b": {
+    intelligence: 12,
+    tps: 121,
+    ttftMs: 380,
+    pricing: { inputPerMTok: 0.28, outputPerMTok: 0.42, cacheRead: 0.028 },
+  },
+  // blended $0.038, 67 tok/s, 408 ms. Titles and nothing else — too slow for
+  // the quick-tasks speed rung and cheap enough that it does not matter.
+  "gpt-oss-20b": {
+    intelligence: 6,
+    tps: 67,
+    ttftMs: 408,
+    pricing: { inputPerMTok: 0.1, outputPerMTok: 0.2, cacheRead: 0.01 },
+  },
+  // blended $0.349, 81 tok/s, 2218 ms. The page builder.
+  "gemini-3.7-flash": {
+    intelligence: 40,
+    tps: 81,
+    ttftMs: 2218,
+    pricing: { inputPerMTok: 0.75, outputPerMTok: 3.75, cacheRead: 0.075 },
+  },
+  // blended $0.187, 9 tok/s, 1092 ms. Reads scanned pages, and nobody watches
+  // it stream — which is why `vision` carries no speed floor.
+  "gemini-3.5-flash-lite": {
+    intelligence: 27,
+    tps: 9,
+    ttftMs: 1092,
+    pricing: { inputPerMTok: 0.42, outputPerMTok: 1.68, cacheRead: 0.042 },
+  },
+  "gemini-3.1-flash-lite": {
+    intelligence: 18,
+    tps: 120,
+    ttftMs: 700,
+    pricing: { inputPerMTok: 0.075, outputPerMTok: 0.3, cacheRead: 0.019 },
+  },
+  "zai-glm-5-3-flash": {
+    intelligence: 42,
+    tps: 71,
+    ttftMs: 1180,
+    pricing: { inputPerMTok: 0.15, outputPerMTok: 0.5, cacheRead: 0.03 },
+  },
+  "glm-5.2": {
+    intelligence: 39,
+    tps: 55,
+    ttftMs: 1400,
+    pricing: { inputPerMTok: 0.4, outputPerMTok: 1.6, cacheRead: 0.11 },
+  },
+  // `deepseek-v4-pro` is DELIBERATELY ABSENT: the fixture needs one row nobody
+  // has graded, because "absent evidence never refuses" is the rule the whole
+  // engine turns on and a fully-measured fleet cannot exercise it. It is also
+  // the one row here bound to no role, so leaving it ungraded costs no
+  // invariant.
+  "gpt-5.6-luna": {
+    intelligence: 34,
+    tps: 95,
+    ttftMs: 900,
+    pricing: { inputPerMTok: 0.25, outputPerMTok: 2, cacheRead: 0.025 },
+  },
+  "minimax-m3": {
+    intelligence: 29,
+    tps: 62,
+    ttftMs: 1500,
+    pricing: { inputPerMTok: 0.3, outputPerMTok: 1.2, cacheRead: 0.03 },
+  },
+};
+
+/** The row fields `MEASURED` fills, applied to a row and its endpoints. */
+const withMeasurements = (state: LiveModelState): LiveModelState => {
+  const measured = MEASURED[state.profileKey];
+  if (measured === undefined) return state;
+  const pricing = {
+    inputPerMTok: measured.pricing.inputPerMTok,
+    outputPerMTok: measured.pricing.outputPerMTok,
+    cacheReadPerMTok: measured.pricing.cacheRead,
+  };
+  return {
+    ...state,
+    pricing,
+    aaMetrics: {
+      fetchedAt: "2026-09-07T03:00:00.000Z",
+      indexVersion: AA_INDEX.version,
+      intelligenceIndex: measured.intelligence,
+    },
+    // Every endpoint carries the same figures, so the pool MEDIAN the signals
+    // are built from is the number named above rather than an artefact of how
+    // many hosts a fixture happens to list.
+    endpointStats: state.endpointStats.map((stat) => ({
+      ...stat,
+      pricing,
+      throughputP50: measured.tps,
+      latencyP50Ms: measured.ttftMs,
+    })),
+  };
+};
+
+const BOUND_ROWS_RAW: readonly LiveModelState[] = [
   row({
     profileKey: "deepseek-v4-flash",
     modelIds: {
@@ -302,6 +435,9 @@ export const BOUND_ROWS: readonly LiveModelState[] = [
     }),
   }),
 ];
+
+export const BOUND_ROWS: readonly LiveModelState[] =
+  BOUND_ROWS_RAW.map(withMeasurements);
 
 /** Install the bound fleet as the live snapshot. */
 export const installBoundFleet = (): void => setLiveStateDouble(BOUND_ROWS);

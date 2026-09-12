@@ -128,6 +128,7 @@ class UpdateTaskDetailsArgs(BaseModel):
     etag: str
     description: str | None = None
     checklist: list[dict[str, Any]] | None = None
+    references: list[dict[str, Any]] | None = None
 
 
 class DeleteTaskArgs(BaseModel):
@@ -381,11 +382,12 @@ def _update_task_details_op(
     etag: str,
     description: str | None = None,
     checklist: list[dict[str, Any]] | None = None,
+    references: list[dict[str, Any]] | None = None,
     connection_id: str | None = None,
 ) -> Operation:
     """Build a update_task_details Operation (does NOT execute).
     Use inside run_plan([...])."""
-    _args = UpdateTaskDetailsArgs(task_id=task_id, etag=etag, description=description, checklist=checklist).model_dump(exclude_none=True)
+    _args = UpdateTaskDetailsArgs(task_id=task_id, etag=etag, description=description, checklist=checklist, references=references).model_dump(exclude_none=True)
     if connection_id is not None:
         _args["connection_id"] = connection_id
     return Operation(action="planner.update_task_details", args=_args)
@@ -395,9 +397,10 @@ def update_task_details(
     etag: str,
     description: str | None = None,
     checklist: list[dict[str, Any]] | None = None,
+    references: list[dict[str, Any]] | None = None,
     connection_id: str | None = None,
 ) -> dict[str, Any]:
-    """Set a task's description and/or replace its checklist
+    """Set a task's description, checklist, or the documents linked to it
 
     (WRITE — build it with `update_task_details.op(...)` and submit
     it with `run_plan([...])`. Calling this directly raises.)

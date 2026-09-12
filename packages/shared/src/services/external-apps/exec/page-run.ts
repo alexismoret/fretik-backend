@@ -244,6 +244,7 @@ export const runPageAction = async (params: {
               endpoint: request.endpoint,
               query: request.query,
               body: request.body,
+              multipart: request.multipart,
             }),
           )
         : await upstream(connection, () =>
@@ -260,7 +261,7 @@ export const runPageAction = async (params: {
       status: "ok",
       result:
         resolved.responseMapper !== undefined
-          ? resolved.responseMapper(raw)
+          ? resolved.responseMapper(raw, validated)
           : raw,
     };
   } catch (error) {

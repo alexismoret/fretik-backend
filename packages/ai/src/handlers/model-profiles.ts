@@ -10,6 +10,10 @@ import {
   validationError,
 } from "@fretik/shared/lib/errors";
 import type { UnmetRequirement } from "@fretik/shared/model-registry/eligibility";
+import {
+  AA_INDEX,
+  functionFloor,
+} from "@fretik/shared/model-registry/eligibility";
 import type { ModelFunctionKey } from "@fretik/shared/model-registry/functions";
 import {
   functionProfileKey,
@@ -337,6 +341,27 @@ modelProfilesRoutes.get("/", async (c) => {
           selected,
           recommended,
           effective: selected ?? recommended,
+          /**
+           * The numeric floors this job sets, for a client that has to DRAW
+           * them rather than merely honour them.
+           *
+           * The picker's plot paints a region and calls it the good one. Until
+           * this field existed it derived that region from fractions of its own
+           * axis maxima — a rectangle in a corner, unrelated to any rule — and
+           * the two disagreed the moment either moved. Artificial Analysis
+           * renumbering its index in September made the disagreement total: the
+           * plot's y-threshold sat at 38.5 on a scale whose top had become 53,
+           * so the region it advertised as "a lot of capability" excluded almost
+           * every model that could actually do the job.
+           *
+           * `null` where the function sets no floor on that axis — a legitimate
+           * answer, and different from a floor of zero.
+           */
+          floors: {
+            intelligence: functionFloor(fn, "intelligence") ?? null,
+            contextTokens: functionFloor(fn, "contextTokens") ?? null,
+            tokensPerSecond: functionFloor(fn, "tokensPerSecond") ?? null,
+          },
         },
       ];
     }),
@@ -370,6 +395,24 @@ modelProfilesRoutes.get("/", async (c) => {
         )
           ? storedLevel
           : null,
+    },
+    /**
+     * The scale the intelligence figures are ON — published rather than
+     * assumed, because assuming it is what broke.
+     *
+     * Every card carries a raw Artificial Analysis index, and the client draws
+     * gauges and a plot against a ceiling. That ceiling used to be a constant
+     * in the frontend ("intelligence tops out at 70"), written when the fleet
+     * spanned 9 to 61 on index v4.1. AA published v4.3 on 2026-09-07 and
+     * renumbered everything downward — the whole market now tops out at 53 —
+     * and every bar on every card silently started under-reading, on a number
+     * nothing in the frontend could have known had changed.
+     *
+     * One number, from the same constant the eligibility floors are derived
+     * from, so the picture and the rules cannot describe different scales.
+     */
+    scales: {
+      intelligence: { version: AA_INDEX.version, max: AA_INDEX.top },
     },
     attribution: {
       provider: "Artificial Analysis",

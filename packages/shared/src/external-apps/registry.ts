@@ -8,6 +8,7 @@ import type {
   ProviderHandler,
   ProviderHandlers,
   ProviderMappers,
+  ProviderOnConnected,
   ProviderSummaries,
   ProviderTestCredentials,
   RequestMapper,
@@ -47,6 +48,12 @@ export interface ProviderEntry {
    * at least one such field; the registry validates every reference.
    */
   dynamicOptions?: ProviderDynamicOptions;
+  /**
+   * One-shot side effect run once the connection is stored and its
+   * credentials verified — activating a chosen profile, registering a
+   * webhook. Optional; see `ProviderOnConnected`.
+   */
+  onConnected?: ProviderOnConnected;
   /** Required when any action has kind === "write". */
   summaries: ProviderSummaries;
 }

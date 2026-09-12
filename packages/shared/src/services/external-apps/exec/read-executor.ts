@@ -78,10 +78,17 @@ const runRead = async (
       endpoint: req.endpoint,
       query: req.query,
       body: req.body,
+      // A read can need a per-call header just as a write can: SharePoint
+      // refuses to filter a list past 5 000 rows on a non-indexed column
+      // unless `Prefer: HonorNonIndexedQueriesWarningMayFailRandomly` says
+      // to try anyway. Dropping it here made the header unreachable from
+      // any read mapper, silently — the request went out without it and
+      // came back 400.
+      headers: req.headers,
       paginate: req.paginate,
     });
     return resolved.responseMapper !== undefined
-      ? resolved.responseMapper(raw)
+      ? resolved.responseMapper(raw, validated)
       : raw;
   }
 
@@ -96,9 +103,10 @@ const runRead = async (
       endpoint: req.endpoint,
       query: req.query,
       body: req.body,
+      multipart: req.multipart,
     });
     return resolved.responseMapper !== undefined
-      ? resolved.responseMapper(raw)
+      ? resolved.responseMapper(raw, validated)
       : raw;
   }
 

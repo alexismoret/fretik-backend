@@ -34,9 +34,15 @@ await mockModule("../../../src/lib/web/http", {
     new TextDecoder().decode(result.body),
 });
 
-const { mapSiteFromSitemap, readSitemapDocument, bunXml } =
+const { mapSiteFromSitemap, readSitemapDocument } =
   await import("../../../src/lib/web/sitemap");
-type XmlParser = ReturnType<typeof bunXml>;
+type XmlParser = Pick<typeof Bun.XML, "parse"> | undefined;
+
+/** The ambient parser, or `undefined` on a runtime without one. */
+const ambientParser = (): XmlParser =>
+  typeof (Bun as { XML?: { parse?: unknown } }).XML?.parse === "function"
+    ? Bun.XML
+    : undefined;
 
 const urlset = (...urls: string[]): string =>
   `<?xml version="1.0"?><urlset>${urls
@@ -331,9 +337,11 @@ describe("reading a sitemap document", () => {
     },
   ];
 
-  const paths: Array<{ label: string; parser: XmlParser | undefined }> = [
+  const paths: Array<{ label: string; parser: XmlParser }> = [
     { label: "scan", parser: undefined },
-    ...(bunXml() === undefined ? [] : [{ label: "Bun.XML", parser: bunXml() }]),
+    ...(ambientParser() === undefined
+      ? []
+      : [{ label: "Bun.XML", parser: ambientParser() }]),
   ];
 
   for (const { label, parser } of paths) {
@@ -368,7 +376,7 @@ describe("reading a sitemap document", () => {
 
     // The premise, stated only where there is a parser to state it about: this
     // input is genuinely rejected rather than merely awkward.
-    const parser = bunXml();
+    const parser = ambientParser();
     if (parser !== undefined) {
       expect(() => parser.parse(malformed)).toThrow();
     }

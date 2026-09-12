@@ -9,7 +9,7 @@ import {
 import {
   applyPublishedBefore,
   faviconFor,
-  imagesFromMarkdown,
+  imagesFromPages,
   joinExcerpts,
   normalizeDate,
   recencyToAfterDate,
@@ -248,28 +248,44 @@ export const parallelFetch = async (
     ),
   );
 
+  const pages = response.results.map((r) => ({
+    url: r.url,
+    title: r.title ?? null,
+    // `full_content` is the whole page, `excerpts` the query-relevant passages.
+    // Prefer whichever the caller asked for, but fall back to the other rather
+    // than returning a blank row: a URL that answered at all is worth more to
+    // the model than an empty page.
+    content: wantsFullContent
+      ? (r.full_content ?? joinExcerpts(r.excerpts))
+      : joinExcerpts(r.excerpts) || (r.full_content ?? ""),
+    publishDate: r.publish_date,
+  }));
+
+  // Harvested across the BATCH rather than page by page, because separating an
+  // illustration from site furniture depends on seeing what the pages have in
+  // common — a logo is on all of them, a photograph on one.
+  const images =
+    request.withImages === true
+      ? imagesFromPages(
+          pages.map((p) => ({
+            url: p.url,
+            title: p.title,
+            markdown: p.content,
+          })),
+          MAX_IMAGES_PER_PAGE,
+        )
+      : undefined;
+
   return {
-    results: response.results.map((r) => {
-      // `full_content` is the whole page, `excerpts` the query-relevant
-      // passages. Prefer whichever the caller asked for, but fall back to the
-      // other rather than returning a blank row: a URL that answered at all is
-      // worth more to the model than an empty page.
-      const content = wantsFullContent
-        ? (r.full_content ?? joinExcerpts(r.excerpts))
-        : joinExcerpts(r.excerpts) || (r.full_content ?? "");
-
-      const images =
-        request.withImages === true
-          ? imagesFromMarkdown(content, MAX_IMAGES_PER_PAGE)
-          : [];
-
+    results: pages.map((p) => {
+      const pageImages = images?.get(p.url) ?? [];
       return {
-        url: r.url,
-        title: r.title ?? null,
-        content,
-        favicon: faviconFor(r.url),
-        publishedDate: normalizeDate(r.publish_date),
-        ...(images.length > 0 ? { images } : {}),
+        url: p.url,
+        title: p.title,
+        content: p.content,
+        favicon: faviconFor(p.url),
+        publishedDate: normalizeDate(p.publishDate),
+        ...(pageImages.length > 0 ? { images: pageImages } : {}),
       };
     }),
     failed: response.errors.map((e) => ({

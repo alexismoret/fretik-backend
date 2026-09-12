@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import {
   applyPublishedBefore,
   faviconFor,
-  imagesFromMarkdown,
+  imagesFromPages,
   joinExcerpts,
   matchesSelectPaths,
   normalizeDate,
@@ -146,52 +146,49 @@ describe("matchesSelectPaths", () => {
   });
 });
 
-describe("imagesFromMarkdown", () => {
+describe("imagesFromPages", () => {
+  const page = (
+    url: string,
+    markdown: string,
+    title: string | null = null,
+  ) => ({
+    url,
+    title,
+    markdown,
+  });
+
+  const urlsOf = (
+    harvest: Map<string, { url: string; description?: string }[]>,
+    pageUrl: string,
+  ): string[] => (harvest.get(pageUrl) ?? []).map((i) => i.url);
+
   /**
    * This is how the image strip survives the move off Tavily: neither search
-   * provider returns images, but the pages `webFetch` reads come back as
-   * Markdown, and Markdown carries its own `![alt](url)`.
+   * provider returns images, but a fetched page comes back as Markdown and
+   * Markdown carries its own `![alt](url)`.
    */
   test("pulls images out with their alt text as the caption", () => {
-    expect(
-      imagesFromMarkdown(
-        "intro ![A quay at dusk](https://cdn.test/quay.jpg) end",
-        5,
-      ),
-    ).toEqual([
+    const harvest = imagesFromPages(
+      [
+        page(
+          "https://a.test/1",
+          "intro ![A quay at dusk](https://cdn.test/quay.jpg) end",
+        ),
+      ],
+      5,
+    );
+    expect(harvest.get("https://a.test/1")).toEqual([
       { url: "https://cdn.test/quay.jpg", description: "A quay at dusk" },
     ]);
   });
 
-  test("omits the caption rather than emitting an empty one", () => {
-    expect(imagesFromMarkdown("![](https://cdn.test/a.jpg)", 5)).toEqual([
-      { url: "https://cdn.test/a.jpg" },
-    ]);
-  });
-
   test("accepts the angle-bracket destination form", () => {
-    expect(imagesFromMarkdown("![x](<https://cdn.test/a b.jpg>)", 5)).toEqual([
-      { url: "https://cdn.test/a b.jpg", description: "x" },
-    ]);
-  });
-
-  /**
-   * The trade this filtering pays for: page images have better provenance than
-   * a generic image search (each one belongs to a citable source) but a noisier
-   * set — a page ships its logo, the author's avatar and a tracking pixel
-   * alongside the one photograph worth showing.
-   */
-  test("drops site furniture and tracking pixels", () => {
-    const markdown = [
-      "![logo](https://cdn.test/logo/brand.png)",
-      "![icon](https://cdn.test/icons/menu.png)",
-      "![avatar](https://cdn.test/avatars/jo.png)",
-      "![pixel](https://cdn.test/1x1.gif)",
-      "![vector](https://cdn.test/chart.svg)",
-      "![real](https://cdn.test/photo.jpg)",
-    ].join("\n");
-    expect(imagesFromMarkdown(markdown, 10)).toEqual([
-      { url: "https://cdn.test/photo.jpg", description: "real" },
+    const harvest = imagesFromPages(
+      [page("https://a.test/1", "![x](<https://cdn.test/a b.jpg>)")],
+      5,
+    );
+    expect(urlsOf(harvest, "https://a.test/1")).toEqual([
+      "https://cdn.test/a b.jpg",
     ]);
   });
 
@@ -200,22 +197,157 @@ describe("imagesFromMarkdown", () => {
    * budget on a thumbnail; only an addressable image is worth returning.
    */
   test("rejects non-http destinations", () => {
-    expect(
-      imagesFromMarkdown("![x](data:image/png;base64,iVBORw0KGgo=)", 5),
-    ).toEqual([]);
-    expect(imagesFromMarkdown("![x](/relative/a.jpg)", 5)).toEqual([]);
+    const harvest = imagesFromPages(
+      [
+        page(
+          "https://a.test/1",
+          "![x](data:image/png;base64,iVBORw0KGgo=) ![y](/relative/a.jpg)",
+        ),
+      ],
+      5,
+    );
+    expect(urlsOf(harvest, "https://a.test/1")).toEqual([]);
   });
 
-  test("dedupes and honours the limit", () => {
-    const markdown = [
-      "![a](https://cdn.test/1.jpg)",
-      "![b](https://cdn.test/1.jpg)",
-      "![c](https://cdn.test/2.jpg)",
-      "![d](https://cdn.test/3.jpg)",
-    ].join("\n");
-    expect(imagesFromMarkdown(markdown, 2)).toEqual([
-      { url: "https://cdn.test/1.jpg", description: "a" },
-      { url: "https://cdn.test/2.jpg", description: "c" },
+  test("drops obviously-named furniture", () => {
+    const harvest = imagesFromPages(
+      [
+        page(
+          "https://a.test/1",
+          [
+            "![logo](https://cdn.test/logo/brand.png)",
+            "![icon](https://cdn.test/icons/menu.png)",
+            "![avatar](https://cdn.test/avatars/jo.png)",
+            "![pixel](https://cdn.test/1x1.gif)",
+            "![vector](https://cdn.test/chart.svg)",
+            "![real](https://cdn.test/photo.jpg)",
+          ].join("\n"),
+        ),
+      ],
+      10,
+    );
+    expect(urlsOf(harvest, "https://a.test/1")).toEqual([
+      "https://cdn.test/photo.jpg",
     ]);
+  });
+
+  /**
+   * The case a filename blocklist cannot win, and the reason the harvest looks
+   * across the batch: a CDN that serves the site logo from a content-hashed
+   * path says nothing about what the image IS. What gives it away is that it
+   * appears on every page, while a real illustration appears on one.
+   */
+  test("drops a hashed-filename logo because every page carries it", () => {
+    const chrome = "https://cdn.test/a1b2c3d4e5.png";
+    const harvest = imagesFromPages(
+      [
+        page("https://a.test/1", `![](${chrome}) ![](https://cdn.test/f1.jpg)`),
+        page("https://a.test/2", `![](${chrome}) ![](https://cdn.test/f2.jpg)`),
+        page("https://a.test/3", `![](${chrome}) ![](https://cdn.test/f3.jpg)`),
+      ],
+      10,
+    );
+
+    expect(urlsOf(harvest, "https://a.test/1")).toEqual([
+      "https://cdn.test/f1.jpg",
+    ]);
+    expect(urlsOf(harvest, "https://a.test/3")).toEqual([
+      "https://cdn.test/f3.jpg",
+    ]);
+  });
+
+  test("keeps an image carried by a minority of the batch", () => {
+    const shared = "https://cdn.test/series-header.jpg";
+    const harvest = imagesFromPages(
+      [
+        page("https://a.test/1", `![](${shared})`),
+        page("https://a.test/2", "![](https://cdn.test/b.jpg)"),
+        page("https://a.test/3", "![](https://cdn.test/c.jpg)"),
+      ],
+      10,
+    );
+    expect(urlsOf(harvest, "https://a.test/1")).toEqual([shared]);
+  });
+
+  /**
+   * The signal needs more than one page to exist, so a single-page fetch must
+   * not suppress its own content for lack of a comparison.
+   */
+  test("never suppresses the only page's images", () => {
+    const repeated = "https://cdn.test/hero.jpg";
+    const harvest = imagesFromPages(
+      [page("https://a.test/1", `![](${repeated}) later ![](${repeated})`)],
+      10,
+    );
+    expect(urlsOf(harvest, "https://a.test/1")).toEqual([repeated]);
+  });
+
+  /**
+   * An empty alt is common and leaves a gallery tile captionless, which is the
+   * visible half of the regression against Tavily's model-written captions.
+   */
+  test("falls back to the page title when the alt text is empty", () => {
+    const harvest = imagesFromPages(
+      [
+        page(
+          "https://a.test/1",
+          "![](https://cdn.test/a.jpg)",
+          "Port of Le Havre",
+        ),
+      ],
+      5,
+    );
+    expect(harvest.get("https://a.test/1")).toEqual([
+      { url: "https://cdn.test/a.jpg", description: "Port of Le Havre" },
+    ]);
+  });
+
+  test("prefers a real alt text over the page title", () => {
+    const harvest = imagesFromPages(
+      [
+        page(
+          "https://a.test/1",
+          "![Crane at berth 4](https://cdn.test/a.jpg)",
+          "Port",
+        ),
+      ],
+      5,
+    );
+    expect(harvest.get("https://a.test/1")?.[0]?.description).toBe(
+      "Crane at berth 4",
+    );
+  });
+
+  test("dedupes within a page and honours the per-page limit", () => {
+    const harvest = imagesFromPages(
+      [
+        page(
+          "https://a.test/1",
+          [
+            "![a](https://cdn.test/1.jpg)",
+            "![b](https://cdn.test/1.jpg)",
+            "![c](https://cdn.test/2.jpg)",
+            "![d](https://cdn.test/3.jpg)",
+          ].join("\n"),
+        ),
+      ],
+      2,
+    );
+    expect(urlsOf(harvest, "https://a.test/1")).toEqual([
+      "https://cdn.test/1.jpg",
+      "https://cdn.test/2.jpg",
+    ]);
+  });
+
+  test("returns an entry for every page, empty ones included", () => {
+    const harvest = imagesFromPages(
+      [
+        page("https://a.test/1", "no images here"),
+        page("https://a.test/2", "![x](https://cdn.test/a.jpg)"),
+      ],
+      5,
+    );
+    expect(harvest.get("https://a.test/1")).toEqual([]);
+    expect(urlsOf(harvest, "https://a.test/2")).toHaveLength(1);
   });
 });

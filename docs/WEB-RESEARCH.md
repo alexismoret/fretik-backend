@@ -135,6 +135,51 @@ with no true pay-as-you-go**. Jina Reader is 5-10× cheaper again (~$0.15/1k) an
 returns images natively, but was acquired by Elastic, its pricing page 404s, and
 it takes one URL per call; it is the documented cheap alternative, not the base.
 
+### Images: what was lost, and what was rebuilt
+
+The one capability with a genuine regression, so it is worth stating plainly
+rather than burying. Neither Perplexity's `/search` nor Parallel's `/extract`
+returns images — verified in both official SDKs — so there is no image _source_
+in this stack at all. What we have instead is a harvest from the Markdown of the
+pages `webFetch` reads.
+
+|                          | Tavily                        | Now                                         |
+| ------------------------ | ----------------------------- | ------------------------------------------- |
+| Where they come from     | its own image index           | the Markdown of pages `webFetch` read       |
+| Relevance                | to the **query**              | to the **page**, which the agent can cite   |
+| Available at search time | yes                           | **no — only after a fetch**                 |
+| Caption                  | model-written, on every image | the image's alt text, page title when empty |
+| Extra cost               | none                          | none                                        |
+
+Two of those are regressions and neither is fixable within the two providers:
+
+- **Availability.** An agent that searches and answers without opening a page
+  now has no images. Restoring it would mean extracting the top hits on every
+  image-bearing search — a second round-trip and ~$0.001 per hit — to illustrate
+  pages the agent never read. That is worse epistemics for a worse price, so the
+  tools say instead where images come from: `searchWeb` points at `webFetch`,
+  and `webFetch` states it is the only source.
+- **Captions.** Alt text is frequently empty or junk. The page title is the
+  fallback, which at least tells the reader what they are looking at.
+
+The third weakness was fixable and was fixed. Telling an illustration from site
+furniture by FILENAME only works on sites that name their files honestly; a CDN
+serving the logo from `/a1b2c3d4.png` defeats any blocklist. The signal that
+generalises is **repetition across the batch**: a logo, an avatar or a share
+button appears on every page of a site, a photograph on one. So an image carried
+by a strict majority of the pages fetched together is dropped whatever its URL
+looks like. It needs more than one page to exist — which is the honest limit of
+a single-URL fetch, and the reason the tool tells the agent to batch related
+URLs.
+
+What stays out of reach either way: a page whose only illustration lives in an
+`og:image` meta tag, outside the body, contributes nothing.
+
+If the availability gap proves to matter in use, the cheapest fix is a free,
+keyless image source — Openverse or Wikimedia Commons — which would restore
+query-time images with licence-clean results, at the cost of narrower coverage
+than a general web index. It is not in this change.
+
 ### `webMap` → no vendor
 
 `robots.txt` and `sitemap.xml` are published _for robots_: static text served by

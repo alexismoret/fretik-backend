@@ -123,9 +123,10 @@ export const matchesSelectPaths = (
 const MARKDOWN_IMAGE = /!\[([^\]]*)\]\(\s*(<[^>]*>|[^\s)]+)[^)]*\)/g;
 
 /**
- * Page furniture that is never worth showing a user: the site's own logo, the
- * author's avatar, a sprite, a tracking pixel. Matched on the path because
- * Markdown carries no dimensions to filter on.
+ * Obvious page furniture, by filename. A cheap first pass and NOT the main
+ * defence: it only catches images whose path says what they are, and a CDN
+ * serving `/a1b2c3d4.png` for the site logo defeats it completely. The signal
+ * that generalises is repetition across pages, below.
  */
 const IMAGE_NOISE =
   /(^|\/)(logo|logos|icons?|favicons?|avatars?|sprites?|badges?|buttons?|pixel|spacer|placeholder|thumb(?:nail)?s?-?\d{0,3}x\d{0,3})[-._/]|\/(1x1|blank)\./i;
@@ -133,45 +134,104 @@ const IMAGE_NOISE =
 /** Extensions that are chrome or vector art rather than photography. */
 const IMAGE_SKIP_EXT = /\.(svg|gif|ico|webmanifest)(\?|#|$)/i;
 
-/**
- * Pull displayable images out of a page's Markdown.
- *
- * This is how the image strip survives the move off Tavily. Neither Perplexity
- * nor Parallel returns images, but Parallel's extract returns MARKDOWN, and
- * Markdown carries its `![alt](url)` — so the images of a page we are already
- * paying to read come free, with their alt text as the caption. That is the
- * same `{ url, description }` shape the gallery already renders.
- *
- * The honest trade against a dedicated image search: these are the images the
- * page chose, so provenance is better (every image belongs to a source the
- * agent can cite) but the set is noisier. Hence the filtering — and a page
- * whose only illustration sits in an `og:image` meta tag, outside the body,
- * contributes nothing.
- */
-export const imagesFromMarkdown = (
-  markdown: string,
-  limit: number,
-): WebImage[] => {
+/** One page's contribution to the image harvest. */
+export interface PageImageSource {
+  url: string;
+  title: string | null;
+  markdown: string;
+}
+
+/** Every image a page's Markdown references, in document order, deduped. */
+const candidatesOf = (markdown: string): WebImage[] => {
   const seen = new Set<string>();
-  const images: WebImage[] = [];
+  const found: WebImage[] = [];
 
   for (const match of markdown.matchAll(MARKDOWN_IMAGE)) {
-    if (images.length >= limit) break;
-
     const alt = (match[1] ?? "").trim();
     let url = (match[2] ?? "").trim();
     // Markdown allows the destination to be wrapped in angle brackets.
     if (url.startsWith("<") && url.endsWith(">")) url = url.slice(1, -1);
 
-    // Data URIs would be inlined into the tool result and blow the context
-    // budget for a thumbnail; only an addressable image is worth returning.
+    // A data URI would be inlined into the tool result and spend the context
+    // budget on a thumbnail; only an addressable image is worth returning.
     if (!/^https?:\/\//i.test(url)) continue;
     if (IMAGE_SKIP_EXT.test(url) || IMAGE_NOISE.test(url)) continue;
     if (seen.has(url)) continue;
 
     seen.add(url);
-    images.push(alt.length > 0 ? { url, description: alt } : { url });
+    found.push(alt.length > 0 ? { url, description: alt } : { url });
   }
 
-  return images;
+  return found;
+};
+
+/**
+ * Harvest the displayable images of a batch of fetched pages.
+ *
+ * This is how the image strip survives the move off Tavily. Neither search
+ * provider returns images, but a fetched page comes back as MARKDOWN and
+ * Markdown carries its `![alt](url)` — so the illustrations of pages we are
+ * already paying to read come free, and each one belongs to a source the agent
+ * can cite, which Tavily's query-matched images did not.
+ *
+ * Separating an illustration from site furniture is the whole difficulty, and
+ * a filename blocklist only works on sites that name their files honestly. The
+ * signal that generalises is **repetition across the batch**: a logo, an author
+ * avatar or a share button appears on EVERY page of a site, while the photo
+ * that illustrates an article appears on one. So an image carried by a
+ * majority of the pages fetched together is dropped whatever its URL looks
+ * like — which catches the hashed-filename logo no pattern can.
+ *
+ * That signal needs more than one page to exist. A single-page fetch falls back
+ * to the blocklist alone and is therefore the weakest case, which is also why
+ * the agent is told to batch related URLs.
+ *
+ * Two limits stay, and are documented rather than papered over: a caption is
+ * the image's alt text (or the page title when the alt is empty), never the
+ * model-written description Tavily generated; and a page whose only
+ * illustration lives in an `og:image` meta tag, outside the body, contributes
+ * nothing at all.
+ */
+export const imagesFromPages = (
+  pages: readonly PageImageSource[],
+  limitPerPage: number,
+): Map<string, WebImage[]> => {
+  const perPage = pages.map((page) => ({
+    page,
+    candidates: candidatesOf(page.markdown),
+  }));
+
+  // How many DISTINCT pages carry each image.
+  const pagesCarrying = new Map<string, number>();
+  for (const { candidates } of perPage) {
+    for (const image of candidates) {
+      pagesCarrying.set(image.url, (pagesCarrying.get(image.url) ?? 0) + 1);
+    }
+  }
+
+  // Chrome = present on a strict majority, and on at least two pages so a
+  // single-page batch never suppresses its own content.
+  const isChrome = (url: string): boolean => {
+    const carrying = pagesCarrying.get(url) ?? 0;
+    return carrying >= 2 && carrying * 2 > perPage.length;
+  };
+
+  const out = new Map<string, WebImage[]>();
+  for (const { page, candidates } of perPage) {
+    const kept: WebImage[] = [];
+    for (const image of candidates) {
+      if (kept.length >= limitPerPage) break;
+      if (isChrome(image.url)) continue;
+      // An empty alt is common and leaves a gallery tile captionless; the page
+      // title at least says what the reader is looking at.
+      if (image.description === undefined && page.title !== null) {
+        kept.push({ url: image.url, description: page.title });
+      } else {
+        kept.push(image);
+      }
+    }
+    out.set(page.url, kept);
+  }
+
+  return out;
 };

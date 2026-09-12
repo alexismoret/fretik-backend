@@ -1,5 +1,4 @@
 import { redis } from "@fretik/shared/lib/redis";
-import { createHash } from "node:crypto";
 
 /**
  * Short-lived result cache for the web tools.
@@ -28,19 +27,21 @@ import { createHash } from "node:crypto";
 const VERSION = "v1";
 
 /**
- * Key from the operation and its normalized arguments. Hashed because a search
- * key would otherwise carry the raw query — and Redis keys surface in logs,
- * `SCAN` output and metrics, where a user's question does not belong.
+ * Key from the operation and its normalized arguments.
+ *
+ * Hashed because a search key would otherwise carry the raw query — and Redis
+ * keys surface in logs, `SCAN` output and metrics, where a user's question does
+ * not belong. `Bun.hash` rather than a cryptographic digest because this is a
+ * lookup key, not a security boundary: nothing downstream trusts it, and the
+ * only cost of the vanishingly unlikely collision is one wrong cache hit inside
+ * a 15-minute window. Base-36 keeps it short in the key space.
  */
 export const webCacheKey = (
   operation: string,
   provider: string,
   payload: unknown,
 ): string => {
-  const digest = createHash("sha256")
-    .update(JSON.stringify(payload))
-    .digest("hex")
-    .slice(0, 32);
+  const digest = Bun.hash(JSON.stringify(payload)).toString(36);
   return `web:${VERSION}:${operation}:${provider}:${digest}`;
 };
 

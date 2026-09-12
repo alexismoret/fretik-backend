@@ -43,20 +43,15 @@ const MAX_URLS = 5_000;
  * handing an image sitemap's JPEGs to `webFetch` is exactly the failure that
  * guess produces.
  *
- * It cannot be the only path, for two measured reasons:
+ * The scan stays for one reason, and it is not about runtime versions: **a
+ * conforming parser throws on malformed XML, and sitemaps in the wild are
+ * frequently malformed**. An unescaped `&` in a query string is endemic.
+ * Measured on Bun 1.4.2, `…/a?b=1&c=2` raises "Expected ';' after the entity
+ * name" and an unclosed tag raises too — either costs every URL in the file,
+ * where a scan still returns all of them. Be liberal in what you accept.
  *
- *  - **It throws on malformed XML**, and sitemaps in the wild are frequently
- *    malformed — an unescaped `&` in a query string is endemic. Verified on Bun
- *    1.4.2: `…/a?b=1&c=2` raises "Expected ';' after the entity name", and an
- *    unclosed tag raises too. Strictness there costs every URL in the file,
- *    where a scan still returns all of them. Be liberal in what you accept.
- *  - **`Bun.XML` landed in Bun 1.4**, and the runtime is pinned loosely
- *    (`oven/bun:1` in the Dockerfiles, `bun-version: latest` in CI). Prod and CI
- *    are on 1.4 today, but a floating pin is exactly the thing not to assume, so
- *    the parser is feature-detected and its absence is simply the fallback.
- *
- * So: parse, and on a throw or an older runtime, scan. Strictly better than
- * either alone, and both paths are pinned by the same tests.
+ * So: parse, and fall through to the scan when the document defeats the parser.
+ * Both paths are pinned by the same case table.
  */
 
 /** `<loc>`, with any namespace prefix captured so it can be vetted. */
@@ -83,22 +78,11 @@ export interface SitemapDocument {
  */
 
 /**
- * `Bun.XML`, or `undefined` on a runtime that predates it. Typed locally
- * because the installed `@types/bun` need not describe it yet; the shape is
- * pinned by the tests rather than by the ambient types.
+ * The XML reader, as a value so a test can choose the path it exercises —
+ * `undefined` is the scan. Both have to stay correct, and a suite that silently
+ * tested whichever one the ambient runtime offers would be worse than none.
  */
-export type XmlParser = { parse: (source: string) => unknown };
-
-/**
- * The parser this runtime offers, if any. Exported so a test can state which
- * path it is exercising instead of inheriting whatever the local `bun` binary
- * happens to be — the two paths must both stay correct, and a suite that
- * silently tests only one of them is worse than no suite.
- */
-export const bunXml = (): XmlParser | undefined => {
-  const candidate = (Bun as unknown as { XML?: XmlParser }).XML;
-  return typeof candidate?.parse === "function" ? candidate : undefined;
-};
+export type XmlParser = Pick<typeof Bun.XML, "parse">;
 
 /** An element name without its namespace prefix: `sm:loc` → `loc`. */
 const localName = (key: string): string => key.slice(key.lastIndexOf(":") + 1);
@@ -147,7 +131,7 @@ const parseWithBunXml = (
   try {
     tree = parser.parse(xml);
   } catch {
-    // Malformed beyond what a strict parser tolerates — the scan takes over.
+    // Malformed beyond what a conforming parser tolerates — the scan takes over.
     return null;
   }
   if (!isRecord(tree)) return null;
@@ -240,7 +224,7 @@ const scanDocument = (xml: string): SitemapDocument => {
  */
 export const readSitemapDocument = (
   xml: string,
-  parser: XmlParser | undefined = bunXml(),
+  parser: XmlParser | undefined = Bun.XML,
 ): SitemapDocument => parseWithBunXml(xml, parser) ?? scanDocument(xml);
 
 const fetchText = async (

@@ -68,7 +68,7 @@
     "zod": "^4.5.4"
   },
   "devDependencies": {
-    "@types/bun": "latest",
+    "@types/bun": "^1.4.2",
     "@types/figlet": "^1.7.0",
     "@types/json-schema": "^7.0.15",
     "@types/pg": "^8.23.1",

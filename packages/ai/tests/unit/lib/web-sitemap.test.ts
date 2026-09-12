@@ -34,7 +34,9 @@ await mockModule("../../../src/lib/web/http", {
     new TextDecoder().decode(result.body),
 });
 
-const { mapSiteFromSitemap } = await import("../../../src/lib/web/sitemap");
+const { mapSiteFromSitemap, readSitemapDocument, bunXml } =
+  await import("../../../src/lib/web/sitemap");
+type XmlParser = ReturnType<typeof bunXml>;
 
 const urlset = (...urls: string[]): string =>
   `<?xml version="1.0"?><urlset>${urls
@@ -250,5 +252,138 @@ describe("mapSiteFromSitemap", () => {
 
     expect(result.links).toEqual([]);
     expect(requested).not.toContain("https://example.com/l3.xml");
+  });
+});
+
+/**
+ * The XML shapes a naive `<loc>` scan gets wrong, run against BOTH reader
+ * paths.
+ *
+ * Both have to stay correct, and which one a given run exercises depends on the
+ * `bun` binary that happens to be installed — `Bun.XML` landed in 1.4, CI runs
+ * `latest` and the Dockerfiles float on `oven/bun:1`. A suite that silently
+ * tested whichever path the local runtime offers would be worse than none, so
+ * the parser is passed in explicitly: `undefined` is the scan, `bunXml()` is
+ * the parser, and the case table is shared.
+ */
+describe("reading a sitemap document", () => {
+  const urlsetXml = (body: string): string =>
+    `<?xml version="1.0"?><urlset>${body}</urlset>`;
+
+  const CASES: Array<{ name: string; xml: string; expected: string[] }> = [
+    {
+      name: "plain urlset",
+      xml: urlsetXml(
+        "<url><loc>https://example.com/a</loc></url><url><loc>https://example.com/b</loc></url>",
+      ),
+      expected: ["https://example.com/a", "https://example.com/b"],
+    },
+    {
+      // A one-page sitemap is where an XML-to-JSON reader silently returns
+      // nothing: the single child comes back as an object, not an array.
+      name: "a single url",
+      xml: urlsetXml("<url><loc>https://example.com/only</loc></url>"),
+      expected: ["https://example.com/only"],
+    },
+    {
+      name: "a CDATA-wrapped loc",
+      xml: urlsetXml(
+        "<url><loc><![CDATA[https://example.com/cdata]]></loc></url>",
+      ),
+      expected: ["https://example.com/cdata"],
+    },
+    {
+      // A commented-out entry is a page the site WITHDREW.
+      name: "a commented-out loc",
+      xml: urlsetXml(
+        "<!-- <url><loc>https://example.com/retired</loc></url> --><url><loc>https://example.com/live</loc></url>",
+      ),
+      expected: ["https://example.com/live"],
+    },
+    {
+      name: "a namespace-prefixed document",
+      xml: '<?xml version="1.0"?><sm:urlset xmlns:sm="http://www.sitemaps.org/schemas/sitemap/0.9"><sm:url><sm:loc>https://example.com/prefixed</sm:loc></sm:url></sm:urlset>',
+      expected: ["https://example.com/prefixed"],
+    },
+    {
+      // Image sitemaps nest an `<image:loc>` in every `<url>`. Those are
+      // assets: surfacing one hands the model a JPEG to `webFetch`.
+      name: "an image sitemap",
+      xml: '<?xml version="1.0"?><urlset xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"><url><loc>https://example.com/page</loc><image:image><image:loc>https://cdn.example.com/photo.jpg</image:loc></image:image></url></urlset>',
+      expected: ["https://example.com/page"],
+    },
+    {
+      name: "escaped entities in a query string",
+      xml: urlsetXml("<url><loc>https://example.com/a?x=1&amp;y=2</loc></url>"),
+      expected: ["https://example.com/a?x=1&y=2"],
+    },
+    {
+      name: "surrounding whitespace",
+      xml: urlsetXml("<url><loc>\n  https://example.com/spaced\n </loc></url>"),
+      expected: ["https://example.com/spaced"],
+    },
+    {
+      name: "sibling metadata alongside the loc",
+      xml: urlsetXml(
+        "<url><loc>https://example.com/dated</loc><lastmod>2026-01-01</lastmod><priority>0.8</priority></url>",
+      ),
+      expected: ["https://example.com/dated"],
+    },
+  ];
+
+  const paths: Array<{ label: string; parser: XmlParser | undefined }> = [
+    { label: "scan", parser: undefined },
+    ...(bunXml() === undefined ? [] : [{ label: "Bun.XML", parser: bunXml() }]),
+  ];
+
+  for (const { label, parser } of paths) {
+    describe(label, () => {
+      for (const { name, xml, expected } of CASES) {
+        test(name, () => {
+          expect(readSitemapDocument(xml, parser).locations).toEqual(expected);
+        });
+      }
+
+      test("recognises an index and its children", () => {
+        const document = readSitemapDocument(
+          '<?xml version="1.0"?><sitemapindex><sitemap><loc>https://example.com/sm-1.xml</loc></sitemap></sitemapindex>',
+          parser,
+        );
+        expect(document.isIndex).toBe(true);
+        expect(document.locations).toEqual(["https://example.com/sm-1.xml"]);
+      });
+    });
+  }
+
+  /**
+   * Not a nicety: an unescaped `&` in a query string is endemic in real
+   * sitemaps, and `Bun.XML` raises on it. Strictness there would cost every URL
+   * in the file, so the scan has to catch what the parser drops — and this
+   * holds whichever runtime runs it, because the parser throws on both.
+   */
+  test("falls back to the scan on XML the parser refuses", () => {
+    const malformed = urlsetXml(
+      "<url><loc>https://example.com/a?b=1&c=2</loc></url>",
+    );
+
+    // The premise, stated only where there is a parser to state it about: this
+    // input is genuinely rejected rather than merely awkward.
+    const parser = bunXml();
+    if (parser !== undefined) {
+      expect(() => parser.parse(malformed)).toThrow();
+    }
+
+    // The outcome, asserted on every runtime.
+    expect(readSitemapDocument(malformed).locations).toEqual([
+      "https://example.com/a?b=1&c=2",
+    ]);
+  });
+
+  test("falls back to the scan on an unclosed tag", () => {
+    const malformed =
+      '<?xml version="1.0"?><urlset><url><loc>https://example.com/a</loc></urlset>';
+    expect(readSitemapDocument(malformed).locations).toEqual([
+      "https://example.com/a",
+    ]);
   });
 });

@@ -149,6 +149,34 @@ The honest limit: a site with no sitemap returns nothing. The tool says so with
 `WEB_MAP_NO_SITEMAP` and points the model at a domain-restricted `searchWeb`,
 which also reaches pages a sitemap never lists.
 
+#### Reading the XML: `Bun.XML` first, a scan when it refuses
+
+`Bun.XML` (Bun ≥ 1.4) is the primary reader. It gets four things right that a
+`<loc>` pattern has to earn one at a time — CDATA-wrapped values, commented-out
+entries (a page the site WITHDREW), entity decoding, namespace prefixes — and it
+separates a page's `<loc>` from the `<image:loc>` nested inside it
+**structurally**, where a pattern can only guess from the namespace declaration.
+That guess is not academic: getting it wrong hands an image sitemap's JPEGs to
+`webFetch`.
+
+It is not the only path, for two measured reasons:
+
+- **It throws on malformed XML**, which real sitemaps frequently are — an
+  unescaped `&` in a query string is endemic. Verified on Bun 1.4.2:
+  `…/a?b=1&c=2` raises `Expected ';' after the entity name`, and an unclosed tag
+  raises too. Strictness there costs every URL in the file; a scan still returns
+  all of them.
+- **The runtime is pinned loosely** — `oven/bun:1` in the Dockerfiles,
+  `bun-version: latest` in CI. Both are on 1.4 today, but a floating pin is
+  exactly the thing not to assume.
+
+So the parser is feature-detected and passed as an argument, and
+`readSitemapDocument(xml, parser)` falls through to the scan on a throw or an
+older runtime. Both paths run the same case table in
+`tests/unit/lib/web-sitemap.test.ts`, with the parser path added only when the
+runtime has one — a suite that silently exercised whichever path the local
+`bun` happened to offer would be worse than none.
+
 ## 4. What the reference agents do
 
 Checked before committing, because a benchmark says which provider is good and

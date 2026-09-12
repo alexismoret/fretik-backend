@@ -115,8 +115,25 @@ export const cacheTtls = () => ({
  * catches the tail.
  */
 export const budgets = () => ({
-  /** Perplexity's per-result extraction cap, in tokens. */
-  searchTokensPerPage: num(process.env.AI_WEB_SEARCH_TOKENS_PER_PAGE, 1_024),
+  /**
+   * Per-result token cap for Perplexity, sent ONLY when an operator sets it.
+   *
+   * Unset by default on purpose. `search_context_size` is the provider's own
+   * dial for how much content a result carries, its presets are what the
+   * public benchmarks actually measured — medium scored 80 and posted the
+   * board's lowest model-inference cost per task — and layering a hand-picked
+   * cap on top both second-guesses that measurement and flattens our own
+   * `depth` option, since a cap applied equally to `low` and `high` stops
+   * `high` from returning any more than `low`. Left to the vendor unless an
+   * operator has a reason.
+   */
+  searchTokensPerPage: num(process.env.AI_WEB_SEARCH_TOKENS_PER_PAGE, 0),
+  /**
+   * Result pages read to harvest images when a search asks for them. Each one
+   * is an extract call ($0.001), so this is the price of the image strip and
+   * it is only ever paid when the model sets `include_images`.
+   */
+  searchImageSources: num(process.env.AI_WEB_SEARCH_IMAGE_SOURCES, 3),
   fetchCharsPerResult: num(process.env.AI_WEB_FETCH_CHARS_PER_RESULT, 12_000),
   fetchCharsTotal: num(process.env.AI_WEB_FETCH_CHARS_TOTAL, 90_000),
   /** Parallel's per-result excerpt cap when it serves search. */

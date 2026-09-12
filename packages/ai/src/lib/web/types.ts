@@ -70,6 +70,11 @@ export interface WebSearchRequest {
   languages?: string[];
   /** ISO 3166-1 alpha-2, for geo-targeted results. */
   country?: string;
+  /**
+   * Also return images, harvested from the top hits. Costs one extract per
+   * page read, so it is opt-in and never implied.
+   */
+  includeImages?: boolean;
 }
 
 /**

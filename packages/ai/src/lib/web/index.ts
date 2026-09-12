@@ -4,7 +4,12 @@ import { webCacheKey, withWebCache } from "./cache";
 import { cacheTtls, effectiveSearchProvider } from "./config";
 import { parallelFetch, parallelSearch } from "./parallel";
 import { perplexitySearch } from "./perplexity";
-import { filterHits, searchWithFallback, type SearchAdapters } from "./routing";
+import {
+  filterHits,
+  harvestImages,
+  searchWithFallback,
+  type SearchAdapters,
+} from "./routing";
 import { mapSiteFromSitemap } from "./sitemap";
 import type {
   WebFetchOutcome,
@@ -68,12 +73,23 @@ export const searchWeb = async (
         { queries: request.queries, depth: request.depth },
         async () => {
           const routed = await searchWithFallback(request, SEARCH_ADAPTERS);
+          const hits = filterHits(
+            routed,
+            request.excludeDomains,
+            request.includeDomains,
+          );
           return {
-            ...filterHits(
-              routed,
-              request.excludeDomains,
-              request.includeDomains,
-            ),
+            ...hits,
+            images:
+              request.includeImages === true
+                ? await harvestImages(hits.results, (urls) =>
+                    parallelFetch({
+                      urls,
+                      withImages: true,
+                      fullContent: true,
+                    }),
+                  )
+                : hits.images,
             cost: routed.cost,
           };
         },

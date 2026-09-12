@@ -104,7 +104,11 @@ other. Three properties then shaped the tool's schema:
   agent fired one `searchWeb` per phrasing and paid a full round-trip each time.
 - **$5/1k is flat across `low`/`medium`/`high` context.** The depth dial is
   therefore purely quality/latency/context and never a price arbitration, which
-  is why the tool can expose it without teaching the model a cost model.
+  is why the tool can expose it without teaching the model a cost model. Nothing
+  else caps the payload: `max_tokens_per_page` is left unset, because the
+  context-size presets are what the benchmarks measured, and a fixed per-result
+  cap applied equally to `low` and `high` would stop `high` returning any more
+  than `low` — flattening our own `depth` option into decoration.
 - **The filters are a superset of the old tool's.** Both date bounds, a relative
   recency preset, domain allow/deny, language, country, and the `academic` /
   `sec` verticals. Under Parallel we would have _lost_ `end_date`.
@@ -135,50 +139,44 @@ with no true pay-as-you-go**. Jina Reader is 5-10× cheaper again (~$0.15/1k) an
 returns images natively, but was acquired by Elastic, its pricing page 404s, and
 it takes one URL per call; it is the documented cheap alternative, not the base.
 
-### Images: what was lost, and what was rebuilt
+### Images
 
-The one capability with a genuine regression, so it is worth stating plainly
-rather than burying. Neither Perplexity's `/search` nor Parallel's `/extract`
-returns images — verified in both official SDKs — so there is no image _source_
-in this stack at all. What we have instead is a harvest from the Markdown of the
-pages `webFetch` reads.
+Neither Perplexity's `/search` nor Parallel's `/extract` returns images —
+verified in both official SDKs — so there is no image _source_ in this stack.
+The strip is harvested instead, from the Markdown of pages that were read.
 
-|                          | Tavily                        | Now                                         |
-| ------------------------ | ----------------------------- | ------------------------------------------- |
-| Where they come from     | its own image index           | the Markdown of pages `webFetch` read       |
-| Relevance                | to the **query**              | to the **page**, which the agent can cite   |
-| Available at search time | yes                           | **no — only after a fetch**                 |
-| Caption                  | model-written, on every image | the image's alt text, page title when empty |
-| Extra cost               | none                          | none                                        |
+`include_images` on `searchWeb` keeps the affordance the Tavily tool had: ask
+for images, get images, without first choosing a page to open. It extracts the
+top 3 hits (`AI_WEB_SEARCH_IMAGE_SOURCES`) and harvests their illustrations, so
+every picture belongs to a result the answer can cite — which Tavily's
+query-matched images did not. `webFetch({ with_images: true })` is the same
+harvest on pages the agent was reading anyway.
 
-Two of those are regressions and neither is fixable within the two providers:
+|                          | Tavily              | Now                                         |
+| ------------------------ | ------------------- | ------------------------------------------- |
+| Where they come from     | its own image index | the pages the search returned               |
+| Relevance                | to the **query**    | to a **cited source**                       |
+| Available at search time | yes                 | yes, opt-in                                 |
+| Caption                  | model-written       | the image's alt text, page title when empty |
+| Cost                     | none                | $0.001 per page read, only when asked       |
 
-- **Availability.** An agent that searches and answers without opening a page
-  now has no images. Restoring it would mean extracting the top hits on every
-  image-bearing search — a second round-trip and ~$0.001 per hit — to illustrate
-  pages the agent never read. That is worse epistemics for a worse price, so the
-  tools say instead where images come from: `searchWeb` points at `webFetch`,
-  and `webFetch` states it is the only source.
-- **Captions.** Alt text is frequently empty or junk. The page title is the
-  fallback, which at least tells the reader what they are looking at.
+Two things are genuinely worse and are not worth pretending otherwise:
+**captions**, because alt text is frequently empty or junk and the page title is
+only a fallback; and **coverage**, because a subject the top results do not
+illustrate yields nothing, where a dedicated image index would still have found
+something.
 
-The third weakness was fixable and was fixed. Telling an illustration from site
-furniture by FILENAME only works on sites that name their files honestly; a CDN
-serving the logo from `/a1b2c3d4.png` defeats any blocklist. The signal that
-generalises is **repetition across the batch**: a logo, an avatar or a share
-button appears on every page of a site, a photograph on one. So an image carried
-by a strict majority of the pages fetched together is dropped whatever its URL
-looks like. It needs more than one page to exist — which is the honest limit of
-a single-URL fetch, and the reason the tool tells the agent to batch related
-URLs.
+Telling an illustration from site furniture is the hard part, and a filename
+blocklist only works on sites that name their files honestly — a CDN serving the
+logo from `/a1b2c3d4.png` defeats it entirely. The signal that generalises is
+**repetition across the batch**: a logo, an avatar or a share button appears on
+every page of a site, a photograph on one, so an image carried by a strict
+majority of the pages read together is dropped whatever its URL looks like. That
+signal needs more than one page to exist, which is why the harvest reads several
+and why `webFetch` tells the agent to batch related URLs.
 
-What stays out of reach either way: a page whose only illustration lives in an
-`og:image` meta tag, outside the body, contributes nothing.
-
-If the availability gap proves to matter in use, the cheapest fix is a free,
-keyless image source — Openverse or Wikimedia Commons — which would restore
-query-time images with licence-clean results, at the cost of narrower coverage
-than a general web index. It is not in this change.
+Still out of reach: a page whose only illustration lives in an `og:image` meta
+tag, outside the body, contributes nothing.
 
 ### `webMap` → no vendor
 

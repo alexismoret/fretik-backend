@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { webCacheKey, withWebCache } from "../../../src/lib/web/cache";
 import {
   filterHits,
+  harvestImages,
   searchWithFallback,
   type SearchAdapters,
 } from "../../../src/lib/web/routing";
@@ -209,6 +210,64 @@ describe("searchWithFallback", () => {
       );
       expect(message).toContain("PERPLEXITY_API_KEY or PARALLEL_API_KEY");
     });
+  });
+});
+
+/**
+ * Images at search time, harvested from the pages the search returned.
+ *
+ * The affordance Tavily had — ask for images, get images, without first
+ * choosing a page to open — restored over a stack whose search providers
+ * return text only. What has to hold is that it is OPT-IN, that it reads a
+ * bounded number of sources, and above all that it can never sink the search
+ * it garnishes.
+ */
+describe("imagesForSearch", () => {
+  const hits = [
+    { url: "https://a.test/1" },
+    { url: "https://a.test/2" },
+    { url: "https://a.test/3" },
+    { url: "https://a.test/4" },
+  ];
+
+  test("reads a bounded number of sources", async () => {
+    const read: string[][] = [];
+    const images = await harvestImages(
+      hits,
+      async (urls: string[]) => {
+        read.push(urls);
+        return {
+          results: urls.map((url) => ({
+            images: [{ url: `${url}/photo.jpg` }],
+          })),
+        };
+      },
+      3,
+    );
+
+    expect(read[0]).toHaveLength(3);
+    expect(images).toHaveLength(3);
+  });
+
+  test("is empty when the search returned nothing to read", async () => {
+    let called = false;
+    const images = await harvestImages([], async () => {
+      called = true;
+      return { results: [] };
+    });
+    expect(images).toEqual([]);
+    expect(called).toBe(false);
+  });
+
+  /**
+   * A garnish must never cost the answer: an unconfigured fetch backend or a
+   * provider having a bad minute loses the strip, not the search.
+   */
+  test("swallows a failing harvest rather than failing the search", async () => {
+    const images = await harvestImages(hits, () => {
+      throw new Error("extract is down");
+    });
+    expect(images).toEqual([]);
   });
 });
 

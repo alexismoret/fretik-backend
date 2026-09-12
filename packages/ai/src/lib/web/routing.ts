@@ -1,11 +1,17 @@
 import { hostFromUrl, isUrlDenied } from "../web-egress";
 import {
+  budgets,
   effectiveSearchProvider,
   searchFallbackProvider,
   type WebSearchProvider,
 } from "./config";
 import { WebProviderUnconfiguredError } from "./errors";
-import type { WebCallCost, WebSearchOutcome, WebSearchRequest } from "./types";
+import type {
+  WebCallCost,
+  WebImage,
+  WebSearchOutcome,
+  WebSearchRequest,
+} from "./types";
 
 /**
  * Search routing policy, kept apart from the adapters it drives.
@@ -63,6 +69,41 @@ export const filterHits = (
     }),
     images: outcome.images.filter((i) => !isUrlDenied(i.url)),
   };
+};
+
+/** Reads pages and returns the images found on them. */
+export type ImageHarvester = (
+  urls: string[],
+) => Promise<{ results: { images?: WebImage[] }[] }>;
+
+/**
+ * Images for a search, read out of the pages the search itself returned.
+ *
+ * Search APIs built for agents return text, so the image strip has to be
+ * harvested — and the only honest place to harvest it from is the sources the
+ * answer is about to cite. That keeps the affordance the Tavily tool had (ask
+ * for images, get images, without first choosing a page to open) while every
+ * picture still belongs to a result the model can point at.
+ *
+ * Opt-in and priced: one extract per page read, paid only when the caller asks.
+ * And it never fails the search — a provider error or a missing key costs the
+ * strip, not the answer, because a garnish that can sink the dish is worse than
+ * no garnish.
+ */
+export const harvestImages = async (
+  results: readonly { url: string }[],
+  harvester: ImageHarvester,
+  sources: number = budgets().searchImageSources,
+): Promise<WebImage[]> => {
+  const urls = results.slice(0, sources).map((r) => r.url);
+  if (urls.length === 0) return [];
+
+  try {
+    const fetched = await harvester(urls);
+    return fetched.results.flatMap((page) => page.images ?? []);
+  } catch {
+    return [];
+  }
 };
 
 /** Marker for "the provider answered, with nothing" — a failure the agent cannot distinguish from an error. */

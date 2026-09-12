@@ -29,7 +29,7 @@ export const createWebSearchTool = () =>
       "",
       "Tune the rest to the question: `depth` trades content per result against speed at NO extra cost, so raise it when snippets came back thin and lower it for a quick lookup; `recency` or `published_after`/`published_before` to bound time; `include_domains` to trust specific sources; `mode: 'academic'` for research, standards and publications, `'sec'` for the regulatory filings of listed companies; `languages` when the answer lives in a language other than the question's.",
       "",
-      "Returns per hit: `title`, `url`, `content` (the source's own words), `favicon`, and `publishedDate` when exposed. Cite every claim with `[Page title](URL)`. To show images, or to read a page in full, `webFetch` it.",
+      "Returns per hit: `title`, `url`, `content` (the source's own words), `favicon`, and `publishedDate` when exposed. Cite every claim with `[Page title](URL)`. Set `include_images` whenever the subject is visual — a place, a product, a person, a work, an event — and show what comes back in a `::gallery`, without waiting to be asked.",
     ].join("\n"),
     inputSchema: z.object({
       queries: z
@@ -100,6 +100,12 @@ export const createWebSearchTool = () =>
         .describe(
           'ISO 3166-1 alpha-2 country code for geo-targeted results, e.g. "FR"',
         ),
+      include_images: z
+        .boolean()
+        .optional()
+        .describe(
+          "Also return images, taken from the pages the search found. Set it whenever the subject is visual.",
+        ),
     }),
     execute: async (
       {
@@ -114,6 +120,7 @@ export const createWebSearchTool = () =>
         mode,
         languages,
         country,
+        include_images,
       },
       options,
     ) => {
@@ -141,6 +148,9 @@ export const createWebSearchTool = () =>
           ...(mode === undefined ? {} : { mode }),
           ...(languages === undefined ? {} : { languages }),
           ...(country === undefined ? {} : { country }),
+          ...(include_images === undefined
+            ? {}
+            : { includeImages: include_images }),
         });
 
         const payload = {

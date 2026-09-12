@@ -41,7 +41,7 @@ export const createWebFetchTool = () =>
       "",
       "Pass up to 20 `urls` in ONE call when you need several related pages — they travel together, and batching also sharpens `with_images`, which tells the site's own logos and buttons apart from real illustrations by seeing what the pages have in common. Set `objective` (and `queries`) to get only the passages that answer your question instead of whole articles; set `full_content` when you need the page entire.",
       "",
-      "`with_images` returns each page's illustrations, with captions, for a `::gallery`. This is the ONLY source of images — searching does not return any — so when the user wants to see something, read the pages that show it.",
+      "`with_images` returns each page's illustrations, with captions, for a `::gallery` — reach for it when you are already reading the pages; `searchWeb({ include_images: true })` is the shorter route when you only want the pictures.",
       "",
       "Returns `{ results: [{ url, title, content, favicon, publishedDate, images? }], failed: [{ url, error, status? }] }` — a partial success is normal: read what came back and do not retry a URL that failed twice. A 403 means the site refuses automated reads; search for the same content elsewhere instead of retrying. Large markdown may be auto-persisted: recover with `read(file_path)` or process with `python`.",
     ].join("\n"),

@@ -106,6 +106,7 @@ export const perplexitySearch = async (
   const domains = domainFilter(request.includeDomains, request.excludeDomains);
   const singleQuery =
     request.queries.length === 1 ? request.queries[0] : undefined;
+  const tokensPerPage = budgets().searchTokensPerPage;
 
   const response = await withWebTimeout(
     "search",
@@ -116,7 +117,10 @@ export const perplexitySearch = async (
         // accepts; passing the bare string keeps the wire shape conventional.
         query: singleQuery ?? request.queries,
         search_context_size: CONTEXT_SIZE[request.depth],
-        max_tokens_per_page: budgets().searchTokensPerPage,
+        // Only when an operator asked for it — see `budgets.searchTokensPerPage`.
+        // Left unset, the provider's own per-context-size budget applies, which
+        // is the configuration the benchmarks measured.
+        ...(tokensPerPage > 0 ? { max_tokens_per_page: tokensPerPage } : {}),
         ...(request.maxResults === undefined
           ? {}
           : { max_results: request.maxResults }),

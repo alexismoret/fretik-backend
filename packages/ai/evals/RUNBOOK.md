@@ -439,13 +439,54 @@ answer-shaped — contract, figures, open points — and the answer gets compose
 from it, with the graph link left on the floor no matter how much retrieval
 happens alongside.
 
-**Which means the next attempt must not be prose.** Two shapes worth measuring,
-neither tried: (a) drop from `<standing_memory>` the episodes whose subject the
-message already names, so the block stops competing with `<active_memory>` on
-its own ground — a renderer rule, checkable; (b) leave the block and raise the
-graph arm's standing inside `<active_memory>`. Until one of them is measured,
-`mr-broad` is an OPEN regression of the standing layer, and the honest summary
-is that the layer is worth +6/80 on contextless questions and −20/30 here.
+**The second wrong explanation, also measured.** The next guess was duplication
+— the same episodes in both blocks, one pre-digested. `probe-standing-overlap.ts`
+was written to check it and printed both blocks for that exact message: the two
+share **zero** episodes. The standing block carries September activity (next
+delivery, penalty clause pending); `<active_memory>` carries the June contract
+and the graph. Not duplication either.
+
+**What the probe did show is an ordering problem, and it is the answer.**
+`<active_memory>` rendered `GRAPH — records named in the message…` LAST, under
+FACTS/EPISODES/RECORDS, because that array was the DROP order — graph is the
+first section to cut under budget pressure, which is right, and it was also
+being used as the reading order, which is not. With a tidy September status
+opening the prompt and the graph link at the very bottom, the reply got composed
+from the top.
+
+Two structural changes, measured one at a time:
+
+| change (cumulative)                                   | `mr-broad` |
+| ----------------------------------------------------- | ---------: |
+| baseline, block on                                    |       1/10 |
+| `<active_memory>` reads GRAPH first                   |       5/10 |
+| + standing block withheld when a GRAPH section exists |   **9/10** |
+
+**The gate's signal is the graph section, not emptiness — and that distinction
+cost a round.** Gating on "`<active_memory>` came back non-empty" was measured
+first: `mr-broad` went to 10/10 and the two cases the layer exists for
+collapsed, `mr-contextless-status` 10/10 → 4/10 and `-brief` 10/10 → 5/10.
+Semantic search dredges the Nordwind contract up for "où on en est ?" in 6 of 10
+repeats, so the fallback kept standing down on questions nothing had answered.
+The judge passed every one of those failures; the deterministic floor ("names 2
+of Nordwind / Callisto / Vega") is what caught it — a floor earning its place by
+catching a narrowing the judge found acceptable.
+
+The graph arm anchors on records NAMED in the message, so it does not drift:
+four probes of "où on en est ?" produce no graph section, every probe of the
+Nordwind question produces one. Read out of the RENDERED block, deliberately —
+a graph section dropped for budget is one the agent never sees, and a block it
+cannot see must not silence the one it can.
+
+Final, n = 10 each, same service, 49/50: `mr-broad` **9/10**, the three
+contextless **10/10** each, `mr-greeting` **10/10**.
+
+**What this makes the layer.** It is now a FALLBACK rather than a companion:
+when the message names something, the turn is the `none` arm that scored
+137/150; when it names nothing, the block is the only thing there. That is the
+mechanical form of a sentence the scaffold had asserted since the layer shipped
+— "when it disagrees with `<active_memory>`, the retrieved block wins" — and
+which nothing had ever enforced.
 
 **The methodology lesson, which is the expensive part.** "Re-run BOTH arms after
 a shared-prompt fix" was already written in this file, and it was followed — both

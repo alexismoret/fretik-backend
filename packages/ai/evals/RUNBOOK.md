@@ -546,6 +546,22 @@ the previous day:
 `chain-contradiction-corrected` is the suite's only genuinely open case and it is
 product-side model variance, not a fixture defect.
 
+**Re-measured 2026-09-12 after the standing-block gate** (the suite shares
+recall with the chatbot, and workflow turn 1 shares the gate), n = 10:
+`chain-workflow-turn-one` 10/10 — after its assertion was re-keyed off the
+judge's phrasing onto the memory's path, see below — `chain-oneoff-not-durable`
+10/10, `chain-convention-promoted` 10/10, `chain-decision-survives` 10/10,
+`chain-contradiction-corrected` 9/10. **49/50.**
+
+**`chain-workflow-convention-applied` ran for the FIRST time: 5/5, ~14.7 s per
+repeat.** Written on 2026-09-11 and never executed until the e2e gate was used
+in anger. It drives a real turn through `/internal/trigger/runs/:runId/turn` —
+the route the orchestrator calls — and reads what the run wrote. Every repeat
+produced a reception procedure whose first step is photographing the parcels
+before opening them, citing `/memories/team/processes/chain-eval-reception.md`,
+from a goal that never mentions photographs. That is the whole claim of the
+workflow memory path, measured at the only place it can be: the output.
+
 **One paid call removed.** `runUnifiedRecall` ran a capability arm — a hybrid
 search plus a rerank over `workflows` + `pages` — on every call, including every
 workflow run, and the only consumer of its output is `capabilityBlock`, read at

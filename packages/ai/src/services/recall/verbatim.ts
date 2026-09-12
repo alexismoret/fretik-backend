@@ -654,38 +654,27 @@ export const buildVerbatimBlock = (
       renderSection("EPISODES — past conversations:", episodes, budget),
       renderSection("RECORDS:", records, budget),
       renderSection("DOCUMENTS:", documents, budget),
-      // Trailing blank line like every other section — it used to be last, so
-      // one `\n` was enough and `assemble` trimmed it. Read first, it needs the
-      // separator; last, `trim()` still takes it back.
       graphLines.length > 0
-        ? `${GRAPH_HEADING}\n\n${graphLines.join("\n")}\n\n`
+        ? `${GRAPH_HEADING}\n\n${graphLines.join("\n")}\n`
         : "",
     ].filter((s) => s.length > 0);
 
-  // Drop order is not READING order, and conflating them cost a case.
+  // TRIED AND REVERTED 2026-09-12: rendering GRAPH first.
   //
-  // The graph section exists only when the message named a record, so when it
-  // is there it is the one section that is on-topic by construction — which is
-  // what the header promises with "most relevant first". Rendered last, it sat
-  // below sections that already read like a complete answer: measured
-  // 2026-09-12 on `mr-broad` ("fais le point sur <named company>"), the reply
-  // carried every figure from EPISODES and omitted the linked project from
-  // GRAPH in 21 runs out of 30, while spending 5-13 tool calls — the agent was
-  // reading, it just stopped above the bottom section.
+  // The reasoning was sound — the section exists only when the message named a
+  // record, so it is on-topic by construction, and the header promises "most
+  // relevant first". It moved `mr-broad` 1/10 -> 5/10. But section order is a
+  // zero-sum attention lever: promoting graph demotes everything under it, and
+  // the full 15-case sweep found the bill. `mr-document-top` and
+  // `mr-private-leak` both fell 10/10 -> 5/10, each on a POSITIVE regex — a
+  // figure that lives in a lower section and stopped being read.
   //
-  // Only the reading order moves. Under budget pressure graph is still the
-  // first section dropped, for the reason the comment above gives.
-  const orderForReading = (parts: string[]): string[] => {
-    const graphAt = parts.findIndex((s) => s.startsWith(GRAPH_HEADING));
-    if (graphAt <= 0) return parts;
-    const graph = parts[graphAt];
-    return graph === undefined
-      ? parts
-      : [graph, ...parts.slice(0, graphAt), ...parts.slice(graphAt + 1)];
-  };
-
+  // What `mr-broad` actually needed was for the standing block to stand down
+  // (`standingBlockFor`), which makes a named-record turn identical to the
+  // control arm that scored those two cases 10/10. Reading order stays the
+  // drop order.
   const assemble = (parts: string[]): string =>
-    `${VERBATIM_HEADER}\n\n${orderForReading(parts).join("")}`.trim();
+    `${VERBATIM_HEADER}\n\n${parts.join("")}`.trim();
 
   // Spend the block's room before rationing it. The ladder descends only as
   // far as this selection actually needs: a two-candidate turn keeps both

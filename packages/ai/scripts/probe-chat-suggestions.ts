@@ -10,6 +10,12 @@
  * Usage, from `backend/packages/ai`:
  *   bun run scripts/probe-chat-suggestions.ts <teamId> <userId> [language]
  *   bun run scripts/probe-chat-suggestions.ts --list
+ *
+ * Model bake-off (`--bench <profileKey,…> [repeats]`), because "is the cheap
+ * model good enough here" is a question about THIS pack on THIS workspace and
+ * nothing else answers it:
+ *   bun run scripts/probe-chat-suggestions.ts <teamId> <userId> fr \
+ *     --bench gpt-oss-120b,gpt-oss-20b 3
  */
 import db from "@fretik/shared/db";
 import { sql } from "drizzle-orm";
@@ -45,6 +51,61 @@ const listCandidates = async (): Promise<void> => {
       `${row.team_id}  ${row.user_id}  ${row.language}  ${String(row.episodes).padStart(3)} episodes  — ${row.team_name} / ${row.user_name}`,
     );
   }
+};
+
+/**
+ * One arm of the bake-off. Reports what a person would actually notice: how
+ * many cards survive, how specific they are (a suggestion naming nothing from
+ * the pack is filler), and how long the first visit blocks.
+ */
+const benchArm = async (
+  profileKey: string,
+  repeats: number,
+  team: { id: string; organizationId: string },
+  userId: string,
+  pack: Awaited<ReturnType<typeof renderSuggestionPack>>,
+): Promise<void> => {
+  const kept: number[] = [];
+  const latencies: number[] = [];
+  const kinds = new Map<string, number>();
+  let grounded = 0;
+  let total = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
+
+  for (let run = 0; run < repeats; run += 1) {
+    const started = Date.now();
+    const generated = await generateSuggestions({
+      teamId: team.id,
+      userId,
+      pack,
+      profileOverride: profileKey,
+    });
+    latencies.push(Date.now() - started);
+    kept.push(generated?.items.length ?? 0);
+    inputTokens += generated?.usage.inputTokens ?? 0;
+    outputTokens += generated?.usage.outputTokens ?? 0;
+    for (const item of generated?.items ?? []) {
+      total += 1;
+      if (item.sourceIds.length > 0) grounded += 1;
+      kinds.set(item.kind, (kinds.get(item.kind) ?? 0) + 1);
+    }
+    if (run === 0 && generated) {
+      console.log(`\n  sample (${profileKey}):`);
+      for (const item of generated.items) {
+        console.log(`    [${item.kind}] ${item.label}`);
+        console.log(`        ${item.prompt}`);
+      }
+    }
+  }
+
+  const median = (xs: number[]): number =>
+    [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)] ?? 0;
+  const avgIn = Math.round(inputTokens / repeats);
+  const avgOut = Math.round(outputTokens / repeats);
+  console.log(
+    `\n  ${profileKey}: kept ${kept.join("/")} (of 4-6 asked) · grounded ${String(grounded)}/${String(total)} · median ${String(median(latencies))}ms · tokens ${String(avgIn)} in / ${String(avgOut)} out per run · kinds ${[...kinds].map(([k, n]) => `${k}:${String(n)}`).join(" ")}`,
+  );
 };
 
 const main = async (): Promise<void> => {
@@ -91,6 +152,21 @@ const main = async (): Promise<void> => {
   // The service does this in a middleware; a script has no middleware, and a
   // cold registry resolves no model at all.
   await ensureModelRegistryWarm();
+
+  const benchFlag = process.argv.indexOf("--bench");
+  if (benchFlag !== -1) {
+    const profiles = (process.argv[benchFlag + 1] ?? "")
+      .split(",")
+      .filter(Boolean);
+    const repeats = Number(process.argv[benchFlag + 2] ?? "3");
+    console.log(
+      `\nBake-off on this pack — ${profiles.join(" vs ")}, ${String(repeats)} repeats each.`,
+    );
+    for (const profileKey of profiles) {
+      await benchArm(profileKey, repeats, team, userId, pack);
+    }
+    return;
+  }
 
   const startedGeneration = Date.now();
   const generated = await generateSuggestions({

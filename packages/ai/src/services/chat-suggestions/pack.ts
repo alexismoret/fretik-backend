@@ -94,13 +94,19 @@ export const renderSuggestionPack = (
 
   // The journal repeats itself by nature (eight uploads into one folder), and
   // eight identical lines would read as eight different things to suggest.
+  //
+  // Each surviving line carries an id for the same reason memory lines do:
+  // measured 2026-09-13, a suggestion about a record created yesterday had
+  // nothing to cite and was dropped by the provenance gate as if invented.
   const seenActivity = new Set<string>();
   const activityLines = sources.activity.flatMap((item) => {
     const label = `${item.type}|${item.title}`;
     if (item.title.length === 0 || seenActivity.has(label)) return [];
     seenActivity.add(label);
     const actor = item.actorName ? ` by ${item.actorName}` : "";
-    return [`- ${isoDay(item.at)} — ${item.type}: ${item.title}${actor}`];
+    return [
+      `- ${isoDay(item.at)} — ${item.type}: ${item.title}${actor} (${remember(`event:${item.id}`)})`,
+    ];
   });
 
   const capabilityLines = sources.capabilities.map((capability) => {

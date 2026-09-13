@@ -54,6 +54,41 @@ const clip = (text: string, max: number): string => {
   return `${(lastSpace > max * 0.6 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
 };
 
+/**
+ * Resolve a cited id against what the pack offered, tolerating the one thing
+ * models get wrong here: dropping the prefix and citing the bare uuid.
+ *
+ * Measured 2026-09-13 on the real workspace — gpt-oss-20b cited
+ * `019fc79b-…` where the pack wrote `episode:019fc79b-…`, on EVERY draft, so
+ * a strict lookup rejected 4 grounded suggestions out of 4 and the screen fell
+ * back to generic cards. The citation is still checked; only its spelling is
+ * forgiven, and only when exactly one offered id ends with it — an ambiguous
+ * bare id resolves to nothing and is dropped like any other invention.
+ */
+const resolveCitation = (
+  cited: string,
+  allowed: ReadonlySet<string>,
+  byBareId: ReadonlyMap<string, string | null>,
+): string | null => {
+  if (allowed.has(cited)) return cited;
+  const bare = cited.includes(":")
+    ? cited.slice(cited.indexOf(":") + 1)
+    : cited;
+  return byBareId.get(bare) ?? null;
+};
+
+/** Bare id → the one offered id it can mean, or `null` when several can. */
+const indexByBareId = (
+  allowed: ReadonlySet<string>,
+): Map<string, string | null> => {
+  const index = new Map<string, string | null>();
+  for (const id of allowed) {
+    const bare = id.includes(":") ? id.slice(id.indexOf(":") + 1) : id;
+    index.set(bare, index.has(bare) ? null : id);
+  }
+  return index;
+};
+
 export const parseSuggestions = (
   raw: string,
   allowedSourceIds: ReadonlySet<string>,
@@ -92,13 +127,19 @@ export const parseSuggestions = (
       (KIND_RANK.get(b.kind) ?? Number.MAX_SAFE_INTEGER),
   );
 
+  const byBareId = indexByBareId(allowedSourceIds);
+
   for (const draft of ordered) {
-    const cited = draft.sourceIds.filter((id) => id.length > 0);
-    const unknown = cited.filter((id) => !allowedSourceIds.has(id));
-    if (unknown.length > 0) {
-      drop(`unknown-source-id (${unknown[0] ?? ""})`);
+    const raw_ids = draft.sourceIds.filter((id) => id.length > 0);
+    const resolved = raw_ids.map((id) =>
+      resolveCitation(id, allowedSourceIds, byBareId),
+    );
+    const unknownAt = resolved.indexOf(null);
+    if (unknownAt !== -1) {
+      drop(`unknown-source-id (${raw_ids[unknownAt] ?? ""})`);
       continue;
     }
+    const cited = resolved.filter((id): id is string => id !== null);
     if (cited.length === 0 && draft.kind !== "capability") {
       drop("no-source-id");
       continue;

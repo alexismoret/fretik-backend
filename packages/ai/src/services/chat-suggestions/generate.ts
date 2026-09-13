@@ -1,6 +1,7 @@
 import type { SuggestionDraft } from "@fretik/shared/schemas/chat-suggestions";
 import { generateText } from "ai";
 import { telemetryFor } from "../../lib/langfuse";
+import { resolveModelForRoleProfile } from "../../lib/model-registry/resolve";
 import { resolveModelForTeam } from "../../lib/model-registry/team-model";
 import { withSlot } from "../../lib/rate-limit";
 import { withNamedTrace } from "../../lib/trace-tool";
@@ -39,12 +40,26 @@ const HOLD_TIMEOUT_MS = 30_000;
 export interface GeneratedSuggestions {
   items: SuggestionDraft[];
   modelKey: string;
+  /**
+   * What the call actually cost in tokens. Langfuse records this too; it is
+   * returned because the probe's model bake-off has to price two candidates
+   * against each other, and reasoning tokens — the half that decides the bill
+   * here — are invisible in the answer.
+   */
+  usage: { inputTokens: number; outputTokens: number };
 }
 
 export const generateSuggestions = async (params: {
   teamId: string;
   userId: string;
   pack: SuggestionPack;
+  /**
+   * Force one registry profile instead of honouring the team's pick. For the
+   * probe script only — the same eval-only override `resolveMemoryModel`
+   * carries, and for the same reason: comparing two models on one workspace
+   * must not mean editing a binding between runs.
+   */
+  profileOverride?: string;
 }): Promise<GeneratedSuggestions | null> => {
   const { teamId, userId, pack } = params;
 
@@ -57,11 +72,13 @@ export const generateSuggestions = async (params: {
         metadata: { teamId, inputHash: pack.inputHash },
       },
       async () => {
-        const { model, profile } = await resolveModelForTeam(
-          "chat-suggestions",
-          teamId,
-        );
-        const { text, finishReason } = await withSlot(
+        const { model, profile } = params.profileOverride
+          ? resolveModelForRoleProfile(
+              "chat-suggestions",
+              params.profileOverride,
+            )
+          : await resolveModelForTeam("chat-suggestions", teamId);
+        const { text, finishReason, usage } = await withSlot(
           "openrouter:chat-suggestions",
           MAX_CONCURRENT,
           HOLD_TIMEOUT_MS,
@@ -86,6 +103,10 @@ export const generateSuggestions = async (params: {
         return {
           items: parseSuggestions(text, pack.sourceIds),
           modelKey: profile.key,
+          usage: {
+            inputTokens: usage.inputTokens ?? 0,
+            outputTokens: usage.outputTokens ?? 0,
+          },
         };
       },
     );

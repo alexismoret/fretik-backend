@@ -46,6 +46,32 @@ describe("parseSuggestions — provenance gate", () => {
     expect(kept).toHaveLength(0);
   });
 
+  test("forgives a bare id when exactly one offered id can mean it", () => {
+    // Measured 2026-09-13: gpt-oss-20b cited `019fc79b-…` where the pack wrote
+    // `episode:019fc79b-…`, on every draft. The citation is still checked; only
+    // its spelling is forgiven.
+    const kept = parseSuggestions(
+      answer([draft({ sourceIds: ["11111111-1111-1111-1111-111111111111"] })]),
+      ALLOWED,
+    );
+
+    expect(kept).toHaveLength(1);
+    expect(kept[0]?.sourceIds).toEqual([
+      "episode:11111111-1111-1111-1111-111111111111",
+    ]);
+  });
+
+  test("still drops a bare id nothing offered", () => {
+    expect(
+      parseSuggestions(
+        answer([
+          draft({ sourceIds: ["99999999-9999-9999-9999-999999999999"] }),
+        ]),
+        ALLOWED,
+      ),
+    ).toHaveLength(0);
+  });
+
   test("drops one citing nothing at all, except a capability", () => {
     expect(
       parseSuggestions(answer([draft({ sourceIds: [] })]), ALLOWED),

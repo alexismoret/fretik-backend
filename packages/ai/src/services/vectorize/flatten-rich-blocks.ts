@@ -74,6 +74,12 @@ const NON_CONTENT_ATTRS = new Set([
   "orientation",
   "open",
   "defaultvalue",
+  // `:::link-card` wiring. A destination and a picture are what the card IS,
+  // but neither is text a reader searches for — and an `og:image` CDN path
+  // (`/is/image/Boulanger/0195950489354_h_f_l_0`) is pure noise in a chunk.
+  // Its `title` and `site` are NOT here: those are the words worth matching.
+  "url",
+  "image",
 ]);
 
 /** Pull the readable values out of a `{…}` attribute string, in order. */

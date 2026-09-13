@@ -111,7 +111,7 @@ export interface ExternalCallTrace {
 }
 
 /**
- * Trace an external, non-LLM AI-adjacent call (E2B sandbox exec, Tavily web
+ * Trace an external, non-LLM AI-adjacent call (E2B sandbox exec, web
  * search/fetch) as a Langfuse `generation` so its ESTIMATED cost rolls into
  * the unified cost view. Nests under the active chatbot-turn trace (these only
  * run inside agent tool steps), so no orphan/session pollution. No-op when

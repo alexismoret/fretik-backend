@@ -1807,7 +1807,8 @@ push doesn't accidentally deploy before the remaining steps are checked.
    load-bearing ones: `LANGFUSE_TRACING_ENVIRONMENT=production` (separates prod from dev across
    traces/scores/sessions/datasets — dev is `development`), `LANGFUSE_PUBLIC_KEY` /
    `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL`, `LANGFUSE_RELEASE=<git sha>`, and REAL cost rates
-   `E2B_PRICE_PER_SECOND` / `TAVILY_PRICE_PER_CREDIT` (defaults are approximations).
+   `E2B_PRICE_PER_SECOND` / `PERPLEXITY_PRICE_PER_SEARCH` / `PARALLEL_PRICE_PER_*`
+   (defaults are approximations).
 2. **Langfuse server seeding** — ✅ **already DONE** on `langfuse.fretik.com`. Prompts
    (`fretik-chatbot-system` + `fretik-chatbot-sub-agent`, label `production`) and eval-config
    (score-configs + Gemini judge connection + managed evaluator) are **project-level**, separated

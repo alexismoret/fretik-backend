@@ -1,0 +1,186 @@
+import { Perplexity } from "@perplexity-ai/perplexity_ai";
+import { budgets, perplexityApiKey, prices, timeouts } from "./config";
+import {
+  nativeTimeoutMs,
+  WebProviderUnconfiguredError,
+  withWebTimeout,
+} from "./errors";
+import { faviconFor, normalizeDate } from "./normalize";
+import type { WebCallCost, WebSearchOutcome, WebSearchRequest } from "./types";
+
+/**
+ * Perplexity adapter — `POST /search`.
+ *
+ * The default search backend since 2026-09, picked on two independent
+ * provider-swap benchmarks that both hold the model and harness fixed:
+ * Perplexity Search takes the TOP THREE places on the Artificial Analysis
+ * Search Index (medium scores 80 against 75 for the previous leaders), and
+ * leads OpenBenchmarks' search-only board at 77.3% where the stack this
+ * replaces scored 47.3%. See `backend/docs/WEB-RESEARCH.md`.
+ *
+ * Three properties of the API shape the tool above it:
+ *
+ *  - **`query` takes a LIST.** Up to five phrasings ride one request, and a
+ *    request is ONE billing unit however many queries it carries. The agent
+ *    used to pay a full round-trip per reformulation; it now pays none.
+ *  - **`search_context_size` costs the same at every level.** $5/1k flat for
+ *    low, medium and high, so the depth dial is purely quality/latency/context
+ *    and never an arbitration on price — which is why the tool can expose it
+ *    without teaching the model a cost model.
+ *  - **The filters are a superset of what the old tool exposed.** Both date
+ *    bounds, a relative recency preset, domain allow/deny, language, country,
+ *    and the `academic` / `sec` verticals.
+ *
+ * What it does NOT have, and where each gap is answered: no URL fetch (that is
+ * Parallel's `/v1/extract`, whose headless browser also reads JS-rendered
+ * pages), no site map (`sitemap.ts`, free), no favicon (derived from the host),
+ * no images (harvested from the Markdown of the pages `webFetch` reads).
+ */
+
+let client: Perplexity | null | undefined;
+
+const requireClient = (): Perplexity => {
+  if (client === undefined) {
+    const apiKey = perplexityApiKey();
+    client = apiKey === undefined ? null : new Perplexity({ apiKey });
+  }
+  if (client === null) {
+    throw new WebProviderUnconfiguredError("PERPLEXITY_API_KEY");
+  }
+  return client;
+};
+
+/** Test seam — drops the memoised client so the next call re-reads env. */
+export const resetPerplexityClient = (): void => {
+  client = undefined;
+};
+
+/**
+ * Our depth dial onto Perplexity's context sizes. All three cost $5/1k; they
+ * differ in how much extracted content each result carries, which trades
+ * against the tokens the agent then pays to read. `quick` led the independent
+ * search-only board at the lowest token count, `medium` leads the AA index —
+ * so the default sits at `standard` and the model moves it deliberately.
+ */
+const CONTEXT_SIZE = {
+  quick: "low",
+  standard: "medium",
+  deep: "high",
+} as const;
+
+/**
+ * Perplexity takes ONE domain list and reads a `-` prefix as exclusion; it
+ * refuses an allowlist and a denylist in the same request. Include wins when
+ * both are given — it is the stronger constraint, and the caller's exclusions
+ * are then applied locally by the caller.
+ */
+/**
+ * ISO `YYYY-MM-DD` → the `MM/DD/YYYY` the date filters demand.
+ *
+ * Not cosmetic. Measured 2026-09-12, every date filter REJECTS an ISO date:
+ * `search_after_date_filter '2026-09-01' must be in MM/DD/YYYY format`, HTTP
+ * 400. Until this existed, any `published_after` / `published_before` search
+ * threw — and, because the routing treats a throw as an outage, fell through
+ * to the fallback provider. A date-bounded search silently ran on the wrong
+ * backend instead of failing loudly.
+ *
+ * A value that is not an ISO date is passed through untouched: the tool schema
+ * already enforces the shape, and inventing a date here would be worse than
+ * letting the provider reject one.
+ */
+export const toUsDate = (iso: string): string => {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  if (match === null) return iso;
+  return `${match[2]}/${match[3]}/${match[1]}`;
+};
+
+const domainFilter = (
+  include: string[] | undefined,
+  exclude: string[] | undefined,
+): string[] | undefined => {
+  if (include !== undefined && include.length > 0) return include.slice(0, 20);
+  if (exclude !== undefined && exclude.length > 0) {
+    return exclude.slice(0, 20).map((d) => (d.startsWith("-") ? d : `-${d}`));
+  }
+  return undefined;
+};
+
+/**
+ * A request is one billing unit whatever it carries — no per-query multiplier,
+ * no per-result surcharge, no token fee. The rare price model that needs no
+ * estimator.
+ */
+const searchCost = (request: WebSearchRequest): WebCallCost => ({
+  costUsd: prices().perplexitySearch,
+  metadata: {
+    provider: "perplexity",
+    depth: request.depth,
+    queries: request.queries.length,
+  },
+});
+
+export const perplexitySearch = async (
+  request: WebSearchRequest,
+): Promise<WebSearchOutcome & { cost: WebCallCost }> => {
+  const timeoutMs = timeouts().search;
+  const domains = domainFilter(request.includeDomains, request.excludeDomains);
+  const singleQuery =
+    request.queries.length === 1 ? request.queries[0] : undefined;
+  const tokensPerPage = budgets().searchTokensPerPage;
+
+  const response = await withWebTimeout(
+    "search",
+    timeoutMs,
+    requireClient().search.create(
+      {
+        // A single-element list would be sent as an array of one, which the API
+        // accepts; passing the bare string keeps the wire shape conventional.
+        query: singleQuery ?? request.queries,
+        search_context_size: CONTEXT_SIZE[request.depth],
+        // Only when an operator asked for it — see `budgets.searchTokensPerPage`.
+        // Left unset, the provider's own per-context-size budget applies, which
+        // is the configuration the benchmarks measured.
+        ...(tokensPerPage > 0 ? { max_tokens_per_page: tokensPerPage } : {}),
+        ...(request.maxResults === undefined
+          ? {}
+          : { max_results: request.maxResults }),
+        ...(domains === undefined ? {} : { search_domain_filter: domains }),
+        ...(request.publishedAfter === undefined
+          ? {}
+          : { search_after_date_filter: toUsDate(request.publishedAfter) }),
+        ...(request.publishedBefore === undefined
+          ? {}
+          : { search_before_date_filter: toUsDate(request.publishedBefore) }),
+        ...(request.crawledAfter === undefined
+          ? {}
+          : { last_updated_after_filter: toUsDate(request.crawledAfter) }),
+        ...(request.recency === undefined
+          ? {}
+          : { search_recency_filter: request.recency }),
+        ...(request.mode === undefined ? {} : { search_mode: request.mode }),
+        ...(request.languages === undefined
+          ? {}
+          : { search_language_filter: request.languages }),
+        ...(request.country === undefined ? {} : { country: request.country }),
+      },
+      { timeout: nativeTimeoutMs(timeoutMs) },
+    ),
+  );
+
+  return {
+    results: response.results.map((r) => ({
+      title: r.title,
+      url: r.url,
+      content: r.snippet,
+      favicon: faviconFor(r.url),
+      // `date` is when the page was published, `last_updated` when the index
+      // last crawled it. BOTH travel: a shop page publishes no date, so the
+      // crawl is the only freshness signal a price or a stock level has. See
+      // `WebSearchHit.lastCrawled` for the incident that proves it.
+      publishedDate: normalizeDate(r.date),
+      lastCrawled: normalizeDate(r.last_updated),
+    })),
+    images: [],
+    cost: searchCost(request),
+  };
+};

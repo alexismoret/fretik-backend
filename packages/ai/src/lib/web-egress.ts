@@ -1,4 +1,5 @@
 import { TOOL_ERROR_CODES } from "./tool-error-codes";
+import { isFetchConfigured, isSearchConfigured } from "./web/config";
 
 /**
  * Egress hardening for the chatbot's web tools (`webFetch` / `searchWeb`).
@@ -9,22 +10,30 @@ import { TOOL_ERROR_CODES } from "./tool-error-codes";
  * friction). Instead this module provides:
  *
  *  1. Always-on hygiene (zero UX cost): reject non-http(s) schemes, internal /
- *     private / loopback / link-local / metadata targets, and over-long URLs.
+ *     private / loopback / link-local / metadata targets, and over-long URLs —
+ *     by NAME (`assertFetchableTarget`) and then by what the name RESOLVES to
+ *     (`assertResolvedTargetAllowed`), since a hostname check alone reads
+ *     `169.254.169.254.nip.io` as an ordinary public domain.
  *  2. Opt-in operator levers (off by default): a denylist
  *     (`AI_WEB_BLOCKED_DOMAINS`) and a dormant allowlist
  *     (`AI_WEB_ALLOWED_DOMAINS`, which flips to deny-by-default when set).
  *     Both apply to fetch targets AND to discovered URLs (`isUrlDenied`), so
  *     search never surfaces a page the fetch path would refuse.
- *  3. A disable switch (`AI_WEB_TOOLS_ENABLED=false`) plus a missing Tavily
- *     key, either of which prunes the web tools from every registry
- *     (`pruneWebTools`) and from the chatbot's per-step tool list.
+ *  3. A disable switch (`AI_WEB_TOOLS_ENABLED=false`) plus a per-tool backend
+ *     key check, either of which prunes the affected web tools from every
+ *     registry (`pruneWebTools`) and from the chatbot's per-step tool list.
  *
- * Honesty note: Tavily fetches server-side, so SSRF-against-Fretik is already
- * near-nil. `assertFetchableTarget` matters mainly for a clean structured error
- * to the model, saving a wasted Tavily credit, and future-proofing a direct
- * fetch. The substantive operator controls are the denylist / allowlist /
- * disable. The residual exfil-via-injection risk in the open default is
- * accepted + documented (bounded to the team's own data by the C10 RLS role).
+ * Status note, updated 2026-09: this module is now LOAD-BEARING, which it was
+ * not before. Under the previous stack every page was fetched at the vendor, so
+ * `assertFetchableTarget` only bought a clean structured error and a saved
+ * credit. `webFetch` still runs at a vendor (Parallel's headless browser, on
+ * their egress), but `webMap` reads `robots.txt` and `sitemap.xml` from THIS
+ * process — so a redirect into a private address is now a real SSRF path, and
+ * `lib/web/http.ts` re-validates every hop through this module rather than
+ * trusting the first check. The substantive operator controls remain the
+ * denylist / allowlist / disable. The residual exfil-via-injection risk in the
+ * open default is accepted + documented (bounded to the team's own data by the
+ * C10 RLS role).
  */
 
 /** Structured egress-validation failure. Returned to the model, never thrown at it. */
@@ -225,6 +234,77 @@ export const assertFetchableTargetWithPolicy = (
 export const assertFetchableTarget = (rawUrl: string): void =>
   assertFetchableTargetWithPolicy(rawUrl, currentEgressPolicy());
 
+/** True when an address the resolver returned must never be connected to. */
+export const isPrivateAddress = (address: string): boolean =>
+  isPrivateIpv4(address) || isPrivateIpv6(address);
+
+/**
+ * Refuse a hostname that RESOLVES to a private address, whatever it is called.
+ *
+ * The checks above read the hostname as a STRING, which stops `127.0.0.1` and
+ * `[::1]` and nothing else: `169.254.169.254.nip.io`, or any domain an attacker
+ * controls, is an ordinary public name that resolves to the cloud metadata
+ * endpoint. That was harmless while every page was fetched at a vendor. It is
+ * not harmless now — `webMap` reads `robots.txt` from THIS process, and link
+ * previews read the `<head>` of URLs that arrived in third-party SEARCH
+ * RESULTS, which is an input we do not control at all.
+ *
+ * ALL resolved addresses must be public, not merely the first: a name that
+ * answers with one public and one private address would otherwise pass and then
+ * connect to whichever the stack happened to pick.
+ *
+ * What this does NOT close is DNS rebinding — the resolver can answer
+ * differently for the connection that follows. Closing that needs the socket
+ * pinned to the address we vetted, which `fetch` does not expose. The realistic
+ * attack is a name that simply points inward, and that one is closed.
+ *
+ * Fails closed: a name that will not resolve cannot be fetched either, so
+ * refusing costs a request that was going to fail regardless.
+ */
+export type HostResolver = (host: string) => Promise<{ address: string }[]>;
+
+const resolveHost: HostResolver = (host) => Bun.dns.lookup(host, { family: 0 });
+
+export const assertResolvedTargetAllowed = async (
+  rawUrl: string,
+  resolve: HostResolver = resolveHost,
+): Promise<void> => {
+  let host: string;
+  try {
+    host = new URL(rawUrl).hostname.toLowerCase();
+  } catch {
+    fail(TOOL_ERROR_CODES.WEB_FETCH_BLOCKED_TARGET, "Invalid URL");
+    return;
+  }
+  const bare =
+    host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+
+  // A literal address was already vetted as a string; resolving it says nothing
+  // new and costs a lookup.
+  if (isPrivateAddress(bare) || /^[\d.]+$/.test(bare) || bare.includes(":")) {
+    return;
+  }
+
+  let addresses: { address: string }[];
+  try {
+    addresses = await resolve(bare);
+  } catch {
+    fail(
+      TOOL_ERROR_CODES.WEB_FETCH_BLOCKED_TARGET,
+      `"${bare}" could not be resolved`,
+    );
+    return;
+  }
+
+  const blocked = addresses.find((a) => isPrivateAddress(a.address));
+  if (blocked !== undefined) {
+    fail(
+      TOOL_ERROR_CODES.WEB_FETCH_BLOCKED_TARGET,
+      `"${bare}" resolves to the internal address ${blocked.address} and cannot be fetched`,
+    );
+  }
+};
+
 /**
  * True when a discovered URL (a `searchWeb` hit, a `webMap` result) should be
  * dropped before the model ever sees it. Applies the SAME domain policy as
@@ -252,10 +332,9 @@ export const isUrlDenied = (
 };
 
 /**
- * The web tools gated by `AI_WEB_TOOLS_ENABLED` and by the presence of a
- * Tavily key. Canonical list — the chatbot's `prepareStep` suppression and
- * the registry pruning below both read it, so a new web tool is gated in one
- * place.
+ * The web tools gated by `AI_WEB_TOOLS_ENABLED` and by their backend's key.
+ * Canonical list — the chatbot's `prepareStep` suppression and the registry
+ * pruning below both read it, so a new web tool is gated in one place.
  */
 export const WEB_TOOL_NAMES: ReadonlySet<string> = new Set([
   "searchWeb",
@@ -264,25 +343,37 @@ export const WEB_TOOL_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * True when the web tools should exist at all on this deployment: the
- * operator switch is on AND a Tavily key is configured (every web tool is
- * Tavily-backed; without a key they can only fail).
+ * Whether ONE web tool can run on this deployment.
+ *
+ * Availability is per tool since 2026-09, because the three no longer share a
+ * backend: `searchWeb` needs the configured search provider's key,
+ * `webFetch` needs Parallel's, and `webMap` needs nothing at all — it reads
+ * `robots.txt` and `sitemap.xml` directly. Under the old single-vendor gate a
+ * deployment with one key lost all three, which is exactly the degradation the
+ * split exists to avoid: a missing fetch key must not take search down with it.
  */
-export const areWebToolsAvailable = (): boolean =>
-  areWebToolsEnabled() && Boolean(process.env.TAVILY_API_KEY);
+export const isWebToolAvailable = (name: string): boolean => {
+  if (!areWebToolsEnabled()) return false;
+  if (name === "searchWeb") return isSearchConfigured();
+  if (name === "webFetch") return isFetchConfigured();
+  if (name === "webMap") return true;
+  return true;
+};
 
 /**
- * Return the registry unchanged when the web tools are available (the normal
- * case), and strip them ONLY when the operator disabled them or no Tavily key
- * is set. Applied to the registries built once at boot (sub-agents, workflow
- * runs), which install no `prepareStep`; the chatbot instead filters per step,
- * which also strips the tools from the prompt's catalogue.
+ * Strip the web tools whose backend this deployment cannot reach. Applied to
+ * the registries built once at boot (sub-agents, workflow runs), which install
+ * no `prepareStep`; the chatbot instead filters per step, which also strips the
+ * tools from the prompt's catalogue.
  */
 export const pruneWebToolsIfUnavailable = <T extends Record<string, unknown>>(
   registry: T,
 ): T => {
-  if (areWebToolsAvailable()) return registry;
+  const unavailable = [...WEB_TOOL_NAMES].filter(
+    (name) => !isWebToolAvailable(name),
+  );
+  if (unavailable.length === 0) return registry;
   const pruned = { ...registry };
-  for (const name of WEB_TOOL_NAMES) delete pruned[name];
+  for (const name of unavailable) delete pruned[name];
   return pruned;
 };

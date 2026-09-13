@@ -3,8 +3,10 @@ import { TOOL_ERROR_CODES } from "../../../src/lib/tool-error-codes";
 import {
   areWebToolsEnabled,
   assertFetchableTargetWithPolicy,
+  assertResolvedTargetAllowed,
   type EgressPolicy,
   hostFromUrl,
+  type HostResolver,
   isUrlDenied,
   pruneWebToolsIfUnavailable,
   WebEgressError,
@@ -117,6 +119,91 @@ describe("assertFetchableTargetWithPolicy — always-on hygiene", () => {
     expect(blockOf("not a url")?.detail.code).toBe(
       TOOL_ERROR_CODES.WEB_FETCH_BLOCKED_TARGET,
     );
+  });
+});
+
+/**
+ * The hostname checks above read a STRING, so they stop `127.0.0.1` and nothing
+ * else. `169.254.169.254.nip.io` is an ordinary public name that resolves to
+ * the cloud metadata endpoint, and this branch is what refuses it.
+ *
+ * That mattered little while every page was fetched at a vendor. It matters now:
+ * `webMap` reads `robots.txt` from this process, and link previews read the
+ * `<head>` of URLs that arrived inside third-party SEARCH RESULTS.
+ *
+ * The resolver is injected — a suite that performed real DNS would be testing
+ * the network.
+ */
+describe("assertResolvedTargetAllowed", () => {
+  const resolving =
+    (...addresses: string[]) =>
+    async () =>
+      addresses.map((address) => ({ address }));
+
+  const blockedBy = async (
+    url: string,
+    resolve: HostResolver,
+  ): Promise<WebEgressError | null> => {
+    try {
+      await assertResolvedTargetAllowed(url, resolve);
+      return null;
+    } catch (err) {
+      return err instanceof WebEgressError ? err : null;
+    }
+  };
+
+  test("refuses a public name that resolves inward", async () => {
+    const err = await blockedBy(
+      "http://169.254.169.254.nip.io/latest/meta-data/",
+      resolving("169.254.169.254"),
+    );
+    expect(err?.detail.code).toBe(TOOL_ERROR_CODES.WEB_FETCH_BLOCKED_TARGET);
+    expect(err?.detail.message).toContain("169.254.169.254");
+  });
+
+  /**
+   * ALL addresses, not just the first: a name answering with one public and one
+   * private address would otherwise pass and then connect to whichever the
+   * stack picked.
+   */
+  test("refuses when only one of several addresses is private", async () => {
+    expect(
+      await blockedBy(
+        "http://mixed.test/",
+        resolving("93.184.216.34", "10.1.2.3"),
+      ),
+    ).not.toBeNull();
+  });
+
+  test("refuses an IPv6 answer inside a private range", async () => {
+    expect(
+      await blockedBy("http://v6.test/", resolving("fd00:ec2::254")),
+    ).not.toBeNull();
+  });
+
+  test("allows a name that resolves only to public addresses", async () => {
+    expect(
+      await blockedBy("https://example.com/", resolving("93.184.216.34")),
+    ).toBeNull();
+  });
+
+  /** A name that will not resolve cannot be fetched either, so refusing is free. */
+  test("fails closed when the name does not resolve", async () => {
+    expect(
+      await blockedBy("http://nx.test/", async () => {
+        throw new Error("NXDOMAIN");
+      }),
+    ).not.toBeNull();
+  });
+
+  /** A literal address was already vetted as a string — resolving it costs a lookup and says nothing. */
+  test("does not resolve a literal address", async () => {
+    let called = false;
+    await blockedBy("https://8.8.8.8/", async () => {
+      called = true;
+      return [];
+    });
+    expect(called).toBe(false);
   });
 });
 
@@ -233,7 +320,14 @@ describe("areWebToolsEnabled", () => {
 /**
  * The kill switch has to reach the registries built once at boot (sub-agents,
  * workflow runs) — they install no `prepareStep`, so without this they kept
- * calling Tavily after an operator disabled the web.
+ * calling a provider after an operator disabled the web.
+ *
+ * Availability is PER TOOL since 2026-09, because the three no longer share a
+ * backend: `searchWeb` needs a search key (either provider's), `webFetch`
+ * needs Parallel's headless browser, and `webMap` needs nothing — it reads a
+ * site's own `sitemap.xml`. The cases below are the partial setups an operator
+ * actually lands in, and each one asserts that a missing key costs only the
+ * tools it backs.
  */
 describe("pruneWebToolsIfUnavailable", () => {
   const registry = { searchWeb: 1, webFetch: 2, webMap: 3, querySql: 4 };
@@ -248,43 +342,92 @@ describe("pruneWebToolsIfUnavailable", () => {
   const survivingTools = (tools: Record<string, unknown>): string[] =>
     Object.keys(pruneWebToolsIfUnavailable(tools)).sort();
 
+  const ENV_KEYS = [
+    "AI_WEB_TOOLS_ENABLED",
+    "AI_WEB_SEARCH_PROVIDER",
+    "PERPLEXITY_API_KEY",
+    "PARALLEL_API_KEY",
+  ] as const;
+
   const withEnv = (
-    env: { enabled?: string; key?: string },
+    env: Partial<Record<(typeof ENV_KEYS)[number], string>>,
     run: () => void,
   ): void => {
-    const originalEnabled = process.env.AI_WEB_TOOLS_ENABLED;
-    const originalKey = process.env.TAVILY_API_KEY;
+    const original = Object.fromEntries(
+      ENV_KEYS.map((k) => [k, process.env[k]]),
+    );
     try {
-      if (env.enabled === undefined) delete process.env.AI_WEB_TOOLS_ENABLED;
-      else process.env.AI_WEB_TOOLS_ENABLED = env.enabled;
-      if (env.key === undefined) delete process.env.TAVILY_API_KEY;
-      else process.env.TAVILY_API_KEY = env.key;
+      for (const key of ENV_KEYS) {
+        const value = env[key];
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
       run();
     } finally {
-      if (originalEnabled === undefined)
-        delete process.env.AI_WEB_TOOLS_ENABLED;
-      else process.env.AI_WEB_TOOLS_ENABLED = originalEnabled;
-      if (originalKey === undefined) delete process.env.TAVILY_API_KEY;
-      else process.env.TAVILY_API_KEY = originalKey;
+      for (const key of ENV_KEYS) {
+        const value = original[key];
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
     }
   };
 
-  test("keeps every tool when enabled with a key (the normal case)", () => {
-    withEnv({ key: "tvly-test" }, () => {
-      expect(pruneWebToolsIfUnavailable(registry)).toEqual(registry);
-    });
+  test("keeps every tool when both keys are configured (the normal case)", () => {
+    withEnv(
+      { PERPLEXITY_API_KEY: "pplx-test", PARALLEL_API_KEY: "par-test" },
+      () => {
+        expect(pruneWebToolsIfUnavailable(registry)).toEqual(registry);
+      },
+    );
   });
 
-  test("strips the web tools when the operator disables them", () => {
-    withEnv({ enabled: "false", key: "tvly-test" }, () => {
-      expect(survivingTools(registry)).toEqual(["querySql"]);
-    });
+  test("strips every web tool when the operator disables them", () => {
+    withEnv(
+      {
+        AI_WEB_TOOLS_ENABLED: "false",
+        PERPLEXITY_API_KEY: "pplx-test",
+        PARALLEL_API_KEY: "par-test",
+      },
+      () => {
+        expect(survivingTools(registry)).toEqual(["querySql"]);
+      },
+    );
   });
 
-  test("strips the web tools when no Tavily key is configured", () => {
+  /**
+   * The one tool that survives a key-less deployment, and deliberately: it
+   * reads `robots.txt` and `sitemap.xml` directly, so there is no vendor whose
+   * absence could break it.
+   */
+  test("keeps webMap when no provider key is configured at all", () => {
     withEnv({}, () => {
-      expect(survivingTools(registry)).toEqual(["querySql"]);
+      expect(survivingTools(registry)).toEqual(["querySql", "webMap"]);
     });
+  });
+
+  test("a search key without Parallel keeps search and map, drops fetch", () => {
+    withEnv({ PERPLEXITY_API_KEY: "pplx-test" }, () => {
+      expect(survivingTools(registry)).toEqual([
+        "querySql",
+        "searchWeb",
+        "webMap",
+      ]);
+    });
+  });
+
+  /**
+   * The likeliest partial setup: `PARALLEL_API_KEY` is required for `webFetch`
+   * anyway, so an operator commonly has it before adding the preferred search
+   * key. Reading only the CONFIGURED provider would prune `searchWeb` from a
+   * deployment that can plainly search — hence `effectiveSearchProvider`.
+   */
+  test("Parallel alone still serves search, even when Perplexity is preferred", () => {
+    withEnv(
+      { AI_WEB_SEARCH_PROVIDER: "perplexity", PARALLEL_API_KEY: "par-test" },
+      () => {
+        expect(pruneWebToolsIfUnavailable(registry)).toEqual(registry);
+      },
+    );
   });
 
   test("leaves the caller's registry untouched", () => {

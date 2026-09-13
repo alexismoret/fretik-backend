@@ -104,7 +104,21 @@ export const installTestEnv = (): void => {
   set("REDIS_URL", "redis://127.0.0.1:1");
   set("E2B_API_KEY", "test-e2b");
   set("MISTRAL_API_KEY", "test-mistral");
-  set("TAVILY_API_KEY", "test-tavily"); // src/lib/tavily.ts validates at load
+
+  // Web research — the key's PRESENCE decides whether the tool exists at all:
+  // `pruneWebToolsIfUnavailable` drops `searchWeb` / `webFetch` from the
+  // registry when their backend is unkeyed. So a suite that asserts on the
+  // registry's SHAPE (which tools are microcompactable, how many tools a role
+  // exposes) silently tests a different registry depending on whether the
+  // machine has a `.env`. That is how `COMPACTABLE_TOOLS` passed on every
+  // laptop and failed in CI the moment the previous single-vendor key stopped
+  // being set here (2026-09-13).
+  //
+  // Fake on purpose, and load-bearing in the other direction too: without
+  // these lines a unit run inherits the DEVELOPER'S REAL keys from `.env`, so
+  // a test that reaches an adapter bills a real search instead of failing.
+  set("PERPLEXITY_API_KEY", "test-perplexity");
+  set("PARALLEL_API_KEY", "test-parallel");
   set("INTERNAL_KEY", "test-internal");
   set("AI_SERVICE_URL", "http://127.0.0.1:1");
   set("APP_URL", "http://127.0.0.1:1");

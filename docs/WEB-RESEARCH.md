@@ -1,0 +1,336 @@
+# Web research stack — decision record
+
+Why `searchWeb` / `webFetch` / `webMap` are backed by what they are backed by,
+what was measured, and what it costs. Written 2026-09-12, when the previous
+single-vendor stack was replaced.
+
+The tables in §3 are quoted from two published third-party benchmarks and keep
+every vendor's name, the one we left included: anonymising a row of someone
+else's measurement would make the evidence unreadable. Nowhere else in the
+codebase does that vendor appear.
+
+Code: `packages/ai/src/lib/web/`. Operator variables: `packages/ai/.env.example`,
+`docs/OPERATIONS.md`.
+
+---
+
+## 1. What changed
+
+| Tool        | Before               | After                                        |
+| ----------- | -------------------- | -------------------------------------------- |
+| `searchWeb` | one vendor `/search` | **Perplexity** `/search`                     |
+| `webFetch`  | the same `/extract`  | **Parallel** `/v1/extract`                   |
+| `webMap`    | the same `/map`      | **`robots.txt` + `sitemap.xml`** — no vendor |
+
+Perplexity is the preferred search backend, Parallel is both the alternative
+(`AI_WEB_SEARCH_PROVIDER=parallel`) and the automatic fallback. Availability is
+checked per tool, so a deployment missing one key keeps the tools the other one
+backs.
+
+## 2. The measurements
+
+Two independent benchmarks, both **provider-swap** designs: the model, the
+harness, the task set and the budgets are held fixed, and only the search vendor
+changes. That is the only design that isolates retrieval quality from model
+quality, and it is why these numbers were trusted over vendor claims.
+
+### Artificial Analysis Search Index
+
+Equal-weighted mean of DeepSearchQA, BrowseComp and AA-Omniscience, agent on the
+open-source Stirrup harness, candidate model fixed at GPT-5.6 Luna.
+
+| Product               |  Index |       Price /1k | Notes                                        |
+| --------------------- | -----: | --------------: | -------------------------------------------- |
+| **Perplexity medium** | **80** |     **$5 flat** | 1st of the board; ~1.1 s/query, 27-29 s/task |
+| Perplexity high       |  top-3 |         $5 flat | quality plateaus between medium and high     |
+| Perplexity low        |  top-3 |         $5 flat | 36 s/task — cheaper payloads, more searches  |
+| Parallel advanced     |     75 |              $5 | previous co-leader                           |
+| Brave LLM context     |     75 |             ~$5 | previous co-leader                           |
+| Exa auto              |     74 | $7 + surcharges |                                              |
+| Firecrawl SERP        |     73 |             ~$2 |                                              |
+| Parallel fast         |     73 |              $1 | cheapest search cost per task ($8.41/1k)     |
+
+Board latency range: 19-62 s per task. Perplexity posts the lowest model
+inference cost per task on the board, $0.028-$0.034, because its payloads are
+lean — a saving on **our** model bill, not the provider's.
+
+### OpenBenchmarks — web search for coding agents
+
+Open code and open data, 100 held-out enterprise-documentation tickets, model
+fixed at `gpt-5.6-sol`, mean ± SD over 3 runs, budgets fixed at 32 turns /
+5 searches / 5 fetches. Snapshot of 2026-09-09.
+
+| Search only          | Completion | Avg search | Median tokens |
+| -------------------- | ---------: | ---------: | ------------: |
+| **Perplexity (low)** |  **77.3%** |     957 ms |     **8,765** |
+| Firecrawl            |      70.3% |     2.87 s |         7,456 |
+| Parallel fast        |      66.7% |     953 ms |        12,460 |
+| Exa fast             |      66.3% |     626 ms |        22,344 |
+| Parallel turbo       |      64.7% |     333 ms |        14,130 |
+| **Tavily fast**      |  **47.3%** |     282 ms |        23,922 |
+| Brave (LLM Context)  |      43.0% |     547 ms |        21,000 |
+
+| Search + fetch        | Completion | Avg search | Median tokens |
+| --------------------- | ---------: | ---------: | ------------: |
+| Exa deep              |      83.0% |     3.97 s |        23,660 |
+| Exa auto              |      81.7% |     1.19 s |        27,433 |
+| TinyFish              |      79.0% |     1.32 s |        12,844 |
+| **Perplexity (high)** |  **77.7%** | **991 ms** |        20,062 |
+| Parallel advanced     |      77.0% |     3.11 s |        27,092 |
+| Firecrawl             |      76.0% |     2.81 s |        17,379 |
+| **Tavily advanced**   |  **60.0%** |     3.41 s |        26,269 |
+| **Tavily basic**      |  **59.0%** |     1.50 s |        27,405 |
+
+### What the two boards agree on
+
+- **The stack we were on is last or near it on both.** 59-60% against 77-83 for
+  the leaders on the same tasks, and 47.3% search-only. This was the decision.
+- **Perplexity is top-tier on both**, and is the fastest and most
+  token-efficient of the leading group.
+- **Brave does not generalise**: 75 on AA, 43.0% on OpenBenchmarks. It was
+  considered and dropped on that contradiction.
+
+Where they disagree — OpenBenchmarks puts Exa first on search + fetch (83.0%)
+while AA scores Exa auto 74 — the explanation is the task mix: OpenBenchmarks
+scores _coding-agent work against vendor documentation_, terrain Exa's semantic
+index is built for. AA's mix (general knowledge plus browsing) is closer to what
+a generalist B2B assistant does, so it carried more weight here. Exa remains the
+documented alternative if that judgement turns out wrong.
+
+## 3. Why each backend
+
+### `searchWeb` → Perplexity
+
+First on the board whose task mix matches ours, first on search-only on the
+other. Three properties then shaped the tool's schema:
+
+- **A request takes up to five queries and bills as ONE unit.** So the tool
+  takes `queries: string[]` and asks the model for 2-3 phrasings. Previously the
+  agent fired one `searchWeb` per phrasing and paid a full round-trip each time.
+- **$5/1k is flat across `low`/`medium`/`high` context.** The depth dial is
+  therefore purely quality/latency/context and never a price arbitration, which
+  is why the tool can expose it without teaching the model a cost model. Nothing
+  else caps the payload: `max_tokens_per_page` is left unset, because the
+  context-size presets are what the benchmarks measured, and a fixed per-result
+  cap applied equally to `low` and `high` would stop `high` returning any more
+  than `low` — flattening our own `depth` option into decoration.
+- **The filters are a superset of the old tool's.** Both date bounds, a relative
+  recency preset, domain allow/deny, language, country, and the `academic` /
+  `sec` verticals. Under Parallel we would have _lost_ `end_date`.
+
+Gaps, and where each is answered: no URL fetch (Parallel, below), no site map
+(`sitemap.ts`), no favicon (derived from the host), no images (harvested from
+the Markdown of the pages `webFetch` reads).
+
+### `webFetch` → Parallel
+
+Two hard requirements decided this, and neither is about ranking quality:
+
+1. **It must read JS-rendered pages.** The old `advanced` depth did, so anything
+   that did not would be a regression on the most visible tool. Parallel runs a
+   server-side headless browser on every extract — no depth flag the model can
+   forget to pass.
+2. **It must not fetch from our IP.** A hosted service reading the open web from
+   one datacenter address collects blocks. This is also why the fetch is not
+   done in-process, which was the first plan: OpenClaw does exactly that, but
+   OpenClaw runs on the user's machine, on a residential IP.
+
+Cost: **$1/1k URLs, pay-as-you-go, no subscription**, 20 URLs per call. Against
+the old `advanced` tier ($3.20/1k) it is 3.2× cheaper.
+
+Firecrawl was the other candidate — both reference agents use it as their
+JS-extraction fallback — and was dropped on one fact: it is **subscription-only,
+with no true pay-as-you-go**. Jina Reader is 5-10× cheaper again (~$0.15/1k) and
+returns images natively, but was acquired by Elastic, its pricing page 404s, and
+it takes one URL per call; it is the documented cheap alternative, not the base.
+
+### Images and link previews
+
+**Corrected 2026-09-12, after a traced production failure.** The first design
+harvested `![](…)` out of the Markdown `webFetch` returned. It could never work:
+measured against the live API, Parallel's `/v1/extract` strips every image from
+its Markdown. The Wikipedia article on MacBook Pro — dozens of photographs — came
+back with **281 links and zero images**; so did apple.com, macg.co and
+support.apple.com. In the traced conversation the path spent **25 seconds** and
+three extract calls to return an empty strip, and it would have done so on every
+call forever. The lesson is the ordinary one: an integration whose tests only
+ever see hand-written fixtures is not known to work.
+
+Perplexity is no help either. Its Search API has no image field, and
+`return_images` — which the docs still describe — died with the Sonar chat
+endpoint: `/chat/completions` now answers `403 … Use /v1/responses instead`, and
+`/v1/responses` rejects the parameter as an unknown field.
+
+So the source is the page's own **`og:image`**, read from its `<head>` by
+`lib/web/page-meta.ts`. That is the tag publishers maintain precisely so a link
+to them looks right, and the read is head-sized. The same pass collects
+`og:description` and `og:site_name`, which is what `::link-cards` renders.
+
+**The model never copies the image, and is no longer asked to.** Returning it
+was necessary but not sufficient: traced on two answers that did render cards
+(Langfuse `01a09659…`, `01a0965b…`), the model wrote `url`, `title` and `site`
+on all seven cards and `image` on none — a ~100-character URL that means
+nothing to it is the first thing dropped from a verbatim copy. So the transcript
+resolves the cover itself: the message holding the card also holds the tool
+result that produced it, and `ChatMessageItem` provides a URL→preview map the
+card reads (`app/utils/proseLink.ts`). Matching is on host + path, because a
+model retypes a URL rather than copying its bytes. Replayed on those two
+answers: **0 of 7 covers before, 3 of 7 after** — the other four are CNIL pages
+that publish no `og:image` at all.
+
+|                      | Old stack           | First attempt (dead) | Now                       |
+| -------------------- | ------------------- | -------------------- | ------------------------- |
+| Where they come from | its own image index | page Markdown        | the page's own `og:image` |
+| Actually returns one | yes                 | **never**            | 13 of 20 sites measured   |
+| Relevance            | to the **query**    | —                    | to a **cited source**     |
+| Caption              | model-written       | —                    | the hit's title           |
+| Cost                 | none                | $0.003/search        | none                      |
+| Latency              | +3 s                | **+25 s**            | +0.3 s                    |
+
+Measured on a 20-site spread (products, press, institutions, SPAs): 13 carry a
+usable image, 14 a description. The seven misses are bot-protected origins
+(fnac, legifrance, shutterstock — all Cloudflare) or pages with no visual. An
+honest `FretikBot` User-Agent scored **identically** to a Chrome one, so the
+honest one ships.
+
+Two properties make this safe to depend on. It is the one read that leaves our
+own IP, so it is **strictly best-effort** — a refusal costs a cover image, never
+the answer; title, snippet and favicon already come from the search result. And
+one `og:image` per page is the publisher's own choice, so there is no site
+furniture to tell apart from content — the filename blocklist and majority
+heuristics the dead design needed are gone. The single case that still needs a
+rule: a site answering every URL with its header logo (measured on cdiscount).
+An image two hits share describes the site, not either page, so it leaves the
+strip — while each card keeps it, because it is what the publisher chose.
+
+**Previews are not a tool parameter, and that is a correction too.** They were
+opt-in (`include_images`, `with_images`) until two traced conversations showed
+why that cannot work: a model chooses the flag while SEARCHING and discovers
+while WRITING that its answer is a list of places to go, by which point the data
+it needs is an argument it did not pass. Neither conversation set the flag, and
+both had a section that wanted cards. So the flags are gone from both schemas —
+a choice the model has never made correctly is a choice not to offer it — and
+previews ride every search and fetch. The price of always-on, measured over
+three real queries: **+62 ms to +1.7 s, median ~0.9 s**, no vendor cost, ~300
+tokens of context. `AI_WEB_PREVIEW_SOURCES=0` is the operator's off switch.
+
+Genuinely worse than before, and not worth pretending otherwise: **coverage**.
+One image per source, and none at all for a third of sites, where a dedicated
+image index would always have found something.
+
+### `webMap` → no vendor
+
+`robots.txt` and `sitemap.xml` are published _for robots_: static text served by
+the origin rather than by a bot-detection layer. So the datacenter-IP problem
+that rules out fetching pages ourselves does not apply to fetching a site's own
+index of itself, and discovery costs nothing where the vendor billed ~1 credit per
+10 pages and doubled it for semantic filtering. Both the crawl and the filtering
+are now free, which is why `search` and `select_paths` can be applied
+generously.
+
+The honest limit: a site with no sitemap returns nothing. The tool says so with
+`WEB_MAP_NO_SITEMAP` and points the model at a domain-restricted `searchWeb`,
+which also reaches pages a sitemap never lists.
+
+#### Reading the XML: `Bun.XML` first, a scan when it refuses
+
+`Bun.XML` (Bun ≥ 1.4) is the primary reader. It gets four things right that a
+`<loc>` pattern has to earn one at a time — CDATA-wrapped values, commented-out
+entries (a page the site WITHDREW), entity decoding, namespace prefixes — and it
+separates a page's `<loc>` from the `<image:loc>` nested inside it
+**structurally**, where a pattern can only guess from the namespace declaration.
+That guess is not academic: getting it wrong hands an image sitemap's JPEGs to
+`webFetch`.
+
+It is not the only path, for two measured reasons:
+
+- **It throws on malformed XML**, which real sitemaps frequently are — an
+  unescaped `&` in a query string is endemic. Verified on Bun 1.4.2:
+  `…/a?b=1&c=2` raises `Expected ';' after the entity name`, and an unclosed tag
+  raises too. Strictness there costs every URL in the file; a scan still returns
+  all of them.
+- **The runtime is pinned loosely** — `oven/bun:1` in the Dockerfiles,
+  `bun-version: latest` in CI. Both are on 1.4 today, but a floating pin is
+  exactly the thing not to assume.
+
+So the parser is feature-detected and passed as an argument, and
+`readSitemapDocument(xml, parser)` falls through to the scan on a throw or an
+older runtime. Both paths run the same case table in
+`tests/unit/lib/web-sitemap.test.ts`, with the parser path added only when the
+runtime has one — a suite that silently exercised whichever path the local
+`bun` happened to offer would be worse than none.
+
+## 4. What the reference agents do
+
+Checked before committing, because a benchmark says which provider is good and
+not how to wire one.
+
+**OpenClaw** runs three tiers: a local `web_fetch` (HTTP GET + Readability, no
+JS, blocks private hosts and **re-checks redirects**), a **Firecrawl fallback**
+when Readability fails, and a separate browser tool for JS and logins. It caches
+`web_search` by query and `web_fetch` by URL for 15 minutes, configurable, zero
+disables.
+
+**Hermes / Nous Portal** routes its Tool Gateway search to Firecrawl and its
+cloud browser to Browser Use. The community plugin _Web Search Plus_ puts 17
+providers behind one interface with a routing priority, automatic fallback, a
+unified `freshness` filter translated to each provider's native parameter, and a
+maintained privacy matrix flagging vendors whose terms permit training on
+customer data.
+
+Four things were taken from this:
+
+1. **A result cache with a TTL** (`lib/web/cache.ts`). An agent repeats
+   near-identical queries across the steps of one turn, and a sub-agent repeats
+   its parent's. Stricter than `selectOrCache`: an empty result is never stored,
+   because pinning zero hits for fifteen minutes turns one bad provider moment
+   into an agent that can find nothing on a subject.
+2. **A search fallback** (`lib/web/routing.ts`). One hop, one alternative —
+   free to own, since the second adapter exists and its key is already present
+   for `webFetch`.
+3. **`status` on a failed fetch.** A 403 (the site refuses automation) calls for
+   a different move than a 404 (gone), and the model can only make it if the
+   code reaches it. OpenClaw also reports a `finalUrl`; Parallel does not expose
+   the requested-vs-landed distinction, so that one was left out rather than
+   shipped as a field that never populates.
+4. **Redirect re-validation per hop** (`lib/web/http.ts`), which is what makes
+   `webMap` safe to run in-process.
+
+Neither project has adopted Perplexity Search: _Web Search Plus_ lists
+Perplexity as "rejected legacy answer endpoint; no source-only mode is
+registered", which refers to the older Sonar _answer_ API, not the Search API
+that returns raw `title`/`url`/`snippet`/`date`. It is a stale catalogue entry
+rather than a verdict — but it does mean this stack is ahead of the open-source
+ecosystem, with fewer worked examples to copy.
+
+## 5. Cost model
+
+Public pay-as-you-go rates, 2026-09. Every rate is env-overridable
+(`PERPLEXITY_PRICE_PER_SEARCH`, `PARALLEL_PRICE_PER_*`) because a negotiated
+rate changes the number, not the code.
+
+| Operation                                  | Before             | After          |
+| ------------------------------------------ | ------------------ | -------------- |
+| One search                                 | $0.008             | **$0.005**     |
+| One search, 3 phrasings                    | $0.024 (3 calls)   | **$0.005** (1) |
+| One page read, JS-rendered                 | $0.0032            | **$0.001**     |
+| One page read, static                      | $0.0016            | **$0.001**     |
+| Site map                                   | $0.0008 / 10 pages | **$0**         |
+| A repeat of any of the above within 15 min | full price         | **$0**         |
+
+A research turn — one search with 3 phrasings, three JS pages read — goes from
+**$0.0336 to $0.008, −76%**. The model bill drops too: ~20k median tokens per
+task against ~26k, roughly −24%, because the payloads are leaner.
+
+## 6. Open items
+
+- **Parallel's headless-browser rendering is a vendor claim**, not something
+  measured here. First check with a real key: a known client-rendered page.
+- **Data retention.** Perplexity's API is documented as Zero Data Retention by
+  default (prompts and responses not stored, only operational metadata). Confirm
+  contractually for the Search API, and check Parallel's equivalent, before
+  routing queries that carry client names.
+- **Validate the choice on our own gold set.** `AI_WEB_SEARCH_PROVIDER` exists
+  so the Langfuse eval loop (`bun run evals:langfuse`) can score Perplexity
+  against Parallel on Fretik's curated cases. Public benchmarks chose the
+  shortlist; our own data should confirm the pick.

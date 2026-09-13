@@ -8,7 +8,7 @@ import {
   resolvePageBuildModelForProfile,
   type ResolvedModel,
 } from "../../lib/model-registry/resolve";
-import { areWebToolsAvailable, WEB_TOOL_NAMES } from "../../lib/web-egress";
+import { isWebToolAvailable, WEB_TOOL_NAMES } from "../../lib/web-egress";
 import { PAGE_BUILDER_AGENT_ID } from "../../services/page-project/build";
 import { pageBuilderHiddenTools } from "../../services/page-project/build-gate";
 import type { PrunePricing } from "../../services/page-project/prune-history";
@@ -66,15 +66,17 @@ const parseChatbotMaxSteps = (): number =>
   parseIntEnv("CHATBOT_MAX_STEPS", { fallback: 30, min: 1, max: 200 });
 
 /**
- * The web tools are suppressed entirely when an operator sets
- * `AI_WEB_TOOLS_ENABLED=false` or no Tavily key is configured (both read by
- * `areWebToolsAvailable` in `lib/web-egress.ts`, which also owns the canonical
- * name list). Passing this as the `suppress` gate to the shared
- * Progressive-Disclosure helpers keeps them out of both `activeTools` and the
- * prompt's domain-tool catalogue, so the model never sees a tool it cannot use.
+ * A web tool is suppressed when an operator sets `AI_WEB_TOOLS_ENABLED=false`
+ * or its own backend has no key — per tool, not as a block, because the three
+ * no longer share a provider (`isWebToolAvailable` in `lib/web-egress.ts`,
+ * which also owns the canonical name list). A deployment with a search key and
+ * no fetch key keeps `searchWeb`. Passing this as the `suppress` gate to the
+ * shared Progressive-Disclosure helpers keeps a suppressed tool out of both
+ * `activeTools` and the prompt's domain-tool catalogue, so the model never sees
+ * a tool it cannot use.
  */
 const isToolSuppressed = (name: string): boolean =>
-  !areWebToolsAvailable() && WEB_TOOL_NAMES.has(name);
+  WEB_TOOL_NAMES.has(name) && !isWebToolAvailable(name);
 
 /**
  * Chatbot agent — Fretik's general-purpose data assistant.

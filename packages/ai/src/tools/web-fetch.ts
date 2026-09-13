@@ -39,9 +39,11 @@ export const createWebFetchTool = () =>
       "",
       "Use it for the FULL content of pages you already know — a page the user referenced, a hit `searchWeb` returned, a URL `webMap` discovered. For discovery, search first: fetching candidate URLs one by one does not scale. JavaScript-rendered pages are handled; you never need to ask for that.",
       "",
-      "Pass up to 20 `urls` in ONE call when you need several related pages — they travel together, and batching also sharpens `with_images`, which tells the site's own logos and buttons apart from real illustrations by seeing what the pages have in common. Set `objective` (and `queries`) to get only the passages that answer your question instead of whole articles; set `full_content` when you need the page entire.",
+      "Pass up to 20 `urls` in ONE call when you need several related pages — they travel together for one round-trip. Set `objective` (and `queries`) to get only the passages that answer your question instead of whole articles; set `full_content` when you need the page entire.",
       "",
-      "`with_images` returns each page's illustrations, with captions, for a `::gallery` — reach for it when you are already reading the pages; `searchWeb({ include_images: true })` is the shorter route when you only want the pictures.",
+      "The reader returns a page's PROSE. It drops what is not text — pictures, and the interactive parts of a commerce page, a configurator or a booking form, whose prices and options may not survive. When a figure matters and the page is one of those, cross-check it against another source rather than reporting a silence as an absence.",
+      "",
+      "Each page also comes back with its own cover `image` when it publishes one, for a `::gallery` or `::link-cards` — nothing to ask for.",
       "",
       "Returns `{ results: [{ url, title, content, favicon, publishedDate, images? }], failed: [{ url, error, status? }] }` — a partial success is normal: read what came back and do not retry a URL that failed twice. A 403 means the site refuses automated reads; search for the same content elsewhere instead of retrying. Large markdown may be auto-persisted: recover with `read(file_path)` or process with `python`.",
     ].join("\n"),
@@ -70,12 +72,6 @@ export const createWebFetchTool = () =>
         .describe(
           "Return each page whole instead of the passages matching `objective`. Use when you need structure or exhaustiveness, not an answer.",
         ),
-      with_images: z
-        .boolean()
-        .optional()
-        .describe(
-          "Also return the images found on each page, with their captions. Set it whenever the subject is visual and you intend to show them.",
-        ),
       fresh: z
         .boolean()
         .optional()
@@ -84,7 +80,7 @@ export const createWebFetchTool = () =>
         ),
     }),
     execute: async (
-      { urls, objective, queries, full_content, with_images, fresh },
+      { urls, objective, queries, full_content, fresh },
       options,
     ) => {
       const ctx = getRuntimeContext(options);
@@ -124,7 +120,6 @@ export const createWebFetchTool = () =>
           ...(objective === undefined ? {} : { objective }),
           ...(queries === undefined ? {} : { queries }),
           ...(full_content === undefined ? {} : { fullContent: full_content }),
-          ...(with_images === undefined ? {} : { withImages: with_images }),
           ...(fresh === undefined ? {} : { fresh }),
           // Correlates this read with the searches of the same task, which the
           // provider uses to rank excerpts. Never model-supplied.

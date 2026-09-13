@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { webCacheKey, withWebCache } from "../../../src/lib/web/cache";
+import type { PageMetadata } from "../../../src/lib/web/page-meta";
 import {
+  attachPreviews,
   filterHits,
-  harvestImages,
   searchWithFallback,
   type SearchAdapters,
 } from "../../../src/lib/web/routing";
@@ -31,6 +32,7 @@ const hit = (provider: string) => ({
   content: "body",
   favicon: null,
   publishedDate: null,
+  lastCrawled: null,
 });
 
 const calls: string[] = [];
@@ -146,6 +148,35 @@ describe("searchWithFallback", () => {
     });
   });
 
+  /**
+   * An empty search is a billed search — these vendors charge per request, not
+   * per result. Reporting only the fallback's cost would under-count every
+   * fallback by one call, and invisibly, since the trace shows one search
+   * because one search succeeded.
+   */
+  test("bills the primary's empty call on top of the fallback's", async () => {
+    await withEnv(BOTH_KEYS, async () => {
+      const result = await searchWithFallback(
+        request,
+        fakeAdapters("empty", "ok"),
+      );
+      expect(result.cost.costUsd).toBeCloseTo(0.01, 10);
+      expect(result.cost.metadata.fallbackFromCostUsd).toBeCloseTo(0.005, 10);
+    });
+  });
+
+  /** A throw carries no usage, so there is nothing to add. */
+  test("bills only the fallback when the primary threw", async () => {
+    await withEnv(BOTH_KEYS, async () => {
+      const result = await searchWithFallback(
+        request,
+        fakeAdapters("throw", "ok"),
+      );
+      expect(result.cost.costUsd).toBeCloseTo(0.005, 10);
+      expect(result.cost.metadata.fallbackFromCostUsd).toBeUndefined();
+    });
+  });
+
   test("an operator can switch the primary with one env var", async () => {
     await withEnv(
       { ...BOTH_KEYS, AI_WEB_SEARCH_PROVIDER: "parallel" },
@@ -216,58 +247,167 @@ describe("searchWithFallback", () => {
 /**
  * Images at search time, harvested from the pages the search returned.
  *
- * The affordance Tavily had — ask for images, get images, without first
+ * The affordance the old stack had — ask for images, get images, without first
  * choosing a page to open — restored over a stack whose search providers
  * return text only. What has to hold is that it is OPT-IN, that it reads a
  * bounded number of sources, and above all that it can never sink the search
  * it garnishes.
  */
-describe("imagesForSearch", () => {
-  const hits = [
-    { url: "https://a.test/1" },
-    { url: "https://a.test/2" },
-    { url: "https://a.test/3" },
-    { url: "https://a.test/4" },
-  ];
+describe("attachPreviews", () => {
+  const outcomeOf = (count: number): WebSearchOutcome => ({
+    results: Array.from({ length: count }, (_, i) => ({
+      ...hit("a"),
+      url: `https://a.test/${i + 1}`,
+      title: `page ${i + 1}`,
+    })),
+    images: [],
+  });
+
+  const meta = (url: string, image: string | null): PageMetadata => ({
+    url,
+    title: "og title",
+    description: "og description",
+    image,
+    siteName: "A Test",
+  });
+
+  const readerFor = (
+    image: (url: string) => string | null,
+    seen?: string[][],
+  ) => {
+    return async (urls: string[]) => {
+      seen?.push(urls);
+      return new Map(urls.map((url) => [url, meta(url, image(url))]));
+    };
+  };
 
   test("reads a bounded number of sources", async () => {
-    const read: string[][] = [];
-    const images = await harvestImages(
-      hits,
-      async (urls: string[]) => {
-        read.push(urls);
-        return {
-          results: urls.map((url) => ({
-            images: [{ url: `${url}/photo.jpg` }],
-          })),
-        };
-      },
+    const seen: string[][] = [];
+    const result = await attachPreviews(
+      outcomeOf(6),
+      readerFor((url) => `${url}/cover.jpg`, seen),
       3,
     );
 
-    expect(read[0]).toHaveLength(3);
-    expect(images).toHaveLength(3);
+    expect(seen[0]).toHaveLength(3);
+    expect(result.images).toHaveLength(3);
   });
 
-  test("is empty when the search returned nothing to read", async () => {
+  /**
+   * The strip and the per-hit field are the SAME harvest: a card and a gallery
+   * tile must never disagree about which picture belongs to a source.
+   */
+  test("attaches the image to its own hit and to the strip", async () => {
+    const result = await attachPreviews(
+      outcomeOf(2),
+      readerFor((url) => `${url}/cover.jpg`),
+    );
+
+    expect(result.results[0]?.image).toBe("https://a.test/1/cover.jpg");
+    expect(result.results[0]?.siteName).toBe("A Test");
+    expect(result.images.map((i) => i.url)).toEqual([
+      "https://a.test/1/cover.jpg",
+      "https://a.test/2/cover.jpg",
+    ]);
+    expect(result.images[0]?.description).toBe("page 1");
+  });
+
+  /**
+   * Measured: 3 of 20 real sites refuse this read outright (Cloudflare), and
+   * others publish no card image. The publisher is still attached, so the hit
+   * renders as a card without a cover rather than not at all.
+   */
+  test("keeps a hit that has no card image", async () => {
+    const result = await attachPreviews(
+      outcomeOf(2),
+      readerFor((url) => (url.endsWith("1") ? null : `${url}/cover.jpg`)),
+    );
+
+    expect(result.results[0]?.image).toBeUndefined();
+    expect(result.results[0]?.siteName).toBe("A Test");
+    expect(result.images).toHaveLength(1);
+  });
+
+  /** A hit we could not read at all still names its publisher. */
+  test("falls back to the host when a page could not be read", async () => {
+    const result = await attachPreviews(outcomeOf(1), async () => new Map());
+    expect(result.results[0]?.siteName).toBe("a.test");
+    expect(result.results[0]?.image).toBeUndefined();
+  });
+
+  /**
+   * Measured: cdiscount.com answers every product URL with its header logo.
+   * An `og:image` serving two pages describes the site, not either page — so
+   * it leaves the strip, while each card keeps the picture its publisher chose.
+   */
+  test("drops a picture two hits share from the strip, not from the cards", async () => {
+    const result = await attachPreviews(
+      outcomeOf(3),
+      readerFor((url) =>
+        url.endsWith("3") ? `${url}/real.jpg` : "https://a.test/logo.png",
+      ),
+    );
+
+    expect(result.images.map((i) => i.url)).toEqual([
+      "https://a.test/3/real.jpg",
+    ]);
+    expect(result.results[0]?.image).toBe("https://a.test/logo.png");
+    expect(result.results[1]?.image).toBe("https://a.test/logo.png");
+  });
+
+  test("does not read when the search returned nothing", async () => {
     let called = false;
-    const images = await harvestImages([], async () => {
-      called = true;
-      return { results: [] };
-    });
-    expect(images).toEqual([]);
+    const result = await attachPreviews(
+      { results: [], images: [] },
+      async () => {
+        called = true;
+        return new Map();
+      },
+    );
+    expect(result.images).toEqual([]);
     expect(called).toBe(false);
   });
 
   /**
-   * A garnish must never cost the answer: an unconfigured fetch backend or a
-   * provider having a bad minute loses the strip, not the search.
+   * A garnish must never cost the answer: the previews are read from our own
+   * egress, so an outage there loses the pictures, not the search.
    */
-  test("swallows a failing harvest rather than failing the search", async () => {
-    const images = await harvestImages(hits, () => {
-      throw new Error("extract is down");
+  test("swallows a failing read rather than failing the search", async () => {
+    const result = await attachPreviews(outcomeOf(2), () => {
+      throw new Error("egress is down");
     });
-    expect(images).toEqual([]);
+    expect(result.images).toEqual([]);
+    expect(result.results).toHaveLength(2);
+  });
+
+  /**
+   * `filterHits` runs BEFORE this and vets every image against the policy;
+   * rebuilding the list here is what put an unvetted host back in. An
+   * `og:image` names whatever host the page chose — typically a CDN, never the
+   * one that was vetted — so the blocklist has to be applied a second time or
+   * a picture becomes the one way past it.
+   */
+  test("drops a cover image the deployment's policy blocks", async () => {
+    process.env.AI_WEB_BLOCKED_DOMAINS = "cdn.blocked.test";
+    try {
+      const result = await attachPreviews(
+        outcomeOf(2),
+        readerFor((url) =>
+          url.endsWith("/1")
+            ? "https://cdn.blocked.test/cover.jpg"
+            : "https://cdn.allowed.test/cover.jpg",
+        ),
+      );
+      expect(result.results[0]?.image).toBeUndefined();
+      expect(result.results[1]?.image).toBe(
+        "https://cdn.allowed.test/cover.jpg",
+      );
+      expect(result.images.map((i) => i.url)).toEqual([
+        "https://cdn.allowed.test/cover.jpg",
+      ]);
+    } finally {
+      delete process.env.AI_WEB_BLOCKED_DOMAINS;
+    }
   });
 });
 

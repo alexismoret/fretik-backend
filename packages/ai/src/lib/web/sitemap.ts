@@ -1,4 +1,5 @@
 import { timeouts } from "./config";
+import { withWebTimeout } from "./errors";
 import { decodeBody, safeFetch } from "./http";
 import { matchesSelectPaths } from "./normalize";
 import type { SiteLink, WebMapOutcome, WebMapRequest } from "./types";
@@ -14,9 +15,9 @@ import type { SiteLink, WebMapOutcome, WebMapRequest } from "./types";
  * the User-Agent (see `config.mapUserAgent`) so an origin that wants to refuse
  * can.
  *
- * It replaces Tavily's `/map`, which billed ~1 credit per 10 discovered pages
- * and doubled that when you wanted semantic filtering. Here both the crawl and
- * the filtering cost nothing.
+ * It replaces a hosted `/map` endpoint that billed ~1 credit per 10 discovered
+ * pages and doubled that when you wanted semantic filtering. Here both the
+ * crawl and the filtering cost nothing.
  *
  * The honest limit: a site with no sitemap returns nothing. That is not a
  * failure to hide — the tool says so, and points the model at a
@@ -285,6 +286,15 @@ const collectUrls = async (
   const urls: string[] = [];
   const visited = new Set<string>();
   let frontier = seeds;
+  /**
+   * Documents FETCHED, not documents parsed.
+   *
+   * Counting only the ones that came back would bound the useful work and
+   * leave the expensive work free: a `<sitemapindex>` listing thousands of
+   * child sitemaps that all 404 costs one request each and never reaches the
+   * limit, turning one `webMap` call into exactly the crawl this bound exists
+   * to prevent. A request is what we pay for, so a request is what we count.
+   */
   let documents = 0;
 
   for (let depth = 0; depth <= MAX_DEPTH && frontier.length > 0; depth += 1) {
@@ -295,9 +305,9 @@ const collectUrls = async (
       if (visited.has(candidate)) continue;
       visited.add(candidate);
 
+      documents += 1;
       const xml = await fetchText(candidate, timeoutMs);
       if (xml === null) continue;
-      documents += 1;
 
       const document = readSitemapDocument(xml);
       if (document.isIndex) next.push(...document.locations);
@@ -324,10 +334,10 @@ const titleFromUrl = (url: string): string | null => {
   }
 };
 
-export const mapSiteFromSitemap = async (
+const mapSiteWithin = async (
   request: WebMapRequest,
+  timeoutMs: number,
 ): Promise<WebMapOutcome> => {
-  const timeoutMs = timeouts().map;
   const limit = request.limit ?? 50;
   const origin = new URL(request.url).origin;
 
@@ -373,4 +383,28 @@ export const mapSiteFromSitemap = async (
   }
 
   return { baseUrl: request.url, links };
+};
+
+/**
+ * `AI_WEB_MAP_TIMEOUT_MS` bounds the CALL, not each request inside it.
+ *
+ * It used to bound only the individual fetch, which left the operation itself
+ * unbounded: up to `MAX_DOCUMENTS` sitemaps plus discovery, each allowed the
+ * full 15 s, is over three minutes of a chat turn spent on one tool call — and
+ * `webMap`'s `WebTimeoutError` branch could never fire, because nothing raced
+ * the whole thing. A share of the budget goes to each request so a healthy
+ * multi-document map still completes well inside it.
+ */
+const REQUEST_SHARE = 4;
+const MIN_REQUEST_MS = 2_000;
+
+export const mapSiteFromSitemap = async (
+  request: WebMapRequest,
+): Promise<WebMapOutcome> => {
+  const totalMs = timeouts().map;
+  const perRequestMs = Math.max(
+    MIN_REQUEST_MS,
+    Math.round(totalMs / REQUEST_SHARE),
+  );
+  return withWebTimeout("map", totalMs, mapSiteWithin(request, perRequestMs));
 };

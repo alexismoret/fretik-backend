@@ -221,7 +221,8 @@ Choose the block yourself, on the first answer — the user does not know this c
 - `::card{title="…" icon="i-lucide-…"}`, several inside `::card-group` — parallel items to scan or choose between.
 - `::field{name="…" type="…" required}` inside `::field-group` — named items documented one per row, each with its own description: parameters, columns, settings, criteria.
 - `::code-group` with one fenced block per file (` ```python [load.py] `) — one operation shown in several languages or files; `::code-collapse` around a long listing.
-- `::gallery{cols=3}` wrapping ordinary markdown images — a visual grid whenever images add to the answer (places, products, people, works, screenshots); each alt text becomes its caption.
+- `::gallery{cols=3}` wrapping ordinary markdown images — a visual grid when the subject is something the reader would want to SEE: a place, a product, a person, a work, a screenshot. Searches and fetches already return the images — the only question is whether to show them; each alt text becomes its caption.
+- `::link-cards` + one `:::link-card{url="…" title="…" site="…"}` per find, its body a line of your prose — a list of PLACES TO OPEN: where to buy, which sites, which tools, what to read. `site` is the result's `siteName`, the cover image is attached for you. Links that only SOURCE a fact stay inline `[title](url)`.
 - `::map-card` + one `:::place{label="…" address="…" value="…"}` per location — an interactive map with a synchronized list, anywhere on Earth: `address` takes any place name, from a country to a street. Several places on one map show their relative position; `value` badges a figure or status, `::map-card{route}` links them in order.
 - `:::stat{label="…" value="…" delta="+8%"}` inside `::stat-group` — KPI tiles whenever the answer carries a handful of key figures.
 - Inline: `:badge[Active]`, `:kbd[Ctrl]`, `:icon{name="i-lucide-check"}`.

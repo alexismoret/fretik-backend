@@ -58,6 +58,25 @@ describe("flattenRichBlocks — markers out, prose intact", () => {
     expect(out).not.toContain("i-lucide");
   });
 
+  test("a link card indexes its words, not its URLs", () => {
+    // A card carries four attributes and a body. Two are text a reader would
+    // search for; two are addresses that would put CDN paths in a chunk.
+    const out = flattenRichBlocks(
+      [
+        "::link-cards",
+        ':::link-card{url="https://www.materiel.net/produit/202603190067.html" title="MacBook Pro M5 Pro 14 pouces" image="https://media.materiel.net/r900/products/MN0006327366.jpg" site="materiel.net"}',
+        "3 559 € — en stock.",
+        ":::",
+        "::",
+      ].join("\n"),
+    );
+    expect(out).toContain("MacBook Pro M5 Pro 14 pouces");
+    expect(out).toContain("materiel.net");
+    expect(out).toContain("3 559 € — en stock.");
+    expect(out).not.toContain("https://");
+    expect(out).not.toContain(".jpg");
+  });
+
   test("inline spans become their label; decoration disappears", () => {
     const out = flattenRichBlocks(
       'Status :badge[Active] — press :kbd[Ctrl] :icon{name="i-lucide-check"}',

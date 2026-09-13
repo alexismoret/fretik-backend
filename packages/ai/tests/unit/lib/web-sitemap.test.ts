@@ -5,7 +5,7 @@ import { mockModule } from "../../lib/mock-module";
  * Site discovery — the one web capability with no vendor behind it.
  *
  * `robots.txt` and `sitemap.xml` are published for robots to read, so the
- * crawl and the filtering both cost nothing where Tavily's `/map` billed per
+ * crawl and the filtering both cost nothing where the old `/map` billed per
  * discovered page and doubled that for semantic filtering. What has to be
  * proven here is that the walk stays BOUNDED and that the failure mode is
  * honest: a site with no sitemap must answer "nothing", never hang or invent.
@@ -258,6 +258,30 @@ describe("mapSiteFromSitemap", () => {
 
     expect(result.links).toEqual([]);
     expect(requested).not.toContain("https://example.com/l3.xml");
+  });
+
+  /**
+   * The document bound has to count REQUESTS, not parsed documents.
+   *
+   * Counting only what came back bounds the useful work and leaves the
+   * expensive work free: an index listing thousands of children that all 404
+   * costs one request each and never reaches the limit — one tool call turned
+   * into exactly the crawl the bound exists to prevent. None of these children
+   * is served, so every fetch fails.
+   */
+  test("counts failed fetches against the document bound", async () => {
+    const dead = Array.from(
+      { length: 500 },
+      (_, i) => `https://example.com/dead-${i}.xml`,
+    );
+    served.set("https://example.com/sitemap.xml", sitemapindex(...dead));
+
+    const result = await mapSiteFromSitemap({ url: "https://example.com" });
+
+    expect(result.links).toEqual([]);
+    // Discovery probes plus at most MAX_DOCUMENTS (12) walked documents —
+    // nowhere near one request per listed child.
+    expect(requested.length).toBeLessThanOrEqual(20);
   });
 });
 

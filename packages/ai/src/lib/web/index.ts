@@ -1,12 +1,13 @@
 import { traceExternalCall } from "../trace-tool";
 import { isUrlDenied } from "../web-egress";
 import { webCacheKey, withWebCache } from "./cache";
-import { cacheTtls, effectiveSearchProvider } from "./config";
+import { cacheTtls, effectiveSearchProvider, previewSources } from "./config";
+import { readPageMetadataBatch } from "./page-meta";
 import { parallelFetch, parallelSearch } from "./parallel";
 import { perplexitySearch } from "./perplexity";
 import {
+  attachPreviews,
   filterHits,
-  harvestImages,
   searchWithFallback,
   type SearchAdapters,
 } from "./routing";
@@ -78,20 +79,21 @@ export const searchWeb = async (
             request.excludeDomains,
             request.includeDomains,
           );
-          return {
-            ...hits,
-            images:
-              request.includeImages === true
-                ? await harvestImages(hits.results, (urls) =>
-                    parallelFetch({
-                      urls,
-                      withImages: true,
-                      fullContent: true,
-                    }),
-                  )
-                : hits.images,
-            cost: routed.cost,
-          };
+          // Unconditional, and that is the fix for a sequencing bug rather
+          // than a preference. The model chose `include_images` while
+          // SEARCHING, but only learns at WRITING time that its answer is a
+          // list of places to go — by which point the data it would need is an
+          // argument it did not pass ten seconds earlier. Traced on two
+          // conversations: neither set it, and both had a section that wanted
+          // cards. Reading previews costs no vendor money and ~0.9 s median
+          // (measured +62 ms to +1.7 s), so the cheap side of the trade is
+          // also the reliable one. `AI_WEB_PREVIEW_SOURCES=0` is the operator's
+          // off switch, and the only one — a per-call flag is exactly what did
+          // not work.
+          const withPreviews = await attachPreviews(hits, (urls) =>
+            readPageMetadataBatch(urls),
+          );
+          return { ...withPreviews, cost: routed.cost };
         },
         (r) => ({
           output: { results: r.results.length },
@@ -121,7 +123,38 @@ export const fetchPages = async (
       traceExternalCall(
         "web-fetch",
         { urls: request.urls },
-        () => parallelFetch(request),
+        async () => {
+          const fetched = await parallelFetch(request);
+          // Same source as a search's previews, for the same reason: the
+          // Markdown the extract returns carries no images at all. One
+          // `og:image` per page is what the publisher chose to represent it.
+          //
+          // Bounded by the same `AI_WEB_PREVIEW_SOURCES` as a search, and for
+          // a sharper reason: a `webFetch` takes up to 20 URLs, so an unbounded
+          // pass would put 20 in-process `<head>` reads behind one tool call —
+          // and would ignore the operator's documented off switch, since the
+          // tool no longer exposes a per-call flag to turn previews off.
+          const sources = previewSources();
+          const previews = await readPageMetadataBatch(
+            fetched.results.slice(0, sources).map((p) => p.url),
+          );
+          return {
+            ...fetched,
+            results: fetched.results.map((page) => {
+              const image = previews.get(page.url)?.image;
+              if (image === undefined || image === null) return page;
+              return {
+                ...page,
+                images: [
+                  {
+                    url: image,
+                    ...(page.title === null ? {} : { description: page.title }),
+                  },
+                ],
+              };
+            }),
+          };
+        },
         (r) => ({
           output: { results: r.results.length, failed: r.failed.length },
           costUsd: r.cost.costUsd,

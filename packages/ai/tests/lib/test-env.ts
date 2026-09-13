@@ -104,7 +104,6 @@ export const installTestEnv = (): void => {
   set("REDIS_URL", "redis://127.0.0.1:1");
   set("E2B_API_KEY", "test-e2b");
   set("MISTRAL_API_KEY", "test-mistral");
-  set("TAVILY_API_KEY", "test-tavily"); // src/lib/tavily.ts validates at load
   set("INTERNAL_KEY", "test-internal");
   set("AI_SERVICE_URL", "http://127.0.0.1:1");
   set("APP_URL", "http://127.0.0.1:1");

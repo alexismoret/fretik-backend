@@ -3,8 +3,10 @@ import { TOOL_ERROR_CODES } from "../../../src/lib/tool-error-codes";
 import {
   areWebToolsEnabled,
   assertFetchableTargetWithPolicy,
+  assertResolvedTargetAllowed,
   type EgressPolicy,
   hostFromUrl,
+  type HostResolver,
   isUrlDenied,
   pruneWebToolsIfUnavailable,
   WebEgressError,
@@ -117,6 +119,91 @@ describe("assertFetchableTargetWithPolicy — always-on hygiene", () => {
     expect(blockOf("not a url")?.detail.code).toBe(
       TOOL_ERROR_CODES.WEB_FETCH_BLOCKED_TARGET,
     );
+  });
+});
+
+/**
+ * The hostname checks above read a STRING, so they stop `127.0.0.1` and nothing
+ * else. `169.254.169.254.nip.io` is an ordinary public name that resolves to
+ * the cloud metadata endpoint, and this branch is what refuses it.
+ *
+ * That mattered little while every page was fetched at a vendor. It matters now:
+ * `webMap` reads `robots.txt` from this process, and link previews read the
+ * `<head>` of URLs that arrived inside third-party SEARCH RESULTS.
+ *
+ * The resolver is injected — a suite that performed real DNS would be testing
+ * the network.
+ */
+describe("assertResolvedTargetAllowed", () => {
+  const resolving =
+    (...addresses: string[]) =>
+    async () =>
+      addresses.map((address) => ({ address }));
+
+  const blockedBy = async (
+    url: string,
+    resolve: HostResolver,
+  ): Promise<WebEgressError | null> => {
+    try {
+      await assertResolvedTargetAllowed(url, resolve);
+      return null;
+    } catch (err) {
+      return err instanceof WebEgressError ? err : null;
+    }
+  };
+
+  test("refuses a public name that resolves inward", async () => {
+    const err = await blockedBy(
+      "http://169.254.169.254.nip.io/latest/meta-data/",
+      resolving("169.254.169.254"),
+    );
+    expect(err?.detail.code).toBe(TOOL_ERROR_CODES.WEB_FETCH_BLOCKED_TARGET);
+    expect(err?.detail.message).toContain("169.254.169.254");
+  });
+
+  /**
+   * ALL addresses, not just the first: a name answering with one public and one
+   * private address would otherwise pass and then connect to whichever the
+   * stack picked.
+   */
+  test("refuses when only one of several addresses is private", async () => {
+    expect(
+      await blockedBy(
+        "http://mixed.test/",
+        resolving("93.184.216.34", "10.1.2.3"),
+      ),
+    ).not.toBeNull();
+  });
+
+  test("refuses an IPv6 answer inside a private range", async () => {
+    expect(
+      await blockedBy("http://v6.test/", resolving("fd00:ec2::254")),
+    ).not.toBeNull();
+  });
+
+  test("allows a name that resolves only to public addresses", async () => {
+    expect(
+      await blockedBy("https://example.com/", resolving("93.184.216.34")),
+    ).toBeNull();
+  });
+
+  /** A name that will not resolve cannot be fetched either, so refusing is free. */
+  test("fails closed when the name does not resolve", async () => {
+    expect(
+      await blockedBy("http://nx.test/", async () => {
+        throw new Error("NXDOMAIN");
+      }),
+    ).not.toBeNull();
+  });
+
+  /** A literal address was already vetted as a string — resolving it costs a lookup and says nothing. */
+  test("does not resolve a literal address", async () => {
+    let called = false;
+    await blockedBy("https://8.8.8.8/", async () => {
+      called = true;
+      return [];
+    });
+    expect(called).toBe(false);
   });
 });
 

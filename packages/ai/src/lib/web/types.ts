@@ -4,7 +4,7 @@
  * Every web tool (`searchWeb`, `webFetch`, `webMap`) speaks these shapes; the
  * adapters under `lib/web/` translate them to and from whichever vendor is
  * configured. Two reasons this seam exists rather than tools calling an SDK
- * directly, as they did in the Tavily era:
+ * directly, as they did before the 2026-09 provider swap:
  *
  *  1. **The output contract is the UI contract.** A tool result is rendered by
  *     `<ChatbotToolsToolWebSearch>` and replayed forever out of stored
@@ -28,6 +28,29 @@ export interface WebSearchHit {
   favicon: string | null;
   /** Only when the source exposes one. */
   publishedDate: string | null;
+  /**
+   * When the search index last CRAWLED the page — not when the page was
+   * written.
+   *
+   * Load-bearing, and it was dropped until 2026-09-12 on the reasoning that
+   * only a publication date is "a fact about the source". That reasoning
+   * failed on exactly the class of page where it matters most. Traced on a
+   * real conversation: an apple.com product page last crawled 2026-07-21 came
+   * back quoting 2 999 €, a retailer crawled 2026-09-10 quoted 3 559 € for the
+   * same configuration, and BOTH arrived carrying `publishedDate: null`
+   * because a shop page publishes no date. The agent saw the contradiction,
+   * doubted itself four times in its reasoning, and settled it on domain
+   * authority — the only signal left to it. A price, a stock level or an
+   * opening time is a fact about the CRAWL, so the crawl date travels.
+   */
+  lastCrawled: string | null;
+  /**
+   * The page's own cover image (`og:image`), attached when the caller asked
+   * for previews. Best-effort: absent for a site that refuses our read.
+   */
+  image?: string | null;
+  /** The publisher's name for a link card, e.g. "MacGeneration". */
+  siteName?: string | null;
 }
 
 /** An image returned alongside hits when the caller asked for them. */
@@ -44,7 +67,7 @@ export interface WebSearchOutcome {
 export interface WebSearchRequest {
   /**
    * 1-5 keyword queries. Multi-query is the headline capability of the
-   * post-Tavily stack: the agent used to fire one `searchWeb` per phrasing and
+   * current stack: the agent used to fire one `searchWeb` per phrasing and
    * pay a full round-trip each time. Perplexity bills a request carrying up to
    * five queries as ONE unit, so every phrasing now rides a single call.
    */
@@ -62,6 +85,15 @@ export interface WebSearchRequest {
   publishedAfter?: string;
   /** ISO `YYYY-MM-DD`, inclusive. */
   publishedBefore?: string;
+  /**
+   * Only results the index has CRAWLED since this date (ISO `YYYY-MM-DD`).
+   *
+   * Distinct from `publishedAfter`, and the one that answers a volatile
+   * question: a shop page carries no publication date at all, so bounding on
+   * publication silently drops it while bounding on the crawl keeps it and
+   * drops the stale snapshot instead.
+   */
+  crawledAfter?: string;
   /** Relative freshness window; translated to each provider's native filter. */
   recency?: "hour" | "day" | "week" | "month" | "year";
   /** Search vertical. `academic` for research/standards, `sec` for filings. */
@@ -70,11 +102,6 @@ export interface WebSearchRequest {
   languages?: string[];
   /** ISO 3166-1 alpha-2, for geo-targeted results. */
   country?: string;
-  /**
-   * Also return images, harvested from the top hits. Costs one extract per
-   * page read, so it is opt-in and never implied.
-   */
-  includeImages?: boolean;
 }
 
 /**
@@ -117,8 +144,6 @@ export interface WebFetchRequest {
   fullContent?: boolean;
   /** Bypass the provider's content cache and fetch live. */
   fresh?: boolean;
-  /** Harvest the page's images (off by default — most fetches want text). */
-  withImages?: boolean;
   /** Correlates the calls of one agent task for better contextual ranking. */
   sessionId?: string;
 }

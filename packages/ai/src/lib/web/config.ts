@@ -91,6 +91,13 @@ export const timeouts = () => ({
   search: num(process.env.AI_WEB_SEARCH_TIMEOUT_MS, 20_000),
   fetch: num(process.env.AI_WEB_FETCH_TIMEOUT_MS, 30_000),
   map: num(process.env.AI_WEB_MAP_TIMEOUT_MS, 15_000),
+  /**
+   * Per-page deadline for a link-preview read (`page-meta.ts`). Short on
+   * purpose: the batch runs in parallel and is pure garnish, so one slow
+   * origin must not hold the search behind it. Measured on 20 sites, the
+   * slowest answered in ~1 s.
+   */
+  preview: num(process.env.AI_WEB_PREVIEW_TIMEOUT_MS, 5_000),
 });
 
 /**
@@ -128,12 +135,6 @@ export const budgets = () => ({
    * operator has a reason.
    */
   searchTokensPerPage: num(process.env.AI_WEB_SEARCH_TOKENS_PER_PAGE, 0),
-  /**
-   * Result pages read to harvest images when a search asks for them. Each one
-   * is an extract call ($0.001), so this is the price of the image strip and
-   * it is only ever paid when the model sets `include_images`.
-   */
-  searchImageSources: num(process.env.AI_WEB_SEARCH_IMAGE_SOURCES, 3),
   fetchCharsPerResult: num(process.env.AI_WEB_FETCH_CHARS_PER_RESULT, 12_000),
   fetchCharsTotal: num(process.env.AI_WEB_FETCH_CHARS_TOTAL, 90_000),
   /** Parallel's per-result excerpt cap when it serves search. */
@@ -164,7 +165,8 @@ export const prices = () => ({
  * result's hostname.
  *
  * No search API built for agents returns favicons — they return text — and
- * Tavily's, which did, were frequently `null`. So we derive them. The request
+ * the previous provider's, which did, were frequently `null`. So we derive
+ * them. The request
  * is issued by the USER'S browser when the `<img>` renders, never by this
  * service, which is why the operator lever matters: set
  * `AI_WEB_FAVICON_SERVICE=` (empty) to emit none and let the UI fall back to
@@ -184,3 +186,24 @@ export const faviconService = (): string | null => {
 export const mapUserAgent = (): string =>
   process.env.AI_WEB_MAP_USER_AGENT ??
   "FretikBot/1.0 (+https://fretik.com/bot)";
+
+/**
+ * User-Agent for a link-preview read. Same honesty as the map crawler and for
+ * the same reason — this is the only other request we make from our own IP —
+ * but it names the job, because `og:` tags exist to be read by preview bots and
+ * an origin deciding whether to serve them wants to know it is talking to one.
+ *
+ * Overridable. A deployment that measures a materially worse hit rate on the
+ * sites its teams actually cite can point it elsewhere without a code change.
+ */
+export const previewUserAgent = (): string =>
+  process.env.AI_WEB_PREVIEW_USER_AGENT ??
+  "FretikBot/1.0 (+https://fretik.com/bot; link preview)";
+
+/**
+ * Pages read to attach preview metadata to a search, when the caller asks for
+ * it. Costs no vendor money — it is our own `<head>` read — so the ceiling is
+ * about latency and politeness, not price.
+ */
+export const previewSources = (): number =>
+  num(process.env.AI_WEB_PREVIEW_SOURCES, 8);

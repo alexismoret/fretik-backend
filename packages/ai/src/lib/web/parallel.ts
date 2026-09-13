@@ -3,13 +3,13 @@ import type { SearchParams, UsageItem } from "parallel-web/resources/top-level";
 import { budgets, parallelApiKey, prices, timeouts } from "./config";
 import {
   nativeTimeoutMs,
+  WebConstraintUnsupportedError,
   WebProviderUnconfiguredError,
   withWebTimeout,
 } from "./errors";
 import {
   applyPublishedBefore,
   faviconFor,
-  imagesFromPages,
   joinExcerpts,
   normalizeDate,
   recencyToAfterDate,
@@ -32,7 +32,7 @@ import type {
  * one address collects blocks. Parallel runs a server-side headless browser
  * over its own egress, bills $1/1k URLs pay-as-you-go with no subscription, and
  * takes 20 URLs per call, so a batch of sources is one round-trip. Against the
- * Tavily `advanced` tier it replaces ($3.20/1k), it is 3.2× cheaper with the
+ * `advanced` tier it replaces ($3.20/1k), it is 3.2× cheaper with the
  * browser always on rather than behind a `depth` flag the model kept forgetting
  * to pass.
  *
@@ -89,9 +89,6 @@ const FRESH_FETCH_POLICY = {
   disable_cache_fallback: false,
 } as const;
 
-/** Images kept per fetched page, before the caller's own budget applies. */
-const MAX_IMAGES_PER_PAGE = 6;
-
 const searchCost = (
   usage: UsageItem[] | null | undefined,
   depth: WebSearchRequest["depth"],
@@ -134,6 +131,22 @@ export const parallelSearch = async (
 ): Promise<WebSearchOutcome & { cost: WebCallCost }> => {
   const timeoutMs = timeouts().search;
   const b = budgets();
+
+  // Refused rather than dropped — see `WebConstraintUnsupportedError`. These
+  // three change WHICH pages are eligible, so ignoring one answers a different
+  // question than the model asked, in a result that looks the same.
+  const unsupported = [
+    ...(request.mode !== undefined && request.mode !== "web"
+      ? [`mode "${request.mode}"`]
+      : []),
+    ...(request.languages === undefined || request.languages.length === 0
+      ? []
+      : ["languages"]),
+    ...(request.crawledAfter === undefined ? [] : ["crawled_after"]),
+  ];
+  if (unsupported.length > 0) {
+    throw new WebConstraintUnsupportedError("Parallel", unsupported);
+  }
 
   // Parallel bounds a search from below only. `recency` collapses onto the same
   // bound, and the upper one is applied locally once results are back.
@@ -181,6 +194,10 @@ export const parallelSearch = async (
     content: joinExcerpts(r.excerpts),
     favicon: faviconFor(r.url),
     publishedDate: normalizeDate(r.publish_date),
+    // Parallel exposes a publish date and no crawl date. Null rather than
+    // borrowed: a freshness signal that silently means something else is worse
+    // than none, and the field is what the agent reasons about on volatile facts.
+    lastCrawled: null,
   }));
 
   return {
@@ -213,10 +230,7 @@ export const parallelFetch = async (
 ): Promise<WebFetchOutcome & { cost: WebCallCost }> => {
   const timeoutMs = timeouts().fetch;
   const b = budgets();
-  // Images live in the page body, which excerpts deliberately cut away — so
-  // asking for images implies asking for the whole page.
-  const wantsFullContent =
-    request.fullContent === true || request.withImages === true;
+  const wantsFullContent = request.fullContent === true;
 
   const response = await withWebTimeout(
     "fetch",
@@ -261,33 +275,14 @@ export const parallelFetch = async (
     publishDate: r.publish_date,
   }));
 
-  // Harvested across the BATCH rather than page by page, because separating an
-  // illustration from site furniture depends on seeing what the pages have in
-  // common — a logo is on all of them, a photograph on one.
-  const images =
-    request.withImages === true
-      ? imagesFromPages(
-          pages.map((p) => ({
-            url: p.url,
-            title: p.title,
-            markdown: p.content,
-          })),
-          MAX_IMAGES_PER_PAGE,
-        )
-      : undefined;
-
   return {
-    results: pages.map((p) => {
-      const pageImages = images?.get(p.url) ?? [];
-      return {
-        url: p.url,
-        title: p.title,
-        content: p.content,
-        favicon: faviconFor(p.url),
-        publishedDate: normalizeDate(p.publishDate),
-        ...(pageImages.length > 0 ? { images: pageImages } : {}),
-      };
-    }),
+    results: pages.map((p) => ({
+      url: p.url,
+      title: p.title,
+      content: p.content,
+      favicon: faviconFor(p.url),
+      publishedDate: normalizeDate(p.publishDate),
+    })),
     failed: response.errors.map((e) => ({
       url: e.url,
       error: e.error_type,

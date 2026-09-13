@@ -10,10 +10,10 @@ import { assertFetchableTarget, WebEgressError } from "../lib/web-egress";
  *
  * The cheap half of "find the right page, then read it", and since 2026-09
  * cheap literally: discovery reads `robots.txt` and `sitemap.xml`, two files
- * published for robots to read, so it costs nothing at all where the Tavily
- * `/map` it replaces billed ~1 credit per 10 discovered pages and doubled that
- * for semantic filtering. Both the crawl and the filter are now free, which is
- * why `select_paths` and `search` can be applied generously.
+ * published for robots to read, so it costs nothing at all where the hosted
+ * `/map` endpoint it replaces billed ~1 credit per 10 discovered pages and
+ * doubled that for semantic filtering. Both the crawl and the filter are now
+ * free, which is why `select_paths` and `search` can be applied generously.
  *
  * Crawling (map + extract in one shot) is deliberately NOT exposed: it pulls
  * whole page bodies the model did not choose.

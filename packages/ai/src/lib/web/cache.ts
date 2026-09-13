@@ -29,12 +29,20 @@ const VERSION = "v1";
 /**
  * Key from the operation and its normalized arguments.
  *
- * Hashed because a search key would otherwise carry the raw query — and Redis
- * keys surface in logs, `SCAN` output and metrics, where a user's question does
- * not belong. `Bun.hash` rather than a cryptographic digest because this is a
- * lookup key, not a security boundary: nothing downstream trusts it, and the
- * only cost of the vanishingly unlikely collision is one wrong cache hit inside
- * a 15-minute window. Base-36 keeps it short in the key space.
+ * Hashed to keep the raw query out of the key space — Redis keys surface in
+ * logs, `SCAN` output and metrics. It is a tidiness measure and not a privacy
+ * boundary: whoever can read these keys can read the cached VALUES next to
+ * them, which hold the results in full.
+ *
+ * `Bun.hash` here despite the project rule banning it for a persisted hash,
+ * because that rule's reason does not reach this key. It is banned because
+ * Wyhash is an alias with no cross-version stability guarantee, so a Bun
+ * upgrade silently changes every digest — which for a `content_hash` means
+ * re-embedding the entire corpus. The blast radius here is one cold cache
+ * window after a deploy that already restarted the process. Collisions are the
+ * same non-event: one wrong hit inside a 15-minute TTL, at 64 bits.
+ *
+ * Base-36 keeps it short in the key space.
  */
 export const webCacheKey = (
   operation: string,

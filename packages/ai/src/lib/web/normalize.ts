@@ -1,6 +1,5 @@
 import { hostFromUrl } from "../web-egress";
 import { faviconService } from "./config";
-import type { WebImage } from "./types";
 
 /**
  * Shared normalisation applied to every provider's output, so a hit looks the
@@ -13,7 +12,7 @@ import type { WebImage } from "./types";
  * Search APIs built for agents return text, not chrome: neither Perplexity nor
  * Parallel carries a favicon field. Deriving it keeps the `favicon` key on the
  * output contract the frontend already renders — no component change, no broken
- * history — and is in practice more reliable than the Tavily field it replaces,
+ * history — and is in practice more reliable than the provider field it replaces,
  * which was often `null`. Returns `null` when the operator emptied
  * `AI_WEB_FAVICON_SERVICE` or the URL has no parseable host; the UI then shows
  * its globe icon.
@@ -33,7 +32,8 @@ export const faviconFor = (url: string): string | null => {
  * The elision marker earns its place twice: it tells the MODEL the passages are
  * discontinuous — without it two unrelated sentences read as one quotation and
  * get cited as contiguous source text — and it gives the UI's `line-clamp-2` a
- * clean first line. `[...]` is the marker Tavily used for chunked extracts, so
+ * clean first line. `[...]` is the marker the previous stack used for chunked
+ * extracts, so
  * stored conversations and new ones read alike.
  */
 export const joinExcerpts = (excerpts: readonly string[]): string =>
@@ -93,7 +93,7 @@ export const recencyToAfterDate = (
 /**
  * Keep only URLs whose PATH matches one of the regexes.
  *
- * `webMap`'s path filter used to be served by the provider (Tavily's
+ * `webMap`'s path filter used to be served by the provider (the old
  * `select_paths`); sitemap discovery has no such notion, so it runs here. Free,
  * and strictly more predictable than a server-side matcher: the pattern is
  * anchored nowhere, matching the old semantics. An unparseable pattern drops
@@ -117,121 +117,4 @@ export const matchesSelectPaths = (
       return true;
     }
   });
-};
-
-/** Markdown image syntax: `![alt](url "optional title")`. */
-const MARKDOWN_IMAGE = /!\[([^\]]*)\]\(\s*(<[^>]*>|[^\s)]+)[^)]*\)/g;
-
-/**
- * Obvious page furniture, by filename. A cheap first pass and NOT the main
- * defence: it only catches images whose path says what they are, and a CDN
- * serving `/a1b2c3d4.png` for the site logo defeats it completely. The signal
- * that generalises is repetition across pages, below.
- */
-const IMAGE_NOISE =
-  /(^|\/)(logo|logos|icons?|favicons?|avatars?|sprites?|badges?|buttons?|pixel|spacer|placeholder|thumb(?:nail)?s?-?\d{0,3}x\d{0,3})[-._/]|\/(1x1|blank)\./i;
-
-/** Extensions that are chrome or vector art rather than photography. */
-const IMAGE_SKIP_EXT = /\.(svg|gif|ico|webmanifest)(\?|#|$)/i;
-
-/** One page's contribution to the image harvest. */
-export interface PageImageSource {
-  url: string;
-  title: string | null;
-  markdown: string;
-}
-
-/** Every image a page's Markdown references, in document order, deduped. */
-const candidatesOf = (markdown: string): WebImage[] => {
-  const seen = new Set<string>();
-  const found: WebImage[] = [];
-
-  for (const match of markdown.matchAll(MARKDOWN_IMAGE)) {
-    const alt = (match[1] ?? "").trim();
-    let url = (match[2] ?? "").trim();
-    // Markdown allows the destination to be wrapped in angle brackets.
-    if (url.startsWith("<") && url.endsWith(">")) url = url.slice(1, -1);
-
-    // A data URI would be inlined into the tool result and spend the context
-    // budget on a thumbnail; only an addressable image is worth returning.
-    if (!/^https?:\/\//i.test(url)) continue;
-    if (IMAGE_SKIP_EXT.test(url) || IMAGE_NOISE.test(url)) continue;
-    if (seen.has(url)) continue;
-
-    seen.add(url);
-    found.push(alt.length > 0 ? { url, description: alt } : { url });
-  }
-
-  return found;
-};
-
-/**
- * Harvest the displayable images of a batch of fetched pages.
- *
- * This is how the image strip survives the move off Tavily. Neither search
- * provider returns images, but a fetched page comes back as MARKDOWN and
- * Markdown carries its `![alt](url)` — so the illustrations of pages we are
- * already paying to read come free, and each one belongs to a source the agent
- * can cite, which Tavily's query-matched images did not.
- *
- * Separating an illustration from site furniture is the whole difficulty, and
- * a filename blocklist only works on sites that name their files honestly. The
- * signal that generalises is **repetition across the batch**: a logo, an author
- * avatar or a share button appears on EVERY page of a site, while the photo
- * that illustrates an article appears on one. So an image carried by a
- * majority of the pages fetched together is dropped whatever its URL looks
- * like — which catches the hashed-filename logo no pattern can.
- *
- * That signal needs more than one page to exist. A single-page fetch falls back
- * to the blocklist alone and is therefore the weakest case, which is also why
- * the agent is told to batch related URLs.
- *
- * Two limits stay, and are documented rather than papered over: a caption is
- * the image's alt text (or the page title when the alt is empty), never the
- * model-written description Tavily generated; and a page whose only
- * illustration lives in an `og:image` meta tag, outside the body, contributes
- * nothing at all.
- */
-export const imagesFromPages = (
-  pages: readonly PageImageSource[],
-  limitPerPage: number,
-): Map<string, WebImage[]> => {
-  const perPage = pages.map((page) => ({
-    page,
-    candidates: candidatesOf(page.markdown),
-  }));
-
-  // How many DISTINCT pages carry each image.
-  const pagesCarrying = new Map<string, number>();
-  for (const { candidates } of perPage) {
-    for (const image of candidates) {
-      pagesCarrying.set(image.url, (pagesCarrying.get(image.url) ?? 0) + 1);
-    }
-  }
-
-  // Chrome = present on a strict majority, and on at least two pages so a
-  // single-page batch never suppresses its own content.
-  const isChrome = (url: string): boolean => {
-    const carrying = pagesCarrying.get(url) ?? 0;
-    return carrying >= 2 && carrying * 2 > perPage.length;
-  };
-
-  const out = new Map<string, WebImage[]>();
-  for (const { page, candidates } of perPage) {
-    const kept: WebImage[] = [];
-    for (const image of candidates) {
-      if (kept.length >= limitPerPage) break;
-      if (isChrome(image.url)) continue;
-      // An empty alt is common and leaves a gallery tile captionless; the page
-      // title at least says what the reader is looking at.
-      if (image.description === undefined && page.title !== null) {
-        kept.push({ url: image.url, description: page.title });
-      } else {
-        kept.push(image);
-      }
-    }
-    out.set(page.url, kept);
-  }
-
-  return out;
 };

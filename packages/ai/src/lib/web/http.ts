@@ -1,16 +1,25 @@
-import { assertFetchableTarget } from "../web-egress";
+import {
+  assertFetchableTarget,
+  assertResolvedTargetAllowed,
+} from "../web-egress";
 import { mapUserAgent } from "./config";
 
 /**
  * The one place this service fetches the open web itself.
  *
- * Everything an agent reads goes through a provider — `webFetch` runs on
+ * Everything an agent READS goes through a provider — `webFetch` runs on
  * Parallel's headless browser precisely so page retrieval happens on their
- * egress and not from our single datacenter address. The exception is site
- * discovery: `robots.txt` and `sitemap.xml` are published FOR robots, are
- * served as static text by the origin rather than by a bot-detection layer,
- * and cost nothing. That narrow case is what this helper exists for, and it is
- * deliberately not exported as a general fetch.
+ * egress and not from our single datacenter address. Two narrow cases are
+ * served here instead, and neither is a general fetch:
+ *
+ *  - **site discovery** — `robots.txt` and `sitemap.xml` are published FOR
+ *    robots, served as static text by the origin rather than by a
+ *    bot-detection layer, and cost nothing;
+ *  - **link previews** — the `<head>` of a page we are already citing, for its
+ *    `og:` card metadata (`page-meta.ts`). Measured 2026-09-12: Parallel's
+ *    extract returns Markdown with every image stripped, so a preview image
+ *    cannot come from the provider at any price. The read is head-sized,
+ *    opt-in, and degrades to no image rather than failing the answer.
  *
  * Because it makes `web-egress.ts` load-bearing for the first time — until now
  * every fetch happened at a vendor, as that module's own comment admits — the
@@ -55,13 +64,36 @@ export interface SafeFetchResult {
   body: Uint8Array<ArrayBuffer>;
 }
 
+export interface SafeFetchOptions {
+  timeoutMs: number;
+  maxBytes?: number;
+  /**
+   * `Accept` for this call. Defaults to the text/XML set site discovery wants;
+   * a preview read asks for HTML, and some origins content-negotiate on it.
+   */
+  accept?: string;
+  /** Overrides `mapUserAgent()` — see `previewUserAgent()` for why. */
+  userAgent?: string;
+  /**
+   * Stop reading as soon as the document's `</head>` has arrived. For a link
+   * preview, everything after it is bandwidth nobody reads.
+   */
+  stopAtHead?: boolean;
+}
+
 /**
  * Fetch a public URL with the full guard rail. Throws `WebEgressError` when a
  * target — original or redirected — is not a legitimate public destination.
  */
 export const safeFetch = async (
   url: string,
-  { timeoutMs, maxBytes = MAX_BYTES }: { timeoutMs: number; maxBytes?: number },
+  {
+    timeoutMs,
+    maxBytes = MAX_BYTES,
+    accept = "text/plain, application/xml, text/xml, */*;q=0.5",
+    userAgent,
+    stopAtHead = false,
+  }: SafeFetchOptions,
 ): Promise<SafeFetchResult> => {
   const controller = new AbortController();
   const deadline = setTimeout(() => controller.abort(), timeoutMs);
@@ -70,15 +102,19 @@ export const safeFetch = async (
     let current = url;
 
     for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
-      // Re-validated on EVERY hop, not just the first.
+      // Re-validated on EVERY hop, not just the first — a redirect is the
+      // cheapest way to turn a vetted URL into an unvetted one. The name is
+      // checked as a string first (cheap, catches literal addresses and the
+      // domain policy), then as what it actually RESOLVES to.
       assertFetchableTarget(current);
+      await assertResolvedTargetAllowed(current);
 
       const response = await fetch(current, {
         redirect: "manual",
         signal: controller.signal,
         headers: {
-          "User-Agent": mapUserAgent(),
-          Accept: "text/plain, application/xml, text/xml, */*;q=0.5",
+          "User-Agent": userAgent ?? mapUserAgent(),
+          Accept: accept,
         },
       });
 
@@ -107,7 +143,7 @@ export const safeFetch = async (
         finalUrl: current,
         status: response.status,
         contentType: response.headers.get("content-type"),
-        body: await readCapped(response, maxBytes),
+        body: await readCapped(response, maxBytes, stopAtHead),
       };
     }
 
@@ -118,21 +154,96 @@ export const safeFetch = async (
 };
 
 /**
- * Read a response body, stopping at `maxBytes`.
+ * `</head` as bytes, for the early stop below.
+ *
+ * Matched on bytes rather than decoded text because the charset is not known
+ * until the document says so, and this literal is ASCII — identical in UTF-8,
+ * latin-1 and every windows-125x page we might meet.
+ */
+const HEAD_CLOSE = [0x3c, 0x2f, 0x68, 0x65, 0x61, 0x64];
+
+/** Seen `</head`, now looking for the `>` that closes it. */
+const AWAITING_GT = HEAD_CLOSE.length;
+
+/** The whole tag has arrived. */
+export const HEAD_MATCHED = HEAD_CLOSE.length + 1;
+
+const isSpace = (byte: number): boolean =>
+  byte === 0x20 || byte === 0x09 || byte === 0x0a || byte === 0x0d;
+
+/** Lowercased, so the scan matches `</HEAD` and `</Head` too. */
+const lower = (byte: number): number =>
+  byte >= 0x41 && byte <= 0x5a ? byte + 0x20 : byte;
+
+/**
+ * Advance the `</head>` match over one chunk, returning the state to carry into
+ * the next. `HEAD_MATCHED` means the whole tag has arrived.
+ *
+ * Carried ACROSS chunks rather than searched within each, because a seven-byte
+ * literal is routinely split by a TCP segment and a per-chunk search would miss
+ * it — silently, by reading the whole body instead of stopping.
+ *
+ * The closing `>` is part of the match, and that is not pedantry: `</head` is a
+ * prefix of `</header>`, and a `<script type="application/ld+json">` inside the
+ * head can carry markup. Stopping there would truncate the head and lose every
+ * tag below it — which is the one way this optimisation could cost metadata
+ * rather than bandwidth.
+ */
+export const advanceHeadMatch = (
+  chunk: Uint8Array,
+  matched: number,
+): number => {
+  let state = matched;
+  for (const byte of chunk) {
+    if (state === HEAD_MATCHED) return state;
+
+    if (state === AWAITING_GT) {
+      if (byte === 0x3e) state = HEAD_MATCHED;
+      else if (isSpace(byte)) continue;
+      else state = byte === HEAD_CLOSE[0] ? 1 : 0;
+      continue;
+    }
+
+    if (lower(byte) === HEAD_CLOSE[state]) {
+      state += 1;
+    } else {
+      // `<` can only ever restart the match, never continue it — true because
+      // no proper prefix of `</head` is also one of its suffixes.
+      state = byte === HEAD_CLOSE[0] ? 1 : 0;
+    }
+  }
+  return state;
+};
+
+/**
+ * Read a response body, stopping at `maxBytes` — or as soon as `stopAtHead`
+ * has seen the end of the document's `<head>`.
  *
  * Streamed rather than `arrayBuffer()`d on purpose: `Content-Length` is a hint
  * a hostile origin controls, so the cap has to be enforced against the bytes
  * that actually arrive.
+ *
+ * The early stop is what makes always-on link previews cheap. Every `og:` tag
+ * lives in the `<head>`, and reading past it is pure waste on someone else's
+ * bandwidth as well as ours: measured over eight real pages, a batch pulled
+ * **2 322 KB** to the byte cap and **884 KB** stopping at `</head>` — the same
+ * metadata for 38 % of the traffic, and sooner.
+ *
+ * The match runs across chunk boundaries (a six-byte literal is easily split
+ * by a TCP segment) with a state machine rather than a per-chunk search, which
+ * `</head` allows because no proper prefix of it is also a suffix.
  */
 const readCapped = async (
   response: Response,
   maxBytes: number,
+  stopAtHead = false,
 ): Promise<Uint8Array<ArrayBuffer>> => {
   const reader = response.body?.getReader();
   if (reader === undefined) return new Uint8Array();
 
   const chunks: Uint8Array[] = [];
   let total = 0;
+  let matched = 0;
 
   for (;;) {
     const { done, value } = await reader.read();
@@ -141,6 +252,14 @@ const readCapped = async (
 
     chunks.push(value);
     total += value.byteLength;
+
+    if (stopAtHead) {
+      matched = advanceHeadMatch(value, matched);
+      if (matched === HEAD_MATCHED) {
+        await reader.cancel();
+        break;
+      }
+    }
 
     if (total >= maxBytes) {
       await reader.cancel();

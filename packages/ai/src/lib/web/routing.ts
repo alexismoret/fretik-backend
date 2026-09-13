@@ -1,11 +1,12 @@
 import { hostFromUrl, isUrlDenied } from "../web-egress";
 import {
-  budgets,
   effectiveSearchProvider,
+  previewSources,
   searchFallbackProvider,
   type WebSearchProvider,
 } from "./config";
 import { WebProviderUnconfiguredError } from "./errors";
+import type { PageMetadata } from "./page-meta";
 import type {
   WebCallCost,
   WebImage,
@@ -71,39 +72,94 @@ export const filterHits = (
   };
 };
 
-/** Reads pages and returns the images found on them. */
-export type ImageHarvester = (
+/** Reads the `<head>` of each URL and returns what it found, keyed by URL. */
+export type PreviewReader = (
   urls: string[],
-) => Promise<{ results: { images?: WebImage[] }[] }>;
+) => Promise<Map<string, PageMetadata>>;
 
 /**
- * Images for a search, read out of the pages the search itself returned.
+ * Attach each top hit's own cover image and publisher, and collect the images
+ * into a strip.
  *
- * Search APIs built for agents return text, so the image strip has to be
- * harvested — and the only honest place to harvest it from is the sources the
- * answer is about to cite. That keeps the affordance the Tavily tool had (ask
- * for images, get images, without first choosing a page to open) while every
- * picture still belongs to a result the model can point at.
+ * **Why the pages and not a provider.** Neither search backend returns images,
+ * and — measured 2026-09-12 — neither does the fetch backend: Parallel's
+ * extract strips every `![](…)` out of the Markdown it produces, so the
+ * previous design could not return a picture at any price. What a page always
+ * has is its own `og:image`, the tag it publishes so that a link to it looks
+ * right. Reading that keeps the affordance the old tool had (ask for images,
+ * get images) and gives every picture a source the model can cite — which the
+ * query-matched images of an image index never did.
  *
- * Opt-in and priced: one extract per page read, paid only when the caller asks.
- * And it never fails the search — a provider error or a missing key costs the
- * strip, not the answer, because a garnish that can sink the dish is worse than
- * no garnish.
+ * One image per hit rather than a page's whole illustration set: `og:image` is
+ * the picture the publisher CHOSE for this page, so there is no site furniture
+ * to tell apart from content and no heuristic to get wrong.
+ *
+ * It never fails the search. A blocked origin, a page with no card metadata, a
+ * timeout — each costs that hit its picture and nothing else, because a
+ * garnish that can sink the dish is worse than no garnish.
  */
-export const harvestImages = async (
-  results: readonly { url: string }[],
-  harvester: ImageHarvester,
-  sources: number = budgets().searchImageSources,
-): Promise<WebImage[]> => {
-  const urls = results.slice(0, sources).map((r) => r.url);
-  if (urls.length === 0) return [];
+export const attachPreviews = async (
+  outcome: WebSearchOutcome,
+  reader: PreviewReader,
+  sources: number = previewSources(),
+): Promise<WebSearchOutcome> => {
+  const urls = outcome.results.slice(0, sources).map((r) => r.url);
+  if (urls.length === 0) return outcome;
 
+  let previews: Map<string, PageMetadata>;
   try {
-    const fetched = await harvester(urls);
-    return fetched.results.flatMap((page) => page.images ?? []);
+    previews = await reader(urls);
   } catch {
-    return [];
+    return outcome;
   }
+
+  const results = outcome.results.map((hit) => {
+    const meta = previews.get(hit.url);
+    // A hit we could not read still gets a publisher: the host is what a card
+    // would show anyway, and an always-present field is one the model can use
+    // without first checking whether it is there.
+    const siteName =
+      meta?.siteName ?? hostFromUrl(hit.url)?.replace(/^www\./i, "");
+    // `og:image` names a host of the page's choosing — usually a CDN, and
+    // never one `filterHits` vetted. This runs AFTER that filter, so the
+    // deployment's blocklist has to be applied again here or an image would
+    // be the one way past it.
+    const image =
+      meta?.image == null || isUrlDenied(meta.image) ? null : meta.image;
+    return {
+      ...hit,
+      ...(image === null ? {} : { image }),
+      ...(siteName === undefined ? {} : { siteName }),
+    };
+  });
+
+  /**
+   * The strip drops a picture two hits share.
+   *
+   * Not deduplication for tidiness: an `og:image` that serves more than one
+   * page is the SITE's default, not that page's illustration — measured,
+   * cdiscount.com answers every product URL with its header logo. One
+   * occurrence is indistinguishable from a real cover and is kept; a repeat
+   * proves the picture says nothing about the page. The card keeps it either
+   * way, because the publisher chose it to represent the link.
+   */
+  const seen = new Map<string, number>();
+  for (const hit of results) {
+    if (hit.image != null) seen.set(hit.image, (seen.get(hit.image) ?? 0) + 1);
+  }
+
+  const images: WebImage[] = results.flatMap((hit) =>
+    hit.image == null || (seen.get(hit.image) ?? 0) > 1
+      ? []
+      : [
+          {
+            url: hit.image,
+            ...(hit.title === null ? {} : { description: hit.title }),
+          },
+        ],
+  );
+
+  return { results, images };
 };
 
 /** Marker for "the provider answered, with nothing" — a failure the agent cannot distinguish from an error. */
@@ -132,9 +188,20 @@ export const searchWithFallback = async (
   }
 
   let primaryError: unknown;
+  /**
+   * What the primary billed before giving up.
+   *
+   * A search that comes back EMPTY is still a search the vendor charges for —
+   * Perplexity bills per request, not per result — so reporting only the
+   * fallback's cost would under-count every fallback by exactly one call, and
+   * silently: the trace would look like one search because one search
+   * succeeded. Known only on the empty path; a throw carries no usage.
+   */
+  let primarySpent = 0;
   try {
     const outcome = await adapters[primary](request);
     if (outcome.results.length > 0) return { ...outcome, provider: primary };
+    primarySpent = outcome.cost.costUsd;
     primaryError = new Error(NO_RESULTS);
   } catch (err) {
     primaryError = err;
@@ -161,9 +228,11 @@ export const searchWithFallback = async (
     provider: fallback,
     cost: {
       ...outcome.cost,
+      costUsd: outcome.cost.costUsd + primarySpent,
       metadata: {
         ...outcome.cost.metadata,
         fallbackFrom: primary,
+        ...(primarySpent > 0 ? { fallbackFromCostUsd: primarySpent } : {}),
         reason:
           primaryError instanceof Error ? primaryError.message : "unknown",
       },

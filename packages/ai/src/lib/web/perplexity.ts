@@ -15,8 +15,8 @@ import type { WebCallCost, WebSearchOutcome, WebSearchRequest } from "./types";
  * provider-swap benchmarks that both hold the model and harness fixed:
  * Perplexity Search takes the TOP THREE places on the Artificial Analysis
  * Search Index (medium scores 80 against 75 for the previous leaders), and
- * leads OpenBenchmarks' search-only board at 77.3% where Tavily — the stack
- * this replaces — scores 47.3%. See `backend/docs/WEB-RESEARCH.md`.
+ * leads OpenBenchmarks' search-only board at 77.3% where the stack this
+ * replaces scored 47.3%. See `backend/docs/WEB-RESEARCH.md`.
  *
  * Three properties of the API shape the tool above it:
  *
@@ -27,7 +27,7 @@ import type { WebCallCost, WebSearchOutcome, WebSearchRequest } from "./types";
  *    low, medium and high, so the depth dial is purely quality/latency/context
  *    and never an arbitration on price — which is why the tool can expose it
  *    without teaching the model a cost model.
- *  - **The filters are a superset of what the Tavily tool exposed.** Both date
+ *  - **The filters are a superset of what the old tool exposed.** Both date
  *    bounds, a relative recency preset, domain allow/deny, language, country,
  *    and the `academic` / `sec` verticals.
  *
@@ -74,6 +74,26 @@ const CONTEXT_SIZE = {
  * both are given — it is the stronger constraint, and the caller's exclusions
  * are then applied locally by the caller.
  */
+/**
+ * ISO `YYYY-MM-DD` → the `MM/DD/YYYY` the date filters demand.
+ *
+ * Not cosmetic. Measured 2026-09-12, every date filter REJECTS an ISO date:
+ * `search_after_date_filter '2026-09-01' must be in MM/DD/YYYY format`, HTTP
+ * 400. Until this existed, any `published_after` / `published_before` search
+ * threw — and, because the routing treats a throw as an outage, fell through
+ * to the fallback provider. A date-bounded search silently ran on the wrong
+ * backend instead of failing loudly.
+ *
+ * A value that is not an ISO date is passed through untouched: the tool schema
+ * already enforces the shape, and inventing a date here would be worse than
+ * letting the provider reject one.
+ */
+export const toUsDate = (iso: string): string => {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  if (match === null) return iso;
+  return `${match[2]}/${match[3]}/${match[1]}`;
+};
+
 const domainFilter = (
   include: string[] | undefined,
   exclude: string[] | undefined,
@@ -127,10 +147,13 @@ export const perplexitySearch = async (
         ...(domains === undefined ? {} : { search_domain_filter: domains }),
         ...(request.publishedAfter === undefined
           ? {}
-          : { search_after_date_filter: request.publishedAfter }),
+          : { search_after_date_filter: toUsDate(request.publishedAfter) }),
         ...(request.publishedBefore === undefined
           ? {}
-          : { search_before_date_filter: request.publishedBefore }),
+          : { search_before_date_filter: toUsDate(request.publishedBefore) }),
+        ...(request.crawledAfter === undefined
+          ? {}
+          : { last_updated_after_filter: toUsDate(request.crawledAfter) }),
         ...(request.recency === undefined
           ? {}
           : { search_recency_filter: request.recency }),
@@ -150,9 +173,12 @@ export const perplexitySearch = async (
       url: r.url,
       content: r.snippet,
       favicon: faviconFor(r.url),
-      // `date` is the publication date; `last_updated` is the crawl. Only the
-      // former is a fact about the source, so it is the one that is shown.
+      // `date` is when the page was published, `last_updated` when the index
+      // last crawled it. BOTH travel: a shop page publishes no date, so the
+      // crawl is the only freshness signal a price or a stock level has. See
+      // `WebSearchHit.lastCrawled` for the incident that proves it.
       publishedDate: normalizeDate(r.date),
+      lastCrawled: normalizeDate(r.last_updated),
     })),
     images: [],
     cost: searchCost(request),

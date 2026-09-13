@@ -29,7 +29,9 @@ export const createWebSearchTool = () =>
       "",
       "Tune the rest to the question: `depth` trades content per result against speed at NO extra cost, so raise it when snippets came back thin and lower it for a quick lookup; `recency` or `published_after`/`published_before` to bound time; `include_domains` to trust specific sources; `mode: 'academic'` for research, standards and publications, `'sec'` for the regulatory filings of listed companies; `languages` when the answer lives in a language other than the question's.",
       "",
-      "Returns per hit: `title`, `url`, `content` (the source's own words), `favicon`, and `publishedDate` when exposed. Cite every claim with `[Page title](URL)`. Set `include_images` whenever the subject is visual — a place, a product, a person, a work, an event — and show what comes back in a `::gallery`, without waiting to be asked.",
+      "Returns per hit: `title`, `url`, `content` (the source's own words), `favicon`, `publishedDate` when exposed, and `lastCrawled` — the day the index last read that page. On a VOLATILE fact (price, stock, rate, schedule, headcount, anything that changes without the page being republished) `content` is a snapshot taken on `lastCrawled`, not today's page: prefer the freshest sources, say the date you are quoting, and when they disagree trust the recent crawl over the authoritative domain. Cite every claim with `[Page title](URL)`.",
+      "",
+      "Every hit also carries its publisher as `siteName` and, when the page publishes one, its own cover `image` — nothing to ask for. Those are what `::link-cards` renders when the answer is a set of places to open, and `::gallery` when the pictures themselves are the point.",
     ].join("\n"),
     inputSchema: z.object({
       queries: z
@@ -68,6 +70,13 @@ export const createWebSearchTool = () =>
         .regex(ISO_DATE)
         .optional()
         .describe("Only pages published on or before this date (YYYY-MM-DD)"),
+      crawled_after: z
+        .string()
+        .regex(ISO_DATE)
+        .optional()
+        .describe(
+          "Only pages the index has re-read since this date (YYYY-MM-DD). The filter for a volatile fact: a shop or listing page carries no publication date, so `published_after` drops it while this one keeps it and drops the stale snapshot instead.",
+        ),
       include_domains: z
         .array(z.string())
         .max(20)
@@ -100,12 +109,6 @@ export const createWebSearchTool = () =>
         .describe(
           'ISO 3166-1 alpha-2 country code for geo-targeted results, e.g. "FR"',
         ),
-      include_images: z
-        .boolean()
-        .optional()
-        .describe(
-          "Also return images, taken from the pages the search found. Set it whenever the subject is visual.",
-        ),
     }),
     execute: async (
       {
@@ -115,12 +118,12 @@ export const createWebSearchTool = () =>
         recency,
         published_after,
         published_before,
+        crawled_after,
         include_domains,
         exclude_domains,
         mode,
         languages,
         country,
-        include_images,
       },
       options,
     ) => {
@@ -139,6 +142,9 @@ export const createWebSearchTool = () =>
           ...(published_before === undefined
             ? {}
             : { publishedBefore: published_before }),
+          ...(crawled_after === undefined
+            ? {}
+            : { crawledAfter: crawled_after }),
           ...(include_domains === undefined
             ? {}
             : { includeDomains: include_domains }),
@@ -148,9 +154,6 @@ export const createWebSearchTool = () =>
           ...(mode === undefined ? {} : { mode }),
           ...(languages === undefined ? {} : { languages }),
           ...(country === undefined ? {} : { country }),
-          ...(include_images === undefined
-            ? {}
-            : { includeImages: include_images }),
         });
 
         const payload = {

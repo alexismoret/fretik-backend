@@ -130,7 +130,7 @@ export const TOOL_ERROR_CODES = {
   // Web. One timeout code for every provider: the model's recourse is the
   // same whoever was slow — narrow the call or try a different route — and a
   // vendor name in an error code is a rename waiting to happen (this one was
-  // `TAVILY_TIMEOUT` until 2026-09).
+  // vendor-named until 2026-09).
   WEB_TIMEOUT: "WEB_TIMEOUT",
   WEB_FETCH_ERROR: "WEB_FETCH_ERROR",
   WEB_FETCH_EMPTY: "WEB_FETCH_EMPTY",

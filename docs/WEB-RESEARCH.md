@@ -1,8 +1,13 @@
 # Web research stack — decision record
 
 Why `searchWeb` / `webFetch` / `webMap` are backed by what they are backed by,
-what was measured, and what it costs. Written 2026-09-12, when Tavily was
-replaced.
+what was measured, and what it costs. Written 2026-09-12, when the previous
+single-vendor stack was replaced.
+
+The tables in §3 are quoted from two published third-party benchmarks and keep
+every vendor's name, the one we left included: anonymising a row of someone
+else's measurement would make the evidence unreadable. Nowhere else in the
+codebase does that vendor appear.
 
 Code: `packages/ai/src/lib/web/`. Operator variables: `packages/ai/.env.example`,
 `docs/OPERATIONS.md`.
@@ -11,11 +16,11 @@ Code: `packages/ai/src/lib/web/`. Operator variables: `packages/ai/.env.example`
 
 ## 1. What changed
 
-| Tool        | Before            | After                                        |
-| ----------- | ----------------- | -------------------------------------------- |
-| `searchWeb` | Tavily `/search`  | **Perplexity** `/search`                     |
-| `webFetch`  | Tavily `/extract` | **Parallel** `/v1/extract`                   |
-| `webMap`    | Tavily `/map`     | **`robots.txt` + `sitemap.xml`** — no vendor |
+| Tool        | Before               | After                                        |
+| ----------- | -------------------- | -------------------------------------------- |
+| `searchWeb` | one vendor `/search` | **Perplexity** `/search`                     |
+| `webFetch`  | the same `/extract`  | **Parallel** `/v1/extract`                   |
+| `webMap`    | the same `/map`      | **`robots.txt` + `sitemap.xml`** — no vendor |
 
 Perplexity is the preferred search backend, Parallel is both the alternative
 (`AI_WEB_SEARCH_PROVIDER=parallel`) and the automatic fallback. Availability is
@@ -78,8 +83,8 @@ fixed at `gpt-5.6-sol`, mean ± SD over 3 runs, budgets fixed at 32 turns /
 
 ### What the two boards agree on
 
-- **Tavily is last or near it on both.** 59-60% against 77-83 for the leaders on
-  the same tasks, and 47.3% search-only. This was the decision.
+- **The stack we were on is last or near it on both.** 59-60% against 77-83 for
+  the leaders on the same tasks, and 47.3% search-only. This was the decision.
 - **Perplexity is top-tier on both**, and is the fastest and most
   token-efficient of the leading group.
 - **Brave does not generalise**: 75 on AA, 43.0% on OpenBenchmarks. It was
@@ -121,7 +126,7 @@ the Markdown of the pages `webFetch` reads).
 
 Two hard requirements decided this, and neither is about ranking quality:
 
-1. **It must read JS-rendered pages.** Tavily's `advanced` depth did, so anything
+1. **It must read JS-rendered pages.** The old `advanced` depth did, so anything
    that did not would be a regression on the most visible tool. Parallel runs a
    server-side headless browser on every extract — no depth flag the model can
    forget to pass.
@@ -131,7 +136,7 @@ Two hard requirements decided this, and neither is about ranking quality:
    OpenClaw runs on the user's machine, on a residential IP.
 
 Cost: **$1/1k URLs, pay-as-you-go, no subscription**, 20 URLs per call. Against
-Tavily's `advanced` tier ($3.20/1k) it is 3.2× cheaper.
+the old `advanced` tier ($3.20/1k) it is 3.2× cheaper.
 
 Firecrawl was the other candidate — both reference agents use it as their
 JS-extraction fallback — and was dropped on one fact: it is **subscription-only,
@@ -139,51 +144,86 @@ with no true pay-as-you-go**. Jina Reader is 5-10× cheaper again (~$0.15/1k) an
 returns images natively, but was acquired by Elastic, its pricing page 404s, and
 it takes one URL per call; it is the documented cheap alternative, not the base.
 
-### Images
+### Images and link previews
 
-Neither Perplexity's `/search` nor Parallel's `/extract` returns images —
-verified in both official SDKs — so there is no image _source_ in this stack.
-The strip is harvested instead, from the Markdown of pages that were read.
+**Corrected 2026-09-12, after a traced production failure.** The first design
+harvested `![](…)` out of the Markdown `webFetch` returned. It could never work:
+measured against the live API, Parallel's `/v1/extract` strips every image from
+its Markdown. The Wikipedia article on MacBook Pro — dozens of photographs — came
+back with **281 links and zero images**; so did apple.com, macg.co and
+support.apple.com. In the traced conversation the path spent **25 seconds** and
+three extract calls to return an empty strip, and it would have done so on every
+call forever. The lesson is the ordinary one: an integration whose tests only
+ever see hand-written fixtures is not known to work.
 
-`include_images` on `searchWeb` keeps the affordance the Tavily tool had: ask
-for images, get images, without first choosing a page to open. It extracts the
-top 3 hits (`AI_WEB_SEARCH_IMAGE_SOURCES`) and harvests their illustrations, so
-every picture belongs to a result the answer can cite — which Tavily's
-query-matched images did not. `webFetch({ with_images: true })` is the same
-harvest on pages the agent was reading anyway.
+Perplexity is no help either. Its Search API has no image field, and
+`return_images` — which the docs still describe — died with the Sonar chat
+endpoint: `/chat/completions` now answers `403 … Use /v1/responses instead`, and
+`/v1/responses` rejects the parameter as an unknown field.
 
-|                          | Tavily              | Now                                         |
-| ------------------------ | ------------------- | ------------------------------------------- |
-| Where they come from     | its own image index | the pages the search returned               |
-| Relevance                | to the **query**    | to a **cited source**                       |
-| Available at search time | yes                 | yes, opt-in                                 |
-| Caption                  | model-written       | the image's alt text, page title when empty |
-| Cost                     | none                | $0.001 per page read, only when asked       |
+So the source is the page's own **`og:image`**, read from its `<head>` by
+`lib/web/page-meta.ts`. That is the tag publishers maintain precisely so a link
+to them looks right, and the read is head-sized. The same pass collects
+`og:description` and `og:site_name`, which is what `::link-cards` renders.
 
-Two things are genuinely worse and are not worth pretending otherwise:
-**captions**, because alt text is frequently empty or junk and the page title is
-only a fallback; and **coverage**, because a subject the top results do not
-illustrate yields nothing, where a dedicated image index would still have found
-something.
+**The model never copies the image, and is no longer asked to.** Returning it
+was necessary but not sufficient: traced on two answers that did render cards
+(Langfuse `01a09659…`, `01a0965b…`), the model wrote `url`, `title` and `site`
+on all seven cards and `image` on none — a ~100-character URL that means
+nothing to it is the first thing dropped from a verbatim copy. So the transcript
+resolves the cover itself: the message holding the card also holds the tool
+result that produced it, and `ChatMessageItem` provides a URL→preview map the
+card reads (`app/utils/proseLink.ts`). Matching is on host + path, because a
+model retypes a URL rather than copying its bytes. Replayed on those two
+answers: **0 of 7 covers before, 3 of 7 after** — the other four are CNIL pages
+that publish no `og:image` at all.
 
-Telling an illustration from site furniture is the hard part, and a filename
-blocklist only works on sites that name their files honestly — a CDN serving the
-logo from `/a1b2c3d4.png` defeats it entirely. The signal that generalises is
-**repetition across the batch**: a logo, an avatar or a share button appears on
-every page of a site, a photograph on one, so an image carried by a strict
-majority of the pages read together is dropped whatever its URL looks like. That
-signal needs more than one page to exist, which is why the harvest reads several
-and why `webFetch` tells the agent to batch related URLs.
+|                      | Old stack           | First attempt (dead) | Now                       |
+| -------------------- | ------------------- | -------------------- | ------------------------- |
+| Where they come from | its own image index | page Markdown        | the page's own `og:image` |
+| Actually returns one | yes                 | **never**            | 13 of 20 sites measured   |
+| Relevance            | to the **query**    | —                    | to a **cited source**     |
+| Caption              | model-written       | —                    | the hit's title           |
+| Cost                 | none                | $0.003/search        | none                      |
+| Latency              | +3 s                | **+25 s**            | +0.3 s                    |
 
-Still out of reach: a page whose only illustration lives in an `og:image` meta
-tag, outside the body, contributes nothing.
+Measured on a 20-site spread (products, press, institutions, SPAs): 13 carry a
+usable image, 14 a description. The seven misses are bot-protected origins
+(fnac, legifrance, shutterstock — all Cloudflare) or pages with no visual. An
+honest `FretikBot` User-Agent scored **identically** to a Chrome one, so the
+honest one ships.
+
+Two properties make this safe to depend on. It is the one read that leaves our
+own IP, so it is **strictly best-effort** — a refusal costs a cover image, never
+the answer; title, snippet and favicon already come from the search result. And
+one `og:image` per page is the publisher's own choice, so there is no site
+furniture to tell apart from content — the filename blocklist and majority
+heuristics the dead design needed are gone. The single case that still needs a
+rule: a site answering every URL with its header logo (measured on cdiscount).
+An image two hits share describes the site, not either page, so it leaves the
+strip — while each card keeps it, because it is what the publisher chose.
+
+**Previews are not a tool parameter, and that is a correction too.** They were
+opt-in (`include_images`, `with_images`) until two traced conversations showed
+why that cannot work: a model chooses the flag while SEARCHING and discovers
+while WRITING that its answer is a list of places to go, by which point the data
+it needs is an argument it did not pass. Neither conversation set the flag, and
+both had a section that wanted cards. So the flags are gone from both schemas —
+a choice the model has never made correctly is a choice not to offer it — and
+previews ride every search and fetch. The price of always-on, measured over
+three real queries: **+62 ms to +1.7 s, median ~0.9 s**, no vendor cost, ~300
+tokens of context. `AI_WEB_PREVIEW_SOURCES=0` is the operator's off switch.
+
+Genuinely worse than before, and not worth pretending otherwise: **coverage**.
+One image per source, and none at all for a third of sites, where a dedicated
+image index would always have found something.
 
 ### `webMap` → no vendor
 
 `robots.txt` and `sitemap.xml` are published _for robots_: static text served by
 the origin rather than by a bot-detection layer. So the datacenter-IP problem
 that rules out fetching pages ourselves does not apply to fetching a site's own
-index of itself, and discovery costs nothing where Tavily billed ~1 credit per
+index of itself, and discovery costs nothing where the vendor billed ~1 credit per
 10 pages and doubled it for semantic filtering. Both the crawl and the filtering
 are now free, which is why `search` and `select_paths` can be applied
 generously.

@@ -168,6 +168,11 @@ export const ROLE_REQUIREMENTS: Record<string, PoolRequirements> = {
   "memory-consolidate": { minMaxOutput: 12_256 },
   "memory-promote": { minMaxOutput: 12_256 },
   "compaction-summarizer": { minMaxOutput: 12_256 },
+  // The chat home screen's suggestions: `MAX_OUTPUT_TOKENS` 4 000, behind the
+  // same 256-token thinking budget as the memory roles whose envelope it
+  // shares. Six suggestions are ~600 tokens of JSON; the rest is the headroom
+  // that keeps reasoning from eating the answer and emptying the screen.
+  "chat-suggestions": { minMaxOutput: 4_256 },
   // `PREEXTRACT_MAX_OUTPUT_TOKENS` is 4 000; the floor is rounded up to leave
   // room for the minimal reasoning these profiles carry.
   "pre-extract": { minMaxOutput: 8_000, requireCache: true },

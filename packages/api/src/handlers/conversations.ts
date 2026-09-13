@@ -18,10 +18,11 @@ import {
   ConversationBackgroundTasksResponseSchema,
   ConversationResponseSchema,
   CreateConversationSchema,
+  MemberPreferencesResponseSchema,
   MembersResponseSchema,
   MessagesResponseSchema,
-  SetMemberEmailPreferenceSchema,
   UpdateConversationSchema,
+  UpdateMemberPreferencesSchema,
 } from "@fretik/shared/schemas/ai";
 import {
   responseCreatedSchemaBuilder,
@@ -38,6 +39,7 @@ import { addConversationMembers } from "@fretik/shared/services/ai/members/add";
 import { markConversationRead } from "@fretik/shared/services/ai/members/mark-read";
 import { removeConversationMember } from "@fretik/shared/services/ai/members/remove";
 import { setMemberEmailPreference } from "@fretik/shared/services/ai/members/set-email-preference";
+import { setMemberPinned } from "@fretik/shared/services/ai/members/set-pinned";
 import { getConversationMessages } from "@fretik/shared/services/ai/messages";
 import { updateConversation } from "@fretik/shared/services/ai/update";
 import { listConversationTasks } from "@fretik/shared/services/conversation-tasks/list";
@@ -281,18 +283,18 @@ const removeMemberRoute = createRoute({
   },
 });
 
-const setMemberEmailRoute = createRoute({
+const updateMemberPreferencesRoute = createRoute({
   method: "patch",
   path: "/{id}/members/me",
-  summary: "Set my email-on-completion preference",
+  summary: "Update my own preferences on this conversation",
   description:
-    "Toggle the current user's personal opt-in to be emailed at the end of every assistant turn. Affects only the caller.",
+    "Email-on-completion and the pin are both PER MEMBER: a conversation is shared, and neither field changes what anyone else sees. Every field is optional and only the ones sent are written. Re-pinning something already pinned keeps its position instead of moving it to the top.",
   tags: ["Conversations"],
   request: {
     params: paramsIdSchema,
     body: {
       content: {
-        "application/json": { schema: SetMemberEmailPreferenceSchema },
+        "application/json": { schema: UpdateMemberPreferencesSchema },
       },
       required: true,
     },
@@ -300,9 +302,9 @@ const setMemberEmailRoute = createRoute({
   responses: {
     200: {
       content: {
-        "application/json": { schema: SetMemberEmailPreferenceSchema },
+        "application/json": { schema: MemberPreferencesResponseSchema },
       },
-      description: "Preference updated",
+      description: "Preferences updated",
     },
     ...responseNotFoundSchema,
     ...responseForbiddenSchema,
@@ -504,22 +506,51 @@ conversationRoutes.openapi(removeMemberRoute, async (c) => {
   return c.json(members, 200);
 });
 
-conversationRoutes.openapi(setMemberEmailRoute, async (c) => {
+conversationRoutes.openapi(updateMemberPreferencesRoute, async (c) => {
   const user = c.get("user");
   const team = c.get("team");
   if (!team) return throwHttpError(403, teamRequired());
 
   const { id } = c.req.valid("param");
-  const { emailOnCompletion } = c.req.valid("json");
+  const { emailOnCompletion, pinned } = c.req.valid("json");
 
-  const result = await setMemberEmailPreference({
-    conversationId: id,
+  if (emailOnCompletion !== undefined) {
+    await setMemberEmailPreference({
+      conversationId: id,
+      teamId: team.id,
+      userId: user.id,
+      emailOnCompletion,
+    });
+  }
+  if (pinned !== undefined) {
+    await setMemberPinned({
+      conversationId: id,
+      teamId: team.id,
+      userId: user.id,
+      pinned,
+    });
+  }
+
+  // Read back rather than echo the request: `pinnedAt` is decided by the
+  // database (`COALESCE(pinned_at, now())`), so the stored value is the only
+  // one that can be reported honestly.
+  const conversation = await getConversation({
+    id,
     teamId: team.id,
     userId: user.id,
-    emailOnCompletion,
   });
+  if (!conversation) {
+    return throwHttpError(404, notFound("Conversation not found"));
+  }
 
-  return c.json(result, 200);
+  return c.json(
+    {
+      emailOnCompletion: conversation.emailOnCompletion,
+      pinned: conversation.pinned,
+      pinnedAt: conversation.pinnedAt,
+    },
+    200,
+  );
 });
 
 conversationRoutes.openapi(markReadRoute, async (c) => {

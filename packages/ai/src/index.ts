@@ -45,6 +45,7 @@ import { cors } from "hono/cors";
 
 import packagejson from "../package.json";
 import { chatFilesRoutes } from "./handlers/chat-files";
+import { chatSuggestionsRoutes } from "./handlers/chat-suggestions";
 import { chatbotInternalRoutes, chatbotRoutes } from "./handlers/chatbot";
 import { linkPreviewRoutes } from "./handlers/link-preview";
 import { memoryRoutes } from "./handlers/memory";
@@ -107,6 +108,11 @@ app.use("*", globalRateLimiter());
 
 // Health check
 app.get("/health", (c) => c.json({ status: "ok" }, 200));
+
+// Personalized starter prompts for the chat home screen. Mounted BEFORE
+// `/chatbot`, whose routes are parameterised (`/:conversationId/...`) and
+// would otherwise read "suggestions" as a conversation id.
+app.route("/chatbot/suggestions", chatSuggestionsRoutes);
 
 // User-facing chatbot stream (auth cookie middleware inside)
 app.route("/chatbot", chatbotRoutes);

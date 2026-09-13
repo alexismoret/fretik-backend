@@ -11,10 +11,14 @@ import {
 
 /**
  * List the conversations the current user participates in for a given agent
- * type, most-recently-active first. Each row is serialised with its full
- * member roster and the user's own per-conversation state (unread, email
- * opt-in, …). The exact total is counted through the membership join so
- * pagination metadata stays correct.
+ * type — the caller's own pinned ones first, then most-recently-active. Each
+ * row is serialised with its full member roster and the user's own
+ * per-conversation state (pinned, unread, email opt-in, …). The exact total is
+ * counted through the membership join so pagination metadata stays correct.
+ *
+ * The pin ordering is done HERE rather than in the client: the list is
+ * paginated, so a client-side sort would only float the pins that happen to be
+ * on the page it already holds.
  */
 export const listConversations = async (data: {
   teamId: string;
@@ -34,7 +38,19 @@ export const listConversations = async (data: {
         ...(search ? { title: { ilike: `%${search}%` } } : {}),
       },
       with: conversationWith,
-      orderBy: { updatedAt: "desc" },
+      // A correlated subquery rather than an ordering on the joined member
+      // row: `members` is a to-many relation here (a conversation has several
+      // participants), so ordering on it would need the CALLER's row picked
+      // out of the collection, which the relational builder cannot express.
+      // NULLS LAST is load-bearing — Postgres sorts NULLs FIRST under DESC,
+      // which would put every unpinned conversation above the pinned ones.
+      orderBy: (conversation, { sql, desc }) => [
+        sql`(SELECT m.pinned_at
+             FROM ai_conversation_members m
+             WHERE m.conversation_id = ${conversation.id}
+               AND m.user_id = ${userId}) DESC NULLS LAST`,
+        desc(conversation.updatedAt),
+      ],
       limit,
       offset: page * limit,
     }),

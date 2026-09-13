@@ -228,6 +228,56 @@ export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
     settingsKind: "bare",
     wrapCache: false,
   },
+  // The chatbot home screen's starter prompts. Reads ~3k tokens of this
+  // reader's own recent work and answers strict JSON, so the two things that
+  // matter are holding a format and not running away on reasoning — which is
+  // `active-memory`'s envelope exactly, and why it shares it rather than
+  // inventing a sixth `settingsKind`.
+  //
+  // Grouped under `recall` (see `functions.ts`), so what a team picks for
+  // recall serves this too and the model hub gains no eighth category. The key
+  // below is therefore documentary, as it is for every non-representative
+  // role: `resolveFunctionProfileKey` serves the FUNCTION's representative
+  // (`active-memory`, gpt-oss-120b) when a team has expressed no preference,
+  // which is the same model this line names.
+  //
+  // Bake-off on one real workspace's pack (3 561 input tokens, 34 citable
+  // ids), 3 repeats per arm, 2026-09-13 — the question being whether a home
+  // screen refreshed at least daily per user per team deserves the dearest of
+  // the three candidates:
+  //
+  //   gpt-oss-120b, effort low   5/5/5 kept · 1.4 s · 981 out  · $0.00109
+  //   gpt-oss-20b,  effort low   4/4/5 kept · 1.2 s · 651 out  · $0.00021
+  //   gpt-oss-20b,  effort med   0/6/6 kept · 3.2 s · 2 924 out · $0.00055
+  //   deepseek-v4-flash, low     6/5/0 kept · 18 s  · 3 712 out · $0.00159
+  //
+  // The cheap arm is cheap and holds the format, and still loses on the only
+  // thing this screen sells: it attributes. It offered "analyser l'impact de
+  // la suppression de Vega Logistics" when the deleted record was Calliope
+  // Verre, and relances to a supplier the pack never puts in arrears — cards
+  // the provenance gate CANNOT catch, because a wrong claim about an id that
+  // was offered is grounded by construction. Raising its effort buys the
+  // missing `pending` kind and then loses a whole batch in three to the 4 000
+  // output cap, reasoning having eaten the budget (the `conversation-title`
+  // trap, at 4x the tokens).
+  //
+  // deepseek is the one that surprises: HALF the output price of gpt-oss-120b
+  // ($0.31 vs $0.60 /MTok) and 1.5x the bill, because it writes ~4x the tokens
+  // for the same six cards — and at 13-39 s it overruns the 25 s ceiling in
+  // `generate.ts`, which the first visit waits behind synchronously. Its
+  // intelligence index (34.5 against 12.3) buys nothing a JSON list of six
+  // labels can spend.
+  //
+  // So the dearest arm is also the only one with three clean runs out of
+  // three, and the cheapest first visit in wall-clock. At ~1.5 generations per
+  // user per day it is ~$0.05 per user per month. Revisit on the `status`
+  // column (used/dismissed per kind), not on list prices.
+  "chat-suggestions": {
+    role: "chat-suggestions",
+    profileKey: "gpt-oss-120b",
+    settingsKind: "active-memory",
+    wrapCache: false,
+  },
   // One-shot malformed-tool-call repair (`repair-tool-call.ts`). Split from
   // `dispatch-cheap` (2026-07): deepseek-v4-flash hit the 20s repair timeout
   // in prod, turning every repair into pure wasted latency — same failure the

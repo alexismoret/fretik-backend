@@ -170,6 +170,11 @@ export const aiMessages = pgTable(
  *  - `lastReadAt`: drives unread indicators in the conversation list.
  *  - `mentionedAt`: set when this member is @mentioned; powers the
  *    "action required" badge until they read (cleared on read).
+ *  - `pinnedAt`: this member's pin, which floats the conversation to the top
+ *    of THEIR list. Per member like everything else here: a conversation is
+ *    shared, so a pin on `ai_conversations` would reorder a colleague's
+ *    sidebar. The timestamp is the ordering key (newest pin first) and
+ *    re-pinning preserves it, so a pinned row never moves under the user.
  *  - `joinedAt`: anchor for the "summarise what I missed" catch-up.
  */
 export const aiConversationMembers = pgTable(
@@ -192,6 +197,8 @@ export const aiConversationMembers = pgTable(
 
     lastReadAt: timestamp("last_read_at"),
     mentionedAt: timestamp("mentioned_at"),
+
+    pinnedAt: timestamp("pinned_at"),
 
     joinedAt: timestamp("joined_at").defaultNow().notNull(),
     createdAt: timestamp("created_at").defaultNow().notNull(),

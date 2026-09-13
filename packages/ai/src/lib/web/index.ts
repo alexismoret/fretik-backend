@@ -2,7 +2,7 @@ import { traceExternalCall } from "../trace-tool";
 import { isUrlDenied } from "../web-egress";
 import { webCacheKey, withWebCache } from "./cache";
 import { cacheTtls, effectiveSearchProvider, previewSources } from "./config";
-import { readPageMetadataBatch } from "./page-meta";
+import { readPageMetadata, readPageMetadataBatch } from "./page-meta";
 import { parallelFetch, parallelSearch } from "./parallel";
 import { perplexitySearch } from "./perplexity";
 import {
@@ -129,11 +129,12 @@ export const fetchPages = async (
           // Markdown the extract returns carries no images at all. One
           // `og:image` per page is what the publisher chose to represent it.
           //
-          // Bounded by the same `AI_WEB_PREVIEW_SOURCES` as a search, and for
-          // a sharper reason: a `webFetch` takes up to 20 URLs, so an unbounded
-          // pass would put 20 in-process `<head>` reads behind one tool call —
-          // and would ignore the operator's documented off switch, since the
-          // tool no longer exposes a per-call flag to turn previews off.
+          // Bounded by the same `AI_WEB_PREVIEW_SOURCES` as a search. At its
+          // default of 20 that is every URL a `webFetch` can take, so the bound
+          // binds nothing in practice and exists for the operator's off switch,
+          // which is the only one left now that the tool exposes no per-call
+          // flag. The reads run at `CONCURRENCY`, against a call that has
+          // already spent tens of seconds in a headless browser per URL.
           const sources = previewSources();
           const previews = await readPageMetadataBatch(
             fetched.results.slice(0, sources).map((p) => p.url),
@@ -161,6 +162,69 @@ export const fetchPages = async (
           metadata: r.cost.metadata,
         }),
       ).then(({ cost: _cost, ...outcome }) => outcome),
+  );
+
+  return { ...value, cached };
+};
+
+export interface LinkPreview {
+  /** Absolute http(s) cover image, or `null` — the page publishes none. */
+  image: string | null;
+  /** The publisher, `null` only when the page could not be read at all. */
+  siteName: string | null;
+}
+
+export interface LinkPreviewResponse extends LinkPreview {
+  cached: boolean;
+}
+
+/**
+ * One page's card metadata, read on demand rather than harvested from a search.
+ *
+ * **Why a second door onto the same read.** A `:::link-card` is rendered from
+ * the URL the MODEL wrote, and a search's previews are joined to it by that
+ * URL — so a card only has a cover when the model retyped the address the
+ * search returned. Measured in production, it frequently does not: asked for
+ * ticket sites it cited `kayak.fr` where the hit was `kayak.fr/flights`, and it
+ * named two sites no search had returned at all. The transcript now recovers
+ * the first case on its own, but nothing in a tool output can answer the
+ * second: the model cited a page this service never read. This is the read for
+ * exactly that card.
+ *
+ * **Why it is cheap enough to offer.** No vendor bills it, the body stops at
+ * `</head>`, and a transcript is re-rendered on every open — which is precisely
+ * why the result is cached whatever it says. A page that publishes no picture
+ * is the answer for hours, not an invitation to ask its origin again on the
+ * next scroll.
+ *
+ * Deliberately untraced. It is not an AI call, it carries no cost, and it runs
+ * outside any turn — so a Langfuse observation here would be an orphan root,
+ * one per card, drowning the traces that do carry a cost.
+ */
+export const readLinkPreview = async (
+  url: string,
+): Promise<LinkPreviewResponse> => {
+  const key = webCacheKey("link-preview", "page-meta", { url });
+
+  const { value, cached } = await withWebCache(
+    key,
+    cacheTtls().preview,
+    // Everything is worth caching here, a blank answer included — see above.
+    () => true,
+    async (): Promise<LinkPreview> => {
+      // Never throws: a blocked, unreachable or non-HTML page resolves `null`,
+      // and the egress guard rejects a private target the same way.
+      const meta = await readPageMetadata(url);
+      const image = meta?.image ?? null;
+      return {
+        // `og:image` names a host of the page's choosing — usually a CDN, and
+        // never the one the URL itself was vetted against. Same second pass
+        // `attachPreviews` makes, for the same reason: an image would
+        // otherwise be the one way past the deployment's blocklist.
+        image: image === null || isUrlDenied(image) ? null : image,
+        siteName: meta?.siteName ?? null,
+      };
+    },
   );
 
   return { ...value, cached };

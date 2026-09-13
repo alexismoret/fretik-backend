@@ -46,6 +46,7 @@ import { cors } from "hono/cors";
 import packagejson from "../package.json";
 import { chatFilesRoutes } from "./handlers/chat-files";
 import { chatbotInternalRoutes, chatbotRoutes } from "./handlers/chatbot";
+import { linkPreviewRoutes } from "./handlers/link-preview";
 import { memoryRoutes } from "./handlers/memory";
 import { modelAdminRoutes } from "./handlers/model-admin";
 import { modelProfilesRoutes } from "./handlers/model-profiles";
@@ -115,6 +116,10 @@ app.route("/chatbot-files", chatFilesRoutes);
 
 // User-facing model selection (C8) — picker menu + team defaults (cookie auth).
 app.route("/model-profiles", modelProfilesRoutes);
+
+// User-facing link-card cover lookup (cookie auth) — the on-demand half of
+// `lib/web/page-meta.ts`, for a card whose page no search returned.
+app.route("/link-preview", linkPreviewRoutes);
 
 // Operator surface for the model engine — SUPER-ADMIN only (cookie auth, then
 // the platform-operator flag). Lives here rather than in @fretik/api because

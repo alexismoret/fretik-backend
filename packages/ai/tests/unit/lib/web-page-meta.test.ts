@@ -89,6 +89,107 @@ describe("parsePageMetadata", () => {
     expect(meta.image).toBe("https://x.test/t.png");
   });
 
+  /**
+   * The chain below `twitter:` — `itemprop`, then `link rel="image_src"`, then
+   * JSON-LD — in the order it is consulted. Each step exists because a real
+   * site declares that one and nothing above it.
+   */
+  test("reads microdata, then image_src, then JSON-LD", () => {
+    const itemprop = parsePageMetadata(
+      "https://x.test/a",
+      "https://x.test/a",
+      page(`<meta itemprop="image" content="https://x.test/micro.jpg">`),
+    );
+    expect(itemprop.image).toBe("https://x.test/micro.jpg");
+
+    const legacy = parsePageMetadata(
+      "https://x.test/a",
+      "https://x.test/a",
+      page(`<link rel="image_src" href="https://x.test/legacy.jpg">`),
+    );
+    expect(legacy.image).toBe("https://x.test/legacy.jpg");
+
+    /** Measured: evasionspascher.fr names its cover only here, relatively. */
+    const structured = parsePageMetadata(
+      "https://x.test/le-mag/article/",
+      "https://x.test/le-mag/article/",
+      page(`<script type="application/ld+json">
+        {"@type":"Article","image":"images/cover.jpg"}
+      </script>`),
+    );
+    expect(structured.image).toBe(
+      "https://x.test/le-mag/article/images/cover.jpg",
+    );
+  });
+
+  /**
+   * `itemprop` names are bare words, so an un-namespaced key would collide with
+   * the `<meta name>` of the same spelling — and "first tag wins" would hand
+   * the collision to whichever the document declares first.
+   */
+  test("keeps an itemprop from colliding with a meta name", () => {
+    const meta = parsePageMetadata(
+      "https://x.test/a",
+      "https://x.test/a",
+      page(`
+        <meta name="image" content="not-a-url-the-card-should-take">
+        <meta property="og:image" content="https://x.test/real.jpg">
+      `),
+    );
+    expect(meta.image).toBe("https://x.test/real.jpg");
+  });
+
+  /**
+   * One JSON-LD block routinely describes the publisher as well as the page,
+   * and the `Organization` node — carrying the LOGO — is conventionally
+   * declared first. A walk that took the first `image` it met would return it.
+   */
+  test("prefers the content node's image over the publisher's logo", () => {
+    const meta = parsePageMetadata(
+      "https://x.test/a",
+      "https://x.test/a",
+      page(`<script type="application/ld+json">
+        {"@graph":[
+          {"@type":"Organization","image":"https://x.test/logo.png"},
+          {"@type":"NewsArticle","image":{"url":"https://x.test/photo.jpg"}}
+        ]}
+      </script>`),
+    );
+    expect(meta.image).toBe("https://x.test/photo.jpg");
+  });
+
+  /** Malformed JSON-LD is ordinary. It must cost that block and nothing else. */
+  test("survives a JSON-LD block that is not JSON", () => {
+    const meta = parsePageMetadata(
+      "https://x.test/a",
+      "https://x.test/a",
+      page(`
+        <script type="application/ld+json">{ this is not json }</script>
+        <script type="application/ld+json">{"@type":"WebPage","image":"https://x.test/ok.jpg"}</script>
+        <meta property="og:site_name" content="X Test">
+      `),
+    );
+    expect(meta.image).toBe("https://x.test/ok.jpg");
+    expect(meta.siteName).toBe("X Test");
+  });
+
+  /**
+   * The chain stops short of the icon family on purpose: those ARE the favicon,
+   * and the card already has a favicon band for a page that declares no
+   * picture. Promoting one would make "no image" look like an image.
+   */
+  test("never promotes an icon to a cover", () => {
+    const meta = parsePageMetadata(
+      "https://x.test/a",
+      "https://x.test/a",
+      page(`
+        <link rel="apple-touch-icon" href="https://x.test/icon-180.png">
+        <link rel="icon" href="https://x.test/favicon.ico">
+      `),
+    );
+    expect(meta.image).toBeNull();
+  });
+
   test("resolves a relative image against the page it came from", () => {
     const meta = parsePageMetadata(
       "https://shop.test/p/1",

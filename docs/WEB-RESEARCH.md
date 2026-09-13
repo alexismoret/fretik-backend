@@ -218,6 +218,58 @@ Genuinely worse than before, and not worth pretending otherwise: **coverage**.
 One image per source, and none at all for a third of sites, where a dedicated
 image index would always have found something.
 
+#### Three defects, found by replaying one production answer (2026-09-13)
+
+A user reported cards showing a favicon while the tool panel above them showed
+perfectly good pictures. Replaying the conversation's raw tool output settled
+it: **the `<head>` parse was never the problem** — it read all ten hits
+correctly, protocol-relative `og:image` included. Three other things were.
+
+**1. The join, not the read.** A card's cover is matched to a hit on host +
+path. The search returned `kayak.fr/flights` and `skyscanner.fr/vols`, both with
+an image; the model wrote `kayak.fr` and `skyscanner.fr`, because **a model
+naming a SITE names its brand, not the deep page it read**. Two of six cards
+lost a cover that was already in memory, on screen, a few centimetres above.
+The map now also registers a host-level entry — the shortest-path hit per host —
+and only a card with no path of its own consults it, so a card naming
+`/article-a` can never inherit `/article-b`'s photo. Replayed on that answer:
+**2 of 6 covers before, 4 of 6 after.**
+
+**2. A ceiling nothing reported.** `AI_WEB_PREVIEW_SOURCES` sat at 8 against a
+default `max_results` of 10. Ranks 9 and 10 (`fr.trip.com`, `kombo.co`) both
+publish an `og:image` that was never read. Default now 20 — the maximum either
+tool can return — with `CONCURRENCY` at 12 so a default-sized search still
+clears in one wave.
+
+**3. The chain stopped at `og:`/`twitter:`.** Four sources now, all in the same
+head and so free: `itemprop="image"`, `<link rel="image_src">`, then JSON-LD
+`image` — preferring a content node's (`Article`, `Product`, …) over the
+`Organization` logo a `@graph` conventionally declares first. Measured value on
+this sample: JSON-LD recovers `evasionspascher.fr`, which declares no `og:`,
+`twitter:` or `image_src` tag at all; the other two recover nothing here and
+cost nothing to carry. The chain deliberately stops before `apple-touch-icon` —
+those are the favicon by another name, and promoting one would make "this page
+has no image" look like a page that has one.
+
+Together: **6 of 10 hits carried an image before, 9 of 10 after** (the miss is
+`expedia.fr`, HTTP 429 to any User-Agent).
+
+#### `GET /link-preview` — the card the transcript cannot serve
+
+The join above has a floor no transcript-side fix can raise: the model writes
+cards for pages **no search returned**, naming a site it already knows. Two of
+the six cards in that answer were of that kind, and one of the two
+(`kiwi.com`) publishes a cover nobody had ever read.
+
+So `readLinkPreview` (`lib/web/index.ts`, route `handlers/link-preview.ts`,
+cookie auth) exposes the same head-sized read on demand, and `LinkCard` asks for
+it only when both cheaper sources came up empty. Cached in Redis for 6 h
+**whatever it says** — a blank answer included, because a transcript is
+re-rendered on every open and a page that publishes nothing must not be asked
+again on the next scroll. Untraced on purpose: no vendor cost, no AI call, and
+it runs outside any turn, so a Langfuse observation would be an orphan root per
+card.
+
 ### `webMap` → no vendor
 
 `robots.txt` and `sitemap.xml` are published _for robots_: static text served by

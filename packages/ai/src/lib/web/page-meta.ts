@@ -13,7 +13,9 @@ import { safeFetch } from "./http";
  * Perplexity has no image route either since `return_images` retired with the
  * Sonar chat endpoint. The remaining source of a page's picture is the page's
  * own `og:image`, which is the tag every social network reads for exactly this
- * purpose, and reading it is a `<head>`-sized GET.
+ * purpose, and reading it is a `<head>`-sized GET — with four weaker
+ * declarations tried below it, all in the same head and so at no extra cost
+ * (see the chain in `parsePageMetadata`).
  *
  * **What it costs.** Nothing to a vendor, ~150-400 ms for a batch fetched in
  * parallel. It is the one read that leaves our own IP, which is why it is
@@ -45,8 +47,18 @@ export interface PageMetadata {
  */
 const MAX_BYTES = 262_144;
 
-/** Concurrent preview reads. Batches are small (≤ 8) and the origins differ. */
-const CONCURRENCY = 8;
+/**
+ * Concurrent preview reads. One per origin in practice — a batch is a search's
+ * hit list, and two hits on the same host are the exception — so this is a
+ * politeness figure only in aggregate.
+ *
+ * Sized above the tools' DEFAULT result count (10) rather than at it: a search
+ * asking for its default must clear in ONE wave, or every turn pays the
+ * batch's slowest origin twice. It deliberately sits below the 20 a caller can
+ * ask for at most — that request is rare, and two waves is the right price
+ * for it.
+ */
+const CONCURRENCY = 12;
 
 /**
  * A whole `<meta>` tag, then its attributes — two passes rather than one
@@ -65,7 +77,18 @@ const CONCURRENCY = 8;
  */
 const META_TAG = /<meta\b(?:"[^"]*"|'[^']*'|[^>])*>/gi;
 const META_ATTR =
-  /\b(property|name|content)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/gi;
+  /\b(property|name|itemprop|content)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/gi;
+
+/**
+ * `<link rel="…" href="…">`, for the pre-OpenGraph `image_src` declaration.
+ * Same two-pass shape as the meta pair above, for the same apostrophe reason.
+ */
+const LINK_TAG = /<link\b(?:"[^"]*"|'[^']*'|[^>])*>/gi;
+const LINK_ATTR = /\b(rel|href)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/gi;
+
+/** A JSON-LD block, `<head>`-scoped like everything else read here. */
+const JSON_LD =
+  /<script\b[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script\s*>/gi;
 
 const TITLE_TAG = /<title[^>]*>([\s\S]{0,500}?)<\/title>/i;
 const HEAD_END = /<\/head\s*>/i;
@@ -175,8 +198,7 @@ const absoluteHttpUrl = (value: string, base: string): string | null => {
   }
 };
 
-const readTags = (html: string): Map<string, string> => {
-  const head = html.split(HEAD_END)[0] ?? html;
+const readTags = (head: string): Map<string, string> => {
   const tags = new Map<string, string>();
 
   for (const tag of head.match(META_TAG) ?? []) {
@@ -185,8 +207,19 @@ const readTags = (html: string): Map<string, string> => {
 
     for (const attr of tag.matchAll(META_ATTR)) {
       const read = attr[2] ?? attr[3] ?? attr[4] ?? "";
-      if (attr[1]?.toLowerCase() === "content") value = read;
-      else key ??= read.toLowerCase();
+      const attribute = attr[1]?.toLowerCase();
+      if (attribute === "content") {
+        value = read;
+        continue;
+      }
+      // Microdata names are bare words — `image`, `name`, `description` — so an
+      // un-namespaced `itemprop` key would collide with the `<meta name>` of
+      // the same spelling, and "first wins" below would hand the collision to
+      // whichever tag the document happens to declare first.
+      key ??=
+        attribute === "itemprop"
+          ? `itemprop:${read.toLowerCase()}`
+          : read.toLowerCase();
     }
 
     // First wins: `og:image` appears several times on sites that offer several
@@ -201,6 +234,136 @@ const readTags = (html: string): Map<string, string> => {
     }
   }
   return tags;
+};
+
+/** `rel` → `href` for the `<link>` tags of a head. First declaration wins. */
+const readLinkHrefs = (head: string): Map<string, string> => {
+  const links = new Map<string, string>();
+
+  for (const tag of head.match(LINK_TAG) ?? []) {
+    let rel: string | undefined;
+    let href: string | undefined;
+
+    for (const attr of tag.matchAll(LINK_ATTR)) {
+      const read = attr[2] ?? attr[3] ?? attr[4] ?? "";
+      if (attr[1]?.toLowerCase() === "rel") rel ??= read.toLowerCase();
+      else href ??= read;
+    }
+
+    if (rel !== undefined && rel !== "" && href !== undefined && href !== "") {
+      if (!links.has(rel)) links.set(rel, decodeEntities(href));
+    }
+  }
+  return links;
+};
+
+/**
+ * `@type` values whose `image` illustrates THIS page, rather than describing
+ * the site that hosts it.
+ *
+ * One JSON-LD block routinely describes several things at once — the article,
+ * the `Organization` publishing it with its logo, a `WebSite`, a
+ * `BreadcrumbList`. A walk that returns the first `image` it meets returns the
+ * publisher's logo more often than the article's photo, because the
+ * organisation node is conventionally declared first.
+ */
+const JSON_LD_CONTENT_TYPES = new Set([
+  "article",
+  "newsarticle",
+  "blogposting",
+  "webpage",
+  "product",
+  "recipe",
+  "event",
+  "videoobject",
+  "imageobject",
+]);
+
+/** Nodes walked before giving up. A real `@graph` is a handful of them. */
+const MAX_JSON_LD_NODES = 500;
+
+/**
+ * `Array.isArray` widens an `unknown` to `any[]`, which then infects every
+ * value read out of it. These two keep the walk below typed without a cast.
+ */
+const isList = (value: unknown): value is unknown[] => Array.isArray(value);
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+
+/** The `image` of a JSON-LD node: a URL, a list of them, or an `ImageObject`. */
+const jsonLdImage = (value: unknown): string | null => {
+  if (typeof value === "string") return value;
+  if (isList(value)) {
+    for (const entry of value) {
+      const found = jsonLdImage(entry);
+      if (found !== null) return found;
+    }
+    return null;
+  }
+  if (isRecord(value)) {
+    const url = value.url;
+    return typeof url === "string" ? url : null;
+  }
+  return null;
+};
+
+/**
+ * The page's image as its structured data declares it — the last source tried,
+ * and the one that answers a page carrying no `og:` tags at all.
+ *
+ * Measured on a live sample: `evasionspascher.fr` publishes no `og:image`, no
+ * `twitter:image` and no `image_src`, and names its cover only here.
+ */
+const readJsonLdImage = (head: string): string | null => {
+  try {
+    let untyped: string | null = null;
+
+    for (const block of head.matchAll(JSON_LD)) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse((block[1] ?? "").trim());
+      } catch {
+        // Malformed JSON-LD is ordinary; it costs this block and no other.
+        continue;
+      }
+
+      const stack: unknown[] = [parsed];
+      let visited = 0;
+
+      while (stack.length > 0 && visited < MAX_JSON_LD_NODES) {
+        visited += 1;
+        const node = stack.pop();
+        if (isList(node)) {
+          stack.push(...node);
+          continue;
+        }
+        if (!isRecord(node)) continue;
+
+        const image = jsonLdImage(node.image);
+        if (image !== null && image !== "") {
+          const declared = node["@type"];
+          const isContent = (isList(declared) ? declared : [declared]).some(
+            (type) =>
+              typeof type === "string" &&
+              JSON_LD_CONTENT_TYPES.has(type.toLowerCase()),
+          );
+          if (isContent) return image;
+          untyped ??= image;
+        }
+
+        for (const value of Object.values(node)) {
+          if (value !== null && typeof value === "object") stack.push(value);
+        }
+      }
+    }
+
+    return untyped;
+  } catch {
+    // Unbounded nesting overflows the recursive `jsonLdImage`. Costs the
+    // JSON-LD source alone: every declaration above it has already been tried.
+    return null;
+  }
 };
 
 /**
@@ -231,7 +394,8 @@ export const parsePageMetadata = (
   finalUrl: string,
   html: string,
 ): PageMetadata => {
-  const tags = readTags(html);
+  const head = html.split(HEAD_END)[0] ?? html;
+  const tags = readTags(head);
   const pick = (...keys: string[]): string | null => {
     for (const key of keys) {
       const value = tags.get(key);
@@ -240,12 +404,32 @@ export const parsePageMetadata = (
     return null;
   };
 
-  const rawImage = pick(
-    "og:image",
-    "og:image:secure_url",
-    "twitter:image",
-    "twitter:image:src",
-  );
+  /**
+   * The cover, strongest declaration first, and every step of it `<head>`-sized
+   * so the chain costs no extra byte on the wire.
+   *
+   * `og:image` is what the publisher chose for a link to this page, so nothing
+   * outranks it. Below it the sources get progressively less card-shaped — a
+   * Twitter card, then microdata, then the pre-OpenGraph `image_src`, then the
+   * structured data a search engine reads — and each exists because a real site
+   * in the measured sample declares that one and none of the ones above it.
+   *
+   * The chain deliberately stops before `apple-touch-icon` and friends: those
+   * are the favicon by another name, and the card already has a favicon band
+   * for a page that declares no picture. Promoting an icon to a cover would
+   * turn "this page has no image" into a tile that looks like it does.
+   */
+  const rawImage =
+    pick(
+      "og:image",
+      "og:image:secure_url",
+      "twitter:image",
+      "twitter:image:src",
+      "itemprop:image",
+    ) ??
+    readLinkHrefs(head).get("image_src") ??
+    readJsonLdImage(head) ??
+    null;
   const titleTag = html.match(TITLE_TAG)?.[1];
 
   return {

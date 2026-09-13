@@ -112,6 +112,14 @@ export const cacheTtls = () => ({
   search: num(process.env.AI_WEB_SEARCH_CACHE_TTL_S, 900),
   fetch: num(process.env.AI_WEB_FETCH_CACHE_TTL_S, 900),
   map: num(process.env.AI_WEB_MAP_CACHE_TTL_S, 3_600),
+  /**
+   * An on-demand link preview, served to a transcript that is RE-RENDERED
+   * every time someone opens the conversation. Hours rather than minutes
+   * because what it caches barely moves — the picture a page publishes for a
+   * link to itself — and because the alternative is re-reading the same
+   * handful of origins on every scroll, from our own egress, forever.
+   */
+  preview: num(process.env.AI_WEB_PREVIEW_CACHE_TTL_S, 21_600),
 });
 
 /**
@@ -201,9 +209,19 @@ export const previewUserAgent = (): string =>
   "FretikBot/1.0 (+https://fretik.com/bot; link preview)";
 
 /**
- * Pages read to attach preview metadata to a search, when the caller asks for
- * it. Costs no vendor money — it is our own `<head>` read — so the ceiling is
- * about latency and politeness, not price.
+ * Pages read to attach preview metadata to a search or a fetch. Costs no vendor
+ * money — it is our own `<head>` read — so the ceiling is about latency and
+ * politeness, not price. `0` is the operator's off switch.
+ *
+ * Sized on the TOOLS' own maxima rather than on a comfortable-looking number:
+ * `searchWeb` returns up to 20 hits and `webFetch` takes up to 20 URLs, so at
+ * 20 every result a caller can see carries what the page declares about
+ * itself. It used to sit at 8 against a default `max_results` of 10, and the
+ * two hits past the cap were invisible in a way nothing reported — measured on
+ * a production answer, ranks 9 and 10 (`fr.trip.com`, `kombo.co`) both publish
+ * an `og:image` that was never read, so the card strip was short by two for a
+ * reason no log carried. A ceiling that silently drops data the caller asked
+ * for is worse than the latency it saves.
  */
 export const previewSources = (): number =>
-  num(process.env.AI_WEB_PREVIEW_SOURCES, 8);
+  num(process.env.AI_WEB_PREVIEW_SOURCES, 20);

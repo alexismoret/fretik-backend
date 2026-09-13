@@ -266,6 +266,10 @@ export const ConversationResponseSchema = z.object({
   unread: z.boolean(),
   /** The current user was @mentioned and hasn't read since. */
   actionRequired: z.boolean(),
+  /** The current user pinned this conversation — affects only their own list. */
+  pinned: z.boolean(),
+  /** When they pinned it; the list's first ordering key. */
+  pinnedAt: z.date().nullable(),
   createdAt: z.date(),
   updatedAt: z.date(),
 });
@@ -284,14 +288,39 @@ export type AddConversationMembersInput = z.infer<
   typeof AddConversationMembersSchema
 >;
 
-export const SetMemberEmailPreferenceSchema = z.object({
-  emailOnCompletion: z.boolean().openapi({
-    description:
-      "The current user's personal opt-in to be emailed at the end of every assistant turn. Affects only the caller.",
-  }),
+/**
+ * The caller's own per-conversation preferences. Every field is optional and
+ * only the ones present are written, so a client that knows about one
+ * preference never clobbers another it has not heard of.
+ */
+export const UpdateMemberPreferencesSchema = z
+  .object({
+    emailOnCompletion: z.boolean().optional().openapi({
+      description:
+        "The current user's personal opt-in to be emailed at the end of every assistant turn. Affects only the caller.",
+    }),
+    pinned: z.boolean().optional().openapi({
+      description:
+        "Pin the conversation to the top of the caller's own list. Affects only the caller.",
+    }),
+  })
+  .refine(
+    (value) =>
+      value.emailOnCompletion !== undefined || value.pinned !== undefined,
+    { message: "At least one preference must be provided" },
+  );
+export type UpdateMemberPreferencesInput = z.infer<
+  typeof UpdateMemberPreferencesSchema
+>;
+
+/** The caller's preferences after the write — read back, never assembled. */
+export const MemberPreferencesResponseSchema = z.object({
+  emailOnCompletion: z.boolean(),
+  pinned: z.boolean(),
+  pinnedAt: z.date().nullable(),
 });
-export type SetMemberEmailPreferenceInput = z.infer<
-  typeof SetMemberEmailPreferenceSchema
+export type MemberPreferencesResponse = z.infer<
+  typeof MemberPreferencesResponseSchema
 >;
 
 export const MembersResponseSchema = z.array(ConversationMemberSchema);

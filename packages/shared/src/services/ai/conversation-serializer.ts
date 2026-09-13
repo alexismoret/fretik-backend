@@ -28,6 +28,7 @@ export type ConversationMemberRow = Pick<
   | "emailOnCompletion"
   | "lastReadAt"
   | "mentionedAt"
+  | "pinnedAt"
   | "joinedAt"
 > & {
   user: Pick<
@@ -67,6 +68,10 @@ export type SerializedConversation = Omit<
   unread: boolean;
   /** The current user was @mentioned and hasn't read since. */
   actionRequired: boolean;
+  /** The current user pinned this conversation to the top of THEIR list. */
+  pinned: boolean;
+  /** When they pinned it — the list's first ordering key. */
+  pinnedAt: Date | null;
 };
 
 /**
@@ -81,6 +86,7 @@ export const conversationWith = {
       emailOnCompletion: true,
       lastReadAt: true,
       mentionedAt: true,
+      pinnedAt: true,
       joinedAt: true,
     },
     with: {
@@ -99,6 +105,7 @@ export const serializeConversation = (
   const current = members.find((m) => m.userId === userId);
   const lastReadAt = current?.lastReadAt ?? null;
   const mentionedAt = current?.mentionedAt ?? null;
+  const pinnedAt = current?.pinnedAt ?? null;
 
   return {
     ...conversation,
@@ -116,5 +123,7 @@ export const serializeConversation = (
     unread: lastReadAt === null || lastReadAt < row.updatedAt,
     actionRequired:
       mentionedAt !== null && (lastReadAt === null || mentionedAt > lastReadAt),
+    pinned: pinnedAt !== null,
+    pinnedAt,
   };
 };

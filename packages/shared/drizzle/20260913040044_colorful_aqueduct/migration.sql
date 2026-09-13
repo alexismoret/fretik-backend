@@ -1,0 +1,1 @@
+ALTER TABLE "ai_conversation_members" ADD COLUMN "pinned_at" timestamp;

@@ -22,7 +22,10 @@ import type {
   RunEvaluator,
 } from "@langfuse/client";
 import { flushLangfuse, langfuseClient } from "../../src/lib/langfuse";
+import { ensureModelRegistryWarm } from "../../src/lib/model-registry/resolve";
+import { runUnifiedRecall } from "../../src/services/recall/recall";
 import { raceDeadline } from "../deadline";
+import { exitAfterFlush } from "../exit";
 import { CHAIN_CASES, type ChainEvalCase } from "./cases";
 import {
   type ChainFixtures,
@@ -42,13 +45,21 @@ const opt = (name: string): string | undefined => {
   return i !== -1 ? argv[i + 1] : undefined;
 };
 
+// Own team, like `evals:memory` — see the note there. This suite is the more
+// destructive of the two: `clearAnchoredEpisodes` wipes every episode anchored
+// on its supplier record per repeat, `promoteEpisodes` writes into the team's
+// `learned/` namespace, and the e2e case creates a real workflow run. On a
+// shared team every one of those reaches somebody else's turn.
 const scope = {
-  teamId: process.env.EVAL_TEAM_ID ?? "",
+  teamId: process.env.EVAL_WRITE_TEAM_ID ?? "",
   organizationId: process.env.EVAL_ORGANIZATION_ID ?? "",
   userId: process.env.EVAL_USER_ID ?? "",
 };
 if (!scope.teamId || !scope.organizationId || !scope.userId) {
-  console.error("Missing EVAL_TEAM_ID / EVAL_ORGANIZATION_ID / EVAL_USER_ID");
+  console.error(
+    "Missing EVAL_WRITE_TEAM_ID / EVAL_ORGANIZATION_ID / EVAL_USER_ID.\n" +
+      "The write-side suites (memory, chain) need their own team — run `bun run evals:ensure-write-team`.",
+  );
   process.exit(1);
 }
 
@@ -58,21 +69,72 @@ if (flag("--cleanup")) {
   process.exit(0);
 }
 
+/** Teardown at the END of the run, not only on an explicit `--cleanup`. */
+const keepFixtures = flag("--keep");
+
 const repeatsRaw = Number.parseInt(opt("--repeats") ?? "", 10);
 const repeats =
   Number.isFinite(repeatsRaw) && repeatsRaw > 0 ? repeatsRaw : DEFAULT_REPEATS;
 const onlyCase = opt("--case");
+// e2e cases need a LIVE service and `TRIGGER_CALLBACK_KEY`; without the flag
+// they are skipped rather than failed, so a normal in-process run on a laptop
+// with no service reports the pipeline and not the absence of one. `--case`
+// names a case explicitly, which is consent enough.
+const withE2e = flag("--e2e");
+const selectable = CHAIN_CASES.filter(
+  (c) => c.e2e !== true || withE2e || c.id === onlyCase,
+);
 const cases = onlyCase
-  ? CHAIN_CASES.filter((c) => c.id === onlyCase)
-  : CHAIN_CASES;
+  ? selectable.filter((c) => c.id === onlyCase)
+  : selectable;
 if (cases.length === 0) {
   console.error(`No case matches --case ${onlyCase ?? ""}`);
   process.exit(1);
 }
+const e2eSelected = cases.some((c) => c.e2e === true);
+if (e2eSelected && !process.env.AI_SERVICE_URL) {
+  console.error(
+    "An e2e case was selected but AI_SERVICE_URL is unset — it drives a real turn over /internal/trigger. Start the ai service and pass AI_SERVICE_URL=…",
+  );
+  process.exit(1);
+}
+const skipped = CHAIN_CASES.length - selectable.length;
+if (skipped > 0) {
+  console.log(`[chain-eval] ${skipped.toString()} e2e case(s) skipped — --e2e`);
+}
+
+// The live model registry is a DB-backed snapshot built lazily, and the only
+// thing that builds it in the service is `registryWarmMiddleware` on the HTTP
+// routes. An in-process eval crosses no route, so every `resolveModel` call
+// here hits an EMPTY snapshot and throws "No model profile for key <k> — no
+// live row describes it". Recall swallows that by design ("recall must never
+// break the main turn"), so the suite reports NONE on every case rather than
+// an error — 4/23, with nothing in the output naming the cause.
+//
+// Invisible until the model engine's v3 change removed the curated TypeScript
+// profiles: before it, a profile existed in code and an unwarmed process
+// resolved one anyway. The frozen baselines in RUNBOOK.md predate that change,
+// which is why they were reproducible then and are not now.
+await ensureModelRegistryWarm();
 
 console.log("[chain-eval] ensuring fixtures (idempotent)…");
 const fixtures: ChainFixtures = await ensureChainFixtures(scope);
 console.log("[chain-eval] fixtures ready");
+
+// The FIRST embedding call of a process times out against a remote provider
+// and `hybrid-search` falls back to its lexical arms — "embedding unavailable
+// — serving lexical arms only", no error, no candidates from the semantic arm.
+// Measured 2026-09-11: that is one guaranteed failed repeat per run, and a case
+// that repeats the same query then caches it (15 s, in-process) can carry the
+// bad result to every other repeat. Burn it here, on a query no case scores.
+await runUnifiedRecall({
+  ...scope,
+  agentType: "chatbot",
+  userMessage: "réchauffement du chemin d'embedding, ignoré",
+  attachedFiles: [],
+  recentTail: "",
+  bypassCache: true,
+}).catch(() => null);
 
 interface RepeatOutcome {
   text: string;
@@ -363,4 +425,10 @@ if (stageTotals.size > 0) {
       .join(", ")}`,
   );
 }
-process.exit(passed === results.length ? 0 : 1);
+if (keepFixtures) {
+  console.log("\n[chain-eval] --keep: fixtures left in place");
+} else {
+  await cleanupChainFixtures(scope);
+  console.log("\n[chain-eval] fixtures cleaned up");
+}
+await exitAfterFlush(passed === results.length ? 0 : 1);

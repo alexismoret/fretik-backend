@@ -25,7 +25,9 @@ import type {
   RunEvaluator,
 } from "@langfuse/client";
 import { flushLangfuse, langfuseClient } from "../../src/lib/langfuse";
+import { ensureModelRegistryWarm } from "../../src/lib/model-registry/resolve";
 import { raceDeadline } from "../deadline";
+import { exitAfterFlush } from "../exit";
 import { MEMORY_CASES, type MemoryEvalCase } from "./cases";
 import {
   cleanupMemoryFixtures,
@@ -45,13 +47,22 @@ const opt = (name: string): string | undefined => {
   return i !== -1 ? argv[i + 1] : undefined;
 };
 
+// The WRITE side runs in its own team. This suite does not read a corpus, it
+// creates one, and until 2026-09-11 it created it in the team the read-side
+// suites score against — which is how a leftover `learned/` memory of this
+// suite came to be the most coherent explanation for `chain-convention-promoted`
+// going 10/10 -> 0/10. No fallback to `EVAL_TEAM_ID`: a silent one rebuilds
+// exactly the contamination the split exists to remove.
 const scope = {
-  teamId: process.env.EVAL_TEAM_ID ?? "",
+  teamId: process.env.EVAL_WRITE_TEAM_ID ?? "",
   organizationId: process.env.EVAL_ORGANIZATION_ID ?? "",
   userId: process.env.EVAL_USER_ID ?? "",
 };
 if (!scope.teamId || !scope.organizationId || !scope.userId) {
-  console.error("Missing EVAL_TEAM_ID / EVAL_ORGANIZATION_ID / EVAL_USER_ID");
+  console.error(
+    "Missing EVAL_WRITE_TEAM_ID / EVAL_ORGANIZATION_ID / EVAL_USER_ID.\n" +
+      "The write-side suites (memory, chain) need their own team — run `bun run evals:ensure-write-team`.",
+  );
   process.exit(1);
 }
 
@@ -59,6 +70,12 @@ if (flag("--cleanup")) {
   await cleanupMemoryFixtures(scope);
   process.exit(0);
 }
+
+/**
+ * Tear the universe down when the run ends, not only when someone remembers
+ * `--cleanup`. `--keep` opts out to inspect the rows a failing case wrote.
+ */
+const keepFixtures = flag("--keep");
 
 const repeatsRaw = Number.parseInt(opt("--repeats") ?? "", 10);
 const repeats =
@@ -72,6 +89,20 @@ if (cases.length === 0) {
   console.error(`No case matches --case ${onlyCase ?? ""}`);
   process.exit(1);
 }
+
+// The live model registry is a DB-backed snapshot built lazily, and the only
+// thing that builds it in the service is `registryWarmMiddleware` on the HTTP
+// routes. An in-process eval crosses no route, so every `resolveModel` call
+// here hits an EMPTY snapshot and throws "No model profile for key <k> — no
+// live row describes it". Recall swallows that by design ("recall must never
+// break the main turn"), so the suite reports NONE on every case rather than
+// an error — 4/23, with nothing in the output naming the cause.
+//
+// Invisible until the model engine's v3 change removed the curated TypeScript
+// profiles: before it, a profile existed in code and an unwarmed process
+// resolved one anyway. The frozen baselines in RUNBOOK.md predate that change,
+// which is why they were reproducible then and are not now.
+await ensureModelRegistryWarm();
 
 console.log(
   `[memory-eval] profile=${profileKey ?? "(code default: 20b)"} — ensuring fixtures…`,
@@ -351,4 +382,10 @@ if (bimodal.length > 0) {
       .join(", ")}`,
   );
 }
-process.exit(passed === results.length ? 0 : 1);
+if (keepFixtures) {
+  console.log("\n[memory-eval] --keep: fixtures left in place");
+} else {
+  await cleanupMemoryFixtures(scope);
+  console.log("\n[memory-eval] fixtures cleaned up");
+}
+await exitAfterFlush(passed === results.length ? 0 : 1);

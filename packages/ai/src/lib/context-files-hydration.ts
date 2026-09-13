@@ -8,6 +8,7 @@ import {
   uploadContextSidecar,
 } from "@fretik/shared/lib/ai-context-storage";
 import { sanitizeSessionPath } from "@fretik/shared/lib/chatbot-session-storage";
+import { signSandboxJwt } from "@fretik/shared/lib/external-apps/sandbox-jwt";
 import type { SandboxLease } from "@fretik/shared/services/e2b/types";
 import { eq } from "drizzle-orm";
 import { extname } from "node:path";
@@ -20,6 +21,7 @@ import {
   prepareSandbox,
   WORKSPACE_DIRS,
   writeFile,
+  writeSandboxAuthFile,
 } from "./conversation-storage";
 import { hydrateMemoryTree } from "./memory-hydration";
 
@@ -66,6 +68,14 @@ interface HydrationContext {
  * hydration gave, now paid only when code actually runs.
  */
 const lastHydratedTurnBySandbox = new Map<string, string>();
+
+/**
+ * Last turn for which a given sandbox got its `fretik_apps` auth file, by
+ * `sandboxId`. Same shape and same reason as `lastHydratedTurnBySandbox`:
+ * several `python` / `bash` calls in one turn must not re-mint the JWT, and
+ * the next turn must, because the file carries that turn's `turn_id`.
+ */
+const lastAuthTurnBySandbox = new Map<string, string>();
 
 const sidecarBasenameFor = (filename: string): string => {
   const ext = extname(filename);
@@ -203,6 +213,69 @@ export const hydrateContextFiles = async (
 };
 
 /**
+ * Mint this turn's sandbox JWT (HS256, 1 h TTL) and write it to
+ * `/workspace/.fretik/auth.json`, which the in-sandbox `fretik_apps` SDK
+ * reads to authenticate its calls back to the backend.
+ *
+ * Called from `prepareSandboxForCode` rather than at turn start. `fretik_apps`
+ * lives INSIDE the sandbox and is only reachable through `python` / `bash`,
+ * both of which funnel through here — so writing it lazily covers every path
+ * that can actually use it, while a turn that never runs code no longer pays
+ * for the sandbox acquisition this write used to force (see the header of
+ * `loadExternalApps`).
+ *
+ * Best-effort and memoised per (sandbox, turn): a failure warns and lets code
+ * execution proceed, exactly as the turn-start version did — `fretik_apps`
+ * calls then fail with an auth error the agent can report, rather than the
+ * whole turn dying.
+ */
+const ensureSandboxAuthFile = async (ctx: {
+  conversationId: string;
+  organizationId: string;
+  teamId: string;
+  userId: string;
+  turnId: string;
+  sandboxId: string;
+}): Promise<void> => {
+  if (lastAuthTurnBySandbox.get(ctx.sandboxId) === ctx.turnId) return;
+
+  const sandboxJwtSecret = Bun.env.SANDBOX_JWT_SECRET;
+  const backendUrl = Bun.env.FRETIK_BACKEND_INTERNAL_URL;
+  if (
+    sandboxJwtSecret === undefined ||
+    sandboxJwtSecret === "" ||
+    backendUrl === undefined ||
+    backendUrl === ""
+  ) {
+    console.warn(
+      "[external-apps] SANDBOX_JWT_SECRET/FRETIK_BACKEND_INTERNAL_URL missing — fretik_apps calls will fail",
+    );
+    return;
+  }
+
+  try {
+    const jwt = await signSandboxJwt({
+      conversationId: ctx.conversationId,
+      teamId: ctx.teamId,
+      userId: ctx.userId,
+      organizationId: ctx.organizationId,
+      turnId: ctx.turnId,
+    });
+    await writeSandboxAuthFile(ctx.conversationId, {
+      jwt,
+      backendUrl,
+      turnId: ctx.turnId,
+    });
+    lastAuthTurnBySandbox.set(ctx.sandboxId, ctx.turnId);
+  } catch (error) {
+    console.warn(
+      "[external-apps] writeSandboxAuthFile failed — fretik_apps calls will fail this turn:",
+      error instanceof Error ? error.message : error,
+    );
+  }
+};
+
+/**
  * Prepare the sandbox for code execution: bootstrap it (dirs, skills,
  * S3 restore) AND hydrate the persistent context files into
  * `/workspace/context/` so `python` / `bash` can read them directly
@@ -227,6 +300,21 @@ export const prepareSandboxForCode = async (ctx: {
   traceId: string | undefined;
 }): Promise<SandboxLease> => {
   const lease = await prepareSandbox(ctx.conversationId);
+
+  // This turn's `fretik_apps` credential. Runs before hydration so a slow
+  // context pull can't leave the SDK unauthenticated for a code call that
+  // only needs the API. `traceId` IS the turn id — the same value the
+  // turn-start version passed as `turnId` (`callOptions.traceId`).
+  if (ctx.userId !== undefined && ctx.traceId !== undefined) {
+    await ensureSandboxAuthFile({
+      conversationId: ctx.conversationId,
+      organizationId: ctx.organizationId,
+      teamId: ctx.teamId,
+      userId: ctx.userId,
+      turnId: ctx.traceId,
+      sandboxId: lease.sandboxId,
+    });
+  }
 
   const alreadyHydrated =
     ctx.traceId !== undefined &&

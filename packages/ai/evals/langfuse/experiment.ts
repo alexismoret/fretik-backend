@@ -70,6 +70,18 @@ export interface ExperimentOptions {
    * pages, not just which one decided to.
    */
   pageBuildProfileKey?: string;
+  /**
+   * Serve every turn's recall under this selector. Recorded in the run
+   * metadata: a run that cannot say which selector produced it is not
+   * comparable to another, and the UI will happily line them up anyway.
+   */
+  recallMode?: string;
+  /**
+   * Which arm serves `<standing_memory>`. In the run metadata for the same
+   * reason as `recallMode`: three arms that cannot be told apart afterwards
+   * are three runs the UI will line up as if they were one experiment.
+   */
+  standingMode?: string;
   runName?: string;
   /**
    * Run every selected case this many times in ONE run (default 1).
@@ -283,6 +295,8 @@ export const runChatbotExperiment = async (
     deterministicOnly: opts.deterministicOnly,
     modelProfileKey: opts.candidateProfileKey,
     pageBuildProfileKey: opts.pageBuildProfileKey,
+    recallMode: opts.recallMode,
+    standingMode: opts.standingMode,
   });
   const evaluators = [buildItemEvaluator(configIds)];
   const runEvaluators = [buildRunEvaluator(configIds), buildCostRunEvaluator()];
@@ -308,7 +322,16 @@ export const runChatbotExperiment = async (
     ...(opts.pageBuildProfileKey
       ? { pageBuildProfileKey: opts.pageBuildProfileKey }
       : {}),
+    ...(opts.recallMode ? { recallMode: opts.recallMode } : {}),
+    ...(opts.standingMode ? { standingMode: opts.standingMode } : {}),
     ...(repeats > 1 ? { repeats } : {}),
+    // Recorded on EVERY run because `ttft-p50-ms` is unreadable without it.
+    // Measured 2026-09-10: two memory-recall cases reported 22 s TTFT at
+    // concurrency 3 and 0.9-2.2 s at concurrency 1 — same cases, same service,
+    // same commit. Correctness does not care; anything time-shaped does, and a
+    // TTFT baseline taken at concurrency 3 is a queueing measurement wearing a
+    // latency label.
+    maxConcurrency,
   };
   const common = {
     name: EXPERIMENT_NAME,

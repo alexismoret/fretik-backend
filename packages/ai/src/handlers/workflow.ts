@@ -77,6 +77,7 @@ import {
   loadExternalApps,
 } from "../agents/shared/fragments";
 import { formatCurrentDate } from "../agents/shared/prompt-renderer";
+import { STANDING_MODE } from "../agents/shared/standing-memory";
 import {
   getWorkflowAgentSet,
   type WorkflowCallOptions,
@@ -87,6 +88,7 @@ import {
   buildSteeringMessage,
 } from "../agents/workflow/playbook-block";
 import type { WorkflowTools } from "../agents/workflow/tools";
+import { recallForWorkflowTurnOne } from "../agents/workflow/turn-one-memory";
 import { subscribeAbort } from "../lib/abort-subscriber";
 import { flushLangfuse, langfuseEnabled } from "../lib/langfuse";
 import {
@@ -96,10 +98,7 @@ import {
 } from "../lib/model-registry/resolve";
 import { resolveTeamFlagship } from "../lib/model-registry/team-model";
 import { buildSensitiveInputScrubber } from "../lib/scrub-stream";
-import {
-  streamWithRetryThenFallback,
-  withSoftTimeout,
-} from "../lib/stream-errors";
+import { streamWithRetryThenFallback } from "../lib/stream-errors";
 import { dropNonTerminalErrorFrames } from "../lib/wire-errors";
 import { triggerCallbackMiddleware } from "../middlewares/trigger-callback";
 import { microcompactMessages } from "../services/compaction/microcompact";
@@ -108,7 +107,6 @@ import {
   NATIVE_FILE_PARSER_PLUGINS,
   prepareModelMessages,
 } from "../services/native-input";
-import { runUnifiedRecall } from "../services/recall/recall";
 import {
   buildTurnMessageMetadata,
   filterNewAssistantMessages,
@@ -230,6 +228,8 @@ const ensureSteeringMessage = async (params: {
   turnIndex: number;
   currentDate: string;
   activeMemoryBlock?: string;
+  memoryIndexBlock?: string;
+  standingMemoryBlock?: string;
   nudge: boolean;
   wrapUp: boolean;
 }): Promise<UIMessage[]> => {
@@ -248,6 +248,8 @@ const ensureSteeringMessage = async (params: {
     turnIndex: params.turnIndex,
     currentDate: params.currentDate,
     activeMemoryBlock: params.activeMemoryBlock,
+    memoryIndexBlock: params.memoryIndexBlock,
+    standingMemoryBlock: params.standingMemoryBlock,
     nudge: params.nudge,
     wrapUp: params.wrapUp,
   });
@@ -336,56 +338,52 @@ const executeTurn = async (params: {
   const runForPrompt: WorkflowRun = { ...run, taskStates };
   params.emitTaskUpdate(taskStates);
 
-  const [fragments, externalApps, recall, attachedFilesBlock, toolPolicies] =
-    await Promise.all([
-      assembleContextFragments({
+  const [
+    fragments,
+    externalApps,
+    activeMemoryBlock,
+    attachedFilesBlock,
+    toolPolicies,
+  ] = await Promise.all([
+    assembleContextFragments(
+      {
         organizationId: run.organizationId,
         teamId: run.teamId,
         userId: actingUserId,
         logPrefix,
-      }),
-      loadExternalApps({
-        conversationId,
-        organizationId: run.organizationId,
-        teamId: run.teamId,
-        userId: actingUserId,
-        turnId: traceId,
-        logPrefix,
-      }),
-      // Memory recall on the FIRST turn only. It rides in turn 1's steering
-      // message (NOT the system prompt, which is byte-stable per run) and then
-      // persists via the replayed message history — later turns re-render from
-      // the same inputs would re-pay the judge for nothing.
-      isFirstTurn && actingUserId !== undefined
-        ? propagateAttributes(
-            {
-              traceName: "active-memory-recall",
-              sessionId: conversationId,
-              userId: actingUserId,
-              tags: [`team:${run.teamId}`],
-            },
-            () =>
-              withSoftTimeout(
-                runUnifiedRecall({
-                  userMessage: `${workflow.name}\n${workflow.playbook.goal}`,
-                  attachedFiles: [],
-                  recentTail: JSON.stringify(run.triggerPayload).slice(0, 2000),
-                  teamId: run.teamId,
-                  organizationId: run.organizationId,
-                  userId: actingUserId,
-                  conversationId,
-                  agentType: "workflow",
-                }),
-                18000,
-                null,
-                "active-memory",
-              ),
-          )
-        : Promise.resolve(null),
-      // Files handed to the run (form/email trigger uploads) → `<file_attachments>`.
-      buildConversationAttachedFilesBlock(conversationId),
-      getTeamToolPolicies(run.teamId),
-    ]);
+      },
+      // The memory surfaces ride turn 1's steering message and then replay
+      // from history. On turns >= 2 they were read anyway and discarded —
+      // two queries per turn of every run, for output nothing consumed.
+      { mode: STANDING_MODE, memory: isFirstTurn },
+    ),
+    loadExternalApps({
+      conversationId,
+      organizationId: run.organizationId,
+      teamId: run.teamId,
+      userId: actingUserId,
+      logPrefix,
+    }),
+    // Memory recall on the FIRST turn only. It rides in turn 1's steering
+    // message (NOT the system prompt, which is byte-stable per run) and then
+    // persists via the replayed message history — later turns re-render from
+    // the same inputs would re-pay the judge for nothing. What it matches on
+    // lives in `recallForWorkflowTurnOne`, with its own eval case.
+    isFirstTurn
+      ? recallForWorkflowTurnOne({
+          organizationId: run.organizationId,
+          teamId: run.teamId,
+          conversationId,
+          actingUserId,
+          workflowName: workflow.name,
+          playbookGoal: workflow.playbook.goal,
+          triggerPayload: run.triggerPayload,
+        })
+      : Promise.resolve(undefined),
+    // Files handed to the run (form/email trigger uploads) → `<file_attachments>`.
+    buildConversationAttachedFilesBlock(conversationId),
+    getTeamToolPolicies(run.teamId),
+  ]);
 
   // Steering carries everything that mutates per turn (date, live statuses,
   // current-task pin, turn-1 recall) so the system prompt stays byte-stable.
@@ -396,7 +394,18 @@ const executeTurn = async (params: {
     history: historyRaw,
     turnIndex,
     currentDate: formatCurrentDate(new Date(), undefined),
-    activeMemoryBlock: recall?.block ?? undefined,
+    activeMemoryBlock,
+    // Both are already `undefined` on turns >= 2 — `memory: isFirstTurn`
+    // above skips the reads entirely — but say so here too: this is the line
+    // a reader checks to know what a later turn's steering message carries.
+    memoryIndexBlock: isFirstTurn ? fragments.memoryIndexBlock : undefined,
+    // Same fallback rule as a chat turn, minus the placeholder: the steering
+    // message has no static scaffold to contradict, so a superseded block is
+    // simply absent rather than announced.
+    standingMemoryBlock:
+      isFirstTurn && (activeMemoryBlock ?? "").trim().length === 0
+        ? fragments.standingMemoryBlock
+        : undefined,
     nudge,
     wrapUp: params.wrapUp,
   });

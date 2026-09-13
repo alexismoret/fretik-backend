@@ -44,6 +44,32 @@ const RAG_DEBUG = process.env.AI_RAG_DEBUG === "true";
 
 const TOP_K = 20;
 
+/**
+ * Source types whose corpus is already written in the vocabulary a question
+ * about them uses.
+ *
+ * Multi-query reformulation buys recall by paraphrasing the question three
+ * ways, and it costs a cheap-model round-trip (~1-3 s) plus two extra
+ * embeddings and two extra hybrid searches — worth it against DOCUMENTS,
+ * where a contract says "indemnité de résiliation" and the user asks about
+ * "frais si on arrête". Memories and episodes are the opposite case: both are
+ * distilled by an LLM at write time, in the team's own words, and each is a
+ * short whole rather than a chunk of a long text — the paraphrase mostly
+ * re-finds the same rows.
+ *
+ * So a search restricted to those two skips it. This is the tool the agent
+ * reaches for mid-turn once `<memory_index>` tells it a memory exists, which
+ * puts it on the visible part of a turn; anything touching `documents` (the
+ * default, when no `sourceTypes` is given) keeps the full expansion.
+ */
+const MEMORY_ONLY_SOURCE_TYPES = new Set<AiVectorSourceType>([
+  "memories",
+  "episodes",
+]);
+
+const isMemoryOnlySearch = (types: AiVectorSourceType[]): boolean =>
+  types.length > 0 && types.every((t) => MEMORY_ONLY_SOURCE_TYPES.has(t));
+
 export const createRagSearchTool = () =>
   tool({
     description: [
@@ -118,6 +144,7 @@ export const createRagSearchTool = () =>
           filters: effectiveFilters,
           topK: TOP_K,
           debug: RAG_DEBUG,
+          skipMultiQuery: isMemoryOnlySearch(validTypes),
         });
       } catch (err) {
         return {

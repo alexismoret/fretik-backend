@@ -129,7 +129,7 @@ export const distillRecordActivity = async (input: {
         // Loud on purpose — it is how a truncated consolidation looked like a
         // NOOP for a whole eval run (2026-08-04).
         console.warn(
-          `[memory-digest] output truncated at ${DIGEST_MAX_OUTPUT_TOKENS.toString()} tokens (finishReason=length)`,
+          `[record-activity] output truncated at ${DIGEST_MAX_OUTPUT_TOKENS.toString()} tokens (finishReason=length)`,
         );
       }
       const parsed = parseDigestOutput(raw);

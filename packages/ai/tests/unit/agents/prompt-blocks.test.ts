@@ -47,6 +47,8 @@ describe("resolveAgentBlocks", () => {
     expect(chatbot).toContain("askUserQuestion");
     expect(chatbot).toContain("<proactive_partnership>");
     expect(chatbot).toContain("{{collaborationBlock}}");
+    expect(chatbot).toContain("<standing_memory>");
+    expect(chatbot).toContain("{{standingMemory}}");
   });
 
   test("workflow variant of the real template has no chatbot leakage", () => {
@@ -60,6 +62,16 @@ describe("resolveAgentBlocks", () => {
     expect(workflow).toContain("<execution_loop>");
     expect(workflow).toContain("<writes_and_approvals>");
     expect(workflow).toContain("{{playbookBlock}}");
+    // The standing block is chatbot-only IN THE PROMPT: a workflow's prompt
+    // must stay byte-stable for a whole run, and this block changes under it.
+    // A workflow gets the same content in its turn-1 steering message instead.
+    //
+    // Pinned on the CLOSING tag, because `<memory_protocol>`'s workflow
+    // variant names the block in prose — it has to, the steering message emits
+    // exactly these tags and the run needs to know what they mean. Only the
+    // element itself carries a `</…>`.
+    expect(workflow).not.toContain("</standing_memory>");
+    expect(workflow).not.toContain("{{standingMemory}}");
     expect(workflow).toContain("{{workflowRunId}}");
     // The blocking askUserQuestion is now a headless tool (it parks the run
     // on a `question` approval), so it legitimately appears in the workflow prompt.
@@ -71,7 +83,7 @@ describe("resolveAgentBlocks", () => {
     expect(workflow).not.toContain("{{sessionStateBlock}}");
     expect(workflow).not.toContain("{{activeMemoryBlock}}");
     expect(workflow).not.toContain("<session_state>");
-    expect(workflow).not.toContain("<active_memory>");
+    expect(workflow).not.toContain("</active_memory>");
   });
 
   test("shared operational sections are present in BOTH variants", () => {

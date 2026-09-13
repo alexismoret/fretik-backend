@@ -24,6 +24,13 @@ export interface RecordAnchor {
 const DEFAULT_MAX_ANCHORS = 5;
 const MAX_SPANS = 150;
 const MAX_SPAN_TOKENS = 4;
+/**
+ * How far below `FUZZY_MATCH_THRESHOLD` the trigram GUC is set so the `%`
+ * prefilter is inclusive of rows sitting exactly on the threshold. Small
+ * enough that the candidate set barely widens, large enough to survive the
+ * float rounding of a `real` GUC.
+ */
+const TRIGRAM_PREFILTER_EPSILON = 0.001;
 
 /**
  * Match arbitrary text spans onto the team's CONFIRMED records — the shared
@@ -176,26 +183,54 @@ export const matchSpansToRecords = async (input: {
   }
 
   // Stage 4 — trigram fuzzy on the normalized label (typos, punctuation).
+  //
+  // The join predicate leads with `%`, NOT with `similarity(…) >= t`, and that
+  // is the whole point of this shape. `idx_collection_records_normalized_label`
+  // is a `gin_trgm_ops` index, and GIN can only answer the trigram OPERATORS
+  // (`%`, `<%`, `LIKE`) — a bare `similarity()` call is an opaque function to
+  // the planner, so the previous form scanned every confirmed record of the
+  // team once per span (up to `MAX_SPANS`) and got steadily slower as a team
+  // accumulated records. Same rows, index-backed.
+  //
+  // `%` is defined as `similarity(a, b) > pg_trgm.similarity_threshold`
+  // (STRICTLY greater), so the GUC is set a hair BELOW the real bar and the
+  // exact `>= FUZZY_MATCH_THRESHOLD` gate is kept in the predicate: `%`
+  // narrows to a candidate set that is a superset of the wanted rows, the
+  // comparison then decides. Setting the GUC to the threshold itself would
+  // silently drop matches that land exactly on it.
+  //
+  // `SET LOCAL` (hence the transaction) rather than `set_limit()`: the pool
+  // hands the same connection to unrelated queries, and a session-level
+  // trigram threshold leaking out of here would change matching everywhere
+  // else it is used.
   const normArray = sql`ARRAY[${sql.join(
     norms.map((n) => sql`${n}`),
     sql`, `,
   )}]::text[]`;
-  const fuzzyRows = await db.execute<{
-    id: string;
-    collection_id: string;
-    label: string;
-    norm: string;
-    sim: number;
-  }>(sql`
-    SELECT r.id, r.collection_id, r.label, c.norm,
-           similarity(r.normalized_label, c.norm) AS sim
-    FROM collection_records r
-    JOIN unnest(${normArray}) AS c(norm)
-      ON similarity(r.normalized_label, c.norm) >= ${FUZZY_MATCH_THRESHOLD}
-    WHERE r.team_id = ${input.teamId} AND r.status = 'confirmed'
-    ORDER BY sim DESC
-    LIMIT ${maxAnchors * 2}
-  `);
+  const fuzzyRows = await db.transaction(async (tx) => {
+    await tx.execute(
+      sql`SET LOCAL pg_trgm.similarity_threshold = ${sql.raw(
+        String(FUZZY_MATCH_THRESHOLD - TRIGRAM_PREFILTER_EPSILON),
+      )}`,
+    );
+    return tx.execute<{
+      id: string;
+      collection_id: string;
+      label: string;
+      norm: string;
+      sim: number;
+    }>(sql`
+      SELECT r.id, r.collection_id, r.label, c.norm,
+             similarity(r.normalized_label, c.norm) AS sim
+      FROM collection_records r
+      JOIN unnest(${normArray}) AS c(norm)
+        ON r.normalized_label % c.norm
+       AND similarity(r.normalized_label, c.norm) >= ${FUZZY_MATCH_THRESHOLD}
+      WHERE r.team_id = ${input.teamId} AND r.status = 'confirmed'
+      ORDER BY sim DESC
+      LIMIT ${maxAnchors * 2}
+    `);
+  });
   for (const r of fuzzyRows.rows) {
     add({
       recordId: r.id,
@@ -219,21 +254,21 @@ export const matchSpansToRecords = async (input: {
  * precision gates decide. ~50-token previews stay well under MAX_SPANS
  * across 2-4 set-based queries — cheap by construction.
  */
-const generateSpans = (text: string): string[] => {
+const generateSpans = (text: string, maxSpans: number): string[] => {
   const tokens = text
     .split(/[\s,;:!?()[\]{}<>"“”«»\n\r]+/u)
     .map((t) => t.replace(/^[.'’]+|[.'’]+$/gu, ""))
     .filter((t) => t.length > 0);
 
   const spans = new Set<string>();
-  for (let i = 0; i < tokens.length && spans.size < MAX_SPANS; i++) {
+  for (let i = 0; i < tokens.length && spans.size < maxSpans; i++) {
     for (let n = 1; n <= MAX_SPAN_TOKENS && i + n <= tokens.length; n++) {
       const span = tokens.slice(i, i + n).join(" ");
       if (span.length < 3 || span.length > 80) continue;
       spans.add(span);
     }
   }
-  return [...spans].slice(0, MAX_SPANS);
+  return [...spans].slice(0, maxSpans);
 };
 
 /**
@@ -247,8 +282,18 @@ export const anchorTextToRecords = async (input: {
   teamId: string;
   text: string;
   maxAnchors?: number;
+  /**
+   * Ceiling on the generated n-gram spans. Defaults to `MAX_SPANS` (150) —
+   * the resolver's budget, where the caller is a background job and coverage
+   * is worth more than milliseconds. The pre-turn recall path passes a
+   * smaller one: every span widens the `unnest` join on stages 3-4, and a
+   * chat message long enough to produce 150 spans is prose, where the
+   * entity-bearing n-grams sit in the opening tokens rather than in the
+   * hundredth window.
+   */
+  maxSpans?: number;
 }): Promise<RecordAnchor[]> => {
-  const spans = generateSpans(input.text);
+  const spans = generateSpans(input.text, input.maxSpans ?? MAX_SPANS);
   if (spans.length === 0) return [];
   return matchSpansToRecords({
     teamId: input.teamId,

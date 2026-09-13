@@ -415,3 +415,131 @@ from release_tasks order by started_at desc limit 20;
 
 Rows are never deleted: "which deploy published that prompt, and did it work"
 is the question this table exists to answer months later.
+
+## 9. Vector search operations
+
+Everything here is about ONE table, `ai_vectors`, and one index,
+`idx_ai_vectors_embedding_hnsw`. It gets its own section because its two
+failure modes are both silent: a plan that stops using the index keeps
+answering CORRECTLY and just gets slower as the corpus grows, and an index scan
+that runs without `hnsw.iterative_scan` returns FEWER rows than it was asked
+for, with no error and no log.
+
+### Why the index was not being used, and what actually fixed it
+
+For months the semantic arm ran an exhaustive scan. The diagnosis on record was
+that `cosine_distance(halfvec, halfvec)` ships from pgvector at `procost = 1`,
+so Postgres prices 20 000 distance computations over 2 560 dimensions the way it
+prices 20 000 integer additions and picks a Seq Scan. A migration raising that
+cost to 100 was written on that basis.
+
+**That diagnosis was wrong, and the migration was deleted rather than applied.**
+Measured 2026-09-10 on the EVAL corpus at 20 108 rows, plan asserted from
+`EXPLAIN` at every point:
+
+| `hnsw.ef_search` | procost = 1 | procost = 100                      |
+| ---------------- | ----------- | ---------------------------------- |
+| 100              | Seq Scan    | parallel Seq Scan (`Gather Merge`) |
+| 160              | Seq Scan    | —                                  |
+| 200              | **HNSW**    | **HNSW**                           |
+| 400              | **HNSW**    | **HNSW**                           |
+
+The lever is `ef_search`, not the operator cost. The index was unused because
+`HNSW_EF_SEARCH` was **100 while the arm asks for `PER_SEARCH_LIMIT = 150`
+rows** — below the limit the planner will not choose a scan that cannot fill it,
+and no amount of operator cost changes that. Worse, at ef=100 the migration's
+only measured effect was to buy a parallel worker for the same exhaustive scan.
+
+Both constants live in `packages/ai/src/services/search/hybrid-search.ts`, each
+with its measurement in the comment above it. `ef_search = 400`,
+`iterative_scan = strict_order`.
+
+### The pairing that matters
+
+`ef_search` decides WHICH rows come back; `hnsw.iterative_scan` decides HOW
+MANY. Same measurement, ten real queries, every result diffed against the exact
+answer:
+
+| setting                      | rows returned | recall@20 | RRF mass |
+| ---------------------------- | ------------- | --------- | -------- |
+| ef=400, `iterative_scan=off` | **67 / 150**  | —         | —        |
+| ef=100, `strict_order`       | 150 / 150     | 98.0 %    | 94.7 %   |
+| ef=400, `strict_order`       | 150 / 150     | 100 %     | 99.4 %   |
+
+Shipping `ef_search = 400` **without** `strict_order` would have cut the
+semantic arm to 67 of its 150 candidates, silently. Never change one of these
+two without the other, and never raise `ef_search` above `PER_SEARCH_LIMIT`
+while turning iteration off.
+
+Only `strict_order` keeps its guarantee as the corpus grows: a fixed `ef_search`
+returns a thinner tail on a bigger table. `hnsw.max_scan_tuples` (default
+20 000) caps an iterative scan, and at production volume that cap is what will
+bind first.
+
+### The runtime guard, and why it is not just a log
+
+`hybrid-search.ts` warns when the semantic arm comes back short — but only
+after checking that a 151st matching row actually exists, so it stays quiet for
+teams whose corpus is honestly under 150 rows. This is the load-bearing safety
+device of the whole change: it detects the RESULT, so it catches any
+combination of (procost, `ef_search`, corpus size, `max_scan_tuples`) that
+starves the arm, including combinations nobody predicted.
+
+```
+[hybrid-search] arm=memories+episodes+records semantic returned 67/150 rows while more match — HNSW famine.
+```
+
+Seeing it means retrieval is degraded now. Roll back with `SEMANTIC_SCAN_MODE`
+below, then fix the tuning.
+
+### Reading the state
+
+The `[hybrid]` line names its arm, its plan mode and its per-arm row counts —
+`searchRAG` fires three of these per turn against populations that differ by
+three orders of magnitude, so an unlabelled timing is not attributable to
+anything:
+
+```
+[hybrid] arm=memories+episodes+records scan=hnsw semantic=48ms bm25=31ms registry=29ms rows=150/12/4
+```
+
+```sql
+-- Which plan does the semantic arm actually get? (paste a real 2560-dim vector)
+EXPLAIN SELECT id FROM ai_vectors WHERE … ORDER BY embedding <=> $1::halfvec LIMIT 150;
+
+-- How big is the index, and does it fit in cache?
+SELECT pg_size_pretty(pg_relation_size('idx_ai_vectors_embedding_hnsw'));
+SHOW shared_buffers;
+```
+
+### Rollback
+
+`SEMANTIC_SCAN_MODE=exact` + restart. The semantic arm then asks for the exact
+plan it ran before this work, with no deploy and no migration to revert.
+
+Reach for it if retrieval quality regresses — and then say so, because
+`bun run evals:recall` at ten repeats is what is supposed to catch that and a
+miss belongs in the suite. Note which direction it protects: falling back to the
+exact plan is a LATENCY decision, not a correctness one (225 ms against ~50 ms
+on 20 108 rows, growing linearly). It cannot return a wrong row. The dangerous
+direction is an index scan without `strict_order`, and that pairing is not
+reachable from this switch.
+
+### `shared_buffers`, and the index that does not fit in it
+
+**Target: `shared_buffers` ≥ 2× the index size.** Dev, measured 2026-09-10:
+20 108 rows, `ai_vectors` 412 MB total, the HNSW index alone **238 MB against a
+128 MB `shared_buffers`** — the index cannot be fully cached even on its own.
+Check this on the Dokploy Postgres service before quoting any production
+latency, and re-check it whenever the corpus grows.
+
+**HNSW indexes do not shrink when rows are deleted.** That 238 MB was 167 MB
+before a `--scale 10000` run inserted and then removed 10 000 distractors; the
+space comes back only with `REINDEX INDEX CONCURRENTLY
+idx_ai_vectors_embedding_hnsw`. Any latency figure taken between a bulk delete
+and a reindex is pessimistic — say which it was.
+
+`pg_prewarm` is **not** installed on dev, and no migration installs it any more
+(it was created by the deleted planner-cost migration). `prewarmVectorIndex()`
+does not exist yet either; both belong to the prewarm work, and until then a
+restart leaves the index cold and the first queries slow.

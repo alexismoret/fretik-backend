@@ -19,7 +19,10 @@ import {
   type WorkflowRunCreateJobData,
 } from "./names";
 
-/** Both job shapes ride the dreaming queue (see EAGER_CONSOLIDATE_JOB). */
+/**
+ * Two job shapes ride the dreaming queue. `EagerConsolidateJobData` is the
+ * only one carrying an `episodeId`, so the dispatcher narrows on that.
+ */
 export type DreamingJobData = DreamingTeamJobData | EagerConsolidateJobData;
 
 /**

@@ -4,6 +4,7 @@ import {
   embedBatch,
   embedQuery,
 } from "../../lib/embeddings";
+import { withSoftTimeout } from "../../lib/stream-errors";
 
 /**
  * Redis-backed LRU + TTL cache for query-path embeddings.
@@ -66,6 +67,34 @@ const KEY_PREFIX = "qec:";
 const LRU_ZSET = "qec:lru";
 const TTL_SECONDS = 60 * 60;
 const MAX_ENTRIES = 1000;
+
+/**
+ * How long the query path will wait for the embedding provider.
+ *
+ * A normal 3-entry batch is 200-500 ms, and the recall gather's own p90 is
+ * ~1 s; but the gather has been measured at 6.3 s and 12.4 s on two turns out
+ * of 230, and both were this call with no ceiling on it. 2.5 s is past the
+ * slowest healthy call by a wide margin and well inside a turn's budget.
+ *
+ * Timing out is not a failure of the search: `hybridSearch` catches the
+ * rejection and serves the two lexical arms, which have already answered by
+ * then. That path exists and is tested — this only makes it reachable.
+ */
+const QUERY_EMBED_TIMEOUT_MS = 2_500;
+
+/**
+ * How long the query path will wait for Redis.
+ *
+ * The cache is an optimisation over a 200-500 ms call, so waiting on it longer
+ * than a fraction of that is self-defeating. Bounded HERE and not with
+ * ioredis's `commandTimeout` because this client is shared with BullMQ, whose
+ * blocking commands are supposed to sit for minutes — a global command timeout
+ * would break the job queues to protect one cache read.
+ *
+ * Every fallback below is the cache-miss shape, so a slow Redis costs the
+ * embedding round trip it would have saved, never the turn.
+ */
+const REDIS_TIMEOUT_MS = 200;
 
 const EMBEDDING_MODEL_ID = process.env.OPENROUTER_EMBEDDING_MODEL ?? "unknown";
 
@@ -150,25 +179,52 @@ export const clearQueryEmbeddingCache = async (): Promise<void> => {
  */
 export const getCachedOrEmbed = async (query: string): Promise<number[]> => {
   const key = hashKey(query);
-  const buf = await redis.getBuffer(key);
+  const buf = await withSoftTimeout(
+    redis.getBuffer(key),
+    REDIS_TIMEOUT_MS,
+    null,
+    "query-embedding-cache read",
+  );
   if (buf) {
     const decoded = decodeEmbedding(buf);
     if (decoded) {
       hits += 1;
-      await redis.zadd(LRU_ZSET, Date.now(), key);
+      await withSoftTimeout(
+        redis.zadd(LRU_ZSET, Date.now(), key),
+        REDIS_TIMEOUT_MS,
+        null,
+        "query-embedding-cache lru touch",
+      );
       return decoded;
     }
     // Corrupted payload — fall through to re-embed and overwrite.
-    await redis.del(key);
+    await withSoftTimeout(
+      redis.del(key),
+      REDIS_TIMEOUT_MS,
+      0,
+      "query-embedding-cache evict",
+    );
   }
 
   misses += 1;
-  const embedding = await embedQuery(query);
+  const embedding = await embedQuery(query, {
+    abortSignal: AbortSignal.timeout(QUERY_EMBED_TIMEOUT_MS),
+  });
   const pipeline = redis.pipeline();
   pipeline.set(key, encodeEmbedding(embedding), "EX", TTL_SECONDS);
   pipeline.zadd(LRU_ZSET, Date.now(), key);
-  await pipeline.exec();
-  await enforceBound();
+  await withSoftTimeout(
+    pipeline.exec(),
+    REDIS_TIMEOUT_MS,
+    null,
+    "query-embedding-cache write",
+  );
+  await withSoftTimeout(
+    enforceBound(),
+    REDIS_TIMEOUT_MS,
+    undefined,
+    "query-embedding-cache lru bound",
+  );
   return embedding;
 };
 
@@ -186,13 +242,102 @@ interface BatchMiss {
   query: string;
 }
 
+/**
+ * Embeddings currently being resolved, by cache key.
+ *
+ * The Redis cache only helps once a vector is WRITTEN; it does nothing for
+ * requests that are in the air at the same instant. Pre-turn recall fans out
+ * three `searchRAG` arms built from ONE query string
+ * (`buildRecallQuery`) inside a single `Promise.all`, so all three reach
+ * `mgetBuffer` before any of them has written back — three cache misses, three
+ * identical OpenRouter round-trips against an 8B embedding model, on the hot
+ * path of every turn.
+ *
+ * This map collapses them: the first caller for a key registers its promise,
+ * every concurrent caller for the same key awaits that promise instead of
+ * issuing its own request. Entries are deleted as soon as the underlying work
+ * settles, so this is strictly a concurrency window — the Redis cache remains
+ * the cross-request, cross-replica layer, and nothing here changes what a
+ * later turn sees.
+ *
+ * Process-local by design: it deduplicates work happening inside ONE replica
+ * at ONE moment, which is exactly the shape of the problem. Two replicas
+ * embedding the same query simultaneously is a rounding error next to three
+ * arms of the same turn doing it.
+ */
+const inFlightEmbeddings = new Map<string, Promise<number[]>>();
+
 export const getCachedOrEmbedBatch = async (
   queries: string[],
 ): Promise<number[][]> => {
   if (queries.length === 0) return [];
 
+  // Per-query promises for THIS call, keyed by the raw query text. Duplicate
+  // strings within one batch (and across concurrent batches, via
+  // `inFlightEmbeddings`) resolve to the same promise.
+  const promiseByQuery = new Map<string, Promise<number[]>>();
+  const owned: {
+    key: string;
+    query: string;
+    resolve: (value: number[]) => void;
+    reject: (reason: unknown) => void;
+  }[] = [];
+
+  for (const query of queries) {
+    if (promiseByQuery.has(query)) continue;
+    const key = hashKey(query);
+    const existing = inFlightEmbeddings.get(key);
+    if (existing) {
+      promiseByQuery.set(query, existing);
+      continue;
+    }
+    let resolve!: (value: number[]) => void;
+    let reject!: (reason: unknown) => void;
+    const promise = new Promise<number[]>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    inFlightEmbeddings.set(key, promise);
+    promiseByQuery.set(query, promise);
+    owned.push({ key, query, resolve, reject });
+  }
+
+  if (owned.length > 0) {
+    try {
+      const resolved = await resolveThroughCache(owned.map((o) => o.query));
+      owned.forEach((o, i) => {
+        o.resolve(resolved[i] ?? []);
+      });
+    } catch (error) {
+      // Reject every waiter with the original error — callers already treat a
+      // failed embed as "semantic side unavailable" (`hybridSearch` falls back
+      // to BM25, `searchRAG` callers soft-fail to empty).
+      for (const o of owned) o.reject(error);
+    } finally {
+      for (const o of owned) inFlightEmbeddings.delete(o.key);
+    }
+  }
+
+  return Promise.all(
+    queries.map((query) => promiseByQuery.get(query) ?? Promise.resolve([])),
+  );
+};
+
+/**
+ * The cache-read → batch-embed → cache-write path, over an already
+ * de-duplicated list of queries. Split out of `getCachedOrEmbedBatch` so the
+ * in-flight collapsing above wraps it rather than being interleaved with it.
+ */
+const resolveThroughCache = async (queries: string[]): Promise<number[][]> => {
+  if (queries.length === 0) return [];
+
   const keys = queries.map(hashKey);
-  const buffers = await redis.mgetBuffer(...keys);
+  const buffers = await withSoftTimeout(
+    redis.mgetBuffer(...keys),
+    REDIS_TIMEOUT_MS,
+    keys.map(() => null),
+    "query-embedding-cache read",
+  );
   const results: (number[] | undefined)[] = Array.from(
     { length: queries.length },
     () => undefined,
@@ -223,11 +368,22 @@ export const getCachedOrEmbedBatch = async (
     }
     missList.push({ index: i, key, query });
   }
-  if (hadHit) await hitPipeline.exec();
+  if (hadHit)
+    await withSoftTimeout(
+      hitPipeline.exec(),
+      REDIS_TIMEOUT_MS,
+      null,
+      "query-embedding-cache lru touch",
+    );
 
   if (missList.length > 0) {
     misses += missList.length;
-    const fresh = await embedBatch(missList.map((m) => m.query));
+    const fresh = await embedBatch(
+      missList.map((m) => m.query),
+      {
+        abortSignal: AbortSignal.timeout(QUERY_EMBED_TIMEOUT_MS),
+      },
+    );
     const missPipeline = redis.pipeline();
     for (const [j, miss] of missList.entries()) {
       const vec = fresh[j];
@@ -236,8 +392,22 @@ export const getCachedOrEmbedBatch = async (
       missPipeline.set(miss.key, encodeEmbedding(vec), "EX", TTL_SECONDS);
       missPipeline.zadd(LRU_ZSET, Date.now(), miss.key);
     }
-    await missPipeline.exec();
-    await enforceBound();
+    // Both are pure housekeeping for the NEXT query — the vectors this call
+    // returns are already in hand. Bounded for the same reason as the read, and
+    // with the same consequence when it fires: a colder cache, never a slower
+    // turn.
+    await withSoftTimeout(
+      missPipeline.exec(),
+      REDIS_TIMEOUT_MS,
+      null,
+      "query-embedding-cache write",
+    );
+    await withSoftTimeout(
+      enforceBound(),
+      REDIS_TIMEOUT_MS,
+      undefined,
+      "query-embedding-cache lru bound",
+    );
   }
 
   return results.map((r) => r ?? []);

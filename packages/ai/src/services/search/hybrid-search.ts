@@ -3,6 +3,11 @@ import type { AiVectorSourceType } from "@fretik/shared/db/schema";
 import { aiVectors } from "@fretik/shared/db/schema";
 import { and, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import { EMBEDDING_DIMENSIONS } from "../../lib/embeddings";
+import {
+  formatTimings,
+  type StageTimings,
+  timeStage,
+} from "../../lib/turn-timings";
 import { fuseArms, type HybridCandidate, type RawRow } from "./fuse-arms";
 import {
   type RegistryRow,
@@ -94,11 +99,73 @@ const BM25_WEIGHT = 0.2;
 const REGISTRY_WEIGHT = 0.2;
 
 /**
- * HNSW query-time parameter. The pgvector default is 40, too low for
- * high-recall RAG — 100 is the Anthropic / Crunchy Data recommended
- * value for 768-2560 dim embeddings with `m=16, ef_construction=200`.
+ * HNSW query-time candidate list size — how many neighbours the graph search
+ * keeps in flight, and therefore WHICH rows come back.
+ *
+ * 400, and it is a measurement (2026-09-10, ten real eval questions against the
+ * EVAL team's 20 108-row knowledge partition; every result compared against the
+ * exact scan's answer, and every plan asserted to be the HNSW index scan —
+ * three earlier attempts at this table were artefacts of a planner that had
+ * quietly answered exactly):
+ *
+ *   ef    rows/150   recall@20   recall@150   RRF mass   ms
+ *   40    150        97.5 %      84.5 %       92.7 %     59
+ *   100   150        98.0 %      87.7 %       94.7 %     46
+ *   200   150        100 %       95.1 %       98.3 %     52
+ *   400   150        100 %       98.1 %       99.4 %     62
+ *   800   150        100 %       99.7 %       99.9 %     70
+ *
+ * against 225 ms for the exact answer. "RRF mass" is the share of this arm's
+ * fusion weight `SEMANTIC_WEIGHT/(rank+1)` that survives, which is the honest
+ * metric: a row missed at rank 150 is worth a fiftieth of one missed at rank 1.
+ *
+ * The top of the ranking is EXACT from ef=200 up, and the top is all that
+ * survives fusion and rerank — so this constant does not trade precision for
+ * speed, it trades the depth of a tail nothing reads. 400 is where another
+ * 10 ms stops buying a measurable tail.
+ *
+ * It is not self-correcting: a fixed ef returns a worse tail as the corpus
+ * grows. `HNSW_ITERATIVE_SCAN` and the famine probe below are what hold as
+ * volume changes; re-run the table if the corpus changes by an order of
+ * magnitude.
  */
-const HNSW_EF_SEARCH = 100;
+const HNSW_EF_SEARCH = 400;
+
+/**
+ * What pgvector does when the scope filter leaves fewer than `LIMIT` rows in
+ * the candidate list: `off` returns SHORT, `strict_order` re-scans with a
+ * growing list until it has them, still in exact distance order.
+ *
+ * This — not `ef_search` — is the load-bearing setting. In the same
+ * measurement, `off` at the pgvector default ef=40 returned **32 of the 150
+ * rows asked for**, and at this file's previous ef=100 it returned **87 of
+ * 150**: no error, no log, just a third of the arm missing. Under
+ * `strict_order` every ef returned 150/150. So `ef_search` decides which rows
+ * come back and this decides how many, and only this one keeps its guarantee
+ * as the corpus grows.
+ */
+const HNSW_ITERATIVE_SCAN = "strict_order";
+
+/**
+ * Kill switch for the index, without a deploy.
+ *
+ * `hnsw` (default) tunes the index and leaves the choice to the planner.
+ * `exact` forbids the index scan, so the planner falls back to a full scan plus
+ * a sort — the plan this arm ran until `HNSW_EF_SEARCH` reached 400, and the
+ * rollback if the index ever misbehaves in production.
+ *
+ * Called `exact` rather than `seqscan` because that is what it actually
+ * guarantees: the planner may answer with a bitmap heap scan instead of a
+ * sequential one (measured — it does), and both are exact.
+ *
+ * Worth knowing before reaching for it: falling back here is a LATENCY
+ * decision, not a correctness one. The exact plan costs 225 ms against the
+ * index's ~50 ms on 20 108 rows and grows linearly, but it cannot return a
+ * wrong row. The dangerous direction is the other one — an index scan without
+ * `HNSW_ITERATIVE_SCAN` — and that pairing is not reachable from here.
+ */
+const SEMANTIC_SCAN_MODE: "hnsw" | "exact" =
+  process.env.SEMANTIC_SCAN_MODE === "exact" ? "exact" : "hnsw";
 
 export interface HybridSearchFilters {
   /**
@@ -124,7 +191,12 @@ export interface HybridSearchFilters {
 
 export interface HybridSearchInput {
   query: string;
-  queryEmbedding: number[];
+  /**
+   * The query vector, or a promise for it. A promise lets the two lexical arms
+   * run through the embedding round trip instead of behind it — see the note in
+   * `hybridSearch`.
+   */
+  queryEmbedding: number[] | Promise<number[]>;
   teamId: string;
   /**
    * Org-level scope. Required: covers user-scope context files
@@ -197,6 +269,89 @@ const wantsRecords = (filters: HybridSearchFilters | undefined): boolean =>
   filters.sourceTypes.length === 0 ||
   filters.sourceTypes.includes("records");
 
+/**
+ * Which slice of the corpus a call is searching, for the log line.
+ *
+ * `searchRAG` fires three of these per turn against wildly different
+ * populations — tens of thousands of rows for the knowledge arm, a hundred for
+ * documents, a handful for workflows and pages. Without this the `[hybrid]`
+ * timings pool all three into one distribution and a regression in the only arm
+ * that scans anything is invisible.
+ */
+export const armLabel = (filters: HybridSearchFilters | undefined): string =>
+  filters?.sourceTypes && filters.sourceTypes.length > 0
+    ? filters.sourceTypes.join("+")
+    : "all";
+
+/**
+ * The per-transaction tuning, as ONE statement.
+ *
+ * `set_config(…, is_local => true)` is `SET LOCAL` in function form, which is
+ * the whole reason to use it: two settings fit in one statement, where two
+ * `SET LOCAL`s would cost two round trips to a database that is not local.
+ *
+ * The transaction it needs is not free — four round trips for a query worth one
+ * — and moving these onto the CONNECTION instead (libpq startup options) does
+ * work and does remove it. It was tried and reverted: isolated, a single search
+ * went 279 ms → 87 ms, but under the real workload of three concurrent arms the
+ * semantic arm went 233 ms → 381 ms and the gather 705 ms → 1 020 ms. The
+ * isolated probe measured one query at a time and did not describe this system.
+ * See `evals/RUNBOOK.md` before trying it again.
+ */
+const semanticTuning = (mode: "hnsw" | "exact" = SEMANTIC_SCAN_MODE): SQL =>
+  mode === "exact"
+    ? sql`SELECT set_config('enable_indexscan', 'off', true)`
+    : sql`SELECT set_config('hnsw.ef_search', ${String(HNSW_EF_SEARCH)}, true), set_config('hnsw.iterative_scan', ${HNSW_ITERATIVE_SCAN}, true)`;
+
+/**
+ * Whether a short arm is worth investigating at all.
+ *
+ * Exported because it is the only decision here worth a test: it is what stands
+ * between a warning that means something and one that fires on every small
+ * tenant until everyone filters it out.
+ */
+export const shouldProbeForFamine = (
+  rowsReturned: number,
+  mode: "hnsw" | "exact" = SEMANTIC_SCAN_MODE,
+): boolean => mode === "hnsw" && rowsReturned < PER_SEARCH_LIMIT;
+
+/**
+ * A short semantic arm is either a small corpus or a famished index, and the
+ * two could not matter more differently: the second is silent, gets worse with
+ * volume, and is the single failure mode this phase exists to prevent. So the
+ * arm's row count alone is not the signal — "there is a 151st matching row and
+ * we did not get it" is. That costs one cheap existence probe.
+ *
+ * **It runs on most searches, not on rare ones.** Two of the three arms recall
+ * fires are honestly smaller than `PER_SEARCH_LIMIT` (118 documents, 6 workflows
+ * and pages on the EVAL team), so they come back "short" every time and get
+ * probed every time — about two extra statements per turn. That is deliberate
+ * and it is why the probe is a bounded existence check over an indexed
+ * predicate rather than a count: on a small partition it stops after scanning
+ * what is there. It is also why it is NOT awaited — the arm it describes has
+ * already answered, and awaiting it would put a round trip on the critical path
+ * of every search of every team whose corpus is under 150 rows.
+ *
+ * The 23/23 gate at ten repeats was measured with these probes running, so
+ * their cost is inside that number and not on top of it.
+ */
+const warnIfFamished = async (
+  clauses: SQL[],
+  rowsReturned: number,
+  arm: string,
+): Promise<void> => {
+  const more = await db
+    .select({ present: sql<number>`1` })
+    .from(aiVectors)
+    .where(and(...clauses))
+    .offset(PER_SEARCH_LIMIT)
+    .limit(1);
+  if (more.length === 0) return;
+  console.warn(
+    `[hybrid-search] arm=${arm} semantic returned ${String(rowsReturned)}/${String(PER_SEARCH_LIMIT)} rows while more match — HNSW famine. Check hnsw.iterative_scan (set to ${HNSW_ITERATIVE_SCAN}), hnsw.ef_search (${String(HNSW_EF_SEARCH)}) and hnsw.max_scan_tuples, which caps an iterative scan at 20 000 tuples by default.`,
+  );
+};
+
 const runSemanticSearch = async (
   queryEmbedding: number[],
   teamId: string,
@@ -208,12 +363,10 @@ const runSemanticSearch = async (
   const clauses = buildFilterClauses(teamId, organizationId, userId, filters);
   const distance = sql<number>`${aiVectors.embedding} <=> ${vectorLiteral}::halfvec`;
 
-  return db.transaction(async (tx) => {
-    // SET LOCAL only scopes to the current transaction — the wrapping
-    // `db.transaction` is mandatory for the tuning to take effect.
-    await tx.execute(
-      sql`SET LOCAL hnsw.ef_search = ${sql.raw(String(HNSW_EF_SEARCH))}`,
-    );
+  const rows = await db.transaction(async (tx) => {
+    // `SET LOCAL` scopes to the current transaction only — the wrapping
+    // `db.transaction` is mandatory for the tuning to take effect at all.
+    await tx.execute(semanticTuning());
     return tx
       .select({
         id: aiVectors.id,
@@ -231,6 +384,18 @@ const runSemanticSearch = async (
       .orderBy(distance)
       .limit(PER_SEARCH_LIMIT);
   });
+
+  if (shouldProbeForFamine(rows.length)) {
+    void warnIfFamished(clauses, rows.length, armLabel(filters)).catch(
+      (err: unknown) => {
+        console.warn(
+          "[hybrid-search] famine probe failed:",
+          err instanceof Error ? err.message : err,
+        );
+      },
+    );
+  }
+  return rows;
 };
 
 const runBm25Search = async (
@@ -283,48 +448,87 @@ export const hybridSearch = async (
   const { query, queryEmbedding, teamId, organizationId, userId, filters } =
     input;
 
-  // Guard against a missing / malformed embedding (upstream provider
-  // timeout, quota, dimension mismatch). Serialising `[]::halfvec`
-  // produces an invalid SQL literal that fails the whole transaction,
-  // so we skip the semantic side entirely and let BM25 carry the query.
-  // Logged as a warning because it indicates an upstream incident, not
-  // a normal empty-corpus scenario.
-  const hasValidEmbedding =
-    Array.isArray(queryEmbedding) &&
-    queryEmbedding.length === EMBEDDING_DIMENSIONS;
-  if (!hasValidEmbedding) {
-    console.warn(
-      `[hybrid-search] invalid query embedding (len=${queryEmbedding?.length ?? 0}, expected=${EMBEDDING_DIMENSIONS}) — falling back to BM25-only`,
-    );
-  }
-
-  const [semanticRows, bm25Rows, registryRows] = await Promise.all([
-    hasValidEmbedding
-      ? runSemanticSearch(
-          queryEmbedding,
+  // The two LEXICAL arms start now, without waiting for the embedding.
+  //
+  // Only the semantic arm needs a vector, and `queryEmbedding` may still be in
+  // flight — a round trip to an 8B embedding model, the single slowest hop in
+  // retrieval. Taking it as a promise and awaiting it inside the semantic
+  // branch means BM25 and the record registry run THROUGH that wait instead of
+  // after it, so a search costs `max(embed, lexical) + fuse` rather than
+  // `embed + max(semantic, lexical)`. Callers that already hold the vector pass
+  // it directly; `Promise.resolve` makes both shapes one code path.
+  //
+  // Guard against a missing / malformed embedding (upstream provider timeout,
+  // quota, dimension mismatch). Serialising `[]::halfvec` produces an invalid
+  // SQL literal that fails the whole transaction, so we skip the semantic side
+  // entirely and let BM25 carry the query. Logged as a warning because it
+  // indicates an upstream incident, not a normal empty-corpus scenario.
+  const semanticPromise = Promise.resolve(queryEmbedding)
+    .then((vector) => {
+      if (Array.isArray(vector) && vector.length === EMBEDDING_DIMENSIONS) {
+        return runSemanticSearch(
+          vector,
           teamId,
           organizationId,
           userId,
           filters,
-        )
-      : Promise.resolve<RawRow[]>([]),
-    runBm25Search(query, teamId, organizationId, userId, filters),
+        );
+      }
+      console.warn(
+        `[hybrid-search] invalid query embedding (len=${vector?.length ?? 0}, expected=${EMBEDDING_DIMENSIONS}) — falling back to BM25-only`,
+      );
+      return [];
+    })
+    // An embedding provider that fails now costs the SEMANTIC arm, not the
+    // search. Before the lexical arms ran in parallel there was nothing to
+    // fall back to — the rejection surfaced from `searchRAG` and recall's own
+    // `.catch` turned it into an empty memory block — so a bad minute at the
+    // embeddings endpoint took memory offline entirely. The two lexical arms
+    // have already answered by the time this settles; serve them.
+    .catch((err: unknown) => {
+      console.warn(
+        "[hybrid-search] embedding unavailable — serving lexical arms only:",
+        err instanceof Error ? err.message : err,
+      );
+      return [];
+    });
+
+  // Per-arm attribution. The three run on separate connections, so this stage
+  // costs `max(arm)` — and which arm that is decides whether a slow search is
+  // an HNSW tuning question, a full-text index question, or neither. Without
+  // it the `[search] hybrid=` figure names a stage but not a suspect.
+  const armTimings: StageTimings = {};
+  const [semanticRows, bm25Rows, registryRows] = await Promise.all([
+    timeStage(armTimings, "semantic", semanticPromise),
+    timeStage(
+      armTimings,
+      "bm25",
+      runBm25Search(query, teamId, organizationId, userId, filters),
+    ),
     wantsRecords(filters)
-      ? runRecordRegistrySearch({
-          queryText: query,
-          teamId,
-          organizationId,
-          recordIds: filters?.sourceIds,
-          // Deliberately shallower than the two vector arms. They fetch 150
-          // because a candidate buried in one can be shallow in the other, and
-          // cross-arm accumulation lifts it into the output. Nothing can lift a
-          // registry-only candidate — this arm is its only source — so a hit at
-          // registry rank r is outscored by the r-1 hits above it, and rank 51
-          // can never reach a top-50 output. Fetching deeper is provably wasted.
-          limit: HYBRID_OUTPUT_SIZE,
-        })
+      ? timeStage(
+          armTimings,
+          "registry",
+          runRecordRegistrySearch({
+            queryText: query,
+            teamId,
+            organizationId,
+            recordIds: filters?.sourceIds,
+            // Deliberately shallower than the two vector arms. They fetch 150
+            // because a candidate buried in one can be shallow in the other, and
+            // cross-arm accumulation lifts it into the output. Nothing can lift a
+            // registry-only candidate — this arm is its only source — so a hit at
+            // registry rank r is outscored by the r-1 hits above it, and rank 51
+            // can never reach a top-50 output. Fetching deeper is provably
+            // wasted.
+            limit: HYBRID_OUTPUT_SIZE,
+          }),
+        )
       : Promise.resolve<RegistryRow[]>([]),
   ]);
+  console.info(
+    `[hybrid] arm=${armLabel(filters)} scan=${SEMANTIC_SCAN_MODE} ${formatTimings(armTimings)} rows=${String(semanticRows.length)}/${String(bm25Rows.length)}/${String(registryRows.length)}`,
+  );
 
   return fuseArms({
     semanticRows,
@@ -346,4 +550,9 @@ export const HYBRID_CONSTANTS = {
   BM25_WEIGHT,
   REGISTRY_WEIGHT,
   HNSW_EF_SEARCH,
+  HNSW_ITERATIVE_SCAN,
+  SEMANTIC_SCAN_MODE,
 } as const;
+
+/** The tuning statement, for the test that pins what each mode actually sends. */
+export const semanticTuningSql = semanticTuning;

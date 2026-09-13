@@ -81,10 +81,26 @@ const embeddingModel = instrumentEmbeddingModel(
   embeddingsProvider.textEmbeddingModel(embeddingModelId),
 );
 
-export const embedQuery = async (value: string): Promise<number[]> => {
+/**
+ * Bound the wait, for callers that have one.
+ *
+ * Deliberately optional and never defaulted here: the query path has a user
+ * waiting and a lexical fallback already wired, while indexing has neither —
+ * a document that failed to embed is a document that stays unsearchable, so
+ * ingest must be allowed to take as long as the provider takes.
+ */
+export interface EmbedOptions {
+  abortSignal?: AbortSignal;
+}
+
+export const embedQuery = async (
+  value: string,
+  options?: EmbedOptions,
+): Promise<number[]> => {
   const { embedding } = await embed({
     model: embeddingModel,
     value,
+    abortSignal: options?.abortSignal,
     telemetry: telemetryFor("embeddings"),
   });
 
@@ -104,13 +120,17 @@ export const embedQuery = async (value: string): Promise<number[]> => {
  * vector must be exactly `EMBEDDING_DIMENSIONS` long; callers
  * (`services/vectorize`) drop offenders defensively before insert.
  */
-export const embedBatch = async (texts: string[]): Promise<number[][]> => {
+export const embedBatch = async (
+  texts: string[],
+  options?: EmbedOptions,
+): Promise<number[][]> => {
   if (texts.length === 0) return [];
 
   const { embeddings } = await embedMany({
     model: embeddingModel,
     values: texts,
     maxParallelCalls: EMBEDDING_PARALLEL_CALLS,
+    abortSignal: options?.abortSignal,
     telemetry: telemetryFor("embeddings"),
   });
 

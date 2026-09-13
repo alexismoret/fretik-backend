@@ -93,6 +93,31 @@ const score = (configIds: ConfigIds, base: Evaluation): Evaluation => {
  * output (trace-verified on `rag-specific-id`, smoke M3 2026-07-17) —
  * whether clarifying was the RIGHT move stays a `correctness` question.
  */
+/**
+ * Median time-to-first-token across the run, or nothing when no turn produced
+ * a visible frame.
+ *
+ * Median rather than mean: one 12 s cold-embedding outlier in twelve cases
+ * moves a mean by a second and describes no turn anybody had. Omitted entirely
+ * rather than reported as 0 — a zero would be read as an infinitely fast run,
+ * which is the one direction a latency score must never fail in.
+ */
+const ttftScore = (outputs: TaskOutput[]): Evaluation[] => {
+  const values = outputs
+    .map((o) => o.ttftMs)
+    .filter((ms): ms is number => ms !== undefined)
+    .sort((a, b) => a - b);
+  if (values.length === 0) return [];
+  return [
+    {
+      name: "ttft-p50-ms",
+      value: values[values.length >> 1] ?? 0,
+      dataType: "NUMERIC",
+      comment: `${values.length.toString()} of ${outputs.length.toString()} turns produced a visible frame`,
+    },
+  ];
+};
+
 export const isZombie = (out: TaskOutput): boolean =>
   out.text.trim().length === 0 &&
   out.error === undefined &&
@@ -133,6 +158,15 @@ export const buildItemEvaluator = (configIds: ConfigIds = {}): Evaluator => {
         value: classifyFailedCheck(out),
         dataType: "CATEGORICAL",
         comment: failedMessages(out),
+      });
+    }
+    // Per case, so a pre-turn regression on ONE case is visible instead of
+    // being averaged away by the run median. Free numeric, no score config.
+    if (out.ttftMs !== undefined) {
+      evaluations.push({
+        name: "ttft-ms",
+        value: out.ttftMs,
+        dataType: "NUMERIC",
       });
     }
     const latency = out.assertionResults.find((a) => a.type === "latencyUnder");
@@ -267,6 +301,12 @@ export const buildRunEvaluator = (configIds: ConfigIds = {}): RunEvaluator => {
         value: Math.round(mean(outputs.map((o) => o.latencyMs))),
         dataType: "NUMERIC",
       }),
+      // Median, and separate from `avg-latency-ms` on purpose: that one is the
+      // whole turn, which a longer answer inflates without anything having got
+      // slower, so it cannot see a pre-turn regression. This is what the memory
+      // work is judged on. Turns that produced no visible frame have no TTFT
+      // and are excluded rather than counted as zero.
+      ...ttftScore(outputs),
       {
         name: "fallback-served-count",
         value: outputs.filter((o) => o.fallbackServed === true).length,

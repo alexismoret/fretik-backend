@@ -96,6 +96,20 @@ export const aiConversations = pgTable(
   (t) => [
     index("ai_conversations_team_idx").on(t.teamId),
     index("ai_conversations_user_idx").on(t.userId),
+    /**
+     * The conversation list's ordering key. Equality on the first two columns
+     * leaves `updated_at, id` as the sort, and the keyset walk seeks on that
+     * same pair — so this index answers both the seek and the ORDER BY with no
+     * Sort node. Declared ascending on purpose: the walk reads it backwards,
+     * which Postgres does natively for a uniformly-reversed sort, and an
+     * ascending index also serves any oldest-first reader.
+     */
+    index("ai_conversations_team_agent_updated_idx").on(
+      t.teamId,
+      t.agentType,
+      t.updatedAt,
+      t.id,
+    ),
   ],
 );
 
@@ -210,5 +224,18 @@ export const aiConversationMembers = pgTable(
     ),
     index("ai_conversation_members_user_idx").on(t.userId),
     index("ai_conversation_members_conversation_idx").on(t.conversationId),
+    /**
+     * The pinned list, read FROM this table rather than through the
+     * conversation. It only pays off that way round: a membership filter on
+     * `ai_conversations` compiles to `EXISTS (… WHERE conversation_id = …
+     * AND user_id = …)`, which the unique index above already serves exactly.
+     *
+     * Partial because a pin list is a shortlist — indexing the millions of
+     * unpinned membership rows to find the handful of pinned ones is the whole
+     * cost and none of the benefit.
+     */
+    index("ai_conversation_members_user_pinned_idx")
+      .on(t.userId, t.pinnedAt)
+      .where(sql`${t.pinnedAt} is not null`),
   ],
 );

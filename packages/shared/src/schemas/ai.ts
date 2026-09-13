@@ -6,6 +6,7 @@ import {
   aiVectorSourceTypeEnum,
   CONVERSATION_TASK_KINDS,
 } from "../db/schema";
+import { cursorParamSchema, paramsListSchema } from "./common/params";
 import { reasoningLevelSchema } from "./reasoning";
 
 /**
@@ -197,6 +198,40 @@ export const pageVectorMetadataSchema = z.object({
 // ==================== //
 // Conversation CRUD    //
 // ==================== //
+
+/**
+ * Query parameters of `GET /conversation`.
+ *
+ * Three things sit on top of the usual `limit`/`page`/`search`, and they exist
+ * for one surface: the conversation list is now a permanent, narrow lane in the
+ * sidebar that only ever scrolls forward.
+ *  - `pinned` splits the list into the two blocks that lane renders — a short
+ *    pinned shortlist and an infinite recent stream — so neither query has to
+ *    carry the other's ordering.
+ *  - `paginate: "cursor"` walks that stream by key instead of by offset, and
+ *    skips the exact total it would otherwise compute and throw away.
+ * Omitting all three keeps the historical behaviour (pinned-first, offset,
+ * exact count) for numbered-page callers.
+ */
+export const conversationListQuerySchema = paramsListSchema.extend({
+  ...cursorParamSchema.shape,
+  agentType: aiAgentTypeSchema.optional().default("chatbot"),
+  // Query params arrive as strings; absent means "both blocks at once".
+  pinned: z
+    .enum(["true", "false"])
+    .optional()
+    .transform((v) => (v === undefined ? undefined : v === "true"))
+    .openapi({
+      type: "string",
+      example: "false",
+      description:
+        "Restrict to the caller's pinned conversations (`true`) or to the unpinned ones (`false`). Omitted returns both, pinned first.",
+    }),
+  // `cursor` walks forward and skips the exact count; ignored unless the list
+  // is the unpinned stream. See `listConversations`.
+  paginate: z.enum(["page", "cursor"]).default("page"),
+});
+export type ConversationListQuery = z.infer<typeof conversationListQuerySchema>;
 
 export const CreateConversationSchema = z.object({
   title: z.string().min(1).max(255).openapi({

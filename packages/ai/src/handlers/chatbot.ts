@@ -121,7 +121,6 @@ import { flushLangfuse, langfuseEnabled } from "../lib/langfuse";
 import { deleteScore, recordScore } from "../lib/langfuse-scores";
 import {
   effectiveReasoningLevel,
-  ensureModelRegistryWarm,
   getProfileForRole,
   reasoningParamForProfile,
   resolveChatModelForProfile,
@@ -159,6 +158,7 @@ import { uuidv7TimestampMs } from "../lib/uuidv7-time";
 import { dropNonTerminalErrorFrames } from "../lib/wire-errors";
 import { chatbotRateLimitMiddleware } from "../middlewares/chatbot-rate-limit";
 import { internalMiddleware } from "../middlewares/internal";
+import { registryWarmMiddleware } from "../middlewares/registry-warm";
 import { sendChatbotFinishedEmailIfEnabled } from "../services/chatbot-finished-email";
 import { compactConversation } from "../services/compaction/compact";
 import { generateConversationTitle } from "../services/conversation-title/generate";
@@ -2421,21 +2421,6 @@ const wrapResponseWithSseHeartbeat = (response: Response): Response => {
 // ==================== //
 // USER-FACING ROUTES   //
 // ==================== //
-
-/**
- * Every turn resolves a model, and a model resolves against a snapshot this
- * process may have lost — see `ensureModelRegistryWarm`. A no-op on the common
- * path (one synchronous check), and the difference between a replica that
- * recovers and one that answers `UNKNOWN_MODEL_PROFILE` about healthy rows
- * until somebody restarts it.
- */
-const registryWarmMiddleware = async (
-  _c: unknown,
-  next: () => Promise<void>,
-): Promise<void> => {
-  await ensureModelRegistryWarm();
-  await next();
-};
 
 const chatbotRoutes = new OpenAPIHono<HonoLoggedAppType>();
 chatbotRoutes.use("*", authMiddleware);

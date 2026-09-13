@@ -50,6 +50,14 @@ export const ROLE_FUNCTION: Record<ModelRole, ModelFunctionKey | "auto"> = {
   // was judgement quality, so its own binding stays the code default and the
   // recommendation still points there.
   "active-memory": "recall",
+  // Same memory, read for a different moment: the judge decides what a MESSAGE
+  // needs, this decides what a person opening the chat with no message might
+  // want. Grouped rather than given a function of its own — a team choosing a
+  // model for "what the assistant remembers about us" is answering both
+  // questions at once, and an eighth category in the hub buys nothing but
+  // hesitation. The `recall` floors (speed, first-token latency, a real
+  // intelligence bar) are the right guard rails for both.
+  "chat-suggestions": "recall",
 
   "cheap-tasks": "quick-tasks",
   // Was `fixed`: repair sits on the hot path of every malformed tool call. The

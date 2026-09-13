@@ -20,6 +20,10 @@
  * - `recall` — the judge that decides what memory a turn sees, under a 15 s
  *   ceiling ON THE HOT PATH OF EVERY TURN. Split from `memory` for that reason
  *   alone: a model chosen for the quality of its writing would break reading.
+ *   It also writes the chat home screen's suggestions, which is the same
+ *   question asked a moment earlier — what is worth surfacing from this
+ *   person's memory — so one pick answers both instead of two cards in the hub
+ *   asking an admin to tell them apart.
  * - `quick-tasks` — titles, reformulation, repair. Volume work where speed or
  *   price is the point.
  * - `vision` — anything that reads an image. The only function with a HARD

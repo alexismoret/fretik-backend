@@ -470,6 +470,7 @@ export type ModelRole =
   | "memory-consolidate"
   | "memory-promote"
   | "compaction-summarizer"
+  | "chat-suggestions"
   | "cheap-tasks"
   | "tool-repair"
   | "vision"

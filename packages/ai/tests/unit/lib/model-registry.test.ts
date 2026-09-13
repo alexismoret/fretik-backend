@@ -316,6 +316,11 @@ describe("role bindings — default model ids pinned (chat: gated M3 flip)", () 
     "memory-extract": "deepseek/deepseek-v4-flash-0731",
     "memory-distill": "deepseek/deepseek-v4-flash-0731",
     "compaction-summarizer": "deepseek/deepseek-v4-flash-0731",
+    // Shares `active-memory`'s model and envelope: ~3k tokens of context in,
+    // strict JSON out, with a person waiting behind a skeleton on the first
+    // visit. Grouped under the `recall` function, so a team steers both with
+    // one pick (see ROLE_FUNCTION).
+    "chat-suggestions": "openai/gpt-oss-120b",
     "cheap-tasks": "openai/gpt-oss-20b",
     // ONE file-capable model backs both the `vision` tool and the `extract`
     // engine (no separate extraction role) — 3.5-flash-lite since 2026-07-25

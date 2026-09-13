@@ -63,6 +63,16 @@ describe("ROLE_FUNCTION", () => {
     expect(ROLE_FUNCTION["page-build"]).toBe("pages");
   });
 
+  test("suggestions ride the recall pick rather than a category of their own", () => {
+    // Seven functions is already a lot to ask of a non-technical admin. The
+    // suggestion writer reads the same memory the judge reads, under the same
+    // speed floors, so it is steered by the same choice — and the hub stays at
+    // seven cards. Moving it to `quick-tasks` or `memory` would silently serve
+    // it that function's representative (gpt-oss-20b / deepseek-v4-flash),
+    // which is why this is pinned rather than left to taste.
+    expect(ROLE_FUNCTION["chat-suggestions"]).toBe("recall");
+  });
+
   test("every function has a representative whose role belongs to it", () => {
     for (const [fn, role] of Object.entries(FUNCTION_REPRESENTATIVE)) {
       expect(`${fn}:${ROLE_FUNCTION[role]}`).toBe(`${fn}:${fn}`);

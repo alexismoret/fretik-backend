@@ -85,6 +85,10 @@ export * from "./ai-memory";
 // consolidation merges — vectorized into ai_vectors as source_type=episodes)
 export * from "./ai-episodes";
 
+// Chat suggestions (per-reader starter prompts on the chatbot home screen,
+// generated from that reader's own recent work)
+export * from "./chat-suggestions";
+
 // Skills (chatbot SKILL.md catalogue + per-team enable/disable overrides)
 export * from "./skills";
 

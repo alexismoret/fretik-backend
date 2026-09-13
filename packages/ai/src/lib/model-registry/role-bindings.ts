@@ -228,6 +228,24 @@ export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
     settingsKind: "bare",
     wrapCache: false,
   },
+  // The chatbot home screen's starter prompts. Reads ~3k tokens of this
+  // reader's own recent work and answers strict JSON, so the two things that
+  // matter are holding a format and not running away on reasoning — which is
+  // `active-memory`'s envelope exactly, and why it shares it rather than
+  // inventing a sixth `settingsKind`.
+  //
+  // Grouped under `recall` (see `functions.ts`), so what a team picks for
+  // recall serves this too and the model hub gains no eighth category. The key
+  // below is therefore documentary, as it is for every non-representative
+  // role: `resolveFunctionProfileKey` serves the FUNCTION's representative
+  // (`active-memory`, gpt-oss-120b) when a team has expressed no preference,
+  // which is the same model this line names.
+  "chat-suggestions": {
+    role: "chat-suggestions",
+    profileKey: "gpt-oss-120b",
+    settingsKind: "active-memory",
+    wrapCache: false,
+  },
   // One-shot malformed-tool-call repair (`repair-tool-call.ts`). Split from
   // `dispatch-cheap` (2026-07): deepseek-v4-flash hit the 20s repair timeout
   // in prod, turning every repair into pure wasted latency — same failure the

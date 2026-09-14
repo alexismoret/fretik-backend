@@ -46,6 +46,20 @@ export const ftpSftpManifest: ProviderManifest = {
   iconColor: "#F59E0B",
   iconGradient: ["#F59E0B", "#EA580C"],
   transport: { kind: "custom-handler" },
+  // One call at a time per connection — the default that works EVERYWHERE
+  // rather than the one that works on modern servers.
+  //
+  // Each action opens its own FTP/SSH session, and a file server caps
+  // concurrent sessions per LOGIN: an EDI account is routinely limited to
+  // one or two, and exceeding it answers `421 Too many connections` — which
+  // reads exactly like bad credentials to anyone debugging it. Parallel
+  // would serve a modern SFTP server slightly better and break a locked-down
+  // one outright, so the connection card's per-account override
+  // (`external_app_connections.concurrency_mode`) is the place to relax it.
+  //
+  // The wait is long because an FTP transfer is: an 8-second default would
+  // make a second widget give up while the first is still moving bytes.
+  concurrency: { mode: "serial", maxWaitMs: 60_000 },
   // No OAuth. Credentials come from the descriptor-driven form and Nango
   // stores them (private-api-bearer template — see SETUP.md).
   scopes: [],

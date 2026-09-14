@@ -93,7 +93,40 @@ that trade: active mode would need the SERVER to open a connection back to us.
 If a customer's server firewalls by source IP, they need the platform's
 egress address allow-listed on their side.
 
-## 5. Verifying a connection
+## 5. Behaviours worth knowing before the first support ticket
+
+All three were measured against a live vsftpd 3.0.5 and a live OpenSSH 9.6
+sftp subsystem, not reasoned about.
+
+**One call at a time, per connection.** The manifest declares
+`concurrency: { mode: "serial", maxWaitMs: 60_000 }`. Each action opens its
+own session, and a file server caps concurrent sessions per LOGIN — an EDI
+account is routinely limited to one or two, and exceeding it answers `421
+Too many connections`, which reads exactly like bad credentials. A customer
+whose server is comfortable with parallel sessions can relax it per account
+via `external_app_connections.concurrency_mode`.
+
+**A 25-second ceiling per action.** `@fretik/api` serves with
+`idleTimeout: 30`, and Bun applies that to a request whose HANDLER is slow,
+not merely to an idle socket (measured: a handler sleeping 6 s behind
+`idleTimeout: 3` loses its connection at 4 s). Past that the call does not
+return an error, it loses the connection — and on an upload that means the
+bytes landed while the agent was told they did not. The provider finishes
+first, with a message saying to send fewer files.
+
+**FTP downloads are verified against the announced size, and retried once.**
+Over 1 000 downloads from a stock vsftpd on localhost, **10 came back empty
+with no error at all** — FTP opens a separate data connection per transfer,
+and on a fast server the payload and its FIN can arrive before the control
+channel's `150` reply is parsed and the reader attached. Nothing in the
+protocol reports it. Every one of the 10 succeeded on the retry, and the
+`[ftp-sftp] short read on …` warning in the logs is that happening. A second
+short read is reported to the agent as a failed transfer rather than
+returned as content. A bare FTP server offering neither `SIZE` nor `MLSD`
+announces no size and cannot be checked this way — worth knowing if a
+customer reports an empty file on one.
+
+## 6. Verifying a connection
 
 The form's **Test connection** button connects AND lists the starting folder.
 Logging in successfully is not enough to prove a connection works — a

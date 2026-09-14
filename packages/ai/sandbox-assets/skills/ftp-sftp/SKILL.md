@@ -1,7 +1,7 @@
 ---
 name: ftp-sftp
 description: File transfer over FTP, FTPS and SFTP — browse a remote file server, read its folders and file metadata, download and upload files in bulk, and move, rename or delete what is there.
-version: b55489e49830
+version: 4736b408be9b
 ---
 
 # File transfer (FTP/SFTP) — 10 actions
@@ -188,6 +188,12 @@ upstream rule.
 - **`Download budget exceeded` / `Too many files in one call`** → split the
   request. These ceilings are about what crosses into the sandbox, not about
   what the server holds.
+- **`The file server did not finish within 25s`** → the call ran out of wall
+  clock, not out of bytes. Ask for fewer files in one go. A transfer that
+  cannot fit a turn belongs in a scheduled workflow.
+- **`Incomplete transfer: the server announced N bytes and sent M`** → the
+  file was NOT read, and nothing was written to the sandbox. Never treat it
+  as an empty file; retry it on its own.
 - **Every `modified_at` is `None`** → this FTP server does not report times.
   Sort by name, or ask the user which file they mean.
 

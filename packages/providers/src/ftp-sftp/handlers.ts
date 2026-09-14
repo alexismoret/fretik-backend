@@ -288,7 +288,13 @@ const findFiles = async (
 
         for (const entry of entries) {
           if (entry.type === "directory") {
-            next.push(entry.path);
+            // Bounded by what the walk can still visit, not by what the
+            // tree holds: a wide archive (a folder per day for five years)
+            // would otherwise queue thousands of paths the loop will never
+            // reach, all held in memory for nothing.
+            if (next.length + directoriesVisited < MAX_WALK_DIRECTORIES) {
+              next.push(entry.path);
+            }
             continue;
           }
           if (!matchesPattern(entry.name, pattern)) continue;
@@ -414,12 +420,11 @@ const downloadFiles = async (
       try {
         const resolved = resolveRemotePath(config.rootPath, requested);
 
-        // Refuse on the ANNOUNCED size before fetching: `session.download`
-        // buffers the whole file in this process, so a check that runs after
-        // it has already spent the memory it was meant to bound. The size is
-        // absent on an FTP server with no SIZE/MLSD, which is why the
-        // post-download check below stays as the backstop rather than being
-        // replaced by this one.
+        // Refuse on the ANNOUNCED size before fetching, when the server
+        // gives one — the cheapest refusal is the one that transfers
+        // nothing. It is only ever an optimisation: an FTP server without
+        // SIZE or MLSD announces nothing at all, which is why the sink
+        // below carries the ceiling that always holds.
         const announced = (await index.stat(resolved))?.sizeBytes;
         if (
           announced !== undefined &&
@@ -429,14 +434,47 @@ const downloadFiles = async (
           continue;
         }
 
-        const bytes = await session.download(resolved);
-        if (totalBytes + bytes.byteLength > MAX_DOWNLOAD_TOTAL_BYTES) {
-          // Report the whole file as refused rather than returning part of
-          // it: half a file written to `sandbox_path` is a file the agent
-          // will happily parse and silently get wrong. The budget is left
-          // untouched so a smaller file later in the list still fits.
-          results.push(refuseOverBudget(requested, name, bytes.byteLength));
-          continue;
+        // The remaining budget IS the per-file ceiling: the sink aborts the
+        // data connection the moment a file goes past it, so an unannounced
+        // 2 GB file costs one chunk over the cap instead of the whole
+        // process's memory.
+        const budget = MAX_DOWNLOAD_TOTAL_BYTES - totalBytes;
+        let bytes = await session.download(resolved, budget);
+
+        // Verify the transfer against the size the server announced.
+        //
+        // Measured, not defensive: over 500 downloads from a stock vsftpd on
+        // localhost, two came back EMPTY with no error at all — FTP opens a
+        // separate data connection per transfer, and on a fast server the
+        // whole payload and its FIN can arrive before the control channel's
+        // `150` reply is parsed and the reader is attached. Nothing in the
+        // protocol reports that; the download simply resolves with nothing.
+        //
+        // An empty file written to `sandbox_path` is the worst outcome this
+        // provider can produce: the agent parses it, finds no rows, and
+        // tells the user their partner sent an empty order. So a short read
+        // is retried once on a fresh data connection, and a second one is
+        // reported as the failure it is rather than returned as content.
+        //
+        // Only possible where the server announces a size (SIZE, MLSD, or
+        // SFTP's attributes — which is everything except a bare FTP server
+        // with neither). There, a genuinely empty file is indistinguishable
+        // from a lost one, and returning it is the only honest choice.
+        if (announced !== undefined && bytes.byteLength !== announced) {
+          console.warn(
+            `[ftp-sftp] short read on ${name}: announced ${announced.toString()}, got ${bytes.byteLength.toString()} — retrying`,
+          );
+          bytes = await session.download(resolved, budget);
+          if (bytes.byteLength !== announced) {
+            results.push({
+              path: requested,
+              name,
+              size_bytes: bytes.byteLength,
+              content_type: contentTypeOf(name),
+              error: `Incomplete transfer: the server announced ${announced.toString()} bytes and sent ${bytes.byteLength.toString()}, twice. The file was NOT read — try again, or fetch it on its own.`,
+            });
+            continue;
+          }
         }
         totalBytes += bytes.byteLength;
         results.push({

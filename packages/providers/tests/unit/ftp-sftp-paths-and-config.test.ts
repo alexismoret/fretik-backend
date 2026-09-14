@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { parseFileTransferConfig } from "../../src/ftp-sftp/config";
+import { freeNameIn } from "../../src/ftp-sftp/handlers";
 import {
   matchesPattern,
   normalizePath,
@@ -241,5 +242,35 @@ describe("approval summaries", () => {
       .filter((a) => a.kind === "write")
       .map((a) => a.name);
     expect(writes.sort()).toEqual(Object.keys(ftpSftpSummaries).sort());
+  });
+});
+
+describe("upload conflict — the rename ladder", () => {
+  test("keeps the extension and counts up", () => {
+    expect(freeNameIn(new Set(["report.csv"]), "report.csv")).toBe(
+      "report (1).csv",
+    );
+    expect(
+      freeNameIn(new Set(["report.csv", "report (1).csv"]), "report.csv"),
+    ).toBe("report (2).csv");
+  });
+
+  test("handles a name with no extension", () => {
+    expect(freeNameIn(new Set(["README"]), "README")).toBe("README (1)");
+  });
+
+  test("gives up rather than returning a taken name", () => {
+    // `rename` exists so a partner\u2019s file is never overwritten. Handing
+    // back an occupied name would do exactly what the policy forbids, so a
+    // crowded folder has to answer null and let the caller report it.
+    const taken = new Set(["a.txt"]);
+    for (let i = 1; i <= 20; i += 1) taken.add(`a (${i.toString()}).txt`);
+    expect(freeNameIn(taken, "a.txt")).toBeNull();
+  });
+
+  test("a dotfile keeps its leading dot", () => {
+    // `.env` has no stem before the dot \u2014 suffixing on the last dot would
+    // produce " (1).env" and lose the file\u2019s identity.
+    expect(freeNameIn(new Set([".env"]), ".env")).toBe(".env (1)");
   });
 });

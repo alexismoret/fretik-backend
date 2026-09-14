@@ -52,6 +52,62 @@ import { matchesPattern, resolveRemotePath, toDisplayPath } from "./paths";
 const configOf = (ctx: ProviderHandlerContext) =>
   parseFileTransferConfig(ctx.credentials, ctx.connection_config);
 
+/**
+ * "Does this path exist, and what is it?" for many paths, answered from one
+ * listing per PARENT directory.
+ *
+ * `session.stat` is one cheap command on SFTP and a whole `LIST` of the
+ * parent on FTP — the protocol has no stat. So the naive loop over fifty
+ * paths in one folder is fifty listings of that folder on every FTP server
+ * in existence. Grouping by parent turns that into one.
+ *
+ * Scoped to a single action, never longer. The cache is read-only against
+ * facts our own writes do not change: deleting a file does not turn a
+ * sibling into a directory, and an upload conflict is decided before any
+ * byte of that batch is written.
+ */
+const createEntryIndex = (session: FileTransferSession) => {
+  const listings = new Map<string, Map<string, RemoteEntry> | null>();
+
+  const listingFor = async (
+    directory: string,
+  ): Promise<Map<string, RemoteEntry> | null> => {
+    const cached = listings.get(directory);
+    if (cached !== undefined) return cached;
+    let index: Map<string, RemoteEntry> | null;
+    try {
+      index = new Map(
+        (await session.list(directory)).map((entry) => [entry.name, entry]),
+      );
+    } catch (error) {
+      // A directory we cannot list is not a directory whose children we can
+      // claim are absent — `null` says "unknown" and callers fall back.
+      if (!isMissingPathError(error)) throw error;
+      index = null;
+    }
+    listings.set(directory, index);
+    return index;
+  };
+
+  return {
+    /** The entry at `path`, or `null` when it is not there. */
+    stat: async (path: string): Promise<RemoteEntry | null> => {
+      const index = await listingFor(dirname(path));
+      if (index === null) return null;
+      return index.get(basename(path)) ?? null;
+    },
+    /** Every name currently in `directory` (empty when it does not exist). */
+    namesIn: async (directory: string): Promise<Set<string>> => {
+      const index = await listingFor(directory);
+      return new Set(index?.keys() ?? []);
+    },
+    /** Forget a directory whose contents this action just changed. */
+    invalidate: (directory: string): void => {
+      listings.delete(directory);
+    },
+  };
+};
+
 /** Project one entry back into the connection's coordinate system. */
 const toAgentEntry = (
   rootPath: string,
@@ -173,6 +229,9 @@ const findFiles = async (
     let directoriesVisited = 0;
 
     for (let depth = 0; depth < maxDepth && frontier.length > 0; depth += 1) {
+      if (found.length >= limit || directoriesVisited >= MAX_WALK_DIRECTORIES) {
+        break;
+      }
       const next: string[] = [];
       for (const directory of frontier) {
         if (found.length >= limit) break;
@@ -224,11 +283,12 @@ const getEntries = async (
   assertBatchSize(paths.length, MAX_BATCH_PATHS, "paths");
 
   return withSession(config, async (session) => {
+    const index = createEntryIndex(session);
     const results: Record<string, unknown>[] = [];
     for (const requested of paths) {
       try {
         const resolved = resolveRemotePath(config.rootPath, requested);
-        const entry = await session.stat(resolved);
+        const entry = await index.stat(resolved);
         results.push({
           path: requested,
           exists: entry !== null,
@@ -303,11 +363,11 @@ const downloadFiles = async (
       try {
         const resolved = resolveRemotePath(config.rootPath, requested);
         const bytes = await session.download(resolved);
-        totalBytes += bytes.byteLength;
-        if (totalBytes > MAX_DOWNLOAD_TOTAL_BYTES) {
-          // Stop at the file that crossed the line rather than truncating
+        if (totalBytes + bytes.byteLength > MAX_DOWNLOAD_TOTAL_BYTES) {
+          // Report the whole file as refused rather than returning part of
           // it: half a file written to `sandbox_path` is a file the agent
-          // will happily parse and silently get wrong.
+          // will happily parse and silently get wrong. The budget is left
+          // untouched so a smaller file later in the list still fits.
           results.push({
             path: requested,
             name,
@@ -315,9 +375,9 @@ const downloadFiles = async (
             content_type: contentTypeOf(name),
             error: `Download budget exceeded (${MAX_DOWNLOAD_TOTAL_MB.toString()} MB per call). Fetch this file in a separate call.`,
           });
-          totalBytes -= bytes.byteLength;
           continue;
         }
+        totalBytes += bytes.byteLength;
         results.push({
           path: requested,
           name,
@@ -342,24 +402,31 @@ const downloadFiles = async (
 };
 
 /** `report.csv` → `report (1).csv`, preserving the extension. */
-const suffixed = (path: string, attempt: number): string => {
-  const directory = dirname(path);
-  const name = basename(path);
+const suffixedName = (name: string, attempt: number): string => {
   const dot = name.lastIndexOf(".");
   const stem = dot > 0 ? name.slice(0, dot) : name;
   const extension = dot > 0 ? name.slice(dot) : "";
-  const renamed = `${stem} (${attempt.toString()})${extension}`;
-  return directory === "." ? renamed : `${directory}/${renamed}`;
+  return `${stem} (${attempt.toString()})${extension}`;
 };
 
-/** Find a free path next to `path`, or null when the neighbourhood is full. */
-const freePathNear = async (
-  session: FileTransferSession,
-  path: string,
-): Promise<string | null> => {
-  for (let attempt = 1; attempt <= 20; attempt += 1) {
-    const candidate = suffixed(path, attempt);
-    if ((await session.stat(candidate)) === null) return candidate;
+/** Attempts before a `rename` conflict policy gives up on a crowded name. */
+const MAX_RENAME_ATTEMPTS = 20;
+
+/**
+ * Pick a free name beside `path`, against a set of names already taken.
+ *
+ * Takes the whole directory listing rather than probing candidate by
+ * candidate: on FTP each probe is a full `LIST` of the parent, so twenty
+ * probes for one renamed file is twenty listings of the same folder.
+ *
+ * Exported for its test — the `rename` conflict policy exists to never
+ * overwrite a partner's file, and a ladder that returns a taken name does
+ * the one thing the policy was chosen to prevent.
+ */
+export const freeNameIn = (taken: Set<string>, name: string): string | null => {
+  for (let attempt = 1; attempt <= MAX_RENAME_ATTEMPTS; attempt += 1) {
+    const candidate = suffixedName(name, attempt);
+    if (!taken.has(candidate)) return candidate;
   }
   return null;
 };
@@ -398,28 +465,46 @@ const uploadFiles = async (
     });
   }
 
+  const wantsPermissions = decoded.some((file) => file.mode !== undefined);
+
   return withSession(config, async (session) => {
-    const capabilities = await session.describe();
+    // Only asked when some file carries a `mode` — on FTP `describe()` costs
+    // a `PWD`, a `FEAT` and a `SYST`, and an upload that sets no permissions
+    // has no use for the answer.
+    const supportsPermissions = wantsPermissions
+      ? (await session.describe()).supportsPermissions
+      : false;
+    const index = createEntryIndex(session);
     const results: Record<string, unknown>[] = [];
     const ensured = new Set<string>();
+    // Names this batch has itself placed, per directory. Two files landing
+    // on the same name in one call would otherwise both read the directory
+    // as free and the second would overwrite the first under a `rename`
+    // policy that exists to prevent exactly that.
+    const claimed = new Map<string, Set<string>>();
 
     for (const file of decoded) {
       try {
         let target = resolveRemotePath(config.rootPath, file.path);
+        const parent = dirname(target);
 
         if (createDirectories) {
-          const parent = dirname(target);
           // One `mkdir -p` per distinct parent, not per file: a batch
           // dropping 20 files in one folder should not send 20 of them.
           if (parent !== "." && parent !== "/" && !ensured.has(parent)) {
             await session.ensureDirectory(parent);
             ensured.add(parent);
+            // The directory may not have existed when the index read it.
+            index.invalidate(parent);
           }
         }
 
         if (onConflict !== "replace") {
-          const existing = await session.stat(target);
-          if (existing !== null) {
+          const taken = new Set([
+            ...(await index.namesIn(parent)),
+            ...(claimed.get(parent) ?? []),
+          ]);
+          if (taken.has(basename(target))) {
             if (onConflict === "fail") {
               results.push({
                 path: file.path,
@@ -428,22 +513,24 @@ const uploadFiles = async (
               });
               continue;
             }
-            const free = await freePathNear(session, target);
+            const free = freeNameIn(taken, basename(target));
             if (free === null) {
               results.push({
                 path: file.path,
                 ok: false,
-                error:
-                  "A file already exists at this path and 20 renamed variants are taken.",
+                error: `A file already exists at this path and ${MAX_RENAME_ATTEMPTS.toString()} renamed variants are taken.`,
               });
               continue;
             }
-            target = free;
+            target = parent === "." ? free : `${parent}/${free}`;
           }
+          const claimedHere = claimed.get(parent) ?? new Set<string>();
+          claimedHere.add(basename(target));
+          claimed.set(parent, claimedHere);
         }
 
         await session.upload(target, file.bytes);
-        if (file.mode !== undefined && capabilities.supportsPermissions) {
+        if (file.mode !== undefined && supportsPermissions) {
           await session.chmod(target, file.mode);
         }
         results.push({
@@ -452,7 +539,7 @@ const uploadFiles = async (
           // Say so rather than failing the upload over it: the bytes did
           // land, and a caller that asked for `0644` on a protocol with no
           // permission model deserves the fact, not an error.
-          ...(file.mode !== undefined && !capabilities.supportsPermissions
+          ...(file.mode !== undefined && !supportsPermissions
             ? {
                 error:
                   "Uploaded, but permissions were not applied — this protocol has no permission model. Use SFTP to set them.",
@@ -525,6 +612,7 @@ const deleteFiles = async (
   assertBatchSize(paths.length, MAX_BATCH_PATHS, "paths");
 
   return withSession(config, async (session) => {
+    const index = createEntryIndex(session);
     const results: Record<string, unknown>[] = [];
     for (const requested of paths) {
       try {
@@ -534,7 +622,7 @@ const deleteFiles = async (
         // some FTP servers happily unlink the entry). Refusing here makes
         // the behaviour the same everywhere and keeps the destructive path
         // behind the action whose approval card says "folder".
-        const entry = await session.stat(resolved);
+        const entry = await index.stat(resolved);
         if (entry !== null && entry.type === "directory") {
           throw new Error(
             "This path is a folder — use delete_directory to remove it.",

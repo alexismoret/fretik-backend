@@ -1,0 +1,1 @@
+DROP INDEX "ai_conversations_team_idx";

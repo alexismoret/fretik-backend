@@ -94,7 +94,6 @@ export const aiConversations = pgTable(
       .$onUpdateFn(() => new Date()),
   },
   (t) => [
-    index("ai_conversations_team_idx").on(t.teamId),
     index("ai_conversations_user_idx").on(t.userId),
     /**
      * The conversation list's ordering key. Equality on the first two columns
@@ -103,6 +102,14 @@ export const aiConversations = pgTable(
      * Sort node. Declared ascending on purpose: the walk reads it backwards,
      * which Postgres does natively for a uniformly-reversed sort, and an
      * ascending index also serves any oldest-first reader.
+     *
+     * It also REPLACES the plain `(team_id)` index that stood here: `team_id`
+     * leads this one, and a b-tree prefix answers every predicate the narrower
+     * index could, including the `ON DELETE CASCADE` lookup behind the team
+     * foreign key. Nothing in the codebase filters conversations by team alone
+     * — the list paths pair it with `agent_type` (where this index resolves
+     * both in the scan rather than filtering one afterwards) and every other
+     * read reaches a conversation by primary key or through the members table.
      */
     index("ai_conversations_team_agent_updated_idx").on(
       t.teamId,

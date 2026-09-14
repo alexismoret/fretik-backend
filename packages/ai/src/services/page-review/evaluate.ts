@@ -10,10 +10,12 @@ import { z } from "zod";
 import { describeLlmError } from "../../lib/describe-llm-error";
 import { telemetryFor } from "../../lib/langfuse";
 import {
+  getProfile,
   resolveModel,
   resolveModelForRoleProfile,
   type ResolvedModel,
 } from "../../lib/model-registry/resolve";
+import type { ModelRole } from "../../lib/model-registry/types";
 import { BUNDLED_SKILLS_DIR } from "../../skills/paths";
 
 /**
@@ -34,6 +36,28 @@ import { BUNDLED_SKILLS_DIR } from "../../skills/paths";
  */
 
 /**
+ * Which critic role judges a page the named builder wrote. The `page-review`
+ * binding, unless the builder's family IS the critic's — the case the fallback
+ * builder creates on purpose (`page-build-fallback` is the critic's own model)
+ * — in which case the family-disjoint `page-review-fallback` judges instead.
+ * A model grading its own family praises it; that is the one outcome a review
+ * exists to prevent, and the reason both fallback bindings move together.
+ *
+ * Compared against the profile that will SERVE, not the one the binding names:
+ * a critic whose every upstream is quarantined already resolves to its own
+ * fallback, and reading the binding would miss that hop — which is exactly the
+ * state where it would land on the builder's family.
+ */
+export const criticRoleForBuilder = (
+  builderProfileKey: string | undefined,
+): ModelRole =>
+  builderProfileKey !== undefined &&
+  getProfile(builderProfileKey).family ===
+    resolveModel("page-review").profile.family
+    ? "page-review-fallback"
+    : "page-review";
+
+/**
  * The critic, resolved once per profile key.
  *
  * Overridable because "who judges" is a measurement question, not only a
@@ -41,11 +65,14 @@ import { BUNDLED_SKILLS_DIR } from "../../skills/paths";
  * same family scores its own family's work — the self-review the whole role
  * exists to avoid — and the arm reads high for the wrong reason. The harness
  * pins a neutral critic for the run; production passes nothing and gets the
- * `page-review` binding.
+ * binding `criticRoleForBuilder` picks for the builder that wrote the page.
  */
-const criticFor = (profileKey?: string): ResolvedModel =>
+const criticFor = (
+  profileKey: string | undefined,
+  builderProfileKey: string | undefined,
+): ResolvedModel =>
   profileKey === undefined
-    ? resolveModel("page-review")
+    ? resolveModel(criticRoleForBuilder(builderProfileKey))
     : resolveModelForRoleProfile("page-review", profileKey);
 
 /**
@@ -314,6 +341,13 @@ export interface PageCritiqueInput {
   pageName: string;
   brief: PageBrief | undefined;
   shots: PageRenderShot[];
+  /**
+   * The profile that BUILT the page, when a builder is asking — so the critic
+   * can be picked from another family (`criticRoleForBuilder`). The parent
+   * agent's `managePage { action: "review" }` passes nothing: its own model is
+   * the chat model, not the builder's.
+   */
+  builderProfileKey?: string;
   /** Gate findings — stated so the critic spends its attention elsewhere. */
   known: string[];
   /**
@@ -397,7 +431,7 @@ export const evaluatePageDesign = async (
   if (params.shots.length === 0) {
     return { ok: false, reason: "no screenshots were captured" };
   }
-  const critic = criticFor(params.criticProfileKey);
+  const critic = criticFor(params.criticProfileKey, params.builderProfileKey);
 
   const content = await buildCritiqueContent(params);
 

@@ -68,6 +68,13 @@ const THRESHOLDS: Record<IncidentKind, Threshold> = {
   "truncated-at-tool-call": { generations: 4, windowMinutes: 120 },
   "upstream-cut": { generations: 5, windowMinutes: 120 },
   stall: { generations: 4, windowMinutes: 120 },
+  // The host's own error frame, mid-answer. Unambiguous — nobody else wrote
+  // it — but a single one is ordinary internet, so it takes the same
+  // corroboration as a cut. Measured 2026-09-14: one turn took 16 of these in
+  // four minutes from one host while another host served the same model in the
+  // same turn cleanly, and each frame left the step holding a tool call with
+  // no arguments. At this threshold that host leaves the pool on the fifth.
+  "provider-error": { generations: 5, windowMinutes: 120 },
 };
 
 /**
@@ -84,6 +91,7 @@ const HUMAN_KIND: Record<IncidentKind, string> = {
   "truncated-at-tool-call": "truncated answers at the tool-call boundary",
   "upstream-cut": "cut long generations mid-flight",
   stall: "stopped producing mid-stream",
+  "provider-error": "reported its own error mid-answer",
 };
 
 /** Upstreams currently quarantined for a model (expired entries excluded). */

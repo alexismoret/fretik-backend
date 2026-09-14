@@ -293,6 +293,59 @@ describe("truncated at tool call", () => {
   });
 });
 
+describe("provider error frames", () => {
+  /**
+   * The 2026-09-14 shape, in one stream: the host writes its own error frame
+   * mid-answer and the step ends holding a tool call with no arguments. The
+   * SDK turns that frame into a failed STEP, so the loop carries on and
+   * nothing else in the product counts it — sixteen of these in four minutes
+   * left the host in the pool.
+   */
+  const toolCall = (input: string): LanguageModelV4StreamPart => ({
+    type: "tool-call",
+    toolCallId: "call_1",
+    toolName: "managePage",
+    input,
+  });
+
+  test("files one incident, counting the frames and the argumentless calls", async () => {
+    await runStream(
+      [
+        { type: "error", error: new Error("Upstream error: 502") },
+        toolCall("{}"),
+        finish("tool-calls"),
+      ],
+      "errored-host",
+    );
+    expect(filed).toHaveLength(1);
+    expect(filed[0]?.kind).toBe("provider-error");
+    expect(filed[0]?.provider).toBe("coreweave");
+    expect(filed[0]?.evidence?.errors).toBe(1);
+    expect(filed[0]?.evidence?.argumentlessCalls).toBe(1);
+  });
+
+  test("an argument-less call on a clean stream is a legal call, not an incident", async () => {
+    // `{}` satisfies a tool whose parameters are all optional. It is the
+    // pairing with the host's own error frame that makes it evidence.
+    await runStream([toolCall("{}"), finish("tool-calls")], "all-optional");
+    expect(filed).toHaveLength(0);
+  });
+
+  test("two frames in one stream are still one incident", async () => {
+    await runStream(
+      [
+        { type: "error", error: new Error("502") },
+        { type: "error", error: new Error("502") },
+        finish("tool-calls"),
+      ],
+      "twice",
+    );
+    expect(filed).toHaveLength(1);
+    expect(filed[0]?.evidence?.errors).toBe(2);
+    expect(filed[0]?.evidence?.argumentlessCalls).toBe(0);
+  });
+});
+
 describe("attribution and rate limiting", () => {
   test("files nothing when providerMetadata names no upstream", async () => {
     await runStream(

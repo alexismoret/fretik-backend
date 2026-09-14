@@ -10,6 +10,7 @@ import {
   summarizeRunUsage,
   type StepUsage,
 } from "../../lib/turn-usage";
+import { continuableResponseMessages } from "./resume-messages";
 import { getRuntimeContext, type AgentRuntimeContext } from "./runtime-context";
 
 /**
@@ -244,6 +245,18 @@ export interface CreateSubAgentExecuteConfig<
  */
 const FALLBACK_MIN_MS = 5 * 60 * 1000;
 
+/**
+ * A finish nobody chose. `stop` and `tool-calls` are the model deciding and
+ * `length` is a budget doing its job; everything else — including the `other`
+ * an OpenRouter watchdog produces when it closes a socket — is the call
+ * ending on its own. Same definition as `lib/model-detectors.ts`, which files
+ * the incident this branch recovers from.
+ */
+const upstreamCut = (finishReason: string): boolean =>
+  finishReason !== "stop" &&
+  finishReason !== "tool-calls" &&
+  finishReason !== "length";
+
 const changedNothing = (
   result: {
     finishReason: string;
@@ -310,9 +323,10 @@ export const createSubAgentExecute = <
       const generate = async (
         agent: Agent<CALL_OPTIONS, TOOLS>,
         deadline: AbortSignal,
+        history: readonly ModelMessage[] = [],
       ): Promise<GenerateTextResult<TOOLS, Record<string, unknown>, never>> =>
         agent.generate({
-          messages,
+          messages: [...messages, ...history],
           options: callOptions,
           abortSignal: signalFor(deadline),
           // Always passed: a conditional spread here collapses the SDK's
@@ -323,31 +337,60 @@ export const createSubAgentExecute = <
           },
         });
 
-      let result = await generate(config.subAgent(ctx), primaryDeadline);
-      let usage = summarizeRunUsage(result.steps);
-      let salvaged = (await config.salvage?.(result, ctx)) ?? undefined;
-      if (
-        config.fallbackSubAgent &&
-        salvaged === undefined &&
-        changedNothing(result, config.hasSideEffect)
-      ) {
-        console.error(
-          `[sub-agent] empty run (finish=${result.finishReason}) — retrying once on the fallback model`,
-        );
-        /**
-         * The fallback gets a floor, not the leftovers. Sharing the primary's
-         * signal meant a first attempt that burned the budget handed the
-         * second one a signal already aborting — a retry born dead, paid for,
-         * and indistinguishable in the trace from a model that failed.
-         */
-        const fallbackDeadline = AbortSignal.timeout(
+      /**
+       * The deadline a retry gets: a floor, not the leftovers. Sharing the
+       * primary's signal meant a first attempt that burned the budget handed
+       * the second one a signal already aborting — a retry born dead, paid
+       * for, and indistinguishable in the trace from a model that failed.
+       */
+      const retryDeadline = (): AbortSignal => {
+        const deadline = AbortSignal.timeout(
           Math.max(
             config.deadlineMs - (Date.now() - startedAt),
             FALLBACK_MIN_MS,
           ),
         );
-        deadlines.push(fallbackDeadline);
-        result = await generate(config.fallbackSubAgent(ctx), fallbackDeadline);
+        deadlines.push(deadline);
+        return deadline;
+      };
+
+      let result = await generate(config.subAgent(ctx), primaryDeadline);
+      let usage = summarizeRunUsage(result.steps);
+      let salvaged = (await config.salvage?.(result, ctx)) ?? undefined;
+      // What the dead attempt established, carried into the next one. The
+      // retries below used to start from the original briefing, so a run cut
+      // after four useful steps paid for those four twice and the second
+      // model could not see what the first had learned.
+      let history = continuableResponseMessages(result.responseMessages);
+
+      const spent = (): boolean =>
+        salvaged === undefined && changedNothing(result, config.hasSideEffect);
+
+      // A cut is not a verdict on the MODEL — the same one, handed what it
+      // already said, usually finishes. Only for a finish nobody chose:
+      // `length` is the budget doing its job and would reproduce exactly.
+      if (spent() && upstreamCut(result.finishReason)) {
+        console.error(
+          `[sub-agent] run cut (finish=${result.finishReason}) — resuming once on the same model`,
+        );
+        result = await generate(config.subAgent(ctx), retryDeadline(), history);
+        usage = mergeUsage(usage, summarizeRunUsage(result.steps));
+        salvaged = (await config.salvage?.(result, ctx)) ?? undefined;
+        history = [
+          ...history,
+          ...continuableResponseMessages(result.responseMessages),
+        ];
+      }
+
+      if (config.fallbackSubAgent && spent()) {
+        console.error(
+          `[sub-agent] empty run (finish=${result.finishReason}) — retrying once on the fallback model`,
+        );
+        result = await generate(
+          config.fallbackSubAgent(ctx),
+          retryDeadline(),
+          history,
+        );
         usage = mergeUsage(usage, summarizeRunUsage(result.steps));
         salvaged = (await config.salvage?.(result, ctx)) ?? undefined;
       }

@@ -80,33 +80,29 @@ const VETTED_DEEPSEEK_UPSTREAMS = [
 ];
 
 describe("settingsForRole — parity with historical settings objects", () => {
-  test("chat-fallback carries minimax-m3's own envelope, not the historical one", () => {
-    // Rebound to minimax-m3 on 2026-08-02 so the fallback shares neither
-    // family nor upstream with the DeepSeek primary.
+  test("chat-fallback carries its own profile's envelope, not the historical one", () => {
+    // The fallback shares neither family nor upstream with the DeepSeek
+    // primary — minimax-m3 held it from 2026-08-02, gpt-5.6-luna since
+    // 2026-09-14, and both satisfy that rule. What this test pins is that the
+    // envelope comes from the BOUND PROFILE rather than from a constant kept
+    // beside it: the role is `chat`-kind, so the pool, the ZDR stance and the
+    // reasoning spelling are all read off whatever profile the binding names,
+    // and rebinding the role is a one-line edit with no envelope to update.
     //
-    // The Novita PIN is gone as of 2026-08-23. This role is what the page
-    // builder falls back to when a build dies, so every M3 turn was being
-    // served by one upstream — and `order` disables `sort`, so nothing faster
-    // could ever win. What this test pins is that the fallback routes through a
-    // POOL: `sort` present, `order` absent.
-    //
-    // The budget is the shared level→budget table's `low`, not a per-model pin.
-    // M3 carried a hand-set 5 000 until 2026-08-30; a live probe at three
-    // budgets returned 5 452 / 4 322 / 2 996 reasoning tokens for 512 / 1 500 /
-    // 8 000 requested — non-monotonic, so the pin never bound anything.
-    expect(
-      settingsForRole(
-        ROLE_BINDINGS["chat-fallback"],
-        getProfileForRole("chat-fallback"),
-      ),
-    ).toEqual({
+    // `effort`, not `max_tokens`: Luna is an effort-style family, and the
+    // level is its own `defaultLevel`. An effort string hardcoded here would
+    // be silently ignored by a `max-tokens` family — the plumbing bug that
+    // made a whole model family untestable on the memory roles in July.
+    const profile = getProfileForRole("chat-fallback");
+    expect(profile.assessment.reasoning.style).toBe("effort");
+    expect(profile.assessment.reasoning.defaultLevel).toBe("high");
+    expect(settingsForRole(ROLE_BINDINGS["chat-fallback"], profile)).toEqual({
       provider: {
         require_parameters: true,
         zdr: true,
-        only: ["Novita", "DeepInfra"],
-        sort: "throughput",
+        only: ["azure"],
       },
-      reasoning: { enabled: true, max_tokens: MAX_TOKENS_BUDGET_BY_LEVEL.low },
+      reasoning: { enabled: true, effort: "high" },
       usage: { include: true },
     });
   });
@@ -297,7 +293,11 @@ describe("settingsForRole — parity with historical settings objects", () => {
 describe("role bindings — default model ids pinned (chat: gated M3 flip)", () => {
   const expectedIds: Record<ModelRole, string> = {
     chat: "deepseek/deepseek-v4-flash-0731",
-    "chat-fallback": "minimax/minimax-m3",
+    // Luna since 2026-09-14: a fallback serves the turns that already went
+    // wrong once, so it must be at least the primary's equal — and a different
+    // family (OpenAI vs DeepSeek), which is the invariant `ROLE_FALLBACK` is
+    // audited on. MiniMax M3 held it from 2026-06-12.
+    "chat-fallback": "openai/gpt-5.6-luna",
     // Workflow executor defaults to the chat profile (reliability first).
     workflow: "deepseek/deepseek-v4-flash-0731",
     "dispatch-cheap": "deepseek/deepseek-v4-flash-0731",
@@ -333,6 +333,10 @@ describe("role bindings — default model ids pinned (chat: gated M3 flip)", () 
     // BUILDER landed there — the two may never share a family, or the critic
     // reviews its own work (see both bindings).
     "page-review": "openai/gpt-5.6-luna",
+    // The critic for a build the FALLBACK builder wrote — which is the
+    // critic's own model, so a family-disjoint one judges instead
+    // (`criticRoleForBuilder`).
+    "page-review-fallback": "google/gemini-3.7-flash",
     // Its own role since 2026-08-18. Before that the page BUILDER resolved
     // `resolveModel("chat")` at module load, so no pin — not the team's
     // flagship, not the eval header — could reach it, and every page the
@@ -344,6 +348,10 @@ describe("role bindings — default model ids pinned (chat: gated M3 flip)", () 
     // Pinned here so the next move is a deliberate edit with a run behind it,
     // exactly like the critic above.
     "page-build": "google/gemini-3.7-flash",
+    // Its own fallback since 2026-09-14, under the page-build envelope. The
+    // previous fallback (`chat-fallback`, then MiniMax M3, chat envelope) built
+    // a $1.72 page that never loaded after Gemini was cut upstream.
+    "page-build-fallback": "openai/gpt-5.6-luna",
     transform: "deepseek/deepseek-v4-flash-0731",
     "transform-fallback": "google/gemini-3.7-flash",
     "tool-repair": "openai/gpt-oss-120b",
@@ -372,6 +380,7 @@ describe("role bindings — default model ids pinned (chat: gated M3 flip)", () 
       // prompt on every step — the same shape the chat roles wrap for, and the
       // reason its binding declares the chat envelope rather than `bare`.
       "page-build",
+      "page-build-fallback",
     ];
     for (const [role, binding] of Object.entries(ROLE_BINDINGS)) {
       expect(binding.wrapCache).toBe(wrapped.includes(role as ModelRole));

@@ -476,7 +476,9 @@ export type ModelRole =
   | "vision"
   | "vision-fallback"
   | "page-review"
+  | "page-review-fallback"
   | "page-build"
+  | "page-build-fallback"
   | "transform"
   | "transform-fallback";
 

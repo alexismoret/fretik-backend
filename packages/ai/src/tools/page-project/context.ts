@@ -51,6 +51,12 @@ export interface PageProjectContext {
    */
   reviewScope: string | undefined;
   requester: PageRequester | undefined;
+  /**
+   * The profile serving the agent that holds these tools — the builder that
+   * writes the page. `pageReview` hands it to the critic so a family-disjoint
+   * judge is picked when the builder runs on the critic's own model.
+   */
+  modelProfileKey: string;
   state: PageProjectState;
   save: (next: PageProjectState) => Promise<void>;
 }
@@ -100,6 +106,7 @@ export const loadPageProjectContext = async (
     scope,
     reviewScope,
     requester,
+    modelProfileKey: ctx.modelProfile.key,
     state,
     save: (next) => writePageProject(scope, next),
   };

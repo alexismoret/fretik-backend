@@ -173,6 +173,10 @@ def list_messages(
 
     folder: Well-known folder (RFC 6154 SPECIAL-USE + Gmail's \\Important extension)
 
+    unread_only: Only return unread messages
+
+    offset: Skip the first N messages (paginate the sorted UID list, newest-first)
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -212,6 +216,10 @@ def search_messages(
 
     query: Free-text search query. IMAP SEARCH does NOT parse the 'OR' keyword — use `query_or` for alternatives instead.
 
+    query_or: Match messages where TEXT matches ANY of these terms (native IMAP OR). Use INSTEAD of writing 'a OR b' in `query`. Exactly one of `query` or `query_or` is required.
+
+    offset: Skip the first N matches (paginate the sorted UID list, newest-first)
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -232,6 +240,8 @@ def list_messages_in_folder(
     """List emails from a custom folder by its folder ID, newest received_at first
 
     folder_id: Folder ID returned by list_folders
+
+    offset: Skip the first N messages (paginate the sorted UID list, newest-first)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -328,6 +338,8 @@ def send_email(
     it with `run_plan([...])`. Calling this directly raises.)
 
     body_html: HTML body
+
+    attachments: File attachments (base64-encoded)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -704,6 +716,8 @@ def create_folder(
     it with `run_plan([...])`. Calling this directly raises.)
 
     display_name: Folder name to create
+
+    parent_folder_id: Parent folder ID (omit to create at the root)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.

@@ -168,8 +168,29 @@ export interface PageRenderResult {
    */
   unresolvedComponents?: string[];
   /**
+   * How each declared dataset answered when the fixtures were captured, so a
+   * reviewer can tell "this page ignores its data" from "this page never got
+   * any". Captured before the browser starts, like the fixtures themselves.
+   *
+   * Without it the two are indistinguishable: with every dataset erroring, the
+   * populated render and the zeroed one are byte-identical, which reads
+   * exactly like a page rendering invented rows (measured 2026-09-14 — four
+   * review rounds spent on that reading, while the cause was one malformed
+   * argument in `page.json`).
+   */
+  datasets?: Record<string, PageRenderDatasetStatus>;
+  /**
    * Set when no browser was reachable. The review then proceeds on whatever it
    * has rather than failing the page for our own infrastructure.
    */
   degraded?: string;
+}
+
+/** One dataset's answer, reduced to what a review needs to say about it. */
+export interface PageRenderDatasetStatus {
+  status: "ok" | "forbidden" | "needs_connection" | "error";
+  /** `error` only — what the source said, verbatim. */
+  message?: string;
+  /** `needs_connection` only — which app the viewer is missing. */
+  providerKey?: string;
 }

@@ -558,6 +558,10 @@ def send_chat_message(
 
     body_html: Message body — HTML or plain text
 
+    inline_images: Inline images (image/png, image/jpeg, image/gif, max ~4MB each) embedded as base64. Appended after body_html as <img> tags. Non-image files cannot be sent.
+
+    attachments: Files ALREADY stored in SharePoint/OneDrive, linked into the message. `content_url` is a DriveItem's `web_url` (from `sharepoint.get_item`, `list_folder`, `search`, or `get_channel_files_folder` + an upload). No bytes are sent here — to attach something new, put it in SharePoint first.
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -593,6 +597,8 @@ def create_chat(
     it with `run_plan([...])`. Calling this directly raises.)
 
     member_user_ids: Azure AD user IDs to add (NOT emails — use `find_user` first). The signed-in user is included implicitly.
+
+    topic: Title — only used when more than two members (group chat)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -638,6 +644,10 @@ def send_channel_message(
 
     subject: Optional thread title — shown in bold above the message body
 
+    inline_images: Inline images (image/png, image/jpeg, image/gif, max ~4MB each) embedded as base64. Appended after body_html as <img> tags. Non-image files cannot be sent.
+
+    attachments: Files ALREADY stored in SharePoint/OneDrive, linked into the message. `content_url` is a DriveItem's `web_url` (from `sharepoint.get_item`, `list_folder`, `search`, or `get_channel_files_folder` + an upload). No bytes are sent here — to attach something new, put it in SharePoint first.
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -681,6 +691,8 @@ def reply_to_channel_message(
     it with `run_plan([...])`. Calling this directly raises.)
 
     inline_images: Inline images (image/png, image/jpeg, image/gif, max ~4MB each) embedded as base64. Appended after body_html as <img> tags. Non-image files cannot be sent.
+
+    attachments: Files ALREADY stored in SharePoint/OneDrive, linked into the message. `content_url` is a DriveItem's `web_url` (from `sharepoint.get_item`, `list_folder`, `search`, or `get_channel_files_folder` + an upload). No bytes are sent here — to attach something new, put it in SharePoint first.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.

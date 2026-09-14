@@ -315,6 +315,14 @@ def create_task(
 
     plan_id: Plan the task belongs to
 
+    bucket_id: Bucket (column) to place the task in
+
+    assignee_ids: Azure AD user IDs to assign (NOT emails — resolve with teams.find_user)
+
+    percent_complete: 0, 50 or 100
+
+    priority: 0–10
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -365,6 +373,12 @@ def update_task(
 
     etag: The task's current etag (from a read). Sent as If-Match; a stale etag fails with 412 — re-read and retry.
 
+    percent_complete: 0, 50 or 100
+
+    priority: 0–10
+
+    assignee_ids: Replaces the assignee set. Azure AD user IDs (resolve with teams.find_user).
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -406,6 +420,10 @@ def update_task_details(
     it with `run_plan([...])`. Calling this directly raises.)
 
     etag: The details object's etag (from get_task_details). Sent as If-Match.
+
+    checklist: Replaces the checklist. Each item: { title }. Omit to leave the checklist unchanged.
+
+    references: Attaches links to the task — typically a document's `web_url` from `sharepoint.get_item` / `search`. Replaces the reference set. Each item: { url, alias? }. Omit to leave references unchanged.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.

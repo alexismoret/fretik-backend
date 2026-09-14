@@ -405,6 +405,8 @@ def list_conversations(
 
     inbox_id: Scope the listing to one inbox
 
+    status: Filter by status. `assigned` / `unassigned` are convenience filters layered on top of `open`
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -515,6 +517,8 @@ def list_contacts(
     """List contacts in the Front company
 
     updated_after: Filter contacts updated after this Unix epoch (seconds)
+
+    updated_before: Filter contacts updated before this Unix epoch (seconds)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -637,6 +641,14 @@ def reply_to_conversation(
 
     text: Plain-text alternative (Front falls back to a stripped body when omitted)
 
+    channel_id: Channel to send from. Defaults to the conversation's last reply-capable channel — pass explicitly when several channels are available to avoid surprises
+
+    to: Override the default recipients
+
+    archive_after: Archive the conversation after sending
+
+    tag_ids_after: Add these tag IDs to the conversation after sending
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -689,6 +701,10 @@ def send_new_message(
 
     channel_id: ID of the channel to send from
 
+    sender_name: Display name shown to the recipient
+
+    tag_ids: Tags to attach to the new conversation
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -728,6 +744,8 @@ def update_conversation(
     it with `run_plan([...])`. Calling this directly raises.)
 
     assignee_id: Teammate ID to assign. Pass an empty string to unassign
+
+    inbox_id: Move the conversation to this inbox
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -904,6 +922,8 @@ def snooze_conversation(
     it with `run_plan([...])`. Calling this directly raises.)
 
     scheduled_at: Unix epoch (seconds) when the snooze should end
+
+    teammate_id: Teammate the snooze is set for (defaults to the bot teammate)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.

@@ -374,6 +374,10 @@ def list_messages(
 
     folder: Well-known folder name
 
+    unread_only: Only return unread messages
+
+    offset: Skip the first N results (Graph `$skip` pagination)
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -409,6 +413,8 @@ def search_messages(
     """Full-text search across the mailbox, ordered by relevance not date
 
     query: Free-text search query
+
+    offset: Skip the first N results (Graph `$skip` pagination)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -516,6 +522,12 @@ def list_calendar_events(
 
     start: Window start (ISO 8601)
 
+    end: Window end (ISO 8601)
+
+    offset: Skip the first N events (Graph `$skip` pagination)
+
+    calendar_id: Calendar ID from list_calendars(). Defaults to the primary calendar.
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -557,6 +569,14 @@ def list_event_instances(
     """List the individual occurrences of a recurring event in a date window
 
     event_id: Master recurring series event ID
+
+    start: Window start (ISO 8601)
+
+    end: Window end (ISO 8601)
+
+    offset: Skip the first N instances (Graph `$skip` pagination)
+
+    calendar_id: Calendar ID from list_calendars(). Defaults to the primary calendar.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -635,6 +655,8 @@ def send_email(
     it with `run_plan([...])`. Calling this directly raises.)
 
     body_html: HTML body
+
+    attachments: Inline file attachments — each item must be < 3MB
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -1158,6 +1180,10 @@ def flag_message(
 
     status: Flag state: `flagged`=mark for follow-up, `complete`=mark done (checked), `notFlagged`=clear the flag
 
+    due_date: ISO 8601 due date for the follow-up reminder (only meaningful when status=flagged)
+
+    time_zone: Time zone for `due_date`
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -1461,6 +1487,8 @@ def create_inbox_rule(
     it with `run_plan([...])`. Calling this directly raises.)
 
     sequence: Priority order — lower runs first
+
+    auto_delete: When true, the matching message is moved to Deleted Items
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.

@@ -18,16 +18,24 @@ import {
 } from "../../lib/model-registry/resolve";
 import type { ReasoningLevel } from "../../lib/model-registry/types";
 import { recordStepUsage, summarizeStep } from "../../lib/turn-usage";
-import { stopOnRepeatedToolErrors, trailingToolErrorRun } from "./agent-set";
+import {
+  INVALID_INPUT_CODE,
+  loopGuardSeverity,
+  loopGuardVerdict,
+  stopOnRepeatedToolErrors,
+  type LoopGuardVerdict,
+} from "./agent-set";
 import {
   DynamicToolManager,
   replayActivationFromHistory,
 } from "./dynamic-tools";
+import { parseIntEnv } from "./env";
 import {
   tryGetRuntimeContext,
   wrapRuntimeContext,
   type AgentRuntimeContext,
 } from "./runtime-context";
+import { StepCallBudget } from "./step-call-budget";
 
 /**
  * Factory for a pair of `ToolLoopAgent` singletons (primary + fallback)
@@ -71,7 +79,7 @@ import {
  */
 export type AgentRuntimeContextBase = Omit<
   AgentRuntimeContext,
-  "dynamicToolManager" | "modelProfile"
+  "dynamicToolManager" | "modelProfile" | "stepCallBudget"
 >;
 
 /**
@@ -110,8 +118,17 @@ export interface BuildAgentSetConfig<CALL_OPTIONS, TTools extends ToolSet> {
    * tool set. Receives `tools` so it can close over them for O(1)
    * lookups; must read the runtime ctx via `getRuntimeContext` at
    * step time (never capture per-request state in its closure).
+   *
+   * Also receives the model the agent being built will SERVE — the primary
+   * for one instance of the set, the fallback for the other — for hooks
+   * whose decisions are priced (the page builder's history pruning). Built
+   * once from the primary's profile, the fallback agent pruned on the wrong
+   * cache prices (2026-09-14).
    */
-  prepareStep?: (tools: TTools) => PrepareStepFunction<TTools>;
+  prepareStep?: (
+    tools: TTools,
+    model: ResolvedModel,
+  ) => PrepareStepFunction<TTools>;
   /**
    * Optional wall-clock wrap-up steer — see `withSoftDeadline`. Set it on an
    * agent that runs under a dispatch `deadlineMs`, at ~75% of that budget,
@@ -354,15 +371,31 @@ export const buildToolsContext = (
   Object.fromEntries(Object.keys(tools).map((name) => [name, ctx]));
 
 /**
- * Loop guard (applied to EVERY agent by `buildToolLoopAgent`): steer at 3
- * identical consecutive tool failures; circuit-break the TURN at 8 — a
- * backstop far above healthy operation (prod observed a 17-call
- * identical-failure loop with neither brake), same philosophy as the turn and
- * token caps. Ending the turn is not ending the work: a workflow run
- * re-steers on its next turn, a chat hands control back to the user.
+ * Loop guard (applied to EVERY agent by `buildToolLoopAgent`), in three
+ * stages. Prod has now produced a runaway that escaped each of the first two,
+ * so each stage exists because the one after it was too late:
+ *
+ *  1. STEER at 3 (2 for a malformed call) — one transient message.
+ *  2. DISARM at 6 — every tool is withdrawn for the rest of the turn and the
+ *     model is told to explain itself. This is the stage the 2026-09-14 loop
+ *     needed: it ran 26 calls in four minutes, narrating its own loop in
+ *     reasoning the whole way, and the user pressed Stop. Ending the turn
+ *     silently at that point would have been no better — they would have got
+ *     26 tool cards and no words. With no tool to reach for, the model can
+ *     only answer, so the turn ends with an explanation instead of a wall.
+ *  3. ABORT at 8 — the stop condition, for the model that keeps trying past a
+ *     withdrawal or loops on something with no tool left to take away.
+ *
+ * Ending the turn is not ending the work: a workflow run re-steers on its next
+ * turn, a chat hands control back to the user.
  */
 const LOOP_GUARD_STEER_AT = 3;
+const LOOP_GUARD_DISARM_AT = 6;
 const LOOP_GUARD_ABORT_AT = 8;
+
+/** See `StepCallBudget` for the measurement behind the default. */
+const parseStepToolCallCap = (): number =>
+  parseIntEnv("AGENT_STEP_TOOL_CALL_CAP", { fallback: 12, min: 1, max: 64 });
 /** Steer sooner for malformed-call-shape errors — one bad retry is enough. */
 const LOOP_GUARD_INPUT_SHAPE_STEER_AT = 2;
 /**
@@ -376,42 +409,70 @@ const INPUT_SHAPE_CODES = new Set([
   "INVALID_ARGS",
   "INVALID_SCHEMA",
   "INVALID_PAGE_RANGE",
+  // The SDK refused the arguments before the tool ran. Same class, same fix.
+  INVALID_INPUT_CODE,
 ]);
 
-/**
- * Wrap an agent's `prepareStep` with the soft half of the loop guard: once the
- * trailing identical-failure run reaches the steer threshold, append ONE
- * transient user message telling the model to stop repeating the call. The
- * override carries forward within the turn and is never persisted (message
- * persistence flows from the UIMessage stream); dedup is by exact text, so
- * parallel failures that jump the counter past the threshold still inject
- * exactly once.
- */
-const withLoopGuard = <TTools extends ToolSet>(
-  base: PrepareStepFunction<TTools> | undefined,
-): PrepareStepFunction<TTools> => {
-  return async (options) => {
-    const result = (await base?.(options)) ?? {};
-    const run = trailingToolErrorRun(options.steps);
-    if (!run) return result;
+/** What the model is told at each stage, in the language of what it did. */
+const guardSteerText = (verdict: LoopGuardVerdict): string | null => {
+  const run = verdict.failure;
+  if (run !== null) {
     const isInputShape = INPUT_SHAPE_CODES.has(run.code);
     const steerAt = isInputShape
       ? LOOP_GUARD_INPUT_SHAPE_STEER_AT
       : LOOP_GUARD_STEER_AT;
-    if (run.count < steerAt) return result;
-    // Input-shape errors: force a corrected retry of the SAME tool from the
-    // hint's example — do NOT license switching tools. Other errors (the tool
-    // genuinely can't proceed): the model may take a different route or report.
-    const guardText = isInputShape
-      ? `[loop-guard] Your ${run.toolName} calls keep failing with ${run.code} — the CALL is malformed, the tool is right. Retry ${run.toolName} ONCE using the exact shape from the error's hint (it shows a valid example). Do not switch to another tool.`
-      : `[loop-guard] Your ${run.toolName} calls keep failing with ${run.code}. Do not repeat the same call: fix the input per the error's hint, take a different approach, or report the blocker (chat: tell the user; workflow run: completeTask failed).`;
+    if (run.count >= steerAt) {
+      // Input-shape errors: force a corrected retry of the SAME tool from the
+      // hint's example — do NOT license switching tools. Other errors (the
+      // tool genuinely can't proceed): take another route or report.
+      return isInputShape
+        ? `[loop-guard] Your ${run.toolName} calls keep failing with ${run.code} — the CALL is malformed, the tool is right. Retry ${run.toolName} ONCE using the exact shape from the error's hint (it shows a valid example). Do not switch to another tool.`
+        : `[loop-guard] Your ${run.toolName} calls keep failing with ${run.code}. Do not repeat the same call: fix the input per the error's hint, take a different approach, or report the blocker (chat: tell the user; workflow run: completeTask failed).`;
+    }
+  }
+  const repeat = verdict.identical;
+  if (repeat !== null && repeat.count >= LOOP_GUARD_STEER_AT) {
+    return `[loop-guard] You have sent ${repeat.toolName} with byte-identical arguments ${repeat.count.toString()} times. The answer will not change. Use the result you already have, change the arguments, or say what is blocking you.`;
+  }
+  return null;
+};
+
+const GUARD_DISARM_TEXT =
+  "[loop-guard] Your tool calls stopped making progress, so the tools are now withdrawn for the rest of this turn. Answer now, in the user's language: what you were trying to do, what failed and how (quote the error), what you did manage to change, and what you or they should try next. Do not attempt another tool call.";
+
+/**
+ * Wrap an agent's `prepareStep` with the two in-loop stages of the guard, and
+ * open the step's tool-call budget.
+ *
+ * A message override carries forward within the turn and is never persisted
+ * (message persistence flows from the UIMessage stream); dedup is by exact
+ * text, so parallel failures that jump a counter past a threshold still inject
+ * exactly once. `activeTools: []` is re-asserted on EVERY step past the
+ * disarm point, because it is a per-step setting while the message is not.
+ */
+export const withLoopGuard = <TTools extends ToolSet>(
+  base: PrepareStepFunction<TTools> | undefined,
+): PrepareStepFunction<TTools> => {
+  return async (options) => {
+    const result = (await base?.(options)) ?? {};
+    tryGetRuntimeContext({
+      runtimeContext: options.runtimeContext,
+    })?.stepCallBudget?.beginStep(options.stepNumber);
+
+    const verdict = loopGuardVerdict(options.steps);
+    const disarmed = loopGuardSeverity(verdict) >= LOOP_GUARD_DISARM_AT;
+    const guardText = disarmed ? GUARD_DISARM_TEXT : guardSteerText(verdict);
+    const withdrawal = disarmed ? { activeTools: [] } : {};
+    if (guardText === null) return { ...result, ...withdrawal };
+
     const messages = result.messages ?? options.messages;
     const alreadyInjected = messages.some(
       (message) => message.role === "user" && message.content === guardText,
     );
-    if (alreadyInjected) return result;
+    if (alreadyInjected) return { ...result, ...withdrawal };
     return {
       ...result,
+      ...withdrawal,
       messages: [...messages, { role: "user" as const, content: guardText }],
     };
   };
@@ -498,7 +559,7 @@ const buildToolLoopAgent = <CALL_OPTIONS, TTools extends ToolSet>(
   const model: LanguageModel = resolved.model;
   const tools = config.buildTools();
   const prepareStep = withSoftDeadline(
-    withLoopGuard(config.prepareStep?.(tools)),
+    withLoopGuard(config.prepareStep?.(tools, resolved)),
     config.softDeadline,
   );
   const configuredStop = config.stopWhen ?? isStepCount(12);
@@ -613,6 +674,7 @@ const buildToolLoopAgent = <CALL_OPTIONS, TTools extends ToolSet>(
       const ctx: AgentRuntimeContext = {
         ...base,
         dynamicToolManager,
+        stepCallBudget: new StepCallBudget(parseStepToolCallCap()),
         // The profile of THIS instance's model — the fallback agent
         // carries the fallback profile, so capability-aware reads
         // (modalities, strict schemas, compaction) always describe the

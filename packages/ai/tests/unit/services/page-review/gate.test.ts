@@ -571,3 +571,83 @@ describe("components that resolved to nothing", () => {
     expect(gate.blocking.join(" ")).not.toContain("resolved to nothing");
   });
 });
+
+/**
+ * The 2026-09-14 defect, and the misreading it produced.
+ *
+ * One malformed argument in `page.json` made every dataset error, so the
+ * populated render and the zeroed one were identical — which is exactly the
+ * fingerprint of a page inventing rows. The review said so, four rounds
+ * running, while the cause was one word nobody was looking at.
+ */
+describe("datasets that never loaded", () => {
+  /** Same text either way: with no data, both renders are the same page. */
+  const identical = {
+    desktop: { horizontalOverflow: false, clipped: 0, textLength: 2_400 },
+    "empty-state": {
+      horizontalOverflow: false,
+      clipped: 0,
+      textLength: 2_400,
+    },
+  };
+
+  test("names the dataset and what the source said", () => {
+    const gate = gatePageRender(
+      render({
+        layout: identical,
+        datasets: {
+          orders: { status: "error", message: 'invalid args for "sort"' },
+        },
+      }),
+      { declaredDatasets: 1, declaredOperations: 0 },
+    );
+    expect(gate.pass).toBe(false);
+    const said = gate.blocking.join(" ");
+    expect(said).toContain("orders");
+    expect(said).toContain('invalid args for "sort"');
+  });
+
+  test("does not also call the page a fabricator", () => {
+    const gate = gatePageRender(
+      render({
+        layout: identical,
+        datasets: {
+          orders: { status: "error", message: "boom" },
+        },
+      }),
+      { declaredDatasets: 1, declaredOperations: 0 },
+    );
+    expect(gate.blocking.join(" ")).not.toContain("essentially the same");
+  });
+
+  test("a missing connection names the app, not an error", () => {
+    const gate = gatePageRender(
+      render({
+        datasets: {
+          inbox: { status: "needs_connection", providerKey: "pbyp" },
+        },
+      }),
+      { declaredDatasets: 1, declaredOperations: 0 },
+    );
+    expect(gate.blocking.join(" ")).toContain("pbyp");
+  });
+
+  test("with every dataset loading, the fabrication rule still fires", () => {
+    const gate = gatePageRender(
+      render({
+        layout: identical,
+        datasets: { orders: { status: "ok" } },
+      }),
+      { declaredDatasets: 1, declaredOperations: 0 },
+    );
+    expect(gate.blocking.join(" ")).toContain("essentially the same");
+  });
+
+  test("a render that reports no dataset statuses is judged as before", () => {
+    const gate = gatePageRender(render({ layout: identical }), {
+      declaredDatasets: 1,
+      declaredOperations: 0,
+    });
+    expect(gate.blocking.join(" ")).toContain("essentially the same");
+  });
+});

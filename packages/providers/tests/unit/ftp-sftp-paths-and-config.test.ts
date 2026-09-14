@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { parseFileTransferConfig } from "../../src/ftp-sftp/config";
-import { freeNameIn } from "../../src/ftp-sftp/handlers";
+import { decodeBase64, freeNameIn } from "../../src/ftp-sftp/handlers";
 import {
   matchesPattern,
   normalizePath,
@@ -272,5 +272,39 @@ describe("upload conflict — the rename ladder", () => {
     // `.env` has no stem before the dot \u2014 suffixing on the last dot would
     // produce " (1).env" and lose the file\u2019s identity.
     expect(freeNameIn(new Set([".env"]), ".env")).toBe(".env (1)");
+  });
+});
+
+describe("upload payload decoding", () => {
+  test("decodes a well-formed payload", () => {
+    expect(new TextDecoder().decode(decodeBase64("aGVsbG8=", "a.txt"))).toBe(
+      "hello",
+    );
+  });
+
+  test("accepts a payload wrapped across lines", () => {
+    // MIME and several Python helpers still wrap at 76 columns; the bytes
+    // are fine and refusing them would be a false alarm.
+    const wrapped = "aGVs\nbG8=";
+    expect(new TextDecoder().decode(decodeBase64(wrapped, "a.txt"))).toBe(
+      "hello",
+    );
+  });
+
+  test("refuses a truncated payload instead of shortening the file", () => {
+    // `Buffer.from(s, "base64")` never throws \u2014 it decodes up to the first
+    // character it does not recognise and returns what it got, so a
+    // truncated payload uploads as a shorter file the server accepts and
+    // the partner's parser rejects hours later.
+    expect(() => decodeBase64("aGVsbG8", "orders.csv")).toThrow(
+      /not valid base64/,
+    );
+    expect(() => decodeBase64("aGVs*G8=", "orders.csv")).toThrow(
+      /not valid base64/,
+    );
+  });
+
+  test("names the file in the error", () => {
+    expect(() => decodeBase64("", "orders.csv")).toThrow(/orders\.csv/);
   });
 });

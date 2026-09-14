@@ -81,8 +81,9 @@ const createEntryIndex = (session: FileTransferSession) => {
       );
     } catch (error) {
       // A directory we cannot list is not a directory whose children we can
-      // claim are absent — `null` says "unknown" and callers fall back.
-      if (!isMissingPathError(error)) throw error;
+      // claim are absent — `null` says UNKNOWN, and every caller has to
+      // decide what to do with that rather than read it as "empty".
+      if (!isSkippableDirectoryError(error)) throw error;
       index = null;
     }
     listings.set(directory, index);
@@ -90,16 +91,25 @@ const createEntryIndex = (session: FileTransferSession) => {
   };
 
   return {
-    /** The entry at `path`, or `null` when it is not there. */
+    /** The entry at `path`, `null` when it is not there or cannot be read. */
     stat: async (path: string): Promise<RemoteEntry | null> => {
       const index = await listingFor(dirname(path));
       if (index === null) return null;
       return index.get(basename(path)) ?? null;
     },
-    /** Every name currently in `directory` (empty when it does not exist). */
-    namesIn: async (directory: string): Promise<Set<string>> => {
+    /**
+     * Every name currently in `directory`, or `null` when the listing could
+     * not be obtained.
+     *
+     * The null matters where it is used. A write-only drop folder — very
+     * common in EDI, where a partner grants STOR and refuses LIST — answers
+     * an error to every listing, and reading that as "no names taken" turns
+     * `on_conflict: "fail"` into a silent overwrite of exactly the file the
+     * policy exists to protect.
+     */
+    namesIn: async (directory: string): Promise<Set<string> | null> => {
       const index = await listingFor(directory);
-      return new Set(index?.keys() ?? []);
+      return index === null ? null : new Set(index.keys());
     },
     /** Forget a directory whose contents this action just changed. */
     invalidate: (directory: string): void => {
@@ -125,6 +135,30 @@ const toAgentEntry = (
 
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
+
+/**
+ * True when a directory listing failed for a reason that is a fact about
+ * THAT directory — it is gone, or this account may not read it — rather
+ * than a fact about the connection.
+ *
+ * The distinction is the whole point: a shared server always has folders the
+ * account cannot enter, and a walk that stops at the first one is useless.
+ * A dropped control channel is the opposite, and treating it as "nothing
+ * here" turns a truncated search into a confident "no such file".
+ */
+const isSkippableDirectoryError = (error: unknown): boolean => {
+  if (isMissingPathError(error)) return true;
+  const message =
+    error instanceof Error ? error.message.toLowerCase() : String(error);
+  return (
+    message.includes("permission denied") ||
+    message.includes("access is denied") ||
+    message.includes("not a directory") ||
+    // FTP: 530 not logged in for this path, 553 action not taken.
+    message.includes("530 ") ||
+    message.includes("553 ")
+  );
+};
 
 /**
  * Refuse an oversized batch at the boundary instead of half-running it.
@@ -243,9 +277,13 @@ const findFiles = async (
           entries = await session.list(directory);
         } catch (error) {
           // A folder the account cannot read is a normal fact of a shared
-          // server, not a reason to abandon the search.
-          if (isMissingPathError(error)) continue;
-          continue;
+          // server — skip it and keep walking. Anything else (the control
+          // channel dropped, the session died mid-walk) must NOT be
+          // swallowed: returning what was found so far as a complete answer
+          // tells the agent the tree holds nothing more, which is a
+          // different claim from "the search stopped".
+          if (isSkippableDirectoryError(error)) continue;
+          throw error;
         }
 
         for (const entry of entries) {
@@ -355,26 +393,49 @@ const downloadFiles = async (
   assertBatchSize(paths.length, MAX_DOWNLOAD_FILES, "files");
 
   return withSession(config, async (session) => {
+    const index = createEntryIndex(session);
     const results: Record<string, unknown>[] = [];
     let totalBytes = 0;
+
+    const refuseOverBudget = (
+      requested: string,
+      name: string,
+      size: number,
+    ): Record<string, unknown> => ({
+      path: requested,
+      name,
+      size_bytes: size,
+      content_type: contentTypeOf(name),
+      error: `Download budget exceeded (${MAX_DOWNLOAD_TOTAL_MB.toString()} MB per call). Fetch this file in a separate call.`,
+    });
 
     for (const requested of paths) {
       const name = basename(requested);
       try {
         const resolved = resolveRemotePath(config.rootPath, requested);
+
+        // Refuse on the ANNOUNCED size before fetching: `session.download`
+        // buffers the whole file in this process, so a check that runs after
+        // it has already spent the memory it was meant to bound. The size is
+        // absent on an FTP server with no SIZE/MLSD, which is why the
+        // post-download check below stays as the backstop rather than being
+        // replaced by this one.
+        const announced = (await index.stat(resolved))?.sizeBytes;
+        if (
+          announced !== undefined &&
+          totalBytes + announced > MAX_DOWNLOAD_TOTAL_BYTES
+        ) {
+          results.push(refuseOverBudget(requested, name, announced));
+          continue;
+        }
+
         const bytes = await session.download(resolved);
         if (totalBytes + bytes.byteLength > MAX_DOWNLOAD_TOTAL_BYTES) {
           // Report the whole file as refused rather than returning part of
           // it: half a file written to `sandbox_path` is a file the agent
           // will happily parse and silently get wrong. The budget is left
           // untouched so a smaller file later in the list still fits.
-          results.push({
-            path: requested,
-            name,
-            size_bytes: bytes.byteLength,
-            content_type: contentTypeOf(name),
-            error: `Download budget exceeded (${MAX_DOWNLOAD_TOTAL_MB.toString()} MB per call). Fetch this file in a separate call.`,
-          });
+          results.push(refuseOverBudget(requested, name, bytes.byteLength));
           continue;
         }
         totalBytes += bytes.byteLength;
@@ -399,6 +460,36 @@ const downloadFiles = async (
     }
     return results;
   });
+};
+
+/**
+ * Decode an upload's payload, refusing anything that is not whole base64.
+ *
+ * `Buffer.from(s, "base64")` never throws: it decodes up to the first
+ * character it does not recognise and returns what it got. A payload
+ * truncated in transit, or one an agent built by concatenating chunks
+ * wrongly, therefore uploads as a SHORTER file that the server accepts and
+ * the partner's parser rejects hours later. Validating the shape first turns
+ * that into an error naming the file.
+ *
+ * Whitespace is stripped before the check rather than rejected: a base64
+ * string that arrived wrapped at 76 columns (what MIME and several Python
+ * helpers still produce) is perfectly valid data.
+ *
+ * Exported for its test — a silent truncation is invisible on our side and
+ * surfaces as the partner's parser rejecting a file hours later.
+ */
+export const decodeBase64 = (value: string, label: string): Uint8Array => {
+  const compact = value.replace(/\s+/g, "");
+  if (compact === "") {
+    throw new Error(`"${label}" has no content — content_base64 is empty.`);
+  }
+  if (compact.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(compact)) {
+    throw new Error(
+      `"${label}" is not valid base64 — the payload looks truncated or corrupted. Re-encode it with base64.b64encode(...).decode().`,
+    );
+  }
+  return new Uint8Array(Buffer.from(compact, "base64"));
 };
 
 /** `report.csv` → `report (1).csv`, preserving the extension. */
@@ -451,7 +542,7 @@ const uploadFiles = async (
     if (remotePath === "") {
       throw new Error("Every uploaded file needs a `remote_path`.");
     }
-    const bytes = Buffer.from(str(prop(file, "content_base64")), "base64");
+    const bytes = decodeBase64(str(prop(file, "content_base64")), remotePath);
     totalBytes += bytes.byteLength;
     if (totalBytes > MAX_UPLOAD_TOTAL_BYTES) {
       throw new Error(
@@ -460,7 +551,7 @@ const uploadFiles = async (
     }
     decoded.push({
       path: remotePath,
-      bytes: new Uint8Array(bytes),
+      bytes,
       mode: asString(prop(file, "mode")),
     });
   }
@@ -500,10 +591,21 @@ const uploadFiles = async (
         }
 
         if (onConflict !== "replace") {
-          const taken = new Set([
-            ...(await index.namesIn(parent)),
-            ...(claimed.get(parent) ?? []),
-          ]);
+          const existing = await index.namesIn(parent);
+          if (existing === null) {
+            // Refusing beats guessing: `fail` and `rename` are both promises
+            // about a file that may already be there, and neither can be
+            // kept without seeing the folder. `replace` needs no listing and
+            // still works on such a server.
+            results.push({
+              path: file.path,
+              ok: false,
+              error:
+                'This folder cannot be listed, so "fail" and "rename" cannot tell whether the file already exists. Use on_conflict="replace" if overwriting is intended.',
+            });
+            continue;
+          }
+          const taken = new Set([...existing, ...(claimed.get(parent) ?? [])]);
           if (taken.has(basename(target))) {
             if (onConflict === "fail") {
               results.push({

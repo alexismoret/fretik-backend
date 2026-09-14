@@ -47,8 +47,13 @@ waiting on a partner's drop.
 
 ```python
 found = ftp_sftp.get_entries(paths=["in/ORDER_2026-09.csv", "in/INVOICE_2026-09.csv"])
-missing = [f.path for f in found if not f.exists]
+missing = [f.path for f in found if not f.exists and not f.error]
+unknown = [f.path for f in found if f.error]
 ```
+
+`exists: False` with an `error` set means the lookup failed, not that the
+file is absent — a folder the account may not list answers the same way. Do
+not report "the file has not arrived" on one of those.
 
 ### Download many files in one call
 

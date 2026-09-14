@@ -142,10 +142,23 @@ export const createUploadToDriveTool = () =>
       const conversationId = ctx.conversationId;
       const userId = ctx.userId;
 
-      // De-duplicate before anything else: the same file named twice would
-      // otherwise be promoted twice and, on the sandbox path, produce two
-      // documents with no relation between them.
-      const requested = [...new Set(files)];
+      // De-duplicate on the RESOLVED source, not the raw string: `x.pdf` and
+      // `attachments/x.pdf` are two spellings of one attachment, and a
+      // `Set` over the strings keeps both — which promotes the same bytes
+      // twice and leaves the Drive holding two documents for one file.
+      const seen = new Set<string>();
+      const sources: { file: string; source: UploadSource }[] = [];
+      for (const file of files) {
+        const source = resolveUploadSource(file);
+        const identity =
+          source.kind === "attachment"
+            ? `attachment:${source.name}`
+            : `workspace:${source.path}`;
+        if (seen.has(identity)) continue;
+        seen.add(identity);
+        sources.push({ file, source });
+      }
+      const requested = sources.map((entry) => entry.file);
 
       // Validate the destination folder belongs to the caller's team.
       if (parentFolderId) {
@@ -162,10 +175,6 @@ export const createUploadToDriveTool = () =>
         }
       }
 
-      const sources = requested.map((file) => ({
-        file,
-        source: resolveUploadSource(file),
-      }));
       const workspacePaths = sources.filter(
         (entry) => entry.source.kind === "workspace",
       );

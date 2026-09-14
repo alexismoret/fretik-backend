@@ -278,7 +278,11 @@ export const ftpSftpManifest: ProviderManifest = {
     // field names on the one shape it was given to avoid guessing.
     EntryLookup: {
       path: { type: "string", description: "The path as you asked for it" },
-      exists: { type: "boolean" },
+      exists: {
+        type: "boolean",
+        description:
+          "Also false when the lookup itself failed — check `error` before concluding a path is absent.",
+      },
       type: {
         type: "enum",
         values: ["file", "directory", "symlink"],
@@ -485,9 +489,16 @@ export const ftpSftpManifest: ProviderManifest = {
       summary: "Upload files to the server (creates missing folders)",
       handler: "uploadFiles",
       params: {
+        // NOT `excludeFromHash` on the array: that strips the whole
+        // parameter from the approval's lookup hash, leaving `on_conflict`
+        // and `create_directories` as the only discriminators — so a second
+        // upload in the same turn would match the first grant and replay its
+        // result instead of writing. Only the BYTES are excluded, one level
+        // down: the card shows paths, so paths are what the user approved,
+        // and a regenerated file with a timestamp inside it should not
+        // re-prompt.
         files: {
           type: "array",
-          excludeFromHash: true,
           description: `Files to send. Up to ${MAX_UPLOAD_FILES.toString()} per call, ${MAX_UPLOAD_TOTAL_MB.toString()} MB total.`,
           items: {
             type: "object",
@@ -577,7 +588,11 @@ export const ftpSftpManifest: ProviderManifest = {
       summary: "Create a folder, with any missing parents",
       handler: "createDirectory",
       params: {
-        path: { type: "string", excludeFromHash: true },
+        // `path` is the ONLY discriminating argument this action has —
+        // excluding it from the approval's lookup hash would make every
+        // `create_directory` in a turn match the first one's grant and
+        // short-circuit on its consumed result, creating nothing.
+        path: { type: "string" },
         mode: {
           type: "string",
           optional: true,

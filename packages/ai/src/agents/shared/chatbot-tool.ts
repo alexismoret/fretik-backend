@@ -5,6 +5,7 @@ import {
   toolError,
   type ToolErrorOutput,
 } from "../../lib/tool-error-codes";
+import { tryGetRuntimeContext } from "./runtime-context";
 
 /**
  * Force a tool output down to PURE JSON (Date → ISO string, `undefined`
@@ -52,6 +53,20 @@ const guardToolExecute = <TInput, TOutput, TContext>(
     TOutput | ToolErrorOutput,
     TContext
   > = (input, options) => {
+    // The ONE place every tool call passes through, which is why the per-step
+    // cap is claimed here rather than in a loop hook: `stopWhen` and
+    // `prepareStep` both run BETWEEN steps and cannot see, let alone stop, a
+    // step that emits 1 450 calls (measured 2026-09-09).
+    const budget = tryGetRuntimeContext(options)?.stepCallBudget;
+    if (budget !== undefined && !budget.tryAcquire()) {
+      return Promise.resolve(
+        toolError(
+          TOOL_ERROR_CODES.STEP_CALL_CAP,
+          `This step already issued its ${budget.limit.toString()} tool calls, so this one was NOT executed — nothing happened.`,
+          "Read the results you have and continue with fewer calls per step.",
+        ),
+      );
+    }
     let result: AsyncIterable<TOutput> | PromiseLike<TOutput> | TOutput;
     try {
       result = execute(input, options);

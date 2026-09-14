@@ -260,6 +260,8 @@ export const INCIDENT_KINDS = [
   "upstream-cut",
   /** The turn watchdog drained a stream that stopped producing. */
   "stall",
+  /** The host put its OWN error frame on a stream it had begun answering. */
+  "provider-error",
 ] as const;
 export type IncidentKind = (typeof INCIDENT_KINDS)[number];
 

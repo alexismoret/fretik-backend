@@ -116,11 +116,13 @@ const emitDocstring = (action: CodegenAction, indentSpaces = 4): string => {
     lines.push(`(WRITE — build it with \`${action.name}.op(...)\` and submit`);
     lines.push("it with `run_plan([...])`. Calling this directly raises.)");
   }
+  // Every described parameter, not just the first: the `break` that stood
+  // here until 2026-09-14 left `limit: "1-200, or -1 for every row"` unread,
+  // and the agent paged 2 100 rows by hand at 200 a call.
   for (const [field, spec] of sortedParamEntries(action.params)) {
     if (spec.description === undefined) continue;
     lines.push("");
     lines.push(`${field}: ${escapeForPyDocstring(spec.description)}`);
-    break;
   }
   // Always document connection_id.
   lines.push("");

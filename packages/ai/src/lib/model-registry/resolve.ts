@@ -814,6 +814,8 @@ export const ROLE_FALLBACK: Partial<Record<ModelRole, ModelRole>> = {
   "pre-extract": "pre-extract-fallback",
   vision: "vision-fallback",
   transform: "transform-fallback",
+  "page-build": "page-build-fallback",
+  "page-review": "page-review-fallback",
 };
 
 /**

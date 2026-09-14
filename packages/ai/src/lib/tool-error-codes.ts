@@ -54,6 +54,10 @@ export const TOOL_ERROR_CODES = {
   // Catch-all for unexpected internal failures
   INTERNAL_ERROR: "INTERNAL_ERROR",
 
+  // The step asked for more tool calls than one step may run, so this one was
+  // refused WITHOUT being executed (`StepCallBudget`). Nothing happened.
+  STEP_CALL_CAP: "STEP_CALL_CAP",
+
   // E2B sandbox (mapped from SDK errors in `_e2b-errors.ts`)
   SANDBOX_NOT_FOUND: "SANDBOX_NOT_FOUND",
   SANDBOX_TIMEOUT: "SANDBOX_TIMEOUT",

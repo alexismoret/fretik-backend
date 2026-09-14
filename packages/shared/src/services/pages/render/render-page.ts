@@ -9,6 +9,7 @@ import { assetContentType, readRuntimeAsset } from "./assets";
 import { buildHarnessHtml } from "./harness";
 import { buildPageSrcdoc } from "./srcdoc";
 import type {
+  PageRenderDatasetStatus,
   PageRenderDrag,
   PageRenderInteraction,
   PageRenderLayout,
@@ -233,6 +234,23 @@ const MAX_OVERLAY_SHOTS = 4;
  */
 const MAX_ROUTE_SHOTS = 6;
 
+/** Each dataset's answer, reduced to what a review needs to say about it. */
+const summarizeDatasetStatuses = (
+  datasets: PageDataResponse["datasets"],
+): Record<string, PageRenderDatasetStatus> => {
+  const out: Record<string, PageRenderDatasetStatus> = {};
+  for (const [id, result] of Object.entries(datasets)) {
+    out[id] = {
+      status: result.status,
+      ...(result.status === "error" ? { message: result.message } : {}),
+      ...(result.status === "needs_connection"
+        ? { providerKey: result.providerKey }
+        : {}),
+    };
+  }
+  return out;
+};
+
 /** Same datasets, no rows — the empty state, without waiting for a quiet day. */
 const emptyFixtures = (
   datasets: PageDataResponse["datasets"],
@@ -303,6 +321,11 @@ export const renderPage = async (params: {
     userId: params.userId,
     variables: {},
   });
+
+  // Kept beside the fixtures so the review can name a dataset that never
+  // loaded, instead of reading the identical populated/empty renders it
+  // produces as a page that invents its rows.
+  const datasetStatuses = summarizeDatasetStatuses(datasets);
 
   const nonce = Bun.randomUUIDv7();
   /**
@@ -647,6 +670,7 @@ export const renderPage = async (params: {
         consoleErrors: [...consoleErrors],
         pageErrors,
         opsRuns,
+        datasets: datasetStatuses,
         ...(skippedActive > 0 ? { skippedActive } : {}),
         ...(drag ? { drag } : {}),
         ...(routes.length > 0

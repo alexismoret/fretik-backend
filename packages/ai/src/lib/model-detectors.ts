@@ -3,9 +3,10 @@
  *
  * `@fretik/shared` `services/model-registry/breaker.ts` can pull a misbehaving
  * upstream out of a model's pool within seconds and with no deploy. It can only
- * do that if something WATCHES the stream, and this is that thing: four
- * literal, judgement-free checks over the text and the finish reason of every
- * generation, filed against the host that actually served the call.
+ * do that if something WATCHES the stream, and this is that thing: five
+ * literal, judgement-free checks over the text, the frames and the finish
+ * reason of every generation, filed against the host that actually served the
+ * call.
  *
  * ONE INCIDENT PER GENERATION PER KIND, without exception. The breaker counts
  * ROWS as distinct generations — that is what makes "three incidents" mean
@@ -219,6 +220,10 @@ interface CallState {
   /** ``` markers so far. An odd count means the text ends inside a fence. */
   fences: number;
   textLength: number;
+  /** `error` frames the host put on its own stream. */
+  providerErrors: number;
+  /** Tool calls whose arguments arrived empty, alongside such an error. */
+  argumentlessCalls: number;
   /** Last `TAIL_CHARS` characters — the only text this module holds. */
   tail: string;
   responseId: string | undefined;
@@ -239,6 +244,8 @@ const newCallState = (): CallState => ({
   thinkTags: 0,
   fences: 0,
   textLength: 0,
+  providerErrors: 0,
+  argumentlessCalls: 0,
   tail: "",
   responseId: undefined,
   providerMetadata: undefined,
@@ -300,6 +307,12 @@ const observeText = (state: CallState, text: string): void => {
   state.tail = window.slice(-TAIL_CHARS);
 };
 
+/** A tool call the host serialised with no arguments at all. */
+const isArgumentless = (input: string): boolean => {
+  const trimmed = input.trim();
+  return trimmed.length === 0 || trimmed === "{}";
+};
+
 const endsMidSentence = (state: CallState): boolean => {
   if (state.fences % 2 === 1) return false;
   const trimmed = state.tail.replace(TRAILING_WHITESPACE, "");
@@ -343,6 +356,23 @@ const findingsFor = (state: CallState, outcome: Outcome): Finding[] => {
     findings.push({
       kind: "truncated-at-tool-call",
       evidence: { finishReason: "tool-calls", textLength: state.textLength },
+    });
+  }
+  if (state.providerErrors > 0) {
+    // The host wrote this frame itself, so there is no judgement in reading
+    // it. What makes it worth a kind of its own rather than a line in a log:
+    // the SDK turns an error frame into a FAILED STEP, not a failed turn, so
+    // the loop carries on and the only trace left is one WARNING nobody
+    // aggregates. Measured 2026-09-14 — 16 frames in four minutes from one
+    // host, each leaving a tool call with no arguments behind it, while a
+    // second host served the same model in the same turn cleanly.
+    findings.push({
+      kind: "provider-error",
+      evidence: {
+        errors: state.providerErrors,
+        argumentlessCalls: state.argumentlessCalls,
+        generationMs: Date.now() - state.startedAt,
+      },
     });
   }
   const cut = suspectCut(outcome.finishReason, state.startedAt);
@@ -440,6 +470,15 @@ export const detectorMiddleware = (
             if (metadata !== undefined) state.providerMetadata = metadata;
             if (part.type === "text-delta") {
               observeText(state, part.delta);
+            } else if (part.type === "error") {
+              state.providerErrors += 1;
+            } else if (part.type === "tool-call") {
+              // Counted only as evidence ON an errored stream: `{}` is a legal
+              // call for a tool whose parameters are all optional, so it is
+              // the pairing with the host's own error frame — not the empty
+              // object — that says the arguments were lost rather than never
+              // written.
+              if (isArgumentless(part.input)) state.argumentlessCalls += 1;
             } else if (part.type === "response-metadata") {
               state.responseId = part.id;
             } else if (part.type === "finish") {

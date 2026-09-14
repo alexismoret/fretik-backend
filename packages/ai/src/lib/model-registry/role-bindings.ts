@@ -72,23 +72,23 @@ export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
   // Deliberately a DIFFERENT family and a different upstream from `chat`:
   // this binding exists for the turns where the primary died, so sharing
   // DeepSeek's weights or DeepInfra's capacity with it would let one incident
-  // take out both. minimax-m3 was the gate-passing default until 2026-08-02 and
-  // routes via Novita.
+  // take out both.
+  //
+  // minimax-m3 held it from 2026-06-12 (its own C3 run, $0.0134/turn) to
+  // 2026-09-14, when a real fallback run showed what a cheap fallback costs:
+  // the page builder fell to M3 after an upstream cut and spent 74 steps
+  // inventing provider keys, reading files without a path and writing a
+  // `page.json` the runtime rejected — $1.72 for a page that did not load. A
+  // fallback serves exactly the turns that already went wrong once; it has to
+  // be at least as capable as the primary, not cheaper. gpt-5.6-luna is the
+  // strongest family-disjoint model in the fleet (it is the page critic for
+  // that reason). Not eval-gated on this role yet — the gate belongs to the
+  // first C3 run that lands on it.
   "chat-fallback": {
     role: "chat-fallback",
-    profileKey: "minimax-m3",
+    profileKey: "gpt-5.6-luna",
     settingsKind: "chat",
     wrapCache: true,
-    // Its own C3 run, from when it held `chat`: all capabilities at or above
-    // the M2.7 baseline, $0.0134/turn. The avg-latency criterion passed only
-    // after the 1.5× recalibration (the 1.3× cap was below measured same-model
-    // variance); the earlier ccf1822e attempt failed on an empty ZDR pool, not
-    // on the model. Kept because a fallback still serves real turns.
-    evalGate: {
-      status: "passed",
-      lastRunId: "3aeec9d1-583f-4ac2-b35a-6cc1381665f3",
-      gatedAt: "2026-06-12",
-    },
   },
   // Autonomous workflow executor. Defaults to the SAME profile as `chat`
   // (reliability first — the priority order is precision > cost) and follows
@@ -379,6 +379,18 @@ export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
     settingsKind: "bare",
     wrapCache: false,
   },
+  // The critic for a build that runs on `page-build-fallback` — which is the
+  // critic's own model. `criticRoleForBuilder` (`services/page-review/
+  // evaluate.ts`) swaps to this binding whenever the builder's family matches
+  // the critic's, so the invariant below holds on the fallback path too: a
+  // critic never grades its own family. Gemini is the builder's PRIMARY, which
+  // by construction is the model that is not building when this one judges.
+  "page-review-fallback": {
+    role: "page-review-fallback",
+    profileKey: "gemini-3.7-flash",
+    settingsKind: "bare",
+    wrapCache: false,
+  },
   // The page BUILDER — the agent that writes the SFC, reads the review and
   // fixes it. Its own role since 2026-08-18, and the reason is a measurement:
   // `pageBuilderSet` was built at module load from `resolveModel("chat")`, so
@@ -453,6 +465,19 @@ export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
   "page-build": {
     role: "page-build",
     profileKey: "gemini-3.7-flash",
+    settingsKind: "page-build",
+    wrapCache: true,
+  },
+  // The builder's own fallback, under the builder's own envelope. Until
+  // 2026-09-14 the builder fell back on `chat-fallback` (then MiniMax M3)
+  // resolved under the CHAT envelope — no page-build reasoning allowance, and
+  // the history-pruning prices of the primary. A fallback that starts a build
+  // from zero after the primary was cut has to be at least the primary's
+  // equal: Luna is family-disjoint from Gemini and the critic swaps to
+  // `page-review-fallback` when this one builds.
+  "page-build-fallback": {
+    role: "page-build-fallback",
+    profileKey: "gpt-5.6-luna",
     settingsKind: "page-build",
     wrapCache: true,
   },

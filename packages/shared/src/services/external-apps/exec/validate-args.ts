@@ -15,6 +15,11 @@ import type {
 
 const cache = new Map<string, z.ZodTypeAny>();
 
+const boundMessage = (spec: ParamSpec, bound: string): string =>
+  spec.description === undefined
+    ? `expected ${bound}`
+    : `expected ${bound} — ${spec.description}`;
+
 const buildParamZod = (spec: ParamSpec): z.ZodTypeAny => {
   const base = buildBase(spec);
   let result = base;
@@ -31,9 +36,16 @@ const buildBase = (spec: ParamSpec): z.ZodTypeAny => {
     case "string":
       return z.string();
     case "integer": {
+      // A bound's error carries the param's own description: the number alone
+      // told an agent "≤200" and nothing about the `-1` the same description
+      // offers for "every row" — it paged 2 100 rows by hand (2026-09-14).
       let s = z.number().int();
-      if (spec.min !== undefined) s = s.min(spec.min);
-      if (spec.max !== undefined) s = s.max(spec.max);
+      if (spec.min !== undefined) {
+        s = s.min(spec.min, { error: boundMessage(spec, `>= ${spec.min}`) });
+      }
+      if (spec.max !== undefined) {
+        s = s.max(spec.max, { error: boundMessage(spec, `<= ${spec.max}`) });
+      }
       return s;
     }
     case "number":

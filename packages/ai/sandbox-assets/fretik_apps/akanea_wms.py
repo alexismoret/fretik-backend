@@ -264,6 +264,10 @@ def get_item_quantities(
 
     filters: Xtent filter over the entity's PascalCase properties — e.g. `ItemCode="AAA-01"`, `CreationDate>=DateTime(2026,1,1) and CreationDate<DateTime(2026,2,1)`, `SupplierName.Contains("Dupont")`. Strings take double quotes. Always filter: an unfiltered call scans the whole warehouse. Full syntax in the guidance below.
 
+    sorts: Sort expression, e.g. `Id desc` or `ItemCode asc,Id desc`.
+
+    limit: Caps the rows handed back. Xtent has no server-side paging, so a broad filter still costs the warehouse a full scan — narrow `filters` rather than raising this.
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -283,6 +287,10 @@ def list_stock_movements(
     """List internal stock movements
 
     filters: Xtent filter over the entity's PascalCase properties — e.g. `ItemCode="AAA-01"`, `CreationDate>=DateTime(2026,1,1) and CreationDate<DateTime(2026,2,1)`, `SupplierName.Contains("Dupont")`. Strings take double quotes. Always filter: an unfiltered call scans the whole warehouse. Full syntax in the guidance below.
+
+    sorts: Sort expression, e.g. `Id desc` or `ItemCode asc,Id desc`.
+
+    limit: Caps the rows handed back. Xtent has no server-side paging, so a broad filter still costs the warehouse a full scan — narrow `filters` rather than raising this.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -304,6 +312,10 @@ def list_items(
 
     filters: Xtent filter over the entity's PascalCase properties — e.g. `ItemCode="AAA-01"`, `CreationDate>=DateTime(2026,1,1) and CreationDate<DateTime(2026,2,1)`, `SupplierName.Contains("Dupont")`. Strings take double quotes. Always filter: an unfiltered call scans the whole warehouse. Full syntax in the guidance below.
 
+    sorts: Sort expression, e.g. `Id desc` or `ItemCode asc,Id desc`.
+
+    limit: Caps the rows handed back. Xtent has no server-side paging, so a broad filter still costs the warehouse a full scan — narrow `filters` rather than raising this.
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -323,6 +335,10 @@ def list_receptions(
     """List inbound receptions
 
     filters: Xtent filter over the entity's PascalCase properties — e.g. `ItemCode="AAA-01"`, `CreationDate>=DateTime(2026,1,1) and CreationDate<DateTime(2026,2,1)`, `SupplierName.Contains("Dupont")`. Strings take double quotes. Always filter: an unfiltered call scans the whole warehouse. Full syntax in the guidance below.
+
+    sorts: Sort expression, e.g. `Id desc` or `ItemCode asc,Id desc`.
+
+    limit: Caps the rows handed back. Xtent has no server-side paging, so a broad filter still costs the warehouse a full scan — narrow `filters` rather than raising this.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -344,6 +360,10 @@ def list_receptions_stored(
 
     filters: Xtent filter over the entity's PascalCase properties — e.g. `ItemCode="AAA-01"`, `CreationDate>=DateTime(2026,1,1) and CreationDate<DateTime(2026,2,1)`, `SupplierName.Contains("Dupont")`. Strings take double quotes. Always filter: an unfiltered call scans the whole warehouse. Full syntax in the guidance below.
 
+    sorts: Sort expression, e.g. `Id desc` or `ItemCode asc,Id desc`.
+
+    limit: Caps the rows handed back. Xtent has no server-side paging, so a broad filter still costs the warehouse a full scan — narrow `filters` rather than raising this.
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -363,6 +383,10 @@ def list_preparations(
     """List outbound preparation orders
 
     filters: Xtent filter over the entity's PascalCase properties — e.g. `ItemCode="AAA-01"`, `CreationDate>=DateTime(2026,1,1) and CreationDate<DateTime(2026,2,1)`, `SupplierName.Contains("Dupont")`. Strings take double quotes. Always filter: an unfiltered call scans the whole warehouse. Full syntax in the guidance below.
+
+    sorts: Sort expression, e.g. `Id desc` or `ItemCode asc,Id desc`.
+
+    limit: Caps the rows handed back. Xtent has no server-side paging, so a broad filter still costs the warehouse a full scan — narrow `filters` rather than raising this.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -384,6 +408,10 @@ def list_preparations_prepared(
 
     filters: Xtent filter over the entity's PascalCase properties — e.g. `ItemCode="AAA-01"`, `CreationDate>=DateTime(2026,1,1) and CreationDate<DateTime(2026,2,1)`, `SupplierName.Contains("Dupont")`. Strings take double quotes. Always filter: an unfiltered call scans the whole warehouse. Full syntax in the guidance below.
 
+    sorts: Sort expression, e.g. `Id desc` or `ItemCode asc,Id desc`.
+
+    limit: Caps the rows handed back. Xtent has no server-side paging, so a broad filter still costs the warehouse a full scan — narrow `filters` rather than raising this.
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -403,6 +431,10 @@ def list_preparations_sscc(
     """List SSCC pallet labels of preparations
 
     filters: Xtent filter over the entity's PascalCase properties — e.g. `ItemCode="AAA-01"`, `CreationDate>=DateTime(2026,1,1) and CreationDate<DateTime(2026,2,1)`, `SupplierName.Contains("Dupont")`. Strings take double quotes. Always filter: an unfiltered call scans the whole warehouse. Full syntax in the guidance below.
+
+    sorts: Sort expression, e.g. `Id desc` or `ItemCode asc,Id desc`.
+
+    limit: Caps the rows handed back. Xtent has no server-side paging, so a broad filter still costs the warehouse a full scan — narrow `filters` rather than raising this.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -440,6 +472,8 @@ def check_entity_integration(
     """Check the integration status of submitted entities
 
     entity_type: Which kind of entity the ids refer to
+
+    entity_ids: Xtent ids of the entities to check
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.

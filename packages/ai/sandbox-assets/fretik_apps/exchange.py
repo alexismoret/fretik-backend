@@ -287,6 +287,10 @@ def list_messages(
 
     folder: Well-known folder name
 
+    unread_only: Only return unread messages
+
+    offset: Skip the first N messages (newest-first)
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -419,6 +423,8 @@ def list_calendar_events(
 
     start: Window start (ISO 8601)
 
+    end: Window end (ISO 8601)
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -510,6 +516,8 @@ def send_email(
     it with `run_plan([...])`. Calling this directly raises.)
 
     body_html: HTML body
+
+    attachments: File attachments (base64-encoded)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -1031,6 +1039,8 @@ def flag_message(
 
     status: Flag state: `flagged`=mark for follow-up, `complete`=mark done, `notFlagged`=clear. Requires Exchange 2013+.
 
+    due_date: ISO 8601 due date for the follow-up (only meaningful when status=flagged)
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -1066,6 +1076,8 @@ def create_folder(
     it with `run_plan([...])`. Calling this directly raises.)
 
     display_name: Folder name to create
+
+    parent_folder_id: Parent folder ID (omit to create at the root)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -1113,6 +1125,8 @@ def create_calendar_event(
 
     start: Start (ISO 8601, include a timezone offset e.g. Z)
 
+    end: End (ISO 8601, include a timezone offset e.g. Z)
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -1156,6 +1170,8 @@ def update_calendar_event(
     it with `run_plan([...])`. Calling this directly raises.)
 
     start: New start (ISO 8601 with timezone offset)
+
+    end: New end (ISO 8601 with timezone offset)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.

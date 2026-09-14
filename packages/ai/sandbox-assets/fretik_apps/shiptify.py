@@ -626,6 +626,10 @@ def list_shipments(
 
     created_date_from: Calendar day, `YYYY-MM-DD` — an instant is rejected
 
+    sh_request_id: Filter by parent shipment-request id
+
+    sr_internal_ref: Filter by parent shipment-request internal_ref
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -710,6 +714,8 @@ def list_locations(
     """List address-book locations — call before creating a SR to pick from/dest address ids
 
     q: Free-text search across name / address / city / zipcode / internal_ref
+
+    internal_ref: Exact match on third-party reference
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -946,6 +952,28 @@ def create_shipment_request(
 
     name: Free-text booking name shown in lists
 
+    shipment_mode_id: Mode id from list_shipment_modes() — road / sea / air / rail / …
+
+    reply_before: Deadline for the carrier to respond — format YYYY-MM-DDTHH:MM:SS (NO timezone suffix). Example: '2026-06-10T18:00:00'. A request mapper strips any trailing Z / +HH:MM as a safety net, but prefer sending the no-TZ form directly.
+
+    from_addresses: Pickup stop(s). See item description for the three accepted shapes; `date_from` (YYYY-MM-DD) is REQUIRED on each.
+
+    dest_addresses: Delivery stop(s) — same item shape as from_addresses; `date_from` REQUIRED.
+
+    carrier_id: Carrier id from list_carriers() when booking with a specific carrier
+
+    carrier_ids: Several carriers to RFQ in parallel
+
+    internal_note: Note visible only inside the account
+
+    internal_ref: Third-party reference (your TMS / ERP id)
+
+    internal_name: Third-party booking name (your internal label)
+
+    measurement_system: Defaults to the account preference
+
+    contents: Cargo lines. Each item requires `type_id` (from list_content_types()) and `quantity`. See item description for optional fields and the unknown-fields warning.
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -997,6 +1025,8 @@ def create_shipment_request_draft(
     it with `run_plan([...])`. Calling this directly raises.)
 
     from_addresses: Same item shape as create_shipment_request. On drafts, `date_from` is OPTIONAL (omit when not yet known).
+
+    contents: Cargo lines (same item shape as create_shipment_request).
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -1118,6 +1148,8 @@ def upload_shipment_request_attachment(
 
     attachments: Files — each `{ fileName, documentType, base64Data | url, accessType?, save? }`. `documentType` is a strict enum: proof_of_delivery, cmr, signed_cmr_at_arrival, bill_of_lading, awb, invoice, customs, packing_list, msds, claim, other, … — a slug off the list is rejected before the call.
 
+    carrier_id: Restrict visibility to a specific carrier (RFQ stage)
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -1159,6 +1191,8 @@ def send_shipment_request_message(
     it with `run_plan([...])`. Calling this directly raises.)
 
     message: Plain-text message body
+
+    carrier_id: Target carrier when the request is RFQ-ing several
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -1204,6 +1238,12 @@ def confirm_shipment_pickup(
 
     date: Pickup date — YYYY-MM-DD
 
+    time: Pickup time — HH:mm
+
+    incident: Incident label (e.g. 'Customs clearance', 'Strike', 'Truck incident', 'Waiting at pick up place'). Omit when pickup is on time.
+
+    cause_id: Cause id from /dictionary/causes when applicable
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -1248,6 +1288,8 @@ def confirm_shipment_delivery(
 
     date: Delivery date — YYYY-MM-DD
 
+    time: Delivery time — HH:mm
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -1290,6 +1332,10 @@ def replan_shipment_pickup(
 
     date: New pickup date — YYYY-MM-DD
 
+    time: HH:mm
+
+    reason: Short reason for the replan
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -1331,6 +1377,8 @@ def replan_shipment_delivery(
     it with `run_plan([...])`. Calling this directly raises.)
 
     date: YYYY-MM-DD
+
+    time: HH:mm
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -1472,6 +1520,20 @@ def create_location(
 
     name: Short label shown in the Shiptify address book
 
+    address_1: Street address (line 1)
+
+    country: ISO 3166-1 alpha-2 country code (e.g. FR, BE, DE)
+
+    type: Location type — Shiptify's closed set. Use `final_customer` for end-customer / delivery sites and `factory` for manufacturing / supplier sites; `other` is the safe fallback.
+
+    instructions: Free-text dock / driver instructions
+
+    internal_ref: Third-party reference (your TMS / ERP id)
+
+    locode: UN/LOCODE (5 letters) for ports / airports
+
+    contact: Main contact at the site — `{ first_name, last_name, email, phone_number, civility? }`
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -1540,6 +1602,20 @@ def galaxy_create_carrier_shipment_request(
 
     shipment_mode_id: Mode id from list_shipment_modes()
 
+    reply_before: Deadline for the shipper to respond — format YYYY-MM-DDTHH:MM:SS (NO timezone suffix). Example: '2026-06-10T18:00:00'. A request mapper strips any trailing Z / +HH:MM as a safety net.
+
+    from_addresses: Pickup stop(s). See item description for the three accepted shapes; `date_from` (YYYY-MM-DD) is REQUIRED on each.
+
+    dest_addresses: Delivery stop(s) — same item shape as from_addresses; `date_from` REQUIRED.
+
+    shipper_id: Shipper id from galaxy_list_shippers() when booking for a specific shipper
+
+    carrier_ids: Other carriers to copy on the quote (RFQ)
+
+    pre_awarded: Mark as pre-awarded (skip the RFQ round)
+
+    contents: Cargo lines. Each item requires `type_id` (from list_content_types()) and `quantity`. See item description for optional fields and the unknown-fields warning.
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -1593,6 +1669,8 @@ def galaxy_create_carrier_shipment_request_draft(
     it with `run_plan([...])`. Calling this directly raises.)
 
     from_addresses: Same item shape as galaxy_create_carrier_shipment_request. On drafts, `date_from` is OPTIONAL.
+
+    contents: Cargo lines (same item shape as galaxy_create_carrier_shipment_request).
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -1744,6 +1822,10 @@ def galaxy_confirm_shipment_pickup(
 
     date: Pickup date — YYYY-MM-DD
 
+    time: Pickup time — HH:mm
+
+    incident: Incident label (e.g. 'Customs clearance', 'Strike', 'Truck incident'). Omit when pickup is on time.
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -1828,6 +1910,8 @@ def galaxy_replan_shipment_pickup(
 
     date: YYYY-MM-DD
 
+    time: HH:mm
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -1905,6 +1989,8 @@ def galaxy_confirm_shipment(
     it with `run_plan([...])`. Calling this directly raises.)
 
     date: YYYY-MM-DD
+
+    time: HH:mm (UTC)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -2058,6 +2144,8 @@ def galaxy_confirm_tracking_point(
 
     date: YYYY-MM-DD
 
+    time: HH:mm
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -2099,6 +2187,8 @@ def galaxy_replan_tracking_point(
     it with `run_plan([...])`. Calling this directly raises.)
 
     date: YYYY-MM-DD
+
+    time: HH:mm
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -2171,6 +2261,8 @@ def galaxy_update_tracking_point_location(
     it with `run_plan([...])`. Calling this directly raises.)
 
     code: Tracking point code from galaxy_list_tracking_points(), e.g. `STY0358`
+
+    address_id: Target address id from list_locations()
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.

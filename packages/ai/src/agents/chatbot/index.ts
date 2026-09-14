@@ -429,11 +429,25 @@ const subAgentPrepareStep = (
 };
 
 /**
+ * What `prunePageWriteHistory` needs to know about the model that will read
+ * the pruned history. Read from the SERVING model, which `buildAgentSet` hands
+ * to the factory per instance — built once from the primary's profile, the
+ * fallback agent pruned on the wrong cache prices (2026-09-14).
+ */
+export const prunePricingFor = (model: ResolvedModel): PrunePricing => ({
+  contextTokens: model.profile.catalog.contextLength,
+  inputPerMTok: model.profile.assessment.pricing.inputPerMTok,
+  ...(model.profile.assessment.pricing.cacheReadPerMTok !== undefined
+    ? { cacheReadPerMTok: model.profile.assessment.pricing.cacheReadPerMTok }
+    : {}),
+});
+
+/**
  * The page builder's gate — same contract, its own concrete tool set, plus the
  * one thing only this agent needs: its own write history, minus the file bodies
  * it has already replaced.
  *
- * The pricing comes from the model actually resolved for this build rather than
+ * The pricing comes from the model actually serving this build rather than
  * from a constant, because whether dropping a body is a saving or a loss is a
  * property of that model's cache. See `prunePageWriteHistory` for the
  * measurement on both sides.
@@ -442,26 +456,28 @@ const subAgentPrepareStep = (
  * builder was spending about a sixth of its steps on a call `pageReview`
  * already makes. See `reviewHasRun`.
  */
-const pageBuilderPrepareStep =
-  (pricing: PrunePricing) =>
-  (tools: PageBuilderTools): PrepareStepFunction<PageBuilderTools> => {
-    const allNames = Object.keys(tools) as (keyof PageBuilderTools)[];
-    return (stepContext) => {
-      const ctx = getRuntimeContext(stepContext);
-      const hidden = pageBuilderHiddenTools(
-        delegateHiddenToolNames(ctx),
-        stepContext.messages,
-      );
-      const pruned = prunePageWriteHistory(stepContext.messages, pricing);
-      return {
-        activeTools: allNames.filter((name) => !hidden.has(name)),
-        toolsContext: buildToolsContext(tools, ctx),
-        // Omitted when nothing was superseded: an override is carried forward
-        // by the SDK, and handing it an identical copy every step buys nothing.
-        ...(pruned !== null ? { messages: pruned } : {}),
-      };
+const pageBuilderPrepareStep = (
+  tools: PageBuilderTools,
+  model: ResolvedModel,
+): PrepareStepFunction<PageBuilderTools> => {
+  const allNames = Object.keys(tools) as (keyof PageBuilderTools)[];
+  const pricing = prunePricingFor(model);
+  return (stepContext) => {
+    const ctx = getRuntimeContext(stepContext);
+    const hidden = pageBuilderHiddenTools(
+      delegateHiddenToolNames(ctx),
+      stepContext.messages,
+    );
+    const pruned = prunePageWriteHistory(stepContext.messages, pricing);
+    return {
+      activeTools: allNames.filter((name) => !hidden.has(name)),
+      toolsContext: buildToolsContext(tools, ctx),
+      // Omitted when nothing was superseded: an override is carried forward
+      // by the SDK, and handing it an identical copy every step buys nothing.
+      ...(pruned !== null ? { messages: pruned } : {}),
     };
   };
+};
 
 /**
  * Sub-agent set on the PRIMARY model — same model as the main agent
@@ -583,7 +599,10 @@ const makePageBuilderSet = (
     buildTools: buildPageBuilderTools,
     systemPrompt: pageBuilderSystemPrompt,
     model,
-    fallbackModel: resolveModel("chat-fallback"),
+    // Its OWN fallback role, under the page-build envelope. `chat-fallback`
+    // served here until 2026-09-14 — resolved under the chat envelope, so a
+    // fallback build ran without the role's reasoning allowance.
+    fallbackModel: resolveModel("page-build-fallback"),
     stopWhen: [isStepCount(parsePageBuilderMaxSteps())],
     repairToolCall: llmRepairToolCall<PageBuilderTools>(),
     // 75% of `buildPage`'s 25-minute dispatch deadline. Past this the hard
@@ -593,15 +612,7 @@ const makePageBuilderSet = (
       afterMs: 1_125_000,
       text: "[deadline] The build is nearly out of time and will be cut off shortly. Land it NOW: make sure the page is saved, then stop — no more edits, no more reviews. Hand back the url with an honest one-line status of what was and was not verified.",
     },
-    prepareStep: pageBuilderPrepareStep({
-      contextTokens: model.profile.catalog.contextLength,
-      inputPerMTok: model.profile.assessment.pricing.inputPerMTok,
-      ...(model.profile.assessment.pricing.cacheReadPerMTok !== undefined
-        ? {
-            cacheReadPerMTok: model.profile.assessment.pricing.cacheReadPerMTok,
-          }
-        : {}),
-    }),
+    prepareStep: pageBuilderPrepareStep,
     buildRuntimeContextBase: buildChatbotRuntimeContextBase,
     callOptionsSchema: ChatbotCallOptionsSchema,
   });

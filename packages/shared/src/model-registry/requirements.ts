@@ -150,6 +150,10 @@ export const ROLE_REQUIREMENTS: Record<string, PoolRequirements> = {
     minMaxOutput: 16_000 + MAX_REASONING_BUDGET,
     requireCache: true,
   },
+  "page-build-fallback": {
+    minMaxOutput: 16_000 + MAX_REASONING_BUDGET,
+    requireCache: true,
+  },
   // The structured-extraction engine asks for 60 000 output tokens
   // (`EXTRACT_MAX_OUTPUT_TOKENS`) under `{effort:"minimal"}` reasoning. This is
   // the largest single ask in the product.
@@ -160,6 +164,7 @@ export const ROLE_REQUIREMENTS: Record<string, PoolRequirements> = {
   "transform-fallback": { minMaxOutput: 16_000 },
   // `page-review` MAX_OUTPUT_TOKENS.
   "page-review": { minMaxOutput: 16_000 },
+  "page-review-fallback": { minMaxOutput: 16_000 },
   // The memory services all ask 12 000 behind a 256-token thinking budget
   // (`MEMORY_REASONING_MAX_TOKENS`).
   "active-memory": { minMaxOutput: 12_256 },

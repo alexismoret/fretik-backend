@@ -86,7 +86,9 @@ export const ROLE_FUNCTION: Record<ModelRole, ModelFunctionKey | "auto"> = {
   "pre-extract-fallback": "auto",
   "vision-fallback": "auto",
   "transform-fallback": "auto",
+  "page-build-fallback": "auto",
   "page-review": "auto",
+  "page-review-fallback": "auto",
 };
 
 /**

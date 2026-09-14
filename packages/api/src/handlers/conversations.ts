@@ -7,15 +7,11 @@ import {
   teamRequired,
   throwHttpError,
 } from "@fretik/shared/lib/errors";
-import {
-  bodyIdListSchema,
-  paramsIdSchema,
-  paramsListSchema,
-} from "@fretik/shared/schemas";
+import { bodyIdListSchema, paramsIdSchema } from "@fretik/shared/schemas";
 import {
   AddConversationMembersSchema,
-  aiAgentTypeSchema,
   ConversationBackgroundTasksResponseSchema,
+  conversationListQuerySchema,
   ConversationResponseSchema,
   CreateConversationSchema,
   MemberPreferencesResponseSchema,
@@ -25,6 +21,7 @@ import {
   UpdateMemberPreferencesSchema,
 } from "@fretik/shared/schemas/ai";
 import {
+  nextCursorSchema,
   responseCreatedSchemaBuilder,
   responseForbiddenSchema,
   responseInternalErrorSchema,
@@ -63,13 +60,9 @@ const listConversationsRoute = createRoute({
   path: "/",
   summary: "List AI conversations",
   description:
-    "List conversations the current user participates in for a given agent type (defaults to chatbot), most-recently-active first.",
+    "List conversations the current user participates in for a given agent type (defaults to chatbot), the caller's pinned ones first then most-recently-active. `pinned` narrows to one of those two blocks; `paginate=cursor` walks the unpinned block forward by key and returns `nextCursor` instead of an exact `count`.",
   tags: ["Conversations"],
-  request: {
-    query: paramsListSchema.extend({
-      agentType: aiAgentTypeSchema.optional().default("chatbot"),
-    }),
-  },
+  request: { query: conversationListQuerySchema },
   responses: {
     200: {
       content: {
@@ -77,6 +70,8 @@ const listConversationsRoute = createRoute({
           schema: z.object({
             count: z.number(),
             data: z.array(ConversationResponseSchema),
+            // Only on the walk, where `count` is not computed.
+            nextCursor: nextCursorSchema.optional(),
           }),
         },
       },
@@ -341,13 +336,17 @@ conversationRoutes.openapi(listConversationsRoute, async (c) => {
   const team = c.get("team");
   if (!team) return throwHttpError(403, teamRequired());
 
-  const { agentType, ...params } = c.req.valid("query");
+  const { agentType, pinned, paginate, cursor, ...params } =
+    c.req.valid("query");
 
   const result = await listConversations({
     teamId: team.id,
     userId: user.id,
     agentType,
     params,
+    pinned,
+    paginate,
+    ...(cursor ? { cursor } : {}),
   });
 
   return c.json(result, 200);

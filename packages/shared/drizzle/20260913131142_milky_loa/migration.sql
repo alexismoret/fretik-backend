@@ -1,0 +1,2 @@
+CREATE INDEX "ai_conversation_members_user_pinned_idx" ON "ai_conversation_members" ("user_id","pinned_at") WHERE "pinned_at" is not null;--> statement-breakpoint
+CREATE INDEX "ai_conversations_team_agent_updated_idx" ON "ai_conversations" ("team_id","agent_type","updated_at","id");

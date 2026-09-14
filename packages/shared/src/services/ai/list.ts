@@ -13,6 +13,8 @@ import {
 /**
  * A pin list is a shortlist, not a page. Past this many the user has stopped
  * using pins as shortcuts, and paginating them would only hide the problem.
+ * It is a CEILING over the caller's `limit`, never a replacement for it — a
+ * route that documents `limit` and then ignores it is a silent divergence.
  */
 const PINNED_MAX = 50;
 
@@ -109,6 +111,9 @@ export const listConversations = async (data: {
  * in pin order. Hydrating the conversations in a second pass then keeps
  * `conversationWith` + `serializeConversation` the single source of a
  * conversation's wire shape, which one hand-written join would fork.
+ *
+ * `count` is the size of what came back, not a total: this block is capped at
+ * `PINNED_MAX` and has no second page for a total to be about.
  */
 const listPinnedConversations = async (data: {
   teamId: string;
@@ -117,7 +122,7 @@ const listPinnedConversations = async (data: {
   params: ParamsList;
 }): Promise<{ count: number; data: SerializedConversation[] }> => {
   const { teamId, userId, agentType, params } = data;
-  const { search } = params;
+  const { limit, search } = params;
 
   const pins = await db.query.aiConversationMembers.findMany({
     columns: { conversationId: true },
@@ -133,7 +138,7 @@ const listPinnedConversations = async (data: {
       },
     },
     orderBy: { pinnedAt: "desc" },
-    limit: PINNED_MAX,
+    limit: Math.min(limit, PINNED_MAX),
   });
 
   if (pins.length === 0) return { count: 0, data: [] };
@@ -277,7 +282,10 @@ const pageConversations = async (data: {
   userId: string;
   agentType: AiAgentType;
   params: ParamsList;
-  pinned?: boolean;
+  /** `false` narrows to the unpinned block; omitted keeps both. NOT `boolean`:
+   *  `true` is intercepted above, and this path has no filter for it — typed
+   *  wider, it would silently return the whole list instead. */
+  pinned?: false;
 }): Promise<{ count: number; data: SerializedConversation[] }> => {
   const { teamId, userId, agentType, params, pinned } = data;
   const { limit, page, search } = params;
@@ -328,7 +336,8 @@ const countUserConversations = async (data: {
   userId: string;
   agentType: AiAgentType;
   search?: string;
-  pinned?: boolean;
+  /** Mirrors `pageConversations`' own narrowing — see the note there. */
+  pinned?: false;
 }): Promise<number> => {
   const { teamId, userId, agentType, search, pinned } = data;
 

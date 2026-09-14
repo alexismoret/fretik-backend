@@ -65,6 +65,25 @@ const seat = async (conversationId: string): Promise<void> => {
   );
 };
 
+/**
+ * `ids` is filled in `beforeAll`, so its element type stays `string |
+ * undefined` under `noUncheckedIndexedAccess`. These two narrow it by FAILING
+ * rather than by asserting: a cast would turn a broken fixture into a
+ * confusing assertion further down, and the rest of this suite carries no
+ * casts either.
+ */
+const conversationAt = (index: number): string => {
+  const id = ids[index];
+  if (!id) throw new Error(`no seeded conversation at index ${index}`);
+  return id;
+};
+
+const cursorOf = (result: { nextCursor?: string | null }): string => {
+  const { nextCursor } = result;
+  if (!nextCursor) throw new Error("expected a nextCursor, got none");
+  return nextCursor;
+};
+
 const walk = async (options: {
   limit: number;
   cursor?: string;
@@ -144,7 +163,7 @@ describe("conversation list — keyset walk", () => {
   test("the last page reports nextCursor null, earlier ones do not", async () => {
     const first = await walk({ limit: 3 });
     expect(first.data).toHaveLength(3);
-    expect(first.nextCursor).toBe(first.data[2]?.id as string);
+    expect(first.nextCursor).toBe(first.data[2]?.id);
 
     const last = await walk({ limit: 50 });
     expect(last.data).toHaveLength(ids.length);
@@ -153,13 +172,13 @@ describe("conversation list — keyset walk", () => {
 
   test("a bump mid-walk serves no row twice", async () => {
     const first = await walk({ limit: 3 });
-    const cursor = first.nextCursor as string;
+    const cursor = cursorOf(first);
 
     // A conversation still ahead of the cursor receives a message: it jumps to
     // the top of the list, ABOVE the region the walk has yet to read. Under
     // offset paging it would slide into the page just served and come back a
     // second time.
-    const bumped = ids[5] as string;
+    const bumped = conversationAt(5);
     await db
       .update(aiConversations)
       .set({ updatedAt: new Date() })
@@ -176,7 +195,7 @@ describe("conversation list — keyset walk", () => {
     // To the microsecond: the ORDER BY and the seek must agree on a second key
     // or this pair traps the walk.
     const tied = new Date(Date.now() - 30 * MINUTE_MS);
-    const [first, second] = [ids[1] as string, ids[2] as string];
+    const [first, second] = [conversationAt(1), conversationAt(2)];
     await db
       .update(aiConversations)
       .set({ updatedAt: tied })
@@ -192,7 +211,7 @@ describe("conversation list — keyset walk", () => {
 
   test("excludes the caller's pins, and only the caller's", async () => {
     const [userA, userB] = fx.userIds;
-    const pinned = ids[4] as string;
+    const pinned = conversationAt(4);
     await setMemberPinned({
       conversationId: pinned,
       teamId: fx.teamId,
@@ -211,7 +230,7 @@ describe("conversation list — keyset walk", () => {
 
   test("a cursor whose conversation is gone restarts the walk", async () => {
     const first = await walk({ limit: 3 });
-    const cursor = first.nextCursor as string;
+    const cursor = cursorOf(first);
 
     // Not the fixture's rows — a conversation that never existed reads exactly
     // like one deleted between two pages.
@@ -252,8 +271,8 @@ describe("conversation list — keyset walk", () => {
 describe("conversation list — pinned split", () => {
   test("pinned:true returns only the caller's pins, newest pin first", async () => {
     const userA = fx.userIds[0];
-    const firstPinned = ids[5] as string;
-    const secondPinned = ids[1] as string;
+    const firstPinned = conversationAt(5);
+    const secondPinned = conversationAt(1);
 
     await setMemberPinned({
       conversationId: firstPinned,
@@ -289,7 +308,7 @@ describe("conversation list — pinned split", () => {
   test("pinned:true is empty for a member who pinned nothing", async () => {
     const [userA, userB] = fx.userIds;
     await setMemberPinned({
-      conversationId: ids[0] as string,
+      conversationId: conversationAt(0),
       teamId: fx.teamId,
       userId: userA,
       pinned: true,
@@ -310,7 +329,7 @@ describe("conversation list — pinned split", () => {
   test("the two blocks partition the list exactly", async () => {
     const userA = fx.userIds[0];
     await setMemberPinned({
-      conversationId: ids[3] as string,
+      conversationId: conversationAt(3),
       teamId: fx.teamId,
       userId: userA,
       pinned: true,
@@ -333,13 +352,13 @@ describe("conversation list — pinned split", () => {
   test("search narrows the pinned block too", async () => {
     const userA = fx.userIds[0];
     await setMemberPinned({
-      conversationId: ids[0] as string,
+      conversationId: conversationAt(0),
       teamId: fx.teamId,
       userId: userA,
       pinned: true,
     });
     await setMemberPinned({
-      conversationId: ids[1] as string,
+      conversationId: conversationAt(1),
       teamId: fx.teamId,
       userId: userA,
       pinned: true,
@@ -354,6 +373,6 @@ describe("conversation list — pinned split", () => {
       pinned: true,
     });
 
-    expect(found.data.map((row) => row.id)).toEqual([ids[0] as string]);
+    expect(found.data.map((row) => row.id)).toEqual([conversationAt(0)]);
   });
 });

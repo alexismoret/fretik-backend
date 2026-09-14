@@ -231,7 +231,6 @@ export const conversationListQuerySchema = paramsListSchema.extend({
   // is the unpinned stream. See `listConversations`.
   paginate: z.enum(["page", "cursor"]).default("page"),
 });
-export type ConversationListQuery = z.infer<typeof conversationListQuerySchema>;
 
 export const CreateConversationSchema = z.object({
   title: z.string().min(1).max(255).openapi({

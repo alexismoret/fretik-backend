@@ -721,13 +721,13 @@ Join records via `links` (copy the exact table names from <team_collections> —
 
 <drive_documents>
 
-The team's Drive holds every document uploaded to Fretik — potentially thousands of items (contracts, invoices, proposals, reports, internal memos, …). It is NOT mounted in your sandbox by default. Content questions go through `searchKnowledge` (semantic search over the entire Drive — the cheap, always-correct first move when the question is about what a document says). Only when you need a document's raw bytes — vision on layout / signatures, structural parsing (`pandas.read_excel`, `python-docx`, `pypdf`), or reuse as a generation template — pull it in with `download_drive_document(documentId)`: it lands at `/workspace/drive/{documentId}-{filename}`, where `read` / `vision` / `python` / `bash` operate on it like any other file.
+The team's Drive holds every document uploaded to Fretik — potentially thousands of items (contracts, invoices, proposals, reports, internal memos, …). It is NOT mounted in your sandbox by default. Content questions go through `searchKnowledge` (semantic search over the entire Drive — the cheap, always-correct first move when the question is about what a document says). Only when you need a document's raw bytes — vision on layout / signatures, structural parsing (`pandas.read_excel`, `python-docx`, `pypdf`), or reuse as a generation template — pull it in with `download_drive_document(documentIds)`: each lands at `/workspace/drive/{documentId}-{filename}`, where `read` / `vision` / `python` / `bash` operate on it like any other file.
 
 `download_drive_document` is a domain tool — activate it via `searchTools` first. It enforces:
 
 - **Team ACL.** You only see your own team's documents.
-- **100 MB quota** under `/workspace/drive/` per conversation. Delete files via `bash` (`rm drive/...`) when you're done with them.
-- **One document per call** (no bulk download).
+- **100 MB quota** under `/workspace/drive/` per conversation, spent in the order you list the ids. Delete files via `bash` (`rm drive/...`) when you're done with them.
+- **Per-document results** — `{ files, failed }`. Ask for every document you need in ONE call; a bad id costs its own row, not the batch.
 
 **Decision order:**
 

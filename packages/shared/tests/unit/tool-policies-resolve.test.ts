@@ -4,7 +4,10 @@ import {
   type ToolPolicyLevel,
 } from "../../src/schemas/tool-policies";
 import type { WorkflowAutonomy } from "../../src/schemas/workflows";
-import { TOOL_CALL_APPLY } from "../../src/services/tool-policies/builtin-apply";
+import {
+  strListOrSingle,
+  TOOL_CALL_APPLY,
+} from "../../src/services/tool-policies/builtin-apply";
 import {
   resolveBuiltinToolPolicy,
   resolveConnectionActionPolicy,
@@ -435,5 +438,39 @@ describe("resolveConnectionActionPolicy — manifest defaults + overrides", () =
         autonomy: "autonomous",
       }),
     ).toBe("auto");
+  });
+});
+
+describe("uploadToDrive grant args — batch and pre-batch shapes", () => {
+  /**
+   * An approval row outlives the deploy that wrote it. `uploadToDrive` used
+   * to store one `path` or one `fileId`; it now stores `paths` / `fileIds`.
+   * A grant clicked minutes after that deploy still carries the old shape,
+   * and reading only the new keys would apply it as an empty set — saving
+   * nothing while the card reports success.
+   */
+  test("reads the batch shape", () => {
+    expect(
+      strListOrSingle({ paths: ["a.pdf", "b.pdf"] }, "paths", "path"),
+    ).toEqual(["a.pdf", "b.pdf"]);
+  });
+
+  test("still reads a grant stored before the batch change", () => {
+    expect(strListOrSingle({ path: "outputs/a.pdf" }, "paths", "path")).toEqual(
+      ["outputs/a.pdf"],
+    );
+    expect(strListOrSingle({ fileId: "f-1" }, "fileIds", "fileId")).toEqual([
+      "f-1",
+    ]);
+  });
+
+  test("an absent arg is an empty list, not a crash", () => {
+    expect(strListOrSingle({}, "paths", "path")).toEqual([]);
+  });
+
+  test("drops non-string entries rather than passing them to a service", () => {
+    expect(
+      strListOrSingle({ paths: ["a.pdf", 42, null] }, "paths", "path"),
+    ).toEqual(["a.pdf"]);
   });
 });

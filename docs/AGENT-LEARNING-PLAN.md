@@ -1322,6 +1322,43 @@ chiffré écrit _avant_ (même discipline que le gate des modèles :
 
 ## 7. Phasage
 
+### État au 2026-09-16 : le palier 0 est construit
+
+Le code du palier 0 existe, testé et vert sur les trois paquets. Ce qui reste
+du palier 0 n'est pas du code : c'est de **pointer le profileur sur la
+production** et de lire les quatre réponses de §6.
+
+| livrable                                                              | où                                                                                                            |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| ledger de trajectoires (`extractTrajectory`, `summarizeTrajectory`)   | `packages/shared/src/services/trajectory/extract.ts`                                                          |
+| chaînes droites et règle def-use                                      | `.../trajectory/chains.ts`                                                                                    |
+| vérité terrain d'un succès, détection des relances manuelles          | `.../trajectory/ground-truth.ts`                                                                              |
+| métriques par run persistées (`usage.work`) + scores Langfuse du tour | `WorkflowRunWorkSchema` ; `handlers/workflow.ts` ; `lib/langfuse-scores.ts` (`recordScores`)                  |
+| profileur opérateur                                                   | `bun run workflows:profile -- --workflow=<id\|nom> [--runs N] [--target=prod]` (`packages/jobs/src/scripts/`) |
+
+**Ce que le profileur a déjà appris, avant même la production.** Lancé sur un
+workflow réel de la base de dev, il a réfuté deux fois sa propre règle, et les
+deux corrections sont dans le code avec leur test :
+
+1. `completeTask` était compté comme fusionnable. Il écrit l'état des tâches du
+   run : c'est une écriture, et une tâche à deux appels se lisait comme une
+   chaîne dont un appel était supprimable — c'est-à-dire un script qui fermerait
+   sa propre tâche.
+2. Plus grave : **98 % des paires adjacentes annoncées fusionnables.** La règle
+   ne connaissait que deux sortes de littéral, porté depuis la sortie
+   précédente ou non ; soixante-six recherches web dont le modèle avait inventé
+   les requêtes sur le moment ne portaient rien de la précédente, donc se
+   lisaient comme des continuations. Elles ne portaient rien parce qu'elles
+   venaient de son propre raisonnement. `analyzeChains` prend maintenant le
+   **vocabulaire de la procédure** (les littéraux vus dans au moins deux runs,
+   plus le payload du trigger du run) et qualifie le reste d'**inventé**, ce qui
+   casse la chaîne. Le même workflow tombe à 6 %.
+
+Ce couple de chiffres est la sortie utile : « 98 % ne portent rien, 6 %
+n'inventent rien » dit que le coût de ce workflow est de l'improvisation, pas
+de la répétition mécanique — donc que le levier y est le playbook et non une
+recette. C'est exactement la question 4 de §6, et elle se répond sans modèle.
+
 | palier                                                               | contenu                                                                                                                                                                                                                                                                                                                                                                                                                                                  | durée indicative | dépend de      |
 | -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- | -------------- |
 | **0 — Mesurer** (profilage lecture seule sur la production, voir §6) | `extractTrajectory` + `summarizeTrajectory` (module pur, tests unitaires sur des transcripts réels anonymisés, reprend `evals/tool-efficiency.ts`) ; `WorkflowRunUsageSchema` étendu + `onWorkflowStepEnd` ; scores Langfuse ; `workflows:profile` ; runs échoués inclus ; classification des liaisons ; vérité terrain du succès ; baseline chiffrée du workflow PbyP et d'un second workflow sans external app                                         | ~1 sem           | —              |

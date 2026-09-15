@@ -1,7 +1,10 @@
 import type { JSONSchema7 } from "@ai-sdk/provider";
 import { InvalidToolInputError, NoSuchToolError } from "ai";
-import { describe, expect, mock, test } from "bun:test";
-import { mockModule } from "../../lib/mock-module";
+import { beforeEach, describe, expect, test } from "bun:test";
+import {
+  resolveModel,
+  setResolveModelTripwire,
+} from "../../lib/resolve-model-double";
 
 /**
  * The repairer fixes a SHAPE and never speaks for the model.
@@ -13,10 +16,23 @@ import { mockModule } from "../../lib/mock-module";
  * case where the SDK now hands the original error back to the model instead.
  */
 
-const resolveModel = mock(() => {
-  throw new Error("the repair reached a model on an input it must refuse");
+/**
+ * Armed per test rather than installed for the process.
+ *
+ * This file used to `mock.module` the whole of `model-registry/resolve` with
+ * a throwing stub at module scope. That registration is permanent and
+ * process-wide, and a test file's body runs when bun EVALUATES it, not when
+ * its tests run — so the tripwire stayed armed for whichever files came
+ * afterwards, and four unrelated suites failed with the message below. The
+ * double is preloaded for every file now (`tests/lib/resolve-model-double.ts`)
+ * and disarmed before every test by `tests/preload.ts`; this just switches it
+ * on for the cases that must never reach a model.
+ */
+const TRIPWIRE = "the repair reached a model on an input it must refuse";
+
+beforeEach(() => {
+  setResolveModelTripwire(TRIPWIRE);
 });
-await mockModule("../../../src/lib/model-registry/resolve", { resolveModel });
 
 const { llmRepairToolCall, repairableInput } =
   await import("../../../src/agents/shared/repair-tool-call");

@@ -12,11 +12,19 @@
  * The redis double must be registered before `mockModule` pulls in a module
  * that reaches `lib/redis` — again a statement ordering, not an import one.
  *
- * What is NOT here any more: the restoration hooks. Under `--isolate` each
- * test file gets a fresh module registry, so a mock a file installs dies with
- * that file and cannot reach the next one. Restoring a module in `afterAll`,
- * or re-installing a double in a global `beforeEach`, was a single-process
- * artifact — see `tests/preload.ts`.
+ * A NOTE ON RESTORATION, which this header used to get wrong. It said a mock
+ * a file installs "dies with that file and cannot reach the next one" under
+ * `--isolate`. That is true of the modules a file IMPORTS and false of a
+ * `mock.module` REGISTRATION, which is process-wide and permanent — the same
+ * correction `tests/preload.ts` already carries for `installBoundFleet()`.
+ *
+ * Restoring in `afterAll` does not fix it either, because a test file's body
+ * runs when bun EVALUATES the file, not when its tests run, and the walk order
+ * is not stable: measured on this commit, one identical two-file command
+ * alternated between 34/34 and 25/34. So a mock whose behaviour would be wrong
+ * for another file belongs HERE, registered once, with the per-test state that
+ * drives it in its own double — `team-ai-settings-double.ts` and
+ * `resolve-model-double.ts` are the two worked examples.
  */
 
 import { mock } from "bun:test";
@@ -75,4 +83,27 @@ await mockModule("@fretik/shared/services/team-ai-settings/get-for-team", {
 await mockModule("@fretik/shared/services/model-registry/live", {
   getLiveStateSync,
   getLiveSnapshotSync,
+});
+
+// `resolveModel` itself, wrapped so ONE suite can assert a code path never
+// reaches a model without arming that assertion for the whole run. Disarmed
+// — which is every file but `repair-tool-call.test.ts`, and every test in it
+// that has not armed it — this delegates to the real implementation.
+//
+// Registered here for the reason the header gives and the reason
+// `resolve-model-double.ts` measures: a file-scoped `mock.module` on this
+// path is permanent and process-wide, so whichever file installs one decides
+// what every later file sees.
+//
+// DYNAMICALLY imported, and last, because unlike the doubles in the import
+// list above this one is not inert: it loads the real `resolve.ts` in order
+// to delegate to it, and that module reads the live snapshot and reaches
+// `lib/redis`. A static import would hoist it ahead of `installTestEnv()`
+// and ahead of both mocks above — the exact ordering trap this file's header
+// describes.
+const { resolveModel: resolveModelDouble } =
+  await import("./resolve-model-double");
+
+await mockModule("../../src/lib/model-registry/resolve", {
+  resolveModel: resolveModelDouble,
 });

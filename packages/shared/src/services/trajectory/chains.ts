@@ -69,6 +69,18 @@ const WRITE_SOURCE_MARKERS = [
 /** The output shape of a call parked on a human approval — always a write. */
 const APPROVAL_PENDING = "approval_pending";
 
+/**
+ * The harness's own progression mechanism, and a write: it commits the run's
+ * task states.
+ *
+ * Named here rather than left to the caller's `writeTools` because it is not a
+ * tool like the others — this module already reads its output to follow the
+ * task cursor, so the protocol is not something it could avoid knowing about.
+ * Without it a two-call task reads as a fusable chain and the estimate counts
+ * the act of closing the task as work a script could do.
+ */
+const PROTOCOL_WRITE_TOOLS = new Set(["completeTask"]);
+
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
 
@@ -136,13 +148,26 @@ const jsonLiterals = (value: unknown, depth = 0): string[] => {
  * yield one enormous string that matches nothing; its literals are scanned out
  * of the source instead.
  */
-const literalsOf = (step: TrajectoryStep): Set<string> => {
+export const literalsOfStep = (step: TrajectoryStep): Set<string> => {
   const raw =
     step.source !== undefined
       ? sourceLiterals(step.source)
       : jsonLiterals(step.input);
   return new Set(raw.filter((lit) => lit.length >= MIN_LITERAL_CHARS));
 };
+
+/**
+ * The same literal vocabulary, read out of an arbitrary value — a trigger
+ * payload, say.
+ *
+ * Exported beside {@link literalsOfStep} so a caller assembling the
+ * `stableLiterals` set uses the DEFINITION the analysis will compare against.
+ * Two slightly different notions of "a literal" on the two sides of that set
+ * would make known values look invented, and the mismatch would show up as a
+ * plausible-looking number rather than as an error.
+ */
+export const literalsOfValue = (value: unknown): Set<string> =>
+  new Set(jsonLiterals(value).filter((lit) => lit.length >= MIN_LITERAL_CHARS));
 
 const serialize = (value: unknown): string => {
   if (value === undefined) return "";
@@ -159,6 +184,7 @@ const observedWrite = (
   step: TrajectoryStep,
   writeTools: ReadonlySet<string>,
 ): boolean => {
+  if (PROTOCOL_WRITE_TOOLS.has(step.toolName)) return true;
   if (writeTools.has(step.toolName)) return true;
   if (serialize(step.output).includes(APPROVAL_PENDING)) return true;
   const source = step.source;
@@ -166,16 +192,24 @@ const observedWrite = (
   return WRITE_SOURCE_MARKERS.some((marker) => source.includes(marker));
 };
 
-/** One adjacent pair of calls, and whether the later one looked at the earlier. */
+/** One adjacent pair of calls, and whether the later one made a decision. */
 export interface ChainJoin {
   fromIndex: number;
   toIndex: number;
   /**
-   * Literals of the later call that first appear in the earlier call's output.
+   * Literals of the later call that first appear in the earlier call's output:
+   * the model READ the result before writing this call.
    * Business data — count them, do not print them.
    */
   carried: string[];
-  /** True when nothing was carried: the pair could become one call. */
+  /**
+   * Literals the later call uses that came from nowhere the analysis can see —
+   * present only when `stableLiterals` was supplied. The model INVENTED them,
+   * so freezing them into a script would replay one run's improvisation as if
+   * it were the procedure. Same data rule as `carried`.
+   */
+  invented: string[];
+  /** True when the later call carried nothing and invented nothing. */
   fusable: boolean;
 }
 
@@ -219,6 +253,26 @@ export interface ChainOptions {
    * consecutive `python` cells; leaving this unset asks it of every call.
    */
   onlyTools?: ReadonlySet<string>;
+  /**
+   * Literals that are part of the PROCEDURE rather than of this one run: the
+   * ones seen in other runs of the same workflow, plus this run's trigger
+   * payload. Supplying them turns on the third category.
+   *
+   * Without it the analysis knows two kinds of literal — carried from the
+   * previous output, or not — and everything in the second kind reads as a
+   * continuation. Measured on a real workflow, that reported 98% of adjacent
+   * pairs as fusable, because sixty-six web searches whose queries the model
+   * had made up on the spot each carried nothing from the one before. They
+   * carried nothing because they came from the model's own reasoning, and
+   * freezing them into a script would replay one run's improvisation as the
+   * procedure.
+   *
+   * With the set supplied, a literal that is neither carried nor known is
+   * INVENTED, and an invented literal breaks the chain. A hardcoded constant
+   * of the workflow appears in every run, so it stays known and stays fusable —
+   * which is the distinction that matters and the one a single run cannot make.
+   */
+  stableLiterals?: ReadonlySet<string>;
 }
 
 /**
@@ -269,14 +323,29 @@ export const analyzeChains = (
 
     const producedHere = serialize(earlier.output);
     const alreadyInHand = serialize(earlier.source ?? earlier.input);
-    const carried = [...literalsOf(later)].filter(
+    const literals = [...literalsOfStep(later)];
+    const carried = literals.filter(
       (lit) => producedHere.includes(lit) && !alreadyInHand.includes(lit),
     );
-    const fusable = carried.length === 0;
+    // Only when the caller supplied what the procedure's own literals are.
+    // Without that, a literal from nowhere is indistinguishable from a
+    // hardcoded constant, and calling it a decision would be a guess.
+    const known = options.stableLiterals;
+    const invented =
+      known === undefined
+        ? []
+        : literals.filter(
+            (lit) =>
+              !known.has(lit) &&
+              !carried.includes(lit) &&
+              !alreadyInHand.includes(lit),
+          );
+    const fusable = carried.length === 0 && invented.length === 0;
     joins.push({
       fromIndex: earlier.index,
       toIndex: later.index,
       carried,
+      invented,
       fusable,
     });
     if (fusable) current.push(later);

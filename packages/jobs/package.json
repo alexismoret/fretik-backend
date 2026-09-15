@@ -11,6 +11,7 @@
     "memory:audit": "bun run src/scripts/memory-audit.ts",
     "gc:run": "bun run src/scripts/run-gc.ts",
     "models:sync": "bun run src/scripts/run-model-sync.ts",
+    "workflows:profile": "bun run src/scripts/workflows-profile.ts",
     "test": "bun test --isolate --timeout=10000 tests/unit",
     "test:integration": "INTEGRATION_DB=1 bun test --isolate --timeout=30000 tests/integration",
     "typecheck": "tsc --noEmit",

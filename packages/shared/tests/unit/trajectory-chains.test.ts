@@ -105,6 +105,57 @@ describe("analyzeChains — what breaks a chain", () => {
   });
 });
 
+describe("analyzeChains — the literal the model made up", () => {
+  // Measured on a real workflow before this existed: 98% of adjacent pairs
+  // reported as fusable, because sixty-six web searches whose queries the
+  // model had invented on the spot each carried nothing from the one before.
+  // They carried nothing because they came from its own reasoning.
+  const search = (query: string, output: unknown): TrajectoryStep => ({
+    ...cell("", output),
+    toolName: "searchWeb",
+    source: undefined,
+    input: { queries: [query] },
+  });
+
+  test("without the procedure's vocabulary, an invention reads as a continuation", () => {
+    nextIndex = 0;
+    const analysis = chainOf(
+      search("competitors of acme", { results: [] }),
+      search("acme pricing model", { results: [] }),
+    );
+    expect(analysis.fusableJoins).toBe(1);
+    expect(analysis.joins[0]?.invented).toEqual([]);
+  });
+
+  test("with it, a literal seen in no other run breaks the chain", () => {
+    nextIndex = 0;
+    const steps = [
+      search("competitors of acme", { results: [] }),
+      search("acme pricing model", { results: [] }),
+    ];
+    const analysis = analyzeChains(steps, {
+      stableLiterals: new Set(["competitors of acme"]),
+    });
+    expect(analysis.joins[0]?.invented).toEqual(["acme pricing model"]);
+    expect(analysis.fusableJoins).toBe(0);
+  });
+
+  test("a constant of the workflow stays fusable", () => {
+    // The whole point of the distinction: a literal hardcoded in the procedure
+    // appears in every run, so it goes into the script and nothing is lost.
+    nextIndex = 0;
+    const steps = [
+      search("weekly market scan", { results: [] }),
+      search("weekly market scan", { results: [] }),
+    ];
+    const analysis = analyzeChains(steps, {
+      stableLiterals: new Set(["weekly market scan"]),
+    });
+    expect(analysis.joins[0]?.invented).toEqual([]);
+    expect(analysis.fusableJoins).toBe(1);
+  });
+});
+
 describe("analyzeChains — what it proposes", () => {
   test("a run of continuations becomes one chain", () => {
     nextIndex = 0;
@@ -156,6 +207,26 @@ describe("analyzeChains — a chain that writes is not counted", () => {
       cell("prepare()", {}),
       cell("submit()", { status: "approval_pending", approvalId: "ap-1" }),
     );
+    expect(analysis.chains[0]?.readOnly).toBe(false);
+    expect(analysis.callsRemovable).toBe(0);
+  });
+
+  test("closing a task is the protocol, not work a script could do", () => {
+    // Measured against a real workflow: a two-call task (`querySql` then
+    // `completeTask`) reported as a fusable chain removing one call, which
+    // would have meant a script closing its own task. `completeTask` commits
+    // the run's task states — it is a write, and this module already knows the
+    // protocol because it reads that output to follow the task cursor.
+    nextIndex = 0;
+    const query = cell("rows = query()", { rows: [] });
+    const close: TrajectoryStep = {
+      ...cell("", { closedTask: { key: "gather" } }),
+      toolName: "completeTask",
+      source: undefined,
+      input: { outcome: "completed", summary: "done" },
+    };
+    const analysis = analyzeChains([query, close]);
+    expect(analysis.fusableJoins).toBe(1);
     expect(analysis.chains[0]?.readOnly).toBe(false);
     expect(analysis.callsRemovable).toBe(0);
   });

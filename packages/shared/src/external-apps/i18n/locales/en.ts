@@ -66,6 +66,13 @@ export default {
         auto_delete: "Auto-delete",
         count: "Count",
         message_ids_preview: "Sample IDs",
+        // FTP/SFTP — a path is the only thing a reviewer can verify here,
+        // so the cards lead with them.
+        paths: "Paths",
+        moves: "Moves",
+        path: "Path",
+        mode: "Permissions",
+        on_conflict: "If the file already exists",
         flag_status: "Flag status",
         due_date: "Due date",
         // Front-specific field labels.
@@ -427,6 +434,39 @@ export default {
         },
         mark_messages_unread: {
           title: { default: "Mark {{count}} emails as unread" },
+        },
+      },
+
+      "ftp-sftp": {
+        upload_files: {
+          title: {
+            single: 'Upload a file to "{{path}}"',
+            default: "Upload {{count}} files",
+          },
+        },
+        move_entries: {
+          title: {
+            single: "Move {{move}}",
+            default: "Move {{count}} files and folders",
+          },
+        },
+        delete_files: {
+          title: {
+            single: 'Delete the file "{{path}}"',
+            default: "Delete {{count}} files",
+          },
+        },
+        create_directory: {
+          title: { default: 'Create the folder "{{path}}"' },
+        },
+        delete_directory: {
+          title: {
+            default: 'Delete the folder "{{path}}"',
+            // Said in the title because it is the one action here with no
+            // undo on any of the three protocols.
+            recursive:
+              'Delete the folder "{{path}}" AND everything inside it — permanently',
+          },
         },
       },
 

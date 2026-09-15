@@ -42,6 +42,57 @@ const AUTH_FAILURE_MESSAGE_PATTERNS = [
 ];
 
 /**
+ * The same signal from a `custom-handler` provider, where the wire is not
+ * HTTP and there is no status code to read.
+ *
+ * `callCustomHandler` has always claimed this worked — "IMAP returns
+ * AUTHENTICATIONFAILED, SMTP raises an EAUTH; if `isAuthFailure` matches the
+ * thrown error we mark the connection" — but every pattern above is an OAuth
+ * or Nango phrasing, so none of those errors ever matched. The consequence is
+ * silent and long-lived: a mailbox password rotated by IT, or an SFTP account
+ * disabled by a partner, keeps the connection `active` forever. Every call
+ * fails, the card shows no problem, and the user is never offered the
+ * Reconnect button that exists for exactly this.
+ *
+ * Each entry is a protocol's own way of saying "these credentials are
+ * wrong", and all of them are DURABLE — a wrong password stays wrong, unlike
+ * the `421 too many connections` / `ECONNREFUSED` / timeout family, which is
+ * deliberately absent so a busy server is never mistaken for a dead
+ * credential.
+ */
+const PROTOCOL_AUTH_FAILURE_PATTERNS = [
+  // SSH / SFTP (`ssh2`): every key and password offered was refused.
+  "all configured authentication methods failed",
+  // IMAP (RFC 5530) and the servers that phrase it themselves.
+  "authenticationfailed",
+  "authentication failed",
+  "invalid credentials",
+  "login failed",
+  "login incorrect",
+  // IMAP NO on LOGIN, POP3 -ERR — `nodemailer` surfaces SMTP 535 as EAUTH.
+  "eauth",
+  "the user name or password is incorrect",
+];
+
+/**
+ * The same signal as a numeric status code, matched on a DIGIT boundary.
+ *
+ * A substring would not do, and the difference is not theoretical: a unit
+ * test caught `"Transferred 1530 bytes"` matching a plain `"530 "` and
+ * marking a perfectly good connection dead over a byte count. The leading
+ * `(^|\D)` is what makes `530` the code rather than the tail of a number.
+ *
+ *  - SMTP 535 — authentication credentials invalid.
+ *  - FTP 530 — not logged in.
+ *  - HTTP 401 — Exchange/EWS behind Basic auth, and anything fronted by IIS.
+ */
+const PROTOCOL_AUTH_FAILURE_CODES = [
+  { pattern: /(^|\D)535\s/, label: "SMTP 535" },
+  { pattern: /(^|\D)530\s/, label: "FTP 530" },
+  { pattern: /(^|\D)401\s+unauthorized/, label: "HTTP 401" },
+];
+
+/**
  * Auth-failure substrings to look for in the BODY of an `http-direct`
  * 403 response. http-direct providers use static API keys (no OAuth
  * refresh dance), so a 403 is usually a business-rule rejection (role
@@ -166,6 +217,20 @@ export const isAuthFailure = (error: unknown): AuthFailureCheck => {
   for (const pattern of AUTH_FAILURE_MESSAGE_PATTERNS) {
     if (haystack.includes(pattern)) {
       return { matched: true, reason: `Auth failure: ${pattern}` };
+    }
+  }
+
+  // 5. Protocol-level refusals from `custom-handler` providers (IMAP, SMTP,
+  //    EWS, SFTP, FTP). No status code to read — the protocol's own words
+  //    are the whole signal.
+  for (const pattern of PROTOCOL_AUTH_FAILURE_PATTERNS) {
+    if (haystack.includes(pattern)) {
+      return { matched: true, reason: `Auth failure: ${pattern}` };
+    }
+  }
+  for (const { pattern, label } of PROTOCOL_AUTH_FAILURE_CODES) {
+    if (pattern.test(haystack)) {
+      return { matched: true, reason: `Auth failure: ${label}` };
     }
   }
 

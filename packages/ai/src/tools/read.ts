@@ -167,7 +167,7 @@ const RUN_OUTPUT_RE = /^runs\/([0-9a-fA-F-]{36})\//;
 const buildFileNotFoundHint = (relative: string): string | undefined => {
   const driveMatch = DRIVE_UUID_RE.exec(relative);
   if (driveMatch) {
-    return `Call \`downloadDriveDocument({ documentId: "${driveMatch[1]}" })\` first. Files under \`drive/\` exist only after a successful download in this conversation.`;
+    return `Call \`downloadDriveDocument({ documentIds: ["${driveMatch[1]}"] })\` first. Files under \`drive/\` exist only after a successful download in this conversation.`;
   }
   const runMatch = RUN_OUTPUT_RE.exec(relative);
   if (runMatch) {

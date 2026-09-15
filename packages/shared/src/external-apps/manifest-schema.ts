@@ -331,6 +331,15 @@ export const credentialFieldKindSchema = z.enum([
   "boolean",
   "select",
   /**
+   * Multi-line secret or free text. Same storage as `password`; the
+   * difference is that the value legitimately contains newlines, so a
+   * single-line `<input>` mangles it on paste. The one case today is an
+   * SSH private key — a PEM block is 5 to 50 lines and pasting it into a
+   * one-line field is how users end up with a key that "looks right" and
+   * never parses.
+   */
+  "textarea",
+  /**
    * Dropdown whose options are resolved at form-render time by calling a
    * provider-registered handler with the values of `dependsOn` fields
    * (typically a freshly-pasted API key). Used when the option set is
@@ -399,6 +408,34 @@ export const credentialFieldSchema = z
      * `dynamicOptions` registry that resolves the option list at runtime.
      */
     optionsHandler: z.string().min(1).optional(),
+    /**
+     * Render this field only while another field of the same form holds one
+     * of these values. A hidden field is not rendered, not validated, and
+     * not submitted — so `required: true` on a hidden field costs nothing,
+     * which is the point: it is how a form expresses "required, but only for
+     * this kind of connection".
+     *
+     * `ftp-sftp` is the case it exists for, three times over: a password is
+     * required with password auth and meaningless with key auth, a private
+     * key is the reverse, and a certificate override belongs to FTPS alone.
+     * Showing all of them at once asks every user to reason about a protocol
+     * they did not choose; splitting the provider in two (Pipedream ships
+     * one app per SFTP auth method) asks them to choose an app by their
+     * credential type.
+     *
+     * Deliberately one field against a value list — not an expression
+     * language. Every real case is "this control belongs to that choice",
+     * and a descriptor the frontend has to evaluate is a descriptor the
+     * frontend and the backend can disagree about.
+     */
+    visibleWhen: z
+      .object({
+        /** Key of another field in the SAME descriptor. */
+        field: z.string().min(1),
+        /** Visible while that field's value is one of these. */
+        equals: z.array(z.string().min(1)).min(1),
+      })
+      .optional(),
     /**
      * Override for the field name used on the WIRE to Nango at connection
      * creation, AND for the name Nango uses when storing the field. Our
@@ -474,32 +511,114 @@ export const credentialLinkedFieldSchema = z.object({
 });
 export type CredentialLinkedField = z.infer<typeof credentialLinkedFieldSchema>;
 
-export const credentialsFormDescriptorSchema = z.object({
-  /** Optional grouped sections (e.g. `imap`, `smtp`) for UI grouping. */
-  sections: z
-    .array(
-      z.object({
-        key: z.string(),
-        titleKey: z.string(),
-        /**
-         * When true, the frontend renders this section collapsed behind a
-         * "show advanced options" toggle. Use for optional override / fallback
-         * fields the typical user never touches (auto-resolved server URL,
-         * version, alternate login) so the default form stays minimal.
-         */
-        collapsed: z.boolean().optional(),
-      }),
-    )
-    .optional(),
-  fields: z.array(credentialFieldSchema).min(1),
-  /** Mirror toggles between fields. */
-  linkedFields: z.array(credentialLinkedFieldSchema).optional(),
-  testConnection: z.object({
-    /** When true, the frontend renders a "Test connection" button. The */
-    /** provider entry MUST then expose a `testCredentials` function. */
-    supported: z.boolean(),
-  }),
+/**
+ * Pack EVERY `target: "credentials"` field into ONE Nango credential field,
+ * as a JSON object, instead of mapping them one-to-one.
+ *
+ * Nango's credential endpoints are strict and narrow, and that is the whole
+ * reason this exists: `BASIC` accepts exactly `{ username, password }` with
+ * each capped at 1024 characters, `API_KEY` exactly `{ apiKey }` capped at
+ * 4096. A provider needing a third secret has nowhere to put it, and one
+ * needing a LONG secret has nowhere to put it either — an RSA-2048 private
+ * key is ~1.7 KB and an RSA-4096 one ~3.3 KB, so `ftp-sftp` fails both caps
+ * at once (username + password + private key + passphrase).
+ *
+ * `connection_config` is not the answer: Nango encrypts `credentials` and
+ * only `credentials` (`encryptConnection` in its `EncryptionManager`), so a
+ * private key parked there would sit in plaintext in Nango's database.
+ *
+ * So the whole secret set travels as one JSON string in the `apiKey` slot of
+ * the `private-api-bearer` template — one encrypted blob, 4096 characters to
+ * spend, arbitrary keys. The frontend packs it at connect + reconnect time;
+ * `normalizeNangoCredentials` unpacks it on read, so every downstream
+ * consumer (handlers, `testCredentials`, the http-direct executor) keeps
+ * reading flat `credentials.<field key>` and never learns this happened.
+ *
+ * Only reach for it when a provider genuinely exceeds Nango's slots.
+ * `nangoKey` per field stays the right tool for a plain rename.
+ */
+export const credentialsSecretEnvelopeSchema = z.object({
+  /**
+   * The Nango credential field carrying the packed JSON. `apiKey` for the
+   * `private-api-bearer` / `private-api-generic` templates (`API_KEY` auth
+   * mode), which is the only slot wide enough to hold a private key.
+   */
+  nangoKey: z.string().min(1),
 });
+export type CredentialsSecretEnvelope = z.infer<
+  typeof credentialsSecretEnvelopeSchema
+>;
+
+export const credentialsFormDescriptorSchema = z
+  .object({
+    /** Optional grouped sections (e.g. `imap`, `smtp`) for UI grouping. */
+    sections: z
+      .array(
+        z.object({
+          key: z.string(),
+          titleKey: z.string(),
+          /**
+           * When true, the frontend renders this section collapsed behind a
+           * "show advanced options" toggle. Use for optional override / fallback
+           * fields the typical user never touches (auto-resolved server URL,
+           * version, alternate login) so the default form stays minimal.
+           */
+          collapsed: z.boolean().optional(),
+        }),
+      )
+      .optional(),
+    fields: z.array(credentialFieldSchema).min(1),
+    /** Mirror toggles between fields. */
+    linkedFields: z.array(credentialLinkedFieldSchema).optional(),
+    /**
+     * Store every credentials-targeted field as ONE encrypted JSON blob —
+     * see `credentialsSecretEnvelopeSchema`. Omit unless the provider needs
+     * more (or longer) secrets than Nango's templates expose.
+     */
+    secretEnvelope: credentialsSecretEnvelopeSchema.optional(),
+    testConnection: z.object({
+      /** When true, the frontend renders a "Test connection" button. The */
+      /** provider entry MUST then expose a `testCredentials` function. */
+      supported: z.boolean(),
+    }),
+  })
+  .superRefine((descriptor, ctx) => {
+    const keys = new Set(descriptor.fields.map((field) => field.key));
+    for (const field of descriptor.fields) {
+      // A `visibleWhen` pointing at a key that is not in the form never
+      // matches, so the field is invisible forever — and the form silently
+      // loses a credential rather than failing loudly at boot.
+      const condition = field.visibleWhen;
+      if (condition !== undefined) {
+        if (!keys.has(condition.field)) {
+          ctx.addIssue({
+            code: "custom",
+            message: `field "${field.key}" is visibleWhen "${condition.field}", which is not a field of this form`,
+          });
+        }
+        if (condition.field === field.key) {
+          ctx.addIssue({
+            code: "custom",
+            message: `field "${field.key}" cannot gate its own visibility`,
+          });
+        }
+      }
+
+      // The envelope IS the rename: every secret lands under its own `key`
+      // inside the JSON, so a per-field `nangoKey` on a credentials field says
+      // two contradictory things about where that value goes.
+      if (
+        descriptor.secretEnvelope !== undefined &&
+        field.target === "credentials" &&
+        field.nangoKey !== undefined
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          message: `field "${field.key}" declares nangoKey but the form uses a secretEnvelope — the envelope key is the only Nango-side name`,
+        });
+      }
+    }
+  });
 export type CredentialsFormDescriptor = z.infer<
   typeof credentialsFormDescriptorSchema
 >;

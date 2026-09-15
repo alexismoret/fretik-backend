@@ -7,6 +7,22 @@
  *     bun run s3:sweep -- --prefix sessions # one family at a time
  *     bun run s3:sweep -- --min-age-hours 1 # default is 24
  *
+ * ENVIRONMENT. This package has no `.env` of its own, and the repo keeps
+ * one per service, so `s3:sweep` passes bun three `--env-file`s — the repo
+ * root, this package, then `packages/api/`. Bun ignores the ones that do
+ * not exist and lets a later file win a shared key, so whichever layout is
+ * in use is picked up without configuration. Anywhere else, call bun
+ * yourself; `--env-file` must come BEFORE `run`, and `bun run s3:sweep --
+ * --env-file=…` will not work because everything after `--` goes to the
+ * script:
+ *
+ *     bun --env-file=../api/.env run src/scripts/sweep-orphan-s3.ts
+ *
+ * AGE. `--min-age-hours` is a floor on how RECENT an object may be, not a
+ * window to look back through: the default sweeps everything older than a
+ * day, however old, and excludes only the last 24 hours. `0` removes even
+ * that exclusion — see the grace-window note below before reaching for it.
+ *
  * WHY THESE EXIST. Deleting a conversation used to reap only the objects
  * sitting at the root of its session folder: `deleteSessionFolder` listed
  * through `listSessionFiles`, which drops every key containing a `/`, and
@@ -40,21 +56,60 @@
  * It is a SCRIPT, not a cron. Read the report, then decide.
  */
 
-import db from "../db";
-import {
-  aiContextProfiles,
-  aiConversations,
-  documents,
-  organization,
-  user,
-} from "../db/schema";
-import { deleteObjects, listObjectsDetailed } from "../lib/s3";
 import {
   classifyObject,
   documentOwner,
   firstSegmentOwner,
   publicImageOwner,
 } from "../lib/s3-orphans";
+
+// ==================== //
+// ENVIRONMENT          //
+// ==================== //
+
+/**
+ * Checked BEFORE `../db` and `../lib/s3` are loaded, which is why those two
+ * are imported dynamically below.
+ *
+ * Both throw at module scope when their variables are missing, and
+ * `lib/s3`'s message is "Missing S3 env vars" — true, and useless to
+ * somebody who ran the documented command and does not know the script
+ * reads an env file at all, let alone which one. An operator script's
+ * first failure should name its own fix.
+ */
+const REQUIRED_ENV = [
+  "DATABASE_URL",
+  "S3_BUCKET",
+  "S3_URL",
+  "S3_REGION",
+  "SCW_ACCESS_KEY",
+  "SCW_SECRET_KEY",
+] as const;
+
+const missingEnv = REQUIRED_ENV.filter((name) => !process.env[name]);
+if (missingEnv.length > 0) {
+  console.error(`Missing environment: ${missingEnv.join(", ")}.`);
+  console.error(
+    "\n`bun run s3:sweep` reads the first .env it finds among the repo root,",
+  );
+  console.error(
+    "packages/shared/ and packages/api/. To point somewhere else, call bun",
+  );
+  console.error("directly — the flag has to come BEFORE `run`:\n");
+  console.error(
+    "    bun --env-file=../api/.env run src/scripts/sweep-orphan-s3.ts\n",
+  );
+  console.error(
+    "(`bun run s3:sweep -- --env-file=…` does NOT work: everything after",
+  );
+  console.error("`--` is passed to the script, not to bun.)");
+  process.exit(2);
+}
+
+const { default: db } = await import("../db");
+const { aiContextProfiles, aiConversations, documents, organization, user } =
+  await import("../db/schema");
+const { deleteObjects, listObjectsDetailed } = await import("../lib/s3");
 
 // ==================== //
 // ARGUMENTS            //

@@ -118,3 +118,7 @@ export * from "./pins";
 
 // One-shot jobs that run once per deployed version, with their outcomes
 export * from "./release-tasks";
+
+// Which product update each user has already been shown (the updates
+// themselves live as reviewed files in the frontend repo)
+export * from "./changelog-reads";

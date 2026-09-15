@@ -85,6 +85,7 @@ guaranteed and does not need to be.
 | **periodic**         | the jobs container                                 | BullMQ schedulers (`queues/schedulers.ts`) | model sync 00:30, bench 01:15, dreaming 03:00, GC 04:00                                      |
 | **ad-hoc operator**  | **inside** the container, via `docker exec`        | operator guard                             | `models:admin`, `models:bench`, backfills, `memory:audit`, `grant:super-admin`, `db:migrate` |
 | **evals**            | a laptop, against a reachable non-prod service     | `evals/*`                                  | `evals:gate` — see `packages/ai/evals/RUNBOOK.md`                                            |
+| **authoring**        | a laptop, writes S3 only (never the database)      | package scripts                            | `changelog:media` — see `CHANGELOG-AUTHORING.md` in fretik-app                               |
 
 Rules of thumb:
 

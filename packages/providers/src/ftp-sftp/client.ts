@@ -118,12 +118,11 @@ const CONNECT_TIMEOUT_MS = 20_000;
 /**
  * Wall clock one action may spend, start to finish.
  *
- * This is NOT a nice-to-have: `@fretik/api` serves with `idleTimeout: 30`,
- * and Bun applies that to a request whose HANDLER is slow, not merely to an
- * idle socket — measured, a handler sleeping 6 s behind `idleTimeout: 3` has
- * its connection closed at 4 s. So an action running past ~30 s does not
- * return an error, it loses the connection, and the sandbox SDK reports
- * "backend unreachable".
+ * This is NOT a nice-to-have. An action that simply runs on does not return
+ * an error, it loses its connection — Bun closes a socket whose HANDLER has
+ * been silent for `idleTimeout` (measured: a handler sleeping 6 s behind
+ * `idleTimeout: 3` has its connection closed at 4 s) — and the sandbox SDK
+ * then reports "backend unreachable".
  *
  * On an upload that is the worst possible failure: the bytes reached the
  * partner's server, the agent was told the call failed, and a retry drops
@@ -131,9 +130,19 @@ const CONNECT_TIMEOUT_MS = 20_000;
  * on — fetch fewer files, send them in smaller batches — is the only
  * outcome that stays truthful.
  *
- * Five seconds of headroom under the 30, for the dispatch either side.
+ * 50 s, set by the SLOT rather than the socket. This provider declares
+ * `concurrency: serial` with `maxWaitMs: 60_000`, so an action must finish
+ * inside the window a queued second call is prepared to wait, and it must
+ * stay under `PLAN_LEASE_MS` (60 s) for the same reason: a call outliving its
+ * lease is exactly the overlap the slot exists to prevent.
+ *
+ * It was 25 s while `@fretik/api` served with `idleTimeout: 30` and the
+ * socket was the tighter of the two. That is no longer true (255 now), and
+ * the difference is real at these limits: 25 MB — the download budget — needs
+ * 25 s of a 1 MB/s link, which is the whole of the old ceiling with nothing
+ * left for the handshake.
  */
-const ACTION_DEADLINE_MS = 25_000;
+const ACTION_DEADLINE_MS = 50_000;
 
 export class TransferDeadlineError extends Error {
   constructor(seconds: number) {

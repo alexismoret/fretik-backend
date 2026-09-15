@@ -85,18 +85,17 @@ describe("what must NOT be mistaken for a dead credential", () => {
 
   test("our own transfer deadline", () => {
     expect(
-      matched("The file server did not finish within 25s. Ask for fewer files"),
+      matched("The file server did not finish within 50s. Ask for fewer files"),
     ).toBe(false);
   });
 
   test("our own proxy deadline, and the rate limit behind it", () => {
-    // `callNangoProxy` gives up at 25 s because Nango will sit on a
-    // provider's `Retry-After` for up to 10 minutes. Being rate-limited is
-    // the OPPOSITE of having dead credentials — the key works, it worked a
-    // second ago, and it will work again shortly.
+    // `callNangoProxy` gives up before its connection slot's lease expires.
+    // Being rate-limited is the OPPOSITE of having dead credentials — the key
+    // works, it worked a second ago, and it will work again shortly.
     expect(
       matched(
-        "The provider did not answer within 25s. It is usually rate-limiting us",
+        "The provider did not answer within 50s. It is usually rate-limiting us",
       ),
     ).toBe(false);
     expect(matched("Request failed with status code 429")).toBe(false);

@@ -163,13 +163,18 @@ Too many connections`, which reads exactly like bad credentials. A customer
 whose server is comfortable with parallel sessions can relax it per account
 via `external_app_connections.concurrency_mode`.
 
-**A 25-second ceiling per action.** `@fretik/api` serves with
-`idleTimeout: 30`, and Bun applies that to a request whose HANDLER is slow,
-not merely to an idle socket (measured: a handler sleeping 6 s behind
-`idleTimeout: 3` loses its connection at 4 s). Past that the call does not
-return an error, it loses the connection — and on an upload that means the
+**A 50-second ceiling per action.** An action that runs past it does not
+return an error, it loses its connection: Bun closes a socket whose HANDLER
+has been silent for `idleTimeout` (measured: a handler sleeping 6 s behind
+`idleTimeout: 3` loses its connection at 4 s). On an upload that means the
 bytes landed while the agent was told they did not. The provider finishes
 first, with a message saying to send fewer files.
+
+The 50 comes from the serial slot, not the socket: a queued second call waits
+`maxWaitMs: 60_000`, so one action has to finish inside that. It was 25 while
+`@fretik/api` served with `idleTimeout: 30`; that is 255 now, and the
+difference matters at these limits — the 25 MB download budget is 25 s of a
+1 MB/s link on its own.
 
 **FTP downloads are verified against the announced size, and retried once.**
 Over 1 000 downloads from a stock vsftpd on localhost, **10 came back empty

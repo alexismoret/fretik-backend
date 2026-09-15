@@ -70,16 +70,21 @@ const MAX_PAGES = 25;
  * v0.71.6) before each of the `retries: 3` attempts — a rate-limited Graph
  * call can therefore keep our request open for many minutes.
  *
- * `@fretik/api` serves with `idleTimeout: 30`, and Bun applies that to a
- * request whose HANDLER is slow, not merely to an idle socket. Past it the
- * sandbox does not get an error, it loses the connection — the agent is told
- * nothing and cannot say whether the write landed. Finishing first, with a
- * message naming the cause, is strictly better.
+ * The ceiling is set by the CONNECTION SLOT, not by the socket. A call that
+ * outlives its lease is the single thing the slot exists to prevent — two
+ * calls overlapping on an account that tolerates one — so this must stay
+ * under the shorter of the two leases: `PLAN_LEASE_MS` 60 s, `READ_LEASE_MS`
+ * 70 s. 50 s leaves margin under both and still lets the legitimately slow
+ * cases finish: a 25-page `@odata.nextLink` walk of a large Planner plan, or
+ * a Graph query on a big mailbox.
  *
- * Raise this if `idleTimeout` is ever raised; it is deliberately the smaller
- * of the two.
+ * The socket is no longer the binding constraint — `@fretik/api` serves with
+ * `idleTimeout: 255`, raised for exactly this class of request. It used to be
+ * 30, which every one of those cases quietly exceeded; past it the sandbox
+ * does not get an error, it loses the connection, and a write whose response
+ * never arrived is indistinguishable from one that never happened.
  */
-const PROXY_DEADLINE_MS = 25_000;
+const PROXY_DEADLINE_MS = 50_000;
 
 export class ProxyDeadlineError extends Error {
   constructor(seconds: number) {

@@ -565,23 +565,38 @@ to the same minor). Two version floors matter to us:
   actually too big (base64 inflates a file by a third, so the ceiling is
   ~750 KB of file).
 
-### What to set on the instance
+### Settings on the instance
 
-`NANGO_PROXY_MAX_RETRY_WAIT_MS` (new in 0.71.6, **default 10 minutes**) is how
-long Nango will sit on a provider's `Retry-After` before retrying. That is far
-longer than any request of ours can live — `@fretik/api` serves with
-`idleTimeout: 30` — so the wait can only ever be spent losing the connection.
-Set it to something under a minute, and note that `callNangoProxy` gives up at
-25 s regardless, so the agent gets an error rather than a dropped socket.
+`NANGO_PROXY_MAX_RETRY_WAIT_MS` (new in 0.71.6, default 10 minutes) is how long
+Nango will sit on a provider's `Retry-After` before retrying. That is longer
+than any request of ours should live, so the wait could only ever be spent
+losing the connection. **Set to `1000`** (2026-09-15): past one second, Nango
+fast-fails with a `*_wait_too_long` reason instead of waiting, and the agent
+gets an answer it can act on. Network errors still retry with their own
+backoff — the cap applies to header-driven waits only. `callNangoProxy` gives
+up at 50 s regardless.
 
-### Two things worth adopting
+### `on_connection_deletion` — wired
 
-- **`on_connection_deletion` webhook** (new in this range). Today, a connection
-  deleted from the Nango dashboard leaves its `external_app_connections` row
-  `active` until the next call fails with `unknown_connection` — we detect it
-  reactively, in `isAuthFailure`. This webhook would let us mark the row the
-  moment it happens. We consume no Nango webhooks at all right now, so this
-  would be the first, and it needs a route plus signature verification.
+Enable it in **Environment Settings → Webhooks**, alongside the URL
+`https://<api-host>/webhooks/nango`, then copy the **signing key** into
+`NANGO_WEBHOOK_SECRET` on `@fretik/api`. That key is NOT `NANGO_SECRET_KEY`;
+Nango keeps the two separate and signing with the wrong one fails every
+delivery.
+
+The route verifies `X-Nango-Hmac-Sha256` over the raw body and marks the
+matching `external_app_connections` row `error`, so the settings page offers
+Reconnect the moment a connection is deleted upstream instead of when
+something next tries to use it — for a connection behind a weekly workflow
+that is the difference between minutes and a week. Deleting from Fretik fires
+the same event; the handler is a no-op when the row is already gone.
+
+Nango retries a non-2xx, so the route answers 200 to anything it knowingly
+ignores (a different event type, a body that will never parse) and reserves
+401 / 500 for the failures a redelivery could actually fix.
+
+### Still worth adopting
+
 - **Self-hosted audit trail** (`NANGO_AUDIT_POSTGRES_*`), GA in this range and
   no longer behind a rollout flag. Writes who connected, reconnected or deleted
   what to a partitioned Postgres table, with a retention window. Worth turning

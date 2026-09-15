@@ -19,17 +19,24 @@ OAuth flow, no HTTP call ever leaves Nango for this provider.
 The template's own `Authorization: Bearer ${apiKey}` projection is irrelevant
 — we never call `nango.proxy`.
 
-## 2. Why `private-api-bearer` and not `private-api-basic`
+## 2. Credential storage — one encrypted slot, 4096 characters
+
+Requires **Nango ≥ v0.71.6**, which is where the `apiKey` credential cap went
+from 1024 characters to 4096. Production runs 0.71.7, so every SSH key type
+below RSA-8192 fits; keep the floor in mind only when standing up a new
+instance or pinning an old image.
+
+### 2.1 Why `private-api-bearer` and not `private-api-basic`
 
 Because of a size ceiling, not a preference.
 
 Nango validates credential bodies with strict per-auth-mode schemas
 (`packages/server/lib/helpers/validation.ts` in its repo):
 
-| Template             | auth_mode | Accepted fields        | Cap per field |
-| -------------------- | --------- | ---------------------- | ------------- |
-| `private-api-basic`  | `BASIC`   | `username`, `password` | 1024 chars    |
-| `private-api-bearer` | `API_KEY` | `apiKey`               | 4096 chars    |
+| Template             | auth_mode | Accepted fields        | Cap per field                       |
+| -------------------- | --------- | ---------------------- | ----------------------------------- |
+| `private-api-basic`  | `BASIC`   | `username`, `password` | 1024 chars — unchanged to this day  |
+| `private-api-bearer` | `API_KEY` | `apiKey`               | **4096** chars (1024 before 0.71.6) |
 
 An SFTP connection can need four secrets — username, password **or** private
 key, passphrase — and an RSA private key alone is ~1.7 KB at 2048 bits and
@@ -41,14 +48,64 @@ so `connection_config` sits in plaintext in its database.
 
 So the manifest declares a `secretEnvelope`: the frontend packs every
 `target: "credentials"` field into one JSON string and sends it as `apiKey`;
-`normalizeNangoCredentials` parses it back on read. One encrypted blob, 4096
-characters to spend, arbitrary keys. Handlers are unaware — they read
-`credentials.private_key` like any other field.
+`normalizeNangoCredentials` parses it back on read. One encrypted blob,
+arbitrary keys, and the `apiKey` cap is the only budget. Handlers are unaware
+— they read `credentials.private_key` like any other field.
 
-**Operational consequence:** an RSA-8192 key (~6.3 KB) does not fit and Nango
-answers HTTP 400. Ed25519 (~400 chars), ECDSA (~300) and RSA up to 4096 all
-fit comfortably. If a customer ever brings an 8192-bit key, the answer is a
-new key, not a schema change.
+### 2.2 What fits in 4096
+
+Measured, not estimated: `JSON.stringify({ username, private_key })` for a
+freshly generated key and a 6-character username. A passphrase adds its own
+length plus ~16 characters of JSON.
+
+| Key type                    | Packed envelope | Fits |
+| --------------------------- | --------------- | ---- |
+| password only               | ~100 chars      | ✅   |
+| ed25519                     | 444 chars       | ✅   |
+| ECDSA P-256                 | 538 chars       | ✅   |
+| RSA-2048 (`-m PEM`, PKCS#1) | 1 740 chars     | ✅   |
+| RSA-2048 (OpenSSH default)  | 1 876 chars     | ✅   |
+| RSA-4096 (OpenSSH default)  | 3 456 chars     | ✅   |
+| RSA-8192 (OpenSSH default)  | ~6.6 KB         | ❌   |
+
+RSA-8192 is the only thing that does not fit, and there is no encoding that
+rescues it: a PEM body is already base64, so gzip buys back exactly what
+re-encoding costs. The answer is a new key — ed25519 for preference, which is
+a seventh of the size and what the form's help text recommends.
+
+### 2.3 An oversized credential is refused at SAVE time, silently
+
+Worth knowing because the shape is confusing rather than rare. Nango answers:
+
+```json
+{
+  "error": {
+    "code": "invalid_body",
+    "errors": [
+      {
+        "code": "too_big",
+        "message": "Too big: expected string to have <=4096 characters",
+        "path": ["apiKey"]
+      }
+    ]
+  }
+}
+```
+
+Two things make it expensive to diagnose:
+
+- **Test connection passes.** It talks to the customer's file server and never
+  touches Nango. Only the save writes credentials, so the green check means
+  nothing about whether they can be stored.
+- **The message is empty in the UI.** `@nangohq/frontend` throws
+  `new AuthError(errorResponse.error.message, …)` and a validation body carries
+  `code` + `errors[]` with no `message` — so the SDK discards exactly the part
+  that names the field. Still true as of 0.71.7. The frontend's
+  `describeNangoAuthError` measures the payload itself and substitutes a real
+  message; without it the user sees nothing and has to open the network tab.
+
+The same body, with `<=1024` instead of `<=4096`, means the instance is older
+than v0.71.6 — check the version before touching the key.
 
 ## 3. What the user supplies
 

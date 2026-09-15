@@ -58,6 +58,86 @@ export interface NangoProxyCall {
  */
 const MAX_PAGES = 25;
 
+/**
+ * Wall-clock ceiling on one `callNangoProxy` — the whole pagination walk
+ * included.
+ *
+ * Without it the call is unbounded from our side: `@nangohq/node` builds its
+ * axios instance with no `timeout`, and `ProxyConfiguration` exposes neither
+ * a `timeout` nor a `signal`, so nothing we pass can shorten it. On the far
+ * side Nango honours the provider's `Retry-After` up to
+ * `NANGO_PROXY_MAX_RETRY_WAIT_MS` (10 minutes by default, introduced in
+ * v0.71.6) before each of the `retries: 3` attempts — a rate-limited Graph
+ * call can therefore keep our request open for many minutes.
+ *
+ * `@fretik/api` serves with `idleTimeout: 30`, and Bun applies that to a
+ * request whose HANDLER is slow, not merely to an idle socket. Past it the
+ * sandbox does not get an error, it loses the connection — the agent is told
+ * nothing and cannot say whether the write landed. Finishing first, with a
+ * message naming the cause, is strictly better.
+ *
+ * Raise this if `idleTimeout` is ever raised; it is deliberately the smaller
+ * of the two.
+ */
+const PROXY_DEADLINE_MS = 25_000;
+
+export class ProxyDeadlineError extends Error {
+  constructor(seconds: number) {
+    super(
+      `The provider did not answer within ${seconds.toString()}s. It is usually rate-limiting us: Nango waits out the provider's Retry-After before retrying, and that can outlast a chat turn. Retry in a minute, or ask for less in one call.`,
+    );
+    this.name = "ProxyDeadlineError";
+  }
+}
+
+/**
+ * Reject with a `ProxyDeadlineError` if `work` has not settled in time.
+ *
+ * The underlying request is NOT cancelled — the SDK gives us no handle to
+ * cancel it with — so it runs on and whatever it returns is dropped. The
+ * explicit `catch` is belt-and-braces against a late rejection: `race`
+ * already subscribes to `work`, so this only matters if that ever changes.
+ */
+const withProxyDeadline = async <T>(work: Promise<T>): Promise<T> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(new ProxyDeadlineError(Math.round(PROXY_DEADLINE_MS / 1000)));
+        }, PROXY_DEADLINE_MS);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    void work.catch(() => undefined);
+  }
+};
+
+/**
+ * Nango answers HTTP 413 `request_too_large` when the body we handed it
+ * exceeds its proxy router's 1 MB limit (the limit is long-standing; the
+ * named code arrived in v0.71.6 — before it, the same refusal came back as
+ * an opaque failure).
+ *
+ * This is reachable from any action that carries a file: Outlook sends
+ * attachments as base64 `contentBytes` inside the message body, and base64
+ * inflates by a third, so it is roughly a 750 KB file. The generic error
+ * reads like a provider fault; the file is the fault, and the agent can act
+ * on that.
+ */
+const REQUEST_TOO_LARGE_HINT =
+  "The request body was too large for the connector's 1 MB limit. If it carries an attachment, send a smaller file or a link to it — base64 adds a third to a file's size, so the ceiling is around 750 KB of actual file.";
+
+const isRequestTooLarge = (error: unknown): boolean => {
+  if (typeof error !== "object" || error === null) return false;
+  const e = error as { response?: { status?: number }; status?: number };
+  // Status alone, not the body's `code`: 413 has exactly one meaning on this
+  // route, and an instance older than v0.71.6 answers it with no code at all.
+  return (e.response?.status ?? e.status) === 413;
+};
+
 /** Split an absolute `@odata.nextLink` into a Nango proxy `{ endpoint, query }`. */
 const splitNextLink = (
   nextLink: string,
@@ -83,9 +163,10 @@ const proxyOnce = async (call: NangoProxyCall): Promise<unknown> => {
   return res.data;
 };
 
-export const callNangoProxy = async (
-  call: NangoProxyCall,
-): Promise<unknown> => {
+export const callNangoProxy = async (call: NangoProxyCall): Promise<unknown> =>
+  await withProxyDeadline(runProxyCall(call));
+
+const runProxyCall = async (call: NangoProxyCall): Promise<unknown> => {
   try {
     const first = await proxyOnce(call);
     if (call.paginate !== true) return first;
@@ -125,6 +206,11 @@ export const callNangoProxy = async (
         reason: detected.reason,
       }).catch(() => undefined);
     }
+    // Re-thrown as a plain Error on purpose: the axios error's own message is
+    // `Request failed with status code 413`, which sends the agent looking at
+    // the provider instead of at the file it just attached.
+    if (isRequestTooLarge(error))
+      throw new Error(REQUEST_TOO_LARGE_HINT, { cause: error });
     throw error;
   }
 };

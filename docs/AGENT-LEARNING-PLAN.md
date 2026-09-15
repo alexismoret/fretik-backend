@@ -1185,6 +1185,101 @@ approuvés : le tampon se détecte.
 | recette         | delta baseline → avec recette sur les mêmes indicateurs, **tokens de recette inclus**, taux de succès, part des runs qui ont utilisé le code                                                                                                                                                 |
 | skills et notes | proposées / activées / rejetées / expirées, `applied`, `useful`, `misleading`, `successAfterRead`, latence de revue, taux de rejet, taux de signalement                                                                                                                                      |
 
+### Lire la production pour le palier 0
+
+Les données dont le palier 0 a besoin sont déjà en production, et rien n'a
+besoin d'être instrumenté avant de les lire. Deux sources, deux méthodes, et
+quelques règles qui ne se négocient pas.
+
+**La topologie réelle, vérifiée le 2026-09-15** sur l'hôte de production
+(`193.168.146.115`, entrée dédiée dans `~/.ssh/config`, clé `amoret_rsa`
+chargée dans l'agent) :
+
+| ce qu'on veut          | conteneur                                            | port sur l'hôte         |
+| ---------------------- | ---------------------------------------------------- | ----------------------- |
+| base applicative       | `fretik-dbtunnelproxy-…-postgres-tunnel-proxy-1`     | `127.0.0.1:5434`        |
+| Redis applicatif       | `fretik-dbtunnelproxy-…-redis-tunnel-proxy-1`        | `127.0.0.1:6381`        |
+| service `@fretik/ai`   | `fretik-ai-…`                                        | pour `docker exec`      |
+| Langfuse, auto-hébergé | `fretik-langfuse-…-langfuse-web-1`, derrière Traefik | via `LANGFUSE_BASE_URL` |
+
+**Le piège à ne pas rater.** `127.0.0.1:5432` sur cet hôte est la base de
+**Langfuse**, pas la base applicative. Seul `5434` est la base produit. Se
+tromper de port, c'est profiler le mauvais corpus sans s'en apercevoir, parce
+que les deux répondent.
+
+**Méthode A, préférée : dans le conteneur, sans rien ouvrir.** C'est la classe
+« ad-hoc operator » de `docs/OPERATIONS.md` §3. `FRETIK_RUNTIME=container` est
+posé par l'image, donc la garde autorise sans bris de glace.
+
+```bash
+ssh 193.168.146.115 "docker exec -w /app/packages/jobs \
+  \$(docker ps -q -f name=fretik-ai -f status=running) \
+  bun run workflows:profile -- --workflow=<id> --target=prod"
+```
+
+**Méthode B : le tunnel depuis le laptop.** Plus rapide à mettre en route,
+mais c'est la forme exacte qui a causé l'incident du 2026-08-30, donc elle
+exige le bris de glace et se referme tout de suite après.
+
+```bash
+ssh -N -L 5434:127.0.0.1:5434 193.168.146.115 &
+NODE_ENV=production FRETIK_ALLOW_LAPTOP_PROD=1 \
+  bun run workflows:profile -- --workflow=<id> --target=prod
+```
+
+`NODE_ENV=production` suffit à faire charger `.env.production.local` par Bun :
+la chaîne de connexion n'est ni lue, ni affichée, ni recopiée nulle part.
+
+**La ligne à lire avant tout le reste.** Quelle que soit la méthode, la garde
+imprime, avant la moindre requête :
+
+```
+[target] prod — db=<nom> host=<ip>:<port> user=<rôle>
+```
+
+C'est le nom que le serveur se donne, pas l'URL à laquelle on croit. Si cette
+ligne ne nomme pas la base attendue, tout ce qui suit ne vaut rien. Elle existe
+parce qu'un script dont l'intention était la lecture seule, par ce même tunnel,
+a migré la production.
+
+**Ce qu'on lit, et ce qu'on n'écrit jamais.** Des `SELECT`, sur `workflows`,
+`workflow_runs` et les `ai_messages` des conversations de run. Aucun `INSERT`,
+aucun `UPDATE`, aucune migration, aucun script qui garde un chemin d'écriture
+« au cas où ». La sortie du profileur est **agrégée** : compteurs, histogrammes
+par outil et par tâche, hachages d'arguments canoniques, ratios de similarité,
+quantiles. Elle n'imprime jamais un argument ni une sortie d'outil, qui sont
+les données métier des clients. Un identifiant de run et une clé de tâche
+suffisent à remonter à un cas à la main si besoin.
+
+**Langfuse.** L'API HTTP sur `LANGFUSE_BASE_URL`, avec les clés déjà présentes
+dans `packages/ai/.env`, filtrée sur l'attribut d'environnement de production.
+Elle apporte ce que la base n'a pas : le temps jusqu'au premier token et la
+latence par étape, et le coût exact, sur les traces `workflow-turn` et
+`chatbot-turn`, groupées par session, la session étant la conversation du run.
+**Ne jamais interroger la base Postgres de Langfuse directement** : c'est un
+détail d'implémentation du produit, son schéma n'est pas un contrat, et l'API
+répond à la même question.
+
+**Les quatre questions auxquelles ce profilage doit répondre**, et dont dépend
+tout le reste du plan :
+
+1. Où partent les étapes d'un run, par tâche et par outil ?
+2. Quelle part des étapes est de la relecture de skills et de la redécouverte
+   de schéma ? C'est le gain direct du palier 1.
+3. Quelle part des cellules `python` consécutives est fusionnable, c'est-à-dire
+   ne contient aucun littéral apparu dans la sortie de la cellule précédente ?
+   C'est le gain du palier 1b.
+4. Reste-t-il des tâches dont les étapes partent en jugement plutôt qu'en
+   mécanique ? Si oui, le levier est le playbook, pas la recette.
+
+**Ce que la production ne peut pas faire.** Mesurer, oui. Valider, non. On ne
+peut pas comparer une recette à son absence sur la production sans lancer de
+vrais runs qui écrivent dans de vrais systèmes. La validation reste au harnais
+headless sur l'équipe d'eval, ou au **mode ombre** de 4.2, qui calcule ce que
+chaque run aurait reçu sans rien lui donner. Le mode ombre est le seul moyen
+d'obtenir le chiffre « combien on aurait économisé » sur du trafic réel à
+risque nul.
+
 **Harnais.** Il manque le harnais de run de workflow ; il devient un prérequis
 du palier 1, pas un à-côté : un point d'entrée headless (`POST
 /internal/trigger/runs/:runId/turn` piloté par le harnais à la place de
@@ -1227,14 +1322,14 @@ chiffré écrit _avant_ (même discipline que le gate des modèles :
 
 ## 7. Phasage
 
-| palier                                                | contenu                                                                                                                                                                                                                                                                                                                                                                                                                                                  | durée indicative | dépend de      |
-| ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- | -------------- |
-| **0 — Mesurer**                                       | `extractTrajectory` + `summarizeTrajectory` (module pur, tests unitaires sur des transcripts réels anonymisés, reprend `evals/tool-efficiency.ts`) ; `WorkflowRunUsageSchema` étendu + `onWorkflowStepEnd` ; scores Langfuse ; `workflows:profile` ; runs échoués inclus ; classification des liaisons ; vérité terrain du succès ; baseline chiffrée du workflow PbyP et d'un second workflow sans external app                                         | ~1 sem           | —              |
-| **1 — Recettes dérivées + préchauffage**              | `prepareSandbox` en parallèle du recall ; recette dérivée sans LLM à `createWorkflowRun`, `workflow_runs.recipe` ; corps rendus dans `<workflow_context>` avec plafond ; `recipes/` matérialisés + préfixe `read` ; phrase `<tool_routing>` + suite `doctrine` + seed ; `shadow` → `on` par workflow (`BaseSection`) ; détail `RunTimeline` ; harnais de run headless + `evals:workflow-recipes`                                                         | 2-3 sem          | 0              |
-| **1b — Fusion des appels et porte de rejeu**          | détection des chaînes droites et des répétitions dans le ledger (règle def-use, aucun modèle) ; émission d'un fichier fusionné par chaîne dans `recipes/` ; **rejeu du candidat sur les entrées des N derniers runs réussis**, comparaison à leur sortie, rejet silencieux en cas d'écart ; jamais de fusion d'une chaîne qui écrit ; métriques « appels fusionnés » et « appels supprimés » par run                                                     | 1-2 sem          | 1              |
-| **2 — Skills apprises v0 + notes d'app + visibilité** | brouillons `team_uploaded` désactivés (`sourceUrl = learned:`), section « Proposées par l'assistant », cartes « propose / a noté » et « appliqué », flags Utile / Trompeur, `skill.applied` ; notes `learned/howto/` (runs + sondes opt-in), section « Appris dans cette équipe » servie par `read-skill-file.ts`, filtre Mémoire ; politique `learning` ; événements d'audit ; `evals:procedures` en paires avec / sans ; non-régression `evals:recall` | 3 sem            | 0, 1           |
-| **3 — Optimiseur LLM et gouvernance v1**              | si les recettes verbatim plafonnent : deltas, pitfalls, compteurs, `converged`, porte d'admission ; `source = 'learned'`, `activated_at`, `skill_history`, versions / diff ; export d'audit ; ré-examen aléatoire                                                                                                                                                                                                                                        | 3 sem            | mesures de 1-2 |
-| **4 — Exécution par le harnais**                      | `scripted` (prélude via le chemin `python`, idempotence de `ensureSteeringMessage`, cache adressé par contenu), niveau de raisonnement par tâche, `no-LLM` avec clic humain ; boucle mainteneurs `skills:insights-report`                                                                                                                                                                                                                                | 2-3 sem          | 3              |
+| palier                                                               | contenu                                                                                                                                                                                                                                                                                                                                                                                                                                                  | durée indicative | dépend de      |
+| -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- | -------------- |
+| **0 — Mesurer** (profilage lecture seule sur la production, voir §6) | `extractTrajectory` + `summarizeTrajectory` (module pur, tests unitaires sur des transcripts réels anonymisés, reprend `evals/tool-efficiency.ts`) ; `WorkflowRunUsageSchema` étendu + `onWorkflowStepEnd` ; scores Langfuse ; `workflows:profile` ; runs échoués inclus ; classification des liaisons ; vérité terrain du succès ; baseline chiffrée du workflow PbyP et d'un second workflow sans external app                                         | ~1 sem           | —              |
+| **1 — Recettes dérivées + préchauffage**                             | `prepareSandbox` en parallèle du recall ; recette dérivée sans LLM à `createWorkflowRun`, `workflow_runs.recipe` ; corps rendus dans `<workflow_context>` avec plafond ; `recipes/` matérialisés + préfixe `read` ; phrase `<tool_routing>` + suite `doctrine` + seed ; `shadow` → `on` par workflow (`BaseSection`) ; détail `RunTimeline` ; harnais de run headless + `evals:workflow-recipes`                                                         | 2-3 sem          | 0              |
+| **1b — Fusion des appels et porte de rejeu**                         | détection des chaînes droites et des répétitions dans le ledger (règle def-use, aucun modèle) ; émission d'un fichier fusionné par chaîne dans `recipes/` ; **rejeu du candidat sur les entrées des N derniers runs réussis**, comparaison à leur sortie, rejet silencieux en cas d'écart ; jamais de fusion d'une chaîne qui écrit ; métriques « appels fusionnés » et « appels supprimés » par run                                                     | 1-2 sem          | 1              |
+| **2 — Skills apprises v0 + notes d'app + visibilité**                | brouillons `team_uploaded` désactivés (`sourceUrl = learned:`), section « Proposées par l'assistant », cartes « propose / a noté » et « appliqué », flags Utile / Trompeur, `skill.applied` ; notes `learned/howto/` (runs + sondes opt-in), section « Appris dans cette équipe » servie par `read-skill-file.ts`, filtre Mémoire ; politique `learning` ; événements d'audit ; `evals:procedures` en paires avec / sans ; non-régression `evals:recall` | 3 sem            | 0, 1           |
+| **3 — Optimiseur LLM et gouvernance v1**                             | si les recettes verbatim plafonnent : deltas, pitfalls, compteurs, `converged`, porte d'admission ; `source = 'learned'`, `activated_at`, `skill_history`, versions / diff ; export d'audit ; ré-examen aléatoire                                                                                                                                                                                                                                        | 3 sem            | mesures de 1-2 |
+| **4 — Exécution par le harnais**                                     | `scripted` (prélude via le chemin `python`, idempotence de `ensureSteeringMessage`, cache adressé par contenu), niveau de raisonnement par tâche, `no-LLM` avec clic humain ; boucle mainteneurs `skills:insights-report`                                                                                                                                                                                                                                | 2-3 sem          | 3              |
 
 Total 12-15 semaines pour une personne ; les paliers 3 et 4 sont conditionnels
 et peuvent ne jamais être construits si les chiffres des paliers 1-2 suffisent.

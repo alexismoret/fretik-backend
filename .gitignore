@@ -56,3 +56,7 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 # Python bytecode caches (sandbox-assets SDK, bundled skill scripts, sdk-templates)
 __pycache__/
 *.pyc
+
+# Raw changelog frames, before `changelog:media` uploads them. The bucket holds
+# the ones that shipped; these are the takes, and a take is not a deliverable.
+.changelog-shots

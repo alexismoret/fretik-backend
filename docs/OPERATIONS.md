@@ -86,6 +86,7 @@ guaranteed and does not need to be.
 | **ad-hoc operator**  | **inside** the container, via `docker exec`        | operator guard                             | `models:admin`, `models:bench`, backfills, `memory:audit`, `grant:super-admin`, `db:migrate` |
 | **evals**            | a laptop, against a reachable non-prod service     | `evals/*`                                  | `evals:gate` — see `packages/ai/evals/RUNBOOK.md`                                            |
 | **authoring**        | a laptop, writes S3 only (never the database)      | package scripts                            | `changelog:media` — see `CHANGELOG-AUTHORING.md` in fretik-app                               |
+| **fixtures**         | a laptop, **disposable databases only**            | operator guard + its own refusal           | `seed:demo-workspace` — the workspace changelog screenshots are captured in                  |
 
 Rules of thumb:
 

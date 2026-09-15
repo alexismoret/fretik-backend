@@ -358,16 +358,20 @@ if (uploaded.length > 0) {
 
     if (item.kind === "video") {
       console.log(
-        `::demo{light="${item.url}" alt="describe what the clip shows"}`,
+        `::demo{light="${item.url}" alt="describe what the clip shows"}\n::\n`,
       );
       continue;
     }
     console.log(
-      dark
+      (dark
         ? `::shot{light="${light ?? ""}" dark="${dark}" alt="describe what is on screen"}`
         : // No twin: say so rather than emitting a half-block that renders the
           // same picture in both themes and looks deliberate.
-          `::shot{light="${item.url}" dark="MISSING — capture this frame in dark mode too" alt="describe what is on screen"}`,
+          `::shot{light="${item.url}" dark="MISSING — capture this frame in dark mode too" alt="describe what is on screen"}`) +
+        // The closing `::` is part of what gets pasted, never a line the author
+        // is trusted to add. Without it the block never closes and swallows the
+        // rest of the update — silently, and only at render time.
+        "\n::\n",
     );
   }
   console.log("");

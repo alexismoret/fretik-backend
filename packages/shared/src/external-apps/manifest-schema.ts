@@ -517,22 +517,30 @@ export type CredentialLinkedField = z.infer<typeof credentialLinkedFieldSchema>;
  *
  * Nango's credential endpoints are strict and narrow, and that is the whole
  * reason this exists: `BASIC` accepts exactly `{ username, password }` with
- * each capped at 1024 characters, `API_KEY` exactly `{ apiKey }` capped at
- * 4096. A provider needing a third secret has nowhere to put it, and one
- * needing a LONG secret has nowhere to put it either — an RSA-2048 private
- * key is ~1.7 KB and an RSA-4096 one ~3.3 KB, so `ftp-sftp` fails both caps
- * at once (username + password + private key + passphrase).
+ * each capped at 1024 characters, `API_KEY` exactly `{ apiKey }`. A provider
+ * needing a third secret has nowhere to put it, and one needing a LONG secret
+ * has nowhere to put it either — an RSA-2048 private key is ~1.7 KB and an
+ * RSA-4096 one ~3.3 KB, so `ftp-sftp` fails both caps at once (username +
+ * password + private key + passphrase).
  *
  * `connection_config` is not the answer: Nango encrypts `credentials` and
  * only `credentials` (`encryptConnection` in its `EncryptionManager`), so a
  * private key parked there would sit in plaintext in Nango's database.
  *
  * So the whole secret set travels as one JSON string in the `apiKey` slot of
- * the `private-api-bearer` template — one encrypted blob, 4096 characters to
- * spend, arbitrary keys. The frontend packs it at connect + reconnect time;
+ * the `private-api-bearer` template — one encrypted blob, arbitrary keys.
+ * The frontend packs it at connect + reconnect time;
  * `normalizeNangoCredentials` unpacks it on read, so every downstream
  * consumer (handlers, `testCredentials`, the http-direct executor) keeps
  * reading flat `credentials.<field key>` and never learns this happened.
+ *
+ * **The envelope is wide, not unbounded: 4096 characters.** That is the
+ * `apiKey` cap from Nango v0.71.6 onwards (commit `7cb48cd8`, 2026-09-01;
+ * it was 1024 before, so the envelope needs an instance at least that new).
+ * Past it Nango refuses the save with `invalid_body` / `too_big` on `apiKey`,
+ * and its frontend SDK drops the part of that body naming the field — so a
+ * provider whose secrets can approach 4096 characters must say what fits in
+ * its SETUP.md; see `providers/src/ftp-sftp/SETUP.md` §2.
  *
  * Only reach for it when a provider genuinely exceeds Nango's slots.
  * `nangoKey` per field stays the right tool for a plain rename.

@@ -31,9 +31,16 @@ import { pages } from "./pages";
  * Lifecycle of a connection.
  *  - `active`   : usable.
  *  - `disabled` : turned off by the team in the settings UI (kept, not deleted).
- *  - `error`    : a Nango Proxy call returned 401/403 — token revoked/expired.
- *                 Detected lazily (no webhooks on Nango free self-hosted);
- *                 the frontend offers a "Reconnect" action.
+ *  - `error`    : the credential no longer works — a proxy call returned
+ *                 401/403, a protocol refused the login, or the connection
+ *                 was deleted on the Nango side. The frontend offers a
+ *                 "Reconnect" action.
+ *
+ * Detected two ways, and the lazy one is still the general case: an action
+ * throws and `isAuthFailure` matches it. Deletion is the exception — Nango's
+ * `on_connection_deletion` webhook reports that one as it happens, so a
+ * connection behind a weekly workflow no longer looks healthy for a week
+ * (`services/external-apps/webhooks/`).
  */
 export const externalAppConnectionStatusEnum = pgEnum(
   "external_app_connection_status",

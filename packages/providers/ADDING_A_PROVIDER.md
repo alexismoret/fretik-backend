@@ -188,14 +188,22 @@ cannot express what the provider needs.
 Nango validates credential bodies with strict per-auth-mode schemas, and the
 caps are hard:
 
-| Template             | auth_mode | Accepted fields        | Cap       |
-| -------------------- | --------- | ---------------------- | --------- |
-| `private-api-basic`  | `BASIC`   | `username`, `password` | 1024 each |
-| `private-api-bearer` | `API_KEY` | `apiKey`               | 4096      |
+| Template             | auth_mode | Accepted fields        | Cap                              |
+| -------------------- | --------- | ---------------------- | -------------------------------- |
+| `private-api-basic`  | `BASIC`   | `username`, `password` | 1024 each                        |
+| `private-api-bearer` | `API_KEY` | `apiKey`               | 4096 (1024 before Nango v0.71.6) |
 
 A provider needing a THIRD secret, or one LONGER than 1024 characters, fits
 in neither. `ftp-sftp` is both at once: username + password OR private key +
 passphrase, where an RSA key is 1.7-3.3 KB on its own.
+
+**The envelope moves the slot problem, and widens the size problem to 4096 —
+it does not remove it.** Nango enforces that cap at SAVE time, long after
+`testConnection` has gone green, and its frontend SDK reports the refusal with
+an empty message. So a provider whose secrets can approach 4096 characters
+must say in its SETUP.md what fits and what does not — `ftp-sftp`'s table runs
+from an ed25519 key at ~450 packed characters to RSA-8192 at ~6.6 KB, which is
+the one thing it refuses.
 
 `connection_config` is not the escape hatch — Nango's `encryptConnection`
 encrypts `credentials` and nothing else, so a private key parked there sits

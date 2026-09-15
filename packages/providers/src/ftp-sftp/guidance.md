@@ -151,7 +151,7 @@ upstream rule.
 - **`Download budget exceeded` / `Too many files in one call`** → split the
   request. These ceilings are about what crosses into the sandbox, not about
   what the server holds.
-- **`The file server did not finish within 25s`** → the call ran out of wall
+- **`The file server did not finish within 50s`** → the call ran out of wall
   clock, not out of bytes. Ask for fewer files in one go. A transfer that
   cannot fit a turn belongs in a scheduled workflow.
 - **`Incomplete transfer: the server announced N bytes and sent M`** → the

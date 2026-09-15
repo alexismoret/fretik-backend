@@ -10,6 +10,7 @@ import { dashboardRoutes } from "../../src/handlers/dashboard";
 import { desktopReleaseRoutes } from "../../src/handlers/desktop-releases";
 import { documentRoutes } from "../../src/handlers/documents";
 import { externalAppsRoutes } from "../../src/handlers/external-apps";
+import { nangoWebhookRoutes } from "../../src/handlers/external-apps/nango-webhook";
 import { sandboxRoutes } from "../../src/handlers/external-apps/sandbox-exec";
 import { fieldDefinitionRoutes } from "../../src/handlers/field-definitions";
 import { folderRoutes } from "../../src/handlers/folders";
@@ -80,5 +81,6 @@ export const MOUNTED_ROUTERS: Record<string, Probeable> = {
   "/super-admins": superAdminRoutes,
   "/team-settings": teamSettingsRoutes,
   "/tool-policies": toolPoliciesRoutes,
+  "/webhooks": nangoWebhookRoutes,
   "/workflows": workflowRoutes,
 };

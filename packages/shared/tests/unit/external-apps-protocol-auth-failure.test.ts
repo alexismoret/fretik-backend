@@ -85,7 +85,30 @@ describe("what must NOT be mistaken for a dead credential", () => {
 
   test("our own transfer deadline", () => {
     expect(
-      matched("The file server did not finish within 25s. Ask for fewer files"),
+      matched("The file server did not finish within 50s. Ask for fewer files"),
+    ).toBe(false);
+  });
+
+  test("our own proxy deadline, and the rate limit behind it", () => {
+    // `callNangoProxy` gives up before its connection slot's lease expires.
+    // Being rate-limited is the OPPOSITE of having dead credentials — the key
+    // works, it worked a second ago, and it will work again shortly.
+    expect(
+      matched(
+        "The provider did not answer within 50s. It is usually rate-limiting us",
+      ),
+    ).toBe(false);
+    expect(matched("Request failed with status code 429")).toBe(false);
+  });
+
+  test("a body Nango refused for its size", () => {
+    // HTTP 413 on the proxy route: the attachment is too big, the connection
+    // is fine. Marking it dead would ask the user to re-enter credentials
+    // over a file they can simply shrink.
+    expect(matched("Request failed with status code 413")).toBe(false);
+    expect(matched("Request entity too large (limit: 1mb)")).toBe(false);
+    expect(
+      matched("The request body was too large for the connector's 1 MB limit."),
     ).toBe(false);
   });
 });

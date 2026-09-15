@@ -11,8 +11,8 @@ import type { ProviderManifest } from "./manifest-schema";
  *
  *  1. **Secret envelope** (`credentialsForm.secretEnvelope`) — the whole
  *     secret set arrives as ONE JSON string in a single Nango credential
- *     field, because Nango's templates expose at most two encrypted slots
- *     and cap each at 1024 (BASIC) or 4096 (API_KEY) characters. Parse it
+ *     field, because Nango's templates expose at most two encrypted slots and
+ *     cap each (1024 for BASIC, 4096 for API_KEY since v0.71.6). Parse it
  *     back into flat fields. See the schema's JSDoc for why an SSH private
  *     key leaves no other option.
  *  2. **Per-field rename** (`credentialsForm.fields[i].nangoKey`) — some

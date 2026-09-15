@@ -543,3 +543,70 @@ and a reindex is pessimistic — say which it was.
 (it was created by the deleted planner-cost migration). `prewarmVectorIndex()`
 does not exist yet either; both belong to the prewarm work, and until then a
 restart leaves the index cold and the first queries slow.
+
+## 10. Nango — the credential vault
+
+Self-hosted, and used for one thing: storing every external-app credential
+encrypted. `nango-proxy` providers (Outlook, SharePoint, Planner) also route
+their HTTP through it; `custom-handler` and `http-direct` providers only read
+credentials back out of it.
+
+**Production runs 0.71.7** (`@nangohq/node` and `@nangohq/frontend` are pinned
+to the same minor). Two version floors matter to us:
+
+- **≥ 0.71.6 for SSH keys.** That release raised the `API_KEY` credential cap
+  from 1024 to 4096 characters, which is the budget the `secretEnvelope` packs
+  every `ftp-sftp` secret into. Below it, only a password or an ed25519 key
+  fits. `packages/providers/src/ftp-sftp/SETUP.md` §2 has the measured table.
+- **≥ 0.71.6 for a readable 413.** Nango's proxy router refuses a request body
+  over 1 MB. It always did; since 0.71.6 it says so with
+  `code: "request_too_large"` instead of failing opaquely. `callNangoProxy`
+  turns that into a message naming the attachment, because that is what is
+  actually too big (base64 inflates a file by a third, so the ceiling is
+  ~750 KB of file).
+
+### Settings on the instance
+
+`NANGO_PROXY_MAX_RETRY_WAIT_MS` (new in 0.71.6, default 10 minutes) is how long
+Nango will sit on a provider's `Retry-After` before retrying. That is longer
+than any request of ours should live, so the wait could only ever be spent
+losing the connection. **Set to `1000`** (2026-09-15): past one second, Nango
+fast-fails with a `*_wait_too_long` reason instead of waiting, and the agent
+gets an answer it can act on. Network errors still retry with their own
+backoff — the cap applies to header-driven waits only. `callNangoProxy` gives
+up at 50 s regardless.
+
+### `on_connection_deletion` — wired
+
+Enable it in **Environment Settings → Webhooks**, alongside the URL
+`https://<api-host>/webhooks/nango`, then copy the **signing key** into
+`NANGO_WEBHOOK_SECRET` on `@fretik/api`. That key is NOT `NANGO_SECRET_KEY`;
+Nango keeps the two separate and signing with the wrong one fails every
+delivery.
+
+The route verifies `X-Nango-Hmac-Sha256` over the raw body and marks the
+matching `external_app_connections` row `error`, so the settings page offers
+Reconnect the moment a connection is deleted upstream instead of when
+something next tries to use it — for a connection behind a weekly workflow
+that is the difference between minutes and a week. Deleting from Fretik fires
+the same event; the handler is a no-op when the row is already gone.
+
+Nango retries a non-2xx, so the route answers 200 to anything it knowingly
+ignores (a different event type, a body that will never parse) and reserves
+401 / 500 for the failures a redelivery could actually fix.
+
+### Still worth adopting
+
+- **Self-hosted audit trail** (`NANGO_AUDIT_POSTGRES_*`), GA in this range and
+  no longer behind a rollout flag. Writes who connected, reconnected or deleted
+  what to a partitioned Postgres table, with a retention window. Worth turning
+  on before a customer asks who revoked a mailbox.
+
+### Known SDK wart
+
+`@nangohq/frontend` builds its `AuthError` from `errorResponse.error.message`,
+and a validation failure's body carries `code` + `errors[]` with **no
+`message`** — so a refused credential reaches the browser as an error with an
+empty message. Still true in 0.71.7. `describeNangoAuthError` in the frontend
+measures the payload itself and substitutes something readable; don't remove it
+on the assumption that an upgrade fixed it.

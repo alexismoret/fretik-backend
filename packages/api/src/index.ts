@@ -44,6 +44,7 @@ import { dashboardRoutes } from "./handlers/dashboard";
 import { desktopReleaseRoutes } from "./handlers/desktop-releases";
 import { documentRoutes } from "./handlers/documents";
 import { externalAppsRoutes } from "./handlers/external-apps";
+import { nangoWebhookRoutes } from "./handlers/external-apps/nango-webhook";
 import { sandboxRoutes } from "./handlers/external-apps/sandbox-exec";
 import { fieldDefinitionRoutes } from "./handlers/field-definitions";
 import { folderRoutes } from "./handlers/folders";
@@ -149,6 +150,8 @@ app.route("/forms", publicFormRoutes);
 app.route("/p", publicPageRoutes);
 app.route("/desktop-releases", desktopReleaseRoutes);
 app.route("/sandbox", sandboxRoutes);
+// Signed ingress from our Nango instance — no session, the HMAC is the auth.
+app.route("/webhooks", nangoWebhookRoutes);
 
 // The document-processing Worker lives in @fretik/jobs (with the memory
 // pipeline) — API replicas only PRODUCE onto the queue. Background CPU
@@ -163,9 +166,41 @@ v${VERSION}
 ---------------------------
 `);
 
+/**
+ * `Bun.serve` closes a socket that has carried no bytes for this many seconds,
+ * and it counts a request whose HANDLER is slow, not merely an idle client.
+ *
+ * This was 30 — never as a decision. The value has no commit that chose it and
+ * no message that explains it; `@fretik/ai` inherited the same three lines and
+ * its comment states the assumption out loud: "the same three lines are in
+ * `api` and `jobs`, where nothing streams for minutes". `/sandbox` falsifies
+ * that. It is where the agent executes external-app actions, synchronously, in
+ * the request:
+ *
+ *  - `READ_LEASE_MS` is 70 s, and its own comment says it must exceed the
+ *    longest legitimate call. Two transports already run past 30 s by design —
+ *    Akanea WMS aborts at 60 s, a page dataset waits 45 s.
+ *  - `run_plan` executes its operations three at a time. Twenty writes at the
+ *    proxy's 25 s ceiling is minutes, and no constant we own bounds a plan's
+ *    length.
+ *
+ * Every one of those was already dying at 30 s — not with an error the agent
+ * could report, which is the part that matters: the socket simply goes, and a
+ * write whose response never arrived is indistinguishable from one that never
+ * happened.
+ *
+ * 255 is Bun's documented maximum, and the value `@fretik/ai` settled on
+ * (2026-09-06) after four page builds died between 90 and 121 s with a
+ * heartbeat that was supposed to prevent exactly that. The argument there
+ * applies here unchanged: this bounds nothing an operator wants bounded, it
+ * only decides whether a slow legitimate request fails or succeeds. `jobs`
+ * keeps 30 — it serves health checks and nothing else.
+ */
+const SOCKET_IDLE_TIMEOUT_SECONDS = 255;
+
 // Serve
 export default {
   port: process.env.PORT,
   fetch: app.fetch,
-  idleTimeout: 30,
+  idleTimeout: SOCKET_IDLE_TIMEOUT_SECONDS,
 };

@@ -32,32 +32,41 @@ pour ça.
    où l'agent le lit. Socle : un **ledger de trajectoires** déterministe, sans
    LLM, dérivé de ce qui est déjà persisté (`ai_messages.parts` contient chaque
    tool call avec `input` et `output`).
-2. **Le code brut d'abord.** Une recette v1 = les cellules `python` du dernier
-   run réussi, verbatim, matérialisées en fichiers `recipes/<task>/…py` que
-   l'agent adapte et exécute ; les corps de skills lus à chaque run, **rendus
-   dans le prompt du run** plutôt que relus ; un snapshot `schema.json`
-   (`describe_collection`, `whoami`) tagué par la version du SKILL du provider.
-   Aucune passe LLM : les agents sont fidèles aux traces brutes, pas aux leçons
-   condensées (section 3.2).
-3. **L'optimiseur LLM est un palier ultérieur, conditionné aux mesures** :
+2. **Le code brut d'abord, et les appels regroupés.** Une recette v1 = le code
+   `python` du dernier run réussi, avec les appels qui s'enchaînent **sans
+   décision du modèle entre eux** fusionnés en un seul script par une règle
+   mécanique ; les corps de skills lus à chaque run, **rendus dans le prompt du
+   run** plutôt que relus ; un snapshot `schema.json` (`describe_collection`,
+   `whoami`) tagué par la version du SKILL du provider. Aucune passe LLM : les
+   agents sont fidèles aux traces brutes, pas aux leçons condensées
+   (section 3.2).
+3. **Toute compilation est jugée par l'historique, jamais par un modèle.** Un
+   script candidat, qu'il fusionne des appels ou qu'il remplace une
+   vérification que le modèle faisait de tête, est **rejoué sur les entrées des
+   N derniers runs réussis** et doit reproduire exactement ce qu'ils avaient
+   produit, sinon il est jeté. Les runs passés sont un jeu de test gratuit et
+   déterministe. C'est ce qui permet de laisser un modèle _proposer_ des
+   optimisations sans lui laisser le dernier mot. Le rejeu n'existe qu'en
+   lecture : une écriture n'est jamais fusionnée ni compilée automatiquement.
+4. **L'optimiseur LLM est un palier ultérieur, conditionné aux mesures** :
    deltas fusionnés de façon déterministe, ≤ 5 pitfalls conditionnels avec
    preuve, compteurs utile/nuisible, état `converged`. Il n'est construit que si
    les recettes verbatim plafonnent.
-4. **Une échelle de promotion chiffrée pour l'exécution par le harnais**
+5. **Une échelle de promotion chiffrée pour l'exécution par le harnais**
    (`scripted` : ≥ 10 succès et ≥ 90 % de séquence identique ; `no-LLM` :
    ≥ 50 et clic humain), avec rétrogradation au premier échec. Palier tardif,
    optionnel par workflow.
-5. **Rien n'est appris en silence, rien n'est appris sur les personnes** :
+6. **Rien n'est appris en silence, rien n'est appris sur les personnes** :
    carte au moment de l'apprentissage, ligne « Appliqué : … » au moment de
    l'usage, page Skills et page workflow comme surfaces de gestion (provenance,
    versions, statistiques, actions), politique d'équipe, journal d'audit. Les
    apprentissages décrivent des tâches et des apps, jamais la performance d'un
    employé (AI Act, annexe III 4(b)).
-6. **Ne pas sur-apprendre, par construction** : les recettes sont dérivées
+7. **Ne pas sur-apprendre, par construction** : les recettes sont dérivées
    (rien ne s'accumule, l'invalidation est gratuite) ; plafonds (≤ 10 skills
    apprises actives par équipe, ≤ 8 notes par app) ; porte d'admission avant
    activation ; retrait fondé sur des compteurs avec plancher d'observations.
-7. **Mesure avant défaut** : baseline à budget de tokens égal (recette
+8. **Mesure avant défaut** : baseline à budget de tokens égal (recette
    incluse), 3 répétitions, paires avec / sans, injection de dérive, pré-vol de
    conformité par modèle. Mode `shadow` → canary → défaut.
 
@@ -654,6 +663,23 @@ tokens?, taskKey? }`, plus `summarizeTrajectory()` (histogramme par outil,
   amont), `dynamic` (le reste). C'est ce qui décide, par tâche, `stable` /
   `noisy` / `judgment` — et ce qui interdit de compiler une écriture
   irréversible dont un argument est `dynamic`.
+- **Chaînes droites**, ce qui rend « 5 appels deviennent 1 » mécanique : une
+  suite maximale d'appels consécutifs dont **chaque** argument est `constant`,
+  `user_input`, ou attribuable de façon unique à la sortie d'un appel plus haut
+  dans la même suite, est une ligne droite et peut devenir un seul script. Un
+  seul argument `dynamic` casse la chaîne, et c'est le garde-fou : un argument
+  `dynamic` signifie que le modèle a regardé un résultat intermédiaire avant de
+  décider, donc fusionner lui retirerait cette décision. Le ledger sort aussi
+  les **répétitions** — même appel, mêmes arguments canoniques, deux fois dans
+  un run ou dans tous les runs. Découverte de schéma et relectures : c'est la
+  moitié des appels supprimables que TraceCompiler mesure.
+- **Candidats de vérification**, ce qui rend « un script vaudrait mieux qu'un
+  modèle » détectable : une tâche où, sur ≥ 3 runs, la trajectoire a la même
+  forme — une lecture ou une extraction, puis un tour de modèle **sans aucun
+  appel d'outil** qui produit un verdict court (un booléen, un compte, une
+  correspondance), puis `completeTask`. C'est une vérification faite de tête,
+  et un script la ferait plus vite et sans varier. Le ledger la **signale** ;
+  il ne décide rien : ce qui tranche est le rejeu (4.2).
 - **Vérité terrain d'un succès**, pour la dérivation des recettes : run
   `succeeded`, non-test, **et** livrable présent quand le playbook en déclare
   un, **et** aucune approbation rejetée, **et** aucune relance manuelle du
@@ -711,12 +737,17 @@ réutilisable. Elle se recalcule à chaque run et ne s'accumule pas.
 - **Contenu par tâche** (`Record<taskKey, TaskRecipe>`) :
   - `skillsInContext` : les fichiers de skills lus dans **≥ 2** des K runs
     (SKILL.md et références) → leurs corps sont rendus dans le prompt du run ;
-  - `code` : les cellules `python` du **dernier** run réussi, verbatim,
-    matérialisées en `recipes/<taskKey>/run-<n>.py` ; les littéraux qui
+  - `code` : le code `python` du **dernier** run réussi, matérialisé sous
+    `recipes/<taskKey>/`. Les appels formant une **chaîne droite** (4.1) sont
+    concaténés en un seul fichier exécutable d'un coup : c'est littéralement
+    « cinq appels d'outil deviennent un ». Ce qui n'est pas fusionnable reste
+    en blocs séparés et étiquetés, dans l'ordre, parce qu'entre deux blocs le
+    modèle avait regardé un résultat avant de décider. Les littéraux qui
     apparaissent dans le payload du trigger sont remplacés par des lectures de
     `/workspace/.fretik/run-params.json` (écrit par le harnais avec
-    `auth.json`), le reste est laissé tel quel — c'est le code qui a marché,
-    pas un script consolidé ;
+    `auth.json`) ; le reste est laissé tel quel — c'est le code qui a marché,
+    pas une réécriture. **Toute fusion passe la porte du rejeu** avant d'être
+    servie ;
   - `schemaSnapshot` : les sorties `describe_collection` / `whoami` du
     dernier run → `recipes/<taskKey>/schema.json`, tagué par le `version:` du
     SKILL du provider ;
@@ -779,18 +810,55 @@ réutilisable. Elle se recalcule à chaque run et ne s'accumule pas.
   doctrine « never transcribe tool output into another tool call » vaut pour
   le code aussi).
 
+#### La compilation déterministe des séquences, et sa porte
+
+C'est le cœur de « moins d'appels », et il n'y a aucun modèle dedans.
+
+**Ce qui est fusionné.** Les chaînes droites de 4.1, et rien d'autre. Une tâche
+qui a fait quinze lectures pour reconstruire à la main une jointure que le
+serveur savait faire produit quinze appels dont les arguments descendent tous
+des précédents : une chaîne droite, un fichier, un appel. Une tâche qui a fait
+deux lectures puis a choisi un dossier en fonction de ce qu'elle a vu a un
+argument `dynamic` au milieu : deux blocs, pas un. La règle décide seule, sans
+qu'on ait à deviner ce que le modèle « pensait ».
+
+**Ce qui est supprimé.** Les répétitions : le même appel avec les mêmes
+arguments deux fois dans un run, ou dans tous les runs. La découverte de schéma
+en est le cas majeur et elle a déjà son fichier ; la règle générale couvre le
+reste (relecture d'un même document, `whoami` répété, listing déjà obtenu).
+
+**La porte : le rejeu contre l'historique.** Avant qu'une fusion ou une
+suppression soit servie à un run, elle est exécutée avec les entrées des
+N derniers runs réussis et sa sortie est comparée à ce que ces runs avaient
+obtenu au même endroit. Identique, elle passe ; différente, elle est jetée sans
+autre forme de procès. C'est gratuit, déterministe, et ça ne demande ni juge
+modèle ni humain. C'est la porte d'ASI, où seulement 15,6 % des programmes
+candidats survivent : **un taux de rejet élevé est le signe que la porte
+travaille**, pas qu'elle est mal réglée. C'est aussi ce qui autorise, au palier
+suivant, un modèle à _proposer_ des optimisations sans jamais décider seul.
+
+**Trois limites à énoncer tout de suite.** Le rejeu n'existe qu'en lecture :
+une chaîne qui écrit n'est jamais fusionnée automatiquement, elle reste
+agentique ou devient une proposition à un humain. La règle def-use est
+conservatrice par construction : elle refusera des fusions qu'un humain
+trouverait évidentes, et c'est le bon compromis, parce que l'erreur inverse
+retire silencieusement une décision au modèle. Et le chiffre de 51 % d'appels
+supprimables de TraceCompiler vient d'un autre corpus que le nôtre : le palier
+0 mesure le nôtre avant qu'on construise quoi que ce soit.
+
 #### Paliers ultérieurs, conditionnés aux mesures
 
 La substance de la v1 (optimiseur, pitfalls, prélude, tâche sans LLM) reste
 la cible, mais chaque marche a une condition d'entrée chiffrée et un retour
 arrière :
 
-| palier                                  | condition d'entrée                                                                                                                                                                    | contenu                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | retour arrière                                                                                                                                                                                                |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **optimiseur LLM** (`assisted+`)        | les recettes verbatim plafonnent dans les chiffres des paliers 0-1 (steps qui ne baissent plus alors que des erreurs se répètent d'un run à l'autre)                                  | une passe LLM sur les **trajectoires brutes** (rôle `workflow-optimize`, à lier par mesure) qui émet des **deltas** — ≤ 5 pitfalls conditionnels (« quand X, faire Y ») citant chacun un `toolCallId` réel sinon rejetés, un script consolidé paramétré selon les liaisons pour les tâches `stable` — fusionnés par un curateur déterministe (jamais une réécriture) ; compteurs `applied` / `errorRecurred` par pitfall ; dédup mécanique par embedding, pas de porte LLM sur des lignes LLM ; validation statique des scripts (`ast.parse`, actions observées seulement, aucun littéral paramétrable en dur) ; recette versionnée avec parent ; état `converged` quand deux passes n'acceptent aucun delta     | rétrogradation à la recette dérivée v1 si le taux de succès des runs avec recette passe sous la baseline sur 10 runs                                                                                          |
-| **`scripted`** (prélude par le harnais) | ≥ 10 runs réussis au même `playbookHash`, ≥ 90 % de séquence d'actions identique, script sans écriture, ≥ 2 runs où l'agent l'a **exécuté lui-même** avec la forme de sortie attendue | le harnais exécute le script avant le tour où la tâche devient courante, **par le chemin du tool `python`** (bootstrap, JWT via `ensureSandboxAuthFile`, `maybePersistLargeOutput`, `consumeSandboxApprovalPending`) et non par un `runInSandbox` parallèle ; injecte une paire tool-call / tool-result synthétique (`tool-python`, `output-available`, le procédé de `buildSyntheticActivationReplayMessage`) **en queue** de l'historique, jamais mi-historique, sauvée avant le tour avec `workflowTurnIndex` ; `ensureSteeringMessage` passe d'un test sur le dernier message à un `find` par métadonnée ; cache adressé par contenu `(runId, taskKey, scriptHash, paramsHash)` pour l'idempotence du replay | échec de prélude (exception, sortie vide, forme inattendue) → `assisted` ce run-ci ; `r_fail > 0.5` sur les 4 derniers → recompilation ; ≤ 3 recompilations par `playbookHash` puis `disabled` + notification |
-| **`no-LLM`**                            | ≥ 50 runs `scripted` réussis, 0 échec de prélude, le script produit `summary` et `expectedOutput`, **clic humain** « Automatiser cette tâche »                                        | la tâche est fermée par le harnais sans tour modèle ; la tâche suivante voit la sortie dans son contexte ; l'agent reste le filet                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | tout échec → `scripted` ; changement de `playbookHash` ou de fingerprint → recette v1                                                                                                                         |
-| **niveau de raisonnement par tâche**    | à mesurer (latence par step sur les tâches `stable`)                                                                                                                                  | la recette propose un `reasoningLevel` par tâche, appliqué par le harnais au tour (`effectiveReasoningLevel`, `handlers/workflow.ts:515`) **seulement** quand toutes les tâches encore ouvertes sont `stable` (les tâches s'enchaînent dans un tour via `completeTask`), seulement pour **baisser**, seulement si `workflow.reasoningLevel` est null ; vérifier l'effet dans la trace, car la fonction renvoie `undefined` en silence au niveau par défaut ou sur une échelle à un seul barreau                                                                                                                                                                                                                  | désactivation par workflow                                                                                                                                                                                    |
+| palier                                                   | condition d'entrée                                                                                                                                                                                             | contenu                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | retour arrière                                                                                                                                                                                                |
+| -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **remplacer une vérification par du code** (`assisted+`) | ≥ 3 runs présentant le même candidat de vérification (4.1) ; ou des recettes verbatim qui plafonnent alors que les mêmes erreurs se répètent d'un run à l'autre                                                | une passe LLM sur les **trajectoires brutes** (rôle `workflow-optimize`, à lier par mesure) qui **propose** : (a) pour chaque candidat de vérification, une fonction Python produisant le même verdict à partir des mêmes entrées ; (b) ≤ 5 pitfalls conditionnels (« quand X, faire Y ») citant chacun un `toolCallId` réel, sinon rejetés ; (c) un script consolidé pour les tâches `stable` que la règle def-use n'a pas su fusionner seule. **Chaque proposition passe la porte du rejeu** et doit reproduire le verdict ou la sortie de CHAQUE run passé ; acceptée, elle démarre en `assisted`, c'est-à-dire offerte à l'agent qui décide de s'en servir. Deltas fusionnés par un curateur déterministe, jamais une réécriture ; compteurs `applied` / `errorRecurred` ; dédup mécanique par embedding, pas de porte LLM sur des lignes LLM ; validation statique (`ast.parse`, actions observées seulement, aucun littéral paramétrable en dur) ; recette versionnée avec parent ; `converged` quand deux passes n'acceptent aucun delta | rétrogradation à la recette dérivée v1 si le taux de succès des runs avec recette passe sous la baseline sur 10 runs                                                                                          |
+| **propositions de playbook**                             | une tâche dont les steps ne baissent pas et dont le ledger montre un motif connu : le même document relu puis extrait, un inventaire séparé de l'extraction, une tâche de jugement à qui on a soufflé `python` | l'optimiseur rédige un **diff proposé** des `instructions` ou des `toolHints` de cette tâche, affiché dans la carte « Optimisations » avec les runs qui le motivent, à la manière d'une pull request. **Jamais appliqué automatiquement** : le playbook est la spécification de l'équipe. C'est souvent le levier le plus fort et le moins cher, la doctrine du dépôt attribuant déjà les pires runs observés à des playbooks mal écrits plutôt qu'à des outils défaillants                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | l'humain ignore la proposition ; elle n'est pas reproposée tant qu'un nouveau run ne rapporte pas le même motif                                                                                               |
+| **`scripted`** (prélude par le harnais)                  | ≥ 10 runs réussis au même `playbookHash`, ≥ 90 % de séquence d'actions identique, script sans écriture, ≥ 2 runs où l'agent l'a **exécuté lui-même** avec la forme de sortie attendue                          | le harnais exécute le script avant le tour où la tâche devient courante, **par le chemin du tool `python`** (bootstrap, JWT via `ensureSandboxAuthFile`, `maybePersistLargeOutput`, `consumeSandboxApprovalPending`) et non par un `runInSandbox` parallèle ; injecte une paire tool-call / tool-result synthétique (`tool-python`, `output-available`, le procédé de `buildSyntheticActivationReplayMessage`) **en queue** de l'historique, jamais mi-historique, sauvée avant le tour avec `workflowTurnIndex` ; `ensureSteeringMessage` passe d'un test sur le dernier message à un `find` par métadonnée ; cache adressé par contenu `(runId, taskKey, scriptHash, paramsHash)` pour l'idempotence du replay                                                                                                                                                                                                                                                                                                                                | échec de prélude (exception, sortie vide, forme inattendue) → `assisted` ce run-ci ; `r_fail > 0.5` sur les 4 derniers → recompilation ; ≤ 3 recompilations par `playbookHash` puis `disabled` + notification |
+| **`no-LLM`**                                             | ≥ 50 runs `scripted` réussis, 0 échec de prélude, le script produit `summary` et `expectedOutput`, **clic humain** « Automatiser cette tâche »                                                                 | la tâche est fermée par le harnais sans tour modèle ; la tâche suivante voit la sortie dans son contexte ; l'agent reste le filet                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | tout échec → `scripted` ; changement de `playbookHash` ou de fingerprint → recette v1                                                                                                                         |
+| **niveau de raisonnement par tâche**                     | à mesurer (latence par step sur les tâches `stable`)                                                                                                                                                           | la recette propose un `reasoningLevel` par tâche, appliqué par le harnais au tour (`effectiveReasoningLevel`, `handlers/workflow.ts:515`) **seulement** quand toutes les tâches encore ouvertes sont `stable` (les tâches s'enchaînent dans un tour via `completeTask`), seulement pour **baisser**, seulement si `workflow.reasoningLevel` est null ; vérifier l'effet dans la trace, car la fonction renvoie `undefined` en silence au niveau par défaut ou sur une échelle à un seul barreau                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | désactivation par workflow                                                                                                                                                                                    |
 
 **Pré-vol par modèle.** Au changement de modèle de l'équipe ou du workflow,
 le fingerprint change et la recette repart de zéro ; avec l'optimiseur, une
@@ -1026,7 +1094,9 @@ uniforme ; tout est journalisé.
 - **Recettes** — page workflow : dans la pile, une carte « Optimisations »
   entre `WorkflowTriggerEditor` et la grille des runs (recette du dernier run :
   par tâche, ce qui a été rendu et les fichiers, lisibles ; runs sources ;
-  métriques avant / après ; actions **désactiver** / **réinitialiser**) ; le
+  métriques avant / après ; actions **désactiver** / **réinitialiser**) ; les
+  **propositions de playbook** y apparaissent comme des diffs à accepter ou à
+  ignorer, avec les runs qui les motivent, jamais appliquées seules ; le
   niveau (`off` / `shadow` / `on`) en troisième `BaseSection` de
   `SettingsSlideover`. Le bouton « Automatiser cette tâche » (palier `no-LLM`)
   vivra dans ce tableau.
@@ -1161,15 +1231,18 @@ chiffré écrit _avant_ (même discipline que le gate des modèles :
 | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- | -------------- |
 | **0 — Mesurer**                                       | `extractTrajectory` + `summarizeTrajectory` (module pur, tests unitaires sur des transcripts réels anonymisés, reprend `evals/tool-efficiency.ts`) ; `WorkflowRunUsageSchema` étendu + `onWorkflowStepEnd` ; scores Langfuse ; `workflows:profile` ; runs échoués inclus ; classification des liaisons ; vérité terrain du succès ; baseline chiffrée du workflow PbyP et d'un second workflow sans external app                                         | ~1 sem           | —              |
 | **1 — Recettes dérivées + préchauffage**              | `prepareSandbox` en parallèle du recall ; recette dérivée sans LLM à `createWorkflowRun`, `workflow_runs.recipe` ; corps rendus dans `<workflow_context>` avec plafond ; `recipes/` matérialisés + préfixe `read` ; phrase `<tool_routing>` + suite `doctrine` + seed ; `shadow` → `on` par workflow (`BaseSection`) ; détail `RunTimeline` ; harnais de run headless + `evals:workflow-recipes`                                                         | 2-3 sem          | 0              |
+| **1b — Fusion des appels et porte de rejeu**          | détection des chaînes droites et des répétitions dans le ledger (règle def-use, aucun modèle) ; émission d'un fichier fusionné par chaîne dans `recipes/` ; **rejeu du candidat sur les entrées des N derniers runs réussis**, comparaison à leur sortie, rejet silencieux en cas d'écart ; jamais de fusion d'une chaîne qui écrit ; métriques « appels fusionnés » et « appels supprimés » par run                                                     | 1-2 sem          | 1              |
 | **2 — Skills apprises v0 + notes d'app + visibilité** | brouillons `team_uploaded` désactivés (`sourceUrl = learned:`), section « Proposées par l'assistant », cartes « propose / a noté » et « appliqué », flags Utile / Trompeur, `skill.applied` ; notes `learned/howto/` (runs + sondes opt-in), section « Appris dans cette équipe » servie par `read-skill-file.ts`, filtre Mémoire ; politique `learning` ; événements d'audit ; `evals:procedures` en paires avec / sans ; non-régression `evals:recall` | 3 sem            | 0, 1           |
 | **3 — Optimiseur LLM et gouvernance v1**              | si les recettes verbatim plafonnent : deltas, pitfalls, compteurs, `converged`, porte d'admission ; `source = 'learned'`, `activated_at`, `skill_history`, versions / diff ; export d'audit ; ré-examen aléatoire                                                                                                                                                                                                                                        | 3 sem            | mesures de 1-2 |
 | **4 — Exécution par le harnais**                      | `scripted` (prélude via le chemin `python`, idempotence de `ensureSteeringMessage`, cache adressé par contenu), niveau de raisonnement par tâche, `no-LLM` avec clic humain ; boucle mainteneurs `skills:insights-report`                                                                                                                                                                                                                                | 2-3 sem          | 3              |
 
-Total 11-13 semaines pour une personne ; les paliers 3 et 4 sont conditionnels
+Total 12-15 semaines pour une personne ; les paliers 3 et 4 sont conditionnels
 et peuvent ne jamais être construits si les chiffres des paliers 1-2 suffisent.
 Ordre de valeur : le palier 1 capture l'essentiel du gain sur les workflows
 récurrents (plus de redécouverte de schéma, plus de relecture de skills, le
-code du run précédent sous la main) avec un risque très faible ; le palier 2
+code du run précédent sous la main) avec un risque très faible ; le palier 1b
+est celui qui répond directement à « cinq appels devraient en faire un », et il
+le fait sans modèle ; le palier 2
 apporte la visibilité et le chat ; les suivants ne se justifient que par la
 mesure.
 
@@ -1206,6 +1279,15 @@ mesure.
   d'accepter une gate qu'ils ne comprenaient pas ; réservée au partagé et à
   l'exécutable. **Apprentissage silencieux** : violation d'attente mesurée
   (CHI 2026), dossier invisible (critique de Willison).
+- **Fusionner des appels sans porte de rejeu**, à la confiance : c'est le
+  défaut explicite de TraceCompiler, qui supprime les appels de découverte de
+  schéma sans versioning et transforme un changement d'API en comportement
+  faux et silencieux. Une fusion non rejouée est une régression qui attend son
+  heure.
+- **Laisser un modèle décider qu'un pas est déterministe** : il ne le sait pas
+  mieux que la règle def-use, et il se trompe dans le sens dangereux — retirer
+  une décision que le modèle prenait vraiment. Le modèle propose, l'historique
+  juge.
 - **Retrait agressif des skills peu utiles** : mesuré pire que pas de
   bibliothèque (Library Drift).
 - **Une porte LLM ADD / UPDATE / NOOP sur des lignes écrites par un LLM** :

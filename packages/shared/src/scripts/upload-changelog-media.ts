@@ -99,6 +99,14 @@ const [slug, ...files] = args;
 
 const PRUNE = flags.has("--prune");
 const CONFIRM_DELETE = flags.has("--delete");
+const ALLOW_DEV_BUCKET = flags.has("--target=dev");
+
+/**
+ * Mirrors `SAFE_DB_NAME_PATTERN` in `lib/operator-guard.ts`: a `dev`/`test`/`ci`
+ * word at either end of the name. Matching a bare substring is how a safe-list
+ * stops being one.
+ */
+const DISPOSABLE_BUCKET = /^(dev|test|ci)[-_]|[-_](dev|test|ci)$/;
 
 // A function DECLARATION, not the arrow the rest of this file uses: a
 // `never`-returning arrow only narrows the control flow after it when the
@@ -121,6 +129,41 @@ if (!SLUG_PATTERN.test(slug)) {
   );
 }
 if (!PRUNE && files.length === 0) usage("Give me at least one file to upload.");
+
+// ============================================================ //
+// WHICH BUCKET                                                  //
+// ============================================================ //
+
+/**
+ * The bucket is announced, and a disposable one is refused.
+ *
+ * This is the only script here whose output is COMMITTED: the URL it prints
+ * goes into an entry, into a pull request, and into production. A laptop's env
+ * points at `dev-files.fretik.com`, and nothing downstream looks wrong — the
+ * URL is https, it resolves, the image renders in review — so the mistake only
+ * surfaces the day someone empties the dev bucket and every customer's
+ * announcement loses its pictures.
+ *
+ * The same Scaleway credentials reach both buckets, so the fix is one
+ * environment variable rather than a second set of keys.
+ */
+const bucket = process.env.S3_BUCKET ?? "";
+
+console.log(`\n  bucket: ${bucket}`);
+
+if (DISPOSABLE_BUCKET.test(bucket) && !ALLOW_DEV_BUCKET) {
+  console.error(
+    `\n  ${bucket} is a disposable bucket, and this URL gets committed.\n`,
+  );
+  console.error("  Re-run against production:\n");
+  console.error(
+    `    S3_BUCKET=files.fretik.com bun run changelog:media ${slug} <file…>\n`,
+  );
+  console.error(
+    "  Or pass --target=dev to exercise the pipeline without publishing.\n",
+  );
+  process.exit(1);
+}
 
 // ============================================================ //
 // PRUNE — retiring an entry                                     //
@@ -287,14 +330,44 @@ if (uploaded.length > 0) {
   console.log(
     `\n  Paste into every app/changelog/entries/${slug}/<locale>.md:\n`,
   );
+  /**
+   * A still needs BOTH themes, so `foo-light.png` and `foo-dark.png` come back
+   * as ONE block rather than two. Pairing on the filename because that is what
+   * a capture script already produces, and an author who has to hand-match two
+   * URLs out of a list of eight will eventually cross them.
+   */
+  const pairKey = (key: string): string =>
+    key.replace(/-(light|dark)-[0-9a-f]{10}\.\w+$/, "");
+
+  const printed = new Set<string>();
+
   for (const item of uploaded) {
-    // An image is plain markdown — it already renders with a frame and a zoom
-    // lightbox. Only a clip needs the MDC block, because raw <video> is
-    // stripped by the renderer's security plugin.
+    if (printed.has(item.key)) continue;
+    printed.add(item.key);
+
+    const twin = uploaded.find(
+      (other) =>
+        other.key !== item.key &&
+        pairKey(other.key) === pairKey(item.key) &&
+        /-dark-/.test(other.key) !== /-dark-/.test(item.key),
+    );
+    if (twin) printed.add(twin.key);
+
+    const light = /-dark-/.test(item.key) ? twin?.url : item.url;
+    const dark = /-dark-/.test(item.key) ? item.url : twin?.url;
+
+    if (item.kind === "video") {
+      console.log(
+        `::demo{light="${item.url}" alt="describe what the clip shows"}`,
+      );
+      continue;
+    }
     console.log(
-      item.kind === "image"
-        ? `![describe what is on screen](${item.url})`
-        : `::demo{src="${item.url}" alt="describe what the clip shows"}`,
+      dark
+        ? `::shot{light="${light ?? ""}" dark="${dark}" alt="describe what is on screen"}`
+        : // No twin: say so rather than emitting a half-block that renders the
+          // same picture in both themes and looks deliberate.
+          `::shot{light="${item.url}" dark="MISSING — capture this frame in dark mode too" alt="describe what is on screen"}`,
     );
   }
   console.log("");

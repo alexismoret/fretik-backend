@@ -35,6 +35,7 @@ import packagejson from "../package.json";
 import { accountRoutes } from "./handlers/account";
 import { aiMemoryRoutes } from "./handlers/ai-memory";
 import { approvalsRoutes } from "./handlers/approvals";
+import { changelogRoutes } from "./handlers/changelog";
 import { chatbotContextRoutes } from "./handlers/chatbot-context";
 import { collectionRecordRoutes } from "./handlers/collection-records";
 import { collectionSharingRoutes } from "./handlers/collection-sharing";
@@ -145,6 +146,8 @@ app.route("/team-settings", teamSettingsRoutes);
 app.route("/workflows", workflowRoutes);
 app.route("/pages", pageRoutes);
 app.route("/pins", pinRoutes);
+// Read receipts only — the product updates themselves ship with the client.
+app.route("/changelog", changelogRoutes);
 app.route("/forms", publicFormRoutes);
 // Anonymous ingress for published pages — no auth, always answers 200.
 app.route("/p", publicPageRoutes);

@@ -4,9 +4,11 @@
  *
  *     bun run changelog:media 2026-09-15-record-relations shots/*.png
  *     bun run changelog:media 2026-09-15-record-relations demo.mp4
+ *     bun run changelog:media --prune 2026-09-15-record-relations [--delete]
  *
  * Prints, for every file, the public URL and the markdown line to paste into
- * `app/changelog/entries/<slug>/{en,fr}.md` in the frontend repo. That repo is
+ * `app/changelog/entries/<slug>/<locale>.md` in the frontend repo — the same
+ * URL in every language, since the media is shared. That repo is
  * where the updates live and where they get reviewed; this script exists only
  * because the bytes cannot live in git — a handful of screen recordings would
  * outweigh the entire history.
@@ -33,18 +35,27 @@
  * to the avatars and org logos the app already serves straight from the
  * bucket. `scripts/sweep-orphan-s3.ts` enumerates only the prefixes it has a
  * rule for, so it neither deletes nor reports these — which is right: their
- * owner is a file in another repository, not a row it could look up.
+ * owner is a file in another repository, not a row it could look up. The
+ * corollary is that `--prune` is the ONLY thing that ever removes them, so
+ * retiring an old update means running it.
  *
- * No database, so no `assertOperatorTarget`: this writes new immutable objects
- * under a prefix nothing else reads, and there is one bucket. It refuses to
- * overwrite a DIFFERENT object at the same key regardless.
+ * No database, so no `assertOperatorTarget`: the upload path writes new
+ * immutable objects under a prefix nothing else reads, and there is one
+ * bucket. `--prune` does destroy, which is why it reports first and needs
+ * `--delete` to act.
  */
 
 import { fileTypeFromBuffer } from "file-type";
 import { basename, extname } from "node:path";
 import process from "node:process";
 
-import { objectExists, publicUrl, putObject } from "../lib/s3";
+import {
+  deleteObjects,
+  listObjects,
+  objectExists,
+  publicUrl,
+  putObject,
+} from "../lib/s3";
 
 // ============================================================ //
 // LIMITS                                                        //
@@ -80,8 +91,14 @@ const SLUG_PATTERN = /^[a-z0-9]+(?:[-.][a-z0-9]+)*$/;
 // ARGUMENTS                                                     //
 // ============================================================ //
 
+const flags = new Set(
+  process.argv.slice(2).filter((arg) => arg.startsWith("--")),
+);
 const args = process.argv.slice(2).filter((arg) => !arg.startsWith("--"));
 const [slug, ...files] = args;
+
+const PRUNE = flags.has("--prune");
+const CONFIRM_DELETE = flags.has("--delete");
 
 // A function DECLARATION, not the arrow the rest of this file uses: a
 // `never`-returning arrow only narrows the control flow after it when the
@@ -90,6 +107,7 @@ const [slug, ...files] = args;
 function usage(message: string): never {
   console.error(`\n  ${message}\n`);
   console.error("  Usage: bun run changelog:media <slug> <file…>");
+  console.error("         bun run changelog:media --prune <slug> [--delete]");
   console.error(
     "  e.g.:  bun run changelog:media 2026-09-15-record-relations shots/*.png\n",
   );
@@ -102,7 +120,49 @@ if (!SLUG_PATTERN.test(slug)) {
     `"${slug}" is not a slug. Use the entry's directory name in the frontend repo, e.g. 2026-09-15-record-relations.`,
   );
 }
-if (files.length === 0) usage("Give me at least one file to upload.");
+if (!PRUNE && files.length === 0) usage("Give me at least one file to upload.");
+
+// ============================================================ //
+// PRUNE — retiring an entry                                     //
+// ============================================================ //
+
+/**
+ * Delete everything stored for one entry, for when its directory is removed
+ * from the frontend repo and the bytes have nothing left pointing at them.
+ *
+ * Its own mode rather than a separate script, and reporting before deleting,
+ * because this is the one operation here that destroys something: everything
+ * else writes new immutable objects. `--prune` alone lists, `--prune --delete`
+ * removes.
+ *
+ * Nothing else reaps these. `sweep-orphan-s3.ts` decides ownership by looking
+ * up a row in Postgres, and the owner of a changelog object is a DIRECTORY IN
+ * ANOTHER REPOSITORY — so it enumerates only the prefixes it has a rule for
+ * and never touches this one. Retiring an entry means running this.
+ */
+if (PRUNE) {
+  const prefix = `public/changelog/${slug}/`;
+  const keys = await listObjects(prefix);
+
+  if (keys.length === 0) {
+    console.log(`\n  Nothing stored under ${prefix}\n`);
+    process.exit(0);
+  }
+
+  console.log(`\n  ${keys.length.toString()} object(s) under ${prefix}:\n`);
+  for (const key of keys) console.log(`    ${key}`);
+
+  if (!CONFIRM_DELETE) {
+    console.log(
+      "\n  Nothing deleted. Re-run with --delete once the entry directory is gone from the frontend repo.\n",
+    );
+    process.exit(0);
+  }
+
+  await deleteObjects(keys);
+  console.log(`\n  Deleted ${keys.length.toString()} object(s).\n`);
+  process.exit(0);
+}
 
 // ============================================================ //
 // PER-FILE PIPELINE                                             //
@@ -223,7 +283,10 @@ for (const path of files) {
 }
 
 if (uploaded.length > 0) {
-  console.log(`\n  Paste into app/changelog/entries/${slug}/{en,fr}.md:\n`);
+  // The same lines go into EVERY language's body — only the alt text changes.
+  console.log(
+    `\n  Paste into every app/changelog/entries/${slug}/<locale>.md:\n`,
+  );
   for (const item of uploaded) {
     // An image is plain markdown — it already renders with a frame and a zoom
     // lightbox. Only a clip needs the MDC block, because raw <video> is

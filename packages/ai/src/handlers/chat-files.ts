@@ -1,5 +1,6 @@
 import db from "@fretik/shared/db";
 import { aiChatFiles } from "@fretik/shared/db/schema";
+import { mimeFromFilename } from "@fretik/shared/file-types";
 import {
   authMiddleware,
   type HonoLoggedAppType,
@@ -7,6 +8,7 @@ import {
 import {
   buildSessionKey,
   listSessionPaths,
+  readSessionFile,
 } from "@fretik/shared/lib/chatbot-session-storage";
 import {
   forbidden,
@@ -24,6 +26,7 @@ import {
   listConversationWorkspaceFiles,
   resolveDriveState,
 } from "@fretik/shared/services/chat-files/workspace-files";
+import { getSessionFilePreviewSource } from "@fretik/shared/services/documents/preview";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { and, desc, eq, ne } from "drizzle-orm";
 import {
@@ -541,6 +544,34 @@ chatFilesRoutes.get("/conversation/:id/files/:filename/download", async (c) => {
       }
       s3RelativePath = match;
     }
+  }
+
+  // `?preview=1` serves whatever a VIEWER should render for this file when
+  // its own bytes are not it: a LibreOffice rendering for legacy Office,
+  // OpenDocument, RTF and TIFF; the extracted markdown for mail. The registry
+  // decides which, so an arbitrary file cannot be used to make the service
+  // spend a Gotenberg call on it — a type that renders from its own bytes
+  // answers `{ kind: null, url: null }` and the caller falls back.
+  //
+  // Named from the RESOLVED path rather than the route param: the extension
+  // is what tells LibreOffice which importer to load, and `?path=` is the
+  // parameter that actually decides which bytes are read.
+  if (c.req.query("preview") === "1") {
+    const previewName = s3RelativePath.split("/").pop() ?? filename;
+    const bytes = await readSessionFile(conversationId, s3RelativePath);
+    if (!bytes || bytes.length === 0) {
+      return throwHttpError(404, notFound("File not found"));
+    }
+
+    const source = await getSessionFilePreviewSource({
+      conversationId,
+      filename: previewName,
+      mimeType: mimeFromFilename(previewName),
+      bytes,
+      sidecarPath: `${WORKSPACE_DIRS.attachments}/${sidecarFilename(previewName)}`,
+    });
+
+    return c.json(source);
   }
 
   // `?disposition=attachment` signs a `Content-Disposition` into the

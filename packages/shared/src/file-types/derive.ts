@@ -290,6 +290,53 @@ export const viewerFor = (
   return isTextMime(mimeType) ? "text" : "none";
 };
 
+/**
+ * Heuristic: are these bytes UTF-8 text (vs binary)? A NUL byte in the
+ * head is a reliable binary tell; otherwise we decode and reject only
+ * when replacement chars dominate. This is what separates source code,
+ * markup and config files — which carry no magic bytes at all — from an
+ * unknown binary.
+ *
+ * Lives here rather than beside the rest of detection because the
+ * frontend needs it too (see `viewerForBytes`), and `detect.ts` is kept
+ * out of the browser bundle.
+ */
+export const isLikelyUtf8Text = (bytes: Uint8Array): boolean => {
+  if (bytes.length === 0) return true;
+  const head = bytes.subarray(0, 8192);
+  if (head.includes(0)) return false; // NUL → binary
+  const text = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+  let bad = 0;
+  for (const ch of text) if (ch === "�") bad += 1;
+  return bad / text.length < 0.01;
+};
+
+/**
+ * `viewerFor`, for a caller that already holds the bytes — which the
+ * viewer always does, since it has to download the file before it can
+ * render it.
+ *
+ * The one thing the bytes settle that a name and a MIME cannot: a file
+ * whose extension nobody has catalogued. A workflow that writes
+ * `manifest.f4k` produces plain text under a private extension, and
+ * every name-based lookup in this file answers `application/octet-stream`
+ * → `none` → "preview not available", for a file the browser could show
+ * verbatim. Sniffing the head settles it.
+ *
+ * Only ever an UPGRADE from `none`. A type the registry knows keeps the
+ * renderer the registry chose — this never second-guesses a real answer,
+ * and a binary with no signature stays unpreviewable.
+ */
+export const viewerForBytes = (
+  bytes: Uint8Array,
+  mimeType: string,
+  filename?: string,
+): ViewerStrategy => {
+  const strategy = viewerFor(mimeType, filename);
+  if (strategy !== "none") return strategy;
+  return isLikelyUtf8Text(bytes) ? "text" : "none";
+};
+
 export const agentAccessFor = (
   mimeType: string,
   filename?: string,

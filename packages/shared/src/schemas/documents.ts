@@ -122,6 +122,21 @@ export const UploadOutcomeSchema = z.enum([
   "alreadyPresent",
 ]);
 
+/**
+ * What a viewer should fetch for a document whose own bytes it cannot
+ * render: a LibreOffice `pdf` rendering (legacy Office, OpenDocument,
+ * RTF, TIFF) or the extracted markdown `sidecar` (mail).
+ *
+ * `kind: null` means the document renders from its own bytes and the
+ * viewer should use `fileUrl`. A non-null `kind` with a null `url` means
+ * this file does need a rendition and there is not one yet — still
+ * processing, or extraction failed. Both are ordinary states, not errors.
+ */
+export const DocumentPreviewSourceSchema = z.object({
+  kind: z.enum(["pdf", "sidecar"]).nullable(),
+  url: z.url().nullable(),
+});
+
 export const DocumentVersionDownloadSchema = z.object({
   /** Presigned, short-lived, and marked as an attachment. */
   url: z.url(),

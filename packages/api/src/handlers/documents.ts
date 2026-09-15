@@ -13,6 +13,7 @@ import {
   AuthoredContentResponseSchema,
   bodyIdListSchema,
   CreateAuthoredDocumentSchema,
+  DocumentPreviewSourceSchema,
   DocumentResponseSchema,
   DocumentVersionDownloadSchema,
   DocumentVersionSchema,
@@ -45,6 +46,7 @@ import {
 import { createAuthoredDocument } from "@fretik/shared/services/documents/authored/create";
 import { deleteDocuments } from "@fretik/shared/services/documents/delete";
 import { listRecentDocuments } from "@fretik/shared/services/documents/list-recent";
+import { getDocumentPreviewSource } from "@fretik/shared/services/documents/preview";
 import { streamUploadProgress } from "@fretik/shared/services/documents/progress";
 import { reextractDocument } from "@fretik/shared/services/documents/reextract";
 import {
@@ -391,6 +393,38 @@ const restoreDocumentVersionRoute = createRoute({
         "application/json": { schema: SaveAuthoredContentResponseSchema },
       },
       description: "Version restored",
+    },
+    ...responseNotFoundSchema,
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+/**
+ * -- GET A DOCUMENT'S PREVIEW SOURCE
+ * --
+ * Its own route rather than a field on the details payload: the first
+ * request for a convertible file runs a LibreOffice conversion, and a
+ * details response carrying breadcrumbs and field values has no business
+ * waiting on Gotenberg — or failing with it. The viewer asks for this
+ * separately and shows its own spinner.
+ */
+const getDocumentPreviewSourceRoute = createRoute({
+  method: "get",
+  path: "/{id}/preview-source",
+  summary: "Get what a viewer should render for a document",
+  description:
+    "A short-lived link to what the viewer should fetch when a document's own bytes cannot be rendered in a browser: a PDF rendering (legacy Office, OpenDocument, RTF, TIFF) or the extracted markdown sidecar (mail). `kind` is null for a type that renders from its own bytes.",
+  tags: ["Documents"],
+  request: {
+    params: paramsIdSchema,
+  },
+  responses: {
+    200: {
+      content: {
+        "application/json": { schema: DocumentPreviewSourceSchema },
+      },
+      description: "The preview source, or nulls when none is needed",
     },
     ...responseNotFoundSchema,
     ...responseForbiddenSchema,
@@ -775,6 +809,25 @@ documentRoutes.openapi(getDocumentDetailsRoute, async (c) => {
     },
     200,
   );
+});
+
+/**
+ * -- GET A DOCUMENT'S PREVIEW SOURCE
+ * --
+ * For a convertible type this renders on the first request and serves the
+ * cached object thereafter; for mail it points at the markdown the
+ * extraction pipeline already wrote.
+ */
+documentRoutes.openapi(getDocumentPreviewSourceRoute, async (c) => {
+  const team = c.get("team");
+  if (!team) {
+    return c.json(teamRequired(), 403);
+  }
+
+  const { id } = c.req.valid("param");
+  const source = await getDocumentPreviewSource({ id, teamId: team.id });
+
+  return c.json(source, 200);
 });
 
 export { documentRoutes };

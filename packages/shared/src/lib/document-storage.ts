@@ -61,6 +61,35 @@ export const buildDocumentSidecarKey = (documentId: string): string =>
   `${DOCUMENTS_PREFIX}/${documentId}.md`;
 
 /**
+ * Prefix under which this document's PDF renditions live — the bytes
+ * behind the `pdf-converted` viewer strategy (legacy Office,
+ * OpenDocument, RTF, TIFF).
+ *
+ * Under `documents/{documentId}` like the original, the thumbnail and
+ * the sidecar, and for the same reason: everything a document owns has
+ * to go when the document goes, and has to be attributable to its team
+ * when we start counting stored bytes. A rendition keyed by content hash
+ * alone would be cheaper — one render shared by every copy of the same
+ * file — and would belong to nobody, so nothing could ever delete it.
+ */
+export const buildDocumentPreviewPdfPrefix = (documentId: string): string =>
+  `${DOCUMENTS_PREFIX}/${documentId}-preview-`;
+
+/**
+ * The rendition key for one exact version of a document's bytes.
+ *
+ * The hash is IN the key, so a document whose bytes are replaced or
+ * restored cannot serve the previous version's rendering: different
+ * bytes, different key, and the stale object is reaped by prefix the
+ * next time the document is written or deleted.
+ */
+export const buildDocumentPreviewPdfKey = (
+  documentId: string,
+  fileHash: string,
+): string =>
+  `${buildDocumentPreviewPdfPrefix(documentId)}${fileHash.slice(0, 16)}.pdf`;
+
+/**
  * Whether a thumbnail object exists for this document — a presigned URL is
  * signed locally and says nothing about the object being there, so handing
  * one out for bytes that were never written renders a broken image where

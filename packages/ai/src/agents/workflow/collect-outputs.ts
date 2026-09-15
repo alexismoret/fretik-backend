@@ -1,5 +1,6 @@
 import type { WorkflowRunOutput } from "@fretik/shared/schemas/workflows";
 import { getConversationMessages } from "@fretik/shared/services/ai/messages";
+import { presentedFilesInMessages } from "@fretik/shared/services/chat-files/presented-files";
 import type { UIMessage } from "ai";
 
 /**
@@ -18,19 +19,12 @@ import type { UIMessage } from "ai";
  * uses (`/chatbot-files/conversation/:id/files/:name/download?path=`), so no
  * new serving path is introduced — team ownership is checked there via the run
  * conversation's teamId.
+ *
+ * The scan itself lives in `@fretik/shared/services/chat-files/presented-files`
+ * because the chat's own file panel asks the same question of the same
+ * transcript — which files did the agent hand over, as opposed to leave lying
+ * around. Two readings of one signal had no business being two parsers.
  */
-
-const stringField = (obj: object, key: string): string | undefined => {
-  if (!(key in obj)) return undefined;
-  const value: unknown = Reflect.get(obj, key);
-  return typeof value === "string" ? value : undefined;
-};
-
-const numberField = (obj: object, key: string): number | undefined => {
-  if (!(key in obj)) return undefined;
-  const value: unknown = Reflect.get(obj, key);
-  return typeof value === "number" ? value : undefined;
-};
 
 /**
  * Extract every `presentFiles` deliverable from a run's conversation, deduped
@@ -47,39 +41,17 @@ export const collectRunOutputs = async (
 ): Promise<WorkflowRunOutput[]> => {
   const persisted = await getConversationMessages(conversationId);
   // Current-turn messages last so their state wins in the by-path dedup.
-  const messages = [...persisted, ...currentTurnMessages];
-  const byPath = new Map<string, WorkflowRunOutput>();
+  const presented = presentedFilesInMessages([
+    ...persisted,
+    ...currentTurnMessages,
+  ]);
 
-  for (const message of messages) {
-    for (const part of message.parts) {
-      if (part.type !== "tool-presentFiles") continue;
-      if (!("output" in part)) continue;
-      const output: unknown = part.output;
-      if (output === null || typeof output !== "object") continue;
-      if (!("files" in output)) continue;
-      const files: unknown = output.files;
-      if (!Array.isArray(files)) continue;
-
-      for (const fileRaw of files) {
-        // `Array.isArray` widens to `any[]`; re-bind to `unknown` and narrow.
-        const file: unknown = fileRaw;
-        if (file === null || typeof file !== "object") continue;
-        const filename = stringField(file, "filename");
-        const filePath = stringField(file, "path");
-        if (filename === undefined || filePath === undefined) continue;
-        const mimeType = stringField(file, "mimeType");
-        const sizeBytes = numberField(file, "size");
-        byPath.set(filePath, {
-          label: filename.slice(0, 120),
-          filePath: filePath.slice(0, 500),
-          ...(mimeType !== undefined
-            ? { mimeType: mimeType.slice(0, 150) }
-            : {}),
-          ...(sizeBytes !== undefined ? { sizeBytes } : {}),
-        });
-      }
-    }
-  }
-
-  return [...byPath.values()];
+  return [...presented.values()].map((file) => ({
+    label: file.filename.slice(0, 120),
+    filePath: file.path.slice(0, 500),
+    ...(file.mimeType !== undefined
+      ? { mimeType: file.mimeType.slice(0, 150) }
+      : {}),
+    ...(file.size !== undefined ? { sizeBytes: file.size } : {}),
+  }));
 };

@@ -389,7 +389,12 @@ export const processDocument = async (
   } finally {
     if (ephemeralPreExtractKey) {
       const keyToDelete = ephemeralPreExtractKey;
-      deleteFilesFromS3([keyToDelete]).catch((err: unknown) => {
+      // AWAITED. Fire-and-forget left the object behind whenever the worker
+      // exited between the pre-extract call returning and this promise being
+      // scheduled — and nothing reads the `x-amz-meta-temporary` marker these
+      // are written with, so a leaked one is never reaped. The cost is one
+      // DELETE on a path that has just spent minutes in OCR.
+      await deleteFilesFromS3([keyToDelete]).catch((err: unknown) => {
         console.warn(
           `[document-processing] Failed to delete ephemeral pre-extract key ${keyToDelete}:`,
           err,

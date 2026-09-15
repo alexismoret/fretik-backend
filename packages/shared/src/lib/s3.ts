@@ -158,6 +158,29 @@ export const getObjectBytes = async (
 };
 
 /**
+ * Whether an object is present, as a HEAD — no body crosses the wire.
+ *
+ * This is what a cache lookup wants. `getObjectBytes` answers the same
+ * question by downloading the object, which for a cached render of a
+ * 200-page deck means pulling megabytes in order to learn a boolean.
+ *
+ * A transient fault answers `false`, so the caller re-derives content it
+ * already had: wasteful, never wrong. The inverse default would serve a
+ * presigned URL for an object that is not there.
+ */
+export const objectExists = async (key: string): Promise<boolean> => {
+  try {
+    return await s3.file(key).exists();
+  } catch (err) {
+    console.warn(
+      `[s3] objectExists failed for ${key}:`,
+      err instanceof Error ? err.message : err,
+    );
+    return false;
+  }
+};
+
+/**
  * Server-side object copy within the bucket — the bytes never transit the
  * caller's process. Used to hand a chat-file attachment off to the Drive
  * pipeline (chatbot Save-on-drive) without downloading + re-uploading it

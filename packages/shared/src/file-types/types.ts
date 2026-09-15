@@ -43,6 +43,13 @@ export type ThumbnailStrategy =
 /** Which frontend viewer renders the file. */
 export type ViewerStrategy =
   | "pdf"
+  /**
+   * No browser renderer exists for the format, but LibreOffice reads it.
+   * The frontend asks the API for a PDF rendition (converted once, then
+   * cached) and hands it to the `pdf` viewer — one branch, two sources.
+   * Legacy Office, OpenDocument, RTF and TIFF all land here.
+   */
+  | "pdf-converted"
   | "docx"
   | "xlsx"
   | "pptx"
@@ -51,6 +58,8 @@ export type ViewerStrategy =
   | "code" // syntax-highlighted code block
   | "text"
   | "image"
+  /** Headers / body / attachment list, read from the markdown sidecar. */
+  | "email"
   | "html-iframe" // sandboxed srcdoc iframe, scripts disabled
   | "none";
 

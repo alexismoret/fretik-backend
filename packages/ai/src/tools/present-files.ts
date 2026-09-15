@@ -1,4 +1,5 @@
 import { mimeFromFilename } from "@fretik/shared/file-types";
+import { resolveFileType } from "@fretik/shared/file-types/detect";
 import { uploadSessionFile } from "@fretik/shared/lib/chatbot-session-storage";
 import { tool } from "ai";
 import { z } from "zod";
@@ -52,13 +53,29 @@ const READ_ONLY_PRESENT_BLOCKLIST = new Set<string>([
 ]);
 
 /**
- * Type the agent's own output from its filename — the file was produced
- * in the sandbox, so nothing declares a MIME for it. Anything outside
- * the registry falls back to `application/octet-stream`: the frontend
- * renders a generic document card with a Download button and no
- * "Open with …" action.
+ * Type the agent's own output from its BYTES, which this tool has read
+ * anyway in order to mirror them to S3, falling back to the filename
+ * when the bytes identify nothing.
+ *
+ * The name alone was not enough, and the gap is not academic: a workflow
+ * writing `manifest.f4k` produces plain text under an extension no
+ * registry will ever list, and a name-based lookup calls that
+ * `application/octet-stream` — an unknown binary, with no preview and no
+ * "Open with …". `resolveFileType` reads the magic bytes, falls back to
+ * a UTF-8 sniff, and calls it `text/plain`, which is what it is.
+ *
+ * The bytes do NOT get the last word, only the first. A format with no
+ * signature that is not UTF-8 either resolves to nothing at all, and for
+ * those the extension is the better guess — so an undetected file keeps
+ * exactly the answer it had before this tool started reading bytes.
  */
-const resolveMimeType = mimeFromFilename;
+const resolveMimeType = async (
+  filename: string,
+  bytes: Uint8Array,
+): Promise<string> => {
+  const resolved = await resolveFileType({ bytes, filename });
+  return resolved.type ? resolved.mimeType : mimeFromFilename(filename);
+};
 
 export interface PresentedFile {
   /** Workspace-relative path (e.g. `outputs/chart.png`). */
@@ -221,7 +238,7 @@ export const createPresentFilesTool = () =>
           file: {
             path: resolved.relative,
             filename,
-            mimeType: resolveMimeType(filename),
+            mimeType: await resolveMimeType(filename, bytes),
             size: bytes.byteLength,
           },
         };

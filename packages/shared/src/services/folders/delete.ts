@@ -1,8 +1,9 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import db from "../../db";
-import { aiVectors, folders } from "../../db/schema";
+import { aiVectors, folders, teamSettings } from "../../db/schema";
 import {
   buildDocumentOriginalKey,
+  buildDocumentPreviewPdfKey,
   buildDocumentSidecarKey,
   buildDocumentThumbnailKey,
 } from "../../lib/document-storage";
@@ -55,11 +56,19 @@ export const deleteFolders = async (data: {
         .where(eq(folders.id, id));
     }
 
-    // Get all documents in the folders and subfolders that are not "uploading"
+    // Every document in these folders and their subfolders.
+    //
+    // No `status` filter: the folder delete cascades the rows away whatever
+    // their status, so excluding `uploading` ones did not spare them — it
+    // only stranded their bytes, with the row that named them gone.
     const documentsToDelete = await tx.query.documents.findMany({
-      columns: { id: true, originalFilename: true },
+      columns: {
+        id: true,
+        originalFilename: true,
+        fileSize: true,
+        fileHash: true,
+      },
       where: {
-        status: { ne: "uploading" },
         OR: [
           { folderId: { in: ids } },
           ...existingFolders.map((f) => ({
@@ -68,6 +77,37 @@ export const deleteFolders = async (data: {
         ],
       },
     });
+
+    // Superseded versions are real objects beside the live original, so they
+    // are freed and refunded too — the same accounting `deleteDocuments` does.
+    // Read BEFORE the cascade: `document_versions.document_id` is ON DELETE SET
+    // NULL, so once the folder goes these rows no longer name their document
+    // and the archive keys become unreachable from the database.
+    const documentIds = documentsToDelete.map((d) => d.id);
+    const versionRows =
+      documentIds.length > 0
+        ? await tx.query.documentVersions.findMany({
+            columns: {
+              documentId: true,
+              storageKey: true,
+              fileSize: true,
+              fileHash: true,
+            },
+            where: { documentId: { in: documentIds }, teamId },
+          })
+        : [];
+
+    const originalKeyById = new Map(
+      documentsToDelete.map((d) => [
+        d.id,
+        buildDocumentOriginalKey(d.id, d.originalFilename),
+      ]),
+    );
+    const archives = versionRows.filter(
+      (v) =>
+        v.documentId !== null &&
+        v.storageKey !== originalKeyById.get(v.documentId),
+    );
 
     // Delete each doc's 1:1 graph mirror (+ its `mentions` links / typed row via
     // FK cascade) BEFORE the folder delete cascades the documents away —
@@ -125,20 +165,47 @@ export const deleteFolders = async (data: {
         ),
       );
 
-    // Delete files from S3 after successful folder deletion — binary,
-    // thumbnail, and OCR markdown sidecar for every cascade-deleted doc.
+    // Refund the freed bytes. A folder delete removes documents exactly as
+    // `deleteDocuments` does, so it owes the team the same refund — without
+    // it `storage_used_gb` only ever climbs, and a team that tidies up by
+    // deleting folders ends up permanently over its own usage figure.
+    const freedBytes =
+      documentsToDelete.reduce((acc, doc) => acc + doc.fileSize, 0) +
+      archives.reduce((acc, v) => acc + v.fileSize, 0);
+    const freedGb = freedBytes / 1024 ** 3;
+    if (freedGb > 0) {
+      await tx
+        .update(teamSettings)
+        .set({
+          storageUsedGb: sql`GREATEST(0, ${teamSettings.storageUsedGb} - ${freedGb})`,
+        })
+        .where(eq(teamSettings.teamId, teamId));
+    }
+
+    // Delete files from S3 after successful folder deletion — for every
+    // cascade-deleted document: the binary, its thumbnail, its OCR markdown
+    // sidecar, every superseded version archive, and every PDF rendition it
+    // ever had (addressed by hash, so derived from the document's current
+    // hash plus each version's).
     // Sidecars only exist for non-spreadsheet documents but `deleteObjects`
     // treats missing keys as success, so we include every doc's sidecar
     // unconditionally.
     if (documentsToDelete.length > 0) {
       const s3KeysToDelete = [
-        ...new Set(
-          documentsToDelete.flatMap((doc) => [
+        ...new Set([
+          ...documentsToDelete.flatMap((doc) => [
             buildDocumentOriginalKey(doc.id, doc.originalFilename),
             buildDocumentThumbnailKey(doc.id),
             buildDocumentSidecarKey(doc.id),
+            buildDocumentPreviewPdfKey(doc.id, doc.fileHash),
           ]),
-        ),
+          ...archives.map((v) => v.storageKey),
+          ...versionRows.flatMap((v) =>
+            v.documentId === null
+              ? []
+              : [buildDocumentPreviewPdfKey(v.documentId, v.fileHash)],
+          ),
+        ]),
       ];
       await deleteFilesFromS3(s3KeysToDelete);
     }

@@ -23,6 +23,7 @@ import {
   thumbnailFor,
   typeForMime,
   viewerFor,
+  viewerForBytes,
 } from "../../src/file-types";
 import { resolveFileType } from "../../src/file-types/detect";
 
@@ -269,6 +270,169 @@ describe("strategies", () => {
     expect(shouldWriteSidecar("text/plain", "whatever")).toBe(false);
     expect(shouldWriteSidecar("image/png", "  \n ")).toBe(false);
     expect(shouldWriteSidecar("image/png", "a".repeat(25))).toBe(true);
+  });
+});
+
+describe("formats that used to have no preview", () => {
+  test("legacy binary Office goes through a server-side PDF rendering", () => {
+    // No browser reads a Compound File Binary container, and the bundled
+    // docx/pptx renderers only open OOXML zips.
+    expect(viewerFor("application/msword")).toBe("pdf-converted");
+    expect(viewerFor("application/vnd.ms-powerpoint")).toBe("pdf-converted");
+    expect(viewerFor("application/rtf")).toBe("pdf-converted");
+    expect(viewerFor("application/vnd.oasis.opendocument.text")).toBe(
+      "pdf-converted",
+    );
+    expect(viewerFor("application/vnd.oasis.opendocument.presentation")).toBe(
+      "pdf-converted",
+    );
+  });
+
+  test("legacy and OpenDocument spreadsheets render in the browser", () => {
+    // SheetJS, bundled by `@vue-office/excel`, reads BIFF and ODS — so
+    // these need no round trip to LibreOffice the way their siblings do.
+    expect(viewerFor("application/vnd.ms-excel")).toBe("xlsx");
+    expect(viewerFor("application/vnd.oasis.opendocument.spreadsheet")).toBe(
+      "xlsx",
+    );
+  });
+
+  test("mail is shown through its extracted sidecar", () => {
+    expect(viewerFor("message/rfc822")).toBe("email");
+    expect(viewerFor("application/vnd.ms-outlook")).toBe("email");
+  });
+
+  test("every type is previewable except video", () => {
+    const withoutViewer = FILE_TYPES.filter((def) => def.viewer === "none");
+    expect(withoutViewer.map((def) => def.id).sort()).toEqual([
+      "mp4",
+      "quicktime",
+      "webm",
+    ]);
+  });
+});
+
+describe("newly registered types", () => {
+  test("macro-enabled Office is accepted rather than refused", () => {
+    // `file-type` reports these distinctly from their macro-free siblings,
+    // so without an entry of their own they resolved to nothing and every
+    // surface rejected them.
+    expect(
+      isDriveSupported("application/vnd.ms-excel.sheet.macroenabled.12"),
+    ).toBe(true);
+    expect(
+      isDriveSupported("application/vnd.ms-word.document.macroenabled.12"),
+    ).toBe(true);
+    expect(
+      isDriveSupported(
+        "application/vnd.ms-powerpoint.presentation.macroenabled.12",
+      ),
+    ).toBe(true);
+    // A macro-enabled workbook is still an OOXML zip: exceljs opens it, and
+    // so does the browser's reader.
+    expect(
+      extractionFor("application/vnd.ms-excel.sheet.macroenabled.12"),
+    ).toBe("spreadsheet");
+    expect(viewerFor("application/vnd.ms-excel.sheet.macroenabled.12")).toBe(
+      "xlsx",
+    );
+  });
+
+  test("TIFF takes the document route, not the single-frame image one", () => {
+    // Scanners and fax gateways emit multi-page TIFF; treating it as a photo
+    // would OCR one frame and preview none.
+    expect(typeForMime("image/tiff")?.id).toBe("tiff");
+    expect(
+      resolveTypeForFile({ mime: "image/tiff", filename: "scan.tif" })?.id,
+    ).toBe("tiff");
+    expect(extractionFor("image/tiff")).toBe("convert-ocr");
+    expect(viewerFor("image/tiff")).toBe("pdf-converted");
+  });
+
+  test("BMP previews natively but reaches OCR through LibreOffice", () => {
+    expect(viewerFor("image/bmp")).toBe("image");
+    expect(extractionFor("image/bmp")).toBe("convert-ocr");
+  });
+
+  test("AVIF gets no thumbnail and no vision, and says so", () => {
+    // Bun's statically linked codecs stop short of AVIF on Linux, and the
+    // vision pool does not accept it either.
+    expect(viewerFor("image/avif")).toBe("image");
+    expect(thumbnailFor("image/avif")).toBe("none");
+    expect(agentAccessFor("image/avif")).toBe("ocr-sidecar");
+  });
+
+  test("calendar, contact and subtitle files are readable text", () => {
+    expect(typeForMime("text/calendar")?.id).toBe("ics");
+    expect(typeForMime("text/vcard")?.id).toBe("vcf");
+    expect(typeForMime("text/vtt")?.id).toBe("subtitles");
+    expect(agentAccessFor("text/calendar")).toBe("raw-text");
+    expect(extractionFor("text/vtt")).toBe("text");
+  });
+
+  test("lightweight markup resolves by extension and highlights", () => {
+    for (const [name, lang] of [
+      ["notes.rst", "rst"],
+      ["guide.adoc", "asciidoc"],
+      ["paper.tex", "latex"],
+      ["change.patch", "diff"],
+      ["page.mdx", "mdx"],
+    ] as const) {
+      expect(codeLanguageFor(name)).toBe(lang);
+      expect(isDriveSupported("text/plain", name)).toBe(true);
+    }
+    expect(
+      resolveTypeForFile({ mime: "text/plain", filename: "a.rst" })?.id,
+    ).toBe("markup");
+    // `.mdx` is markdown, not a separate format.
+    expect(
+      resolveTypeForFile({ mime: "text/plain", filename: "a.mdx" })?.id,
+    ).toBe("markdown");
+  });
+
+  test("`.log` and `.htm` were already supported, and stay so", () => {
+    // Reported as missing; they were not. Pinned so a future registry edit
+    // cannot quietly make the report true.
+    expect(
+      resolveTypeForFile({ mime: "text/plain", filename: "app.log" })?.id,
+    ).toBe("txt");
+    expect(viewerFor("text/plain", "app.log")).toBe("text");
+    expect(EXT_TO_MIME[".htm"]).toBe("text/html");
+    expect(viewerFor("text/html", "page.htm")).toBe("html-iframe");
+  });
+});
+
+describe("viewerForBytes", () => {
+  test("an unknown extension on text bytes is previewable after all", () => {
+    // A workflow writing `manifest.f4k` produces plain text under an
+    // extension no registry lists; every name-based lookup calls that an
+    // unknown binary.
+    expect(viewerFor("application/octet-stream", "manifest.f4k")).toBe("none");
+    expect(
+      viewerForBytes(
+        encode("id,total\n1,42\n"),
+        "application/octet-stream",
+        "manifest.f4k",
+      ),
+    ).toBe("text");
+  });
+
+  test("it never overrides a type the registry knows", () => {
+    // A CSV keeps the CSV viewer even though its bytes are also text.
+    expect(viewerForBytes(encode("a,b\n1,2\n"), "text/csv", "data.csv")).toBe(
+      "csv",
+    );
+    expect(viewerForBytes(PDF_BYTES, "application/pdf", "a.pdf")).toBe("pdf");
+  });
+
+  test("an unknown BINARY stays unpreviewable", () => {
+    expect(
+      viewerForBytes(
+        new Uint8Array([0x00, 0x01, 0x02, 0xff]),
+        "application/octet-stream",
+        "blob.f4k",
+      ),
+    ).toBe("none");
   });
 });
 

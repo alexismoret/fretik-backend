@@ -4,6 +4,7 @@ import { aiVectors, folders, teamSettings } from "../../db/schema";
 import { documents } from "../../db/schema/documents";
 import {
   buildDocumentOriginalKey,
+  buildDocumentPreviewPdfKey,
   buildDocumentSidecarKey,
   buildDocumentThumbnailKey,
 } from "../../lib/document-storage";
@@ -28,6 +29,7 @@ export const deleteDocuments = async (data: {
       originalFilename: true,
       status: true,
       fileSize: true,
+      fileHash: true,
     },
     where: { id: { in: ids }, teamId },
   });
@@ -51,7 +53,12 @@ export const deleteDocuments = async (data: {
   const versionRows =
     ids.length > 0
       ? await db.query.documentVersions.findMany({
-          columns: { documentId: true, storageKey: true, fileSize: true },
+          columns: {
+            documentId: true,
+            storageKey: true,
+            fileSize: true,
+            fileHash: true,
+          },
           where: { documentId: { in: ids }, teamId },
         })
       : [];
@@ -124,20 +131,42 @@ export const deleteDocuments = async (data: {
         ),
       );
 
-    // Delete files in S3 — binary, thumbnail, and OCR markdown sidecar.
+    // Delete files in S3 — binary, thumbnail, OCR markdown sidecar, and
+    // every PDF rendition the document ever had.
     // Sidecars only exist for non-spreadsheet documents; `deleteFilesFromS3`
     // (via `deleteObjects`) treats missing keys as success, so it's safe to
     // include every doc's sidecar key unconditionally.
+    //
+    // Renditions are addressed by hash, so the keys are derived from every
+    // hash this document is known to have held: its current one, plus each
+    // version's. That covers the renditions of superseded bytes without a
+    // LIST per document — and a bulk delete of a folder would otherwise pay
+    // one round trip per file to find objects most documents never had.
+    const renditionKeys = [
+      ...existingDocuments.map((d) =>
+        buildDocumentPreviewPdfKey(d.id, d.fileHash),
+      ),
+      ...versionRows.flatMap((v) =>
+        v.documentId === null
+          ? []
+          : [buildDocumentPreviewPdfKey(v.documentId, v.fileHash)],
+      ),
+    ];
+
     await deleteFilesFromS3([
       ...new Set([
-        ...existingDocuments
-          .filter((d) => d.status !== "uploading")
-          .flatMap((d) => [
-            buildDocumentOriginalKey(d.id, d.originalFilename),
-            buildDocumentThumbnailKey(d.id),
-            buildDocumentSidecarKey(d.id),
-          ]),
+        // Every document, `uploading` ones included. Their row is being
+        // deleted either way, and `uploadDocument` writes the bytes BEFORE
+        // it inserts the row — so skipping them did not protect an upload in
+        // flight, it stranded the object that upload had already written.
+        // A key that was never written deletes as a no-op.
+        ...existingDocuments.flatMap((d) => [
+          buildDocumentOriginalKey(d.id, d.originalFilename),
+          buildDocumentThumbnailKey(d.id),
+          buildDocumentSidecarKey(d.id),
+        ]),
         ...archives.map((v) => v.storageKey),
+        ...renditionKeys,
       ]),
     ]);
 

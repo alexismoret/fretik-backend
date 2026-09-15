@@ -1,6 +1,7 @@
 import { fileTypeFromBuffer } from "file-type";
 import {
   extensionOf,
+  isLikelyUtf8Text,
   resolveTypeForFile,
   TEXT_EXT_TO_MIME,
   typeForMime,
@@ -28,21 +29,13 @@ export interface ResolvedFile {
 }
 
 /**
- * Heuristic: are these bytes UTF-8 text (vs binary)? A NUL byte in the
- * head is a reliable binary tell; otherwise we decode and reject only
- * when replacement chars dominate. This is what separates source code,
- * markup and config files — which carry no magic bytes at all — from an
- * unknown binary.
+ * Re-exported for the callers that have always imported it from here.
+ * It LIVES in `derive.ts` now: the frontend viewer needs the same sniff
+ * to recognise a text file wearing an extension nobody has catalogued,
+ * and `index.ts` — the browser's door into this directory — cannot reach
+ * this module without dragging `file-type` into the bundle.
  */
-export const isLikelyUtf8Text = (bytes: Uint8Array): boolean => {
-  if (bytes.length === 0) return true;
-  const head = bytes.subarray(0, 8192);
-  if (head.includes(0)) return false; // NUL → binary
-  const text = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
-  let bad = 0;
-  for (const ch of text) if (ch === "�") bad += 1;
-  return bad / text.length < 0.01;
-};
+export { isLikelyUtf8Text };
 
 /**
  * `file-type` reports one generic MIME for every Microsoft Compound File

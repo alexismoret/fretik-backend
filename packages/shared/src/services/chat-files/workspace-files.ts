@@ -1,11 +1,12 @@
 import { and, desc, eq, ne } from "drizzle-orm";
 import db from "../../db";
 import { aiChatFiles, documents, documentVersions } from "../../db/schema";
-import { declaredMimeFromFilename } from "../../file-types";
+import { mimeFromFilename } from "../../file-types";
 import {
   listSessionEntries,
   readSessionFile,
 } from "../../lib/chatbot-session-storage";
+import { listPresentedFiles } from "./presented-files";
 
 /**
  * Everything a conversation has produced or been given, as one list.
@@ -28,8 +29,21 @@ import {
 
 export type WorkspaceFileSource = "attachment" | "output";
 
+/**
+ * Whether the agent handed this file over (`presentFiles`) or merely left
+ * it behind. See `presented-files.ts` for why the transcript is what
+ * answers this.
+ */
+export type WorkspaceFileKind = "deliverable" | "working";
+
 export interface WorkspaceFile {
   source: WorkspaceFileSource;
+  /**
+   * Deliverable vs working-out. Attachments are always `deliverable`:
+   * the user chose to put them here, so nothing about them is a
+   * by-product.
+   */
+  kind: WorkspaceFileKind;
   /** Session-relative for outputs (`outputs/report.xlsx`), bare for attachments. */
   path: string;
   filename: string;
@@ -44,26 +58,42 @@ export interface WorkspaceFile {
 }
 
 /**
- * `outputs/` is mirrored to S3 after a sandbox run, so its files still have
- * bytes once the sandbox is paused, and it is where the agent puts what it
- * MEANT to hand over. `attachments/` comes from the rows above instead;
- * `skills/`, `runs/` and the rest are machinery, not deliverables.
- */
-const LISTED_OUTPUT_DIRS = ["outputs"] as const;
-
-/**
- * Sub-trees of `outputs/` that are MACHINERY, not deliverables.
+ * Session sub-trees that are never a file in their own right.
  *
  * `outputs/persisted/` is where an oversized tool result is parked so the
  * model can read it back (`maybePersistLargeOutput`). Those files are part of
  * how a turn works, not something anyone asked for — listing them buries the
  * one spreadsheet the user wanted under four `call_function_….json`.
  *
- * Spelled out here rather than imported: the constant lives in
- * `@fretik/ai/lib/conversation-storage` (`WORKSPACE_DIRS.outputsPersisted`)
- * and this package cannot depend on that one. Keep the two in step.
+ * `attachments/` is listed from the `ai_chat_files` rows above, which carry
+ * the detected MIME and the Drive link the S3 listing knows nothing about;
+ * taking it from both would double every attachment. `previews/` holds PDF
+ * renditions of files already listed — a derived artefact of a row, not a
+ * row.
+ *
+ * Spelled out here rather than imported: the constants live in
+ * `@fretik/ai/lib/conversation-storage` (`WORKSPACE_DIRS`) and this package
+ * cannot depend on that one. Keep the two in step.
  */
-const EXCLUDED_OUTPUT_PREFIXES = ["outputs/persisted/"] as const;
+const EXCLUDED_SESSION_PREFIXES = [
+  "outputs/persisted/",
+  "attachments/",
+  "previews/",
+] as const;
+
+/**
+ * `outputs/` is where the agent is told to put what it produces, and it is
+ * mirrored to S3 after every sandbox run — so those files still have bytes
+ * once the sandbox is paused.
+ *
+ * It is not the only place a deliverable can be, though, which is what the
+ * `presented` set below is for: `presentFiles` accepts any path under
+ * `/workspace/` and mirrors whatever it is given, so an agent that wrote to
+ * the workspace root and presented it produced a file with real bytes on S3
+ * that this listing used to ignore completely. It was uploaded, it was
+ * announced to the user, and the panel showed nothing.
+ */
+const PRIMARY_OUTPUT_PREFIX = "outputs/";
 
 /**
  * Documents this conversation put in the Drive, keyed by filename.
@@ -115,6 +145,7 @@ export const listConversationWorkspaceFiles = async (args: {
 
   const attachments: WorkspaceFile[] = attachmentRows.map((row) => ({
     source: "attachment",
+    kind: "deliverable",
     path: `attachments/${row.filename}`,
     filename: row.filename,
     mimeType: row.mimeType,
@@ -123,11 +154,13 @@ export const listConversationWorkspaceFiles = async (args: {
     driveDocumentId: row.documentId,
   }));
 
-  const outputLists = await Promise.all(
-    LISTED_OUTPUT_DIRS.map((dir) =>
-      listSessionEntries(args.conversationId, dir),
-    ),
-  );
+  // The whole session tree in one listing, rather than one call per known
+  // directory: a presented file can be anywhere under the workspace, and
+  // asking S3 per directory cannot find what it was not told to look for.
+  const [sessionEntries, presented] = await Promise.all([
+    listSessionEntries(args.conversationId),
+    listPresentedFiles(args.conversationId),
+  ]);
 
   // Documents this conversation has already filed, by name. ONE query and no
   // byte reads — which is the whole point: it answers "is there a document
@@ -138,25 +171,52 @@ export const listConversationWorkspaceFiles = async (args: {
   // `resolveDriveState`, asked per file when one is actually opened.
   const filedHere = await documentsFiledFromConversation(args);
 
-  const outputs: WorkspaceFile[] = outputLists
-    .flat()
-    .filter(
-      (entry) =>
-        !EXCLUDED_OUTPUT_PREFIXES.some((prefix) =>
+  /**
+   * Only split the outputs when there is positive evidence to split them
+   * on. A conversation where the agent never called `presentFiles` has no
+   * deliverables recorded, and treating that as "everything here is
+   * working-out" would fold the whole panel into a secondary section —
+   * hiding files on the strength of a signal that was never sent.
+   *
+   * So: no presented file anywhere, no demotion. Silence is not evidence.
+   */
+  const splittable = presented.size > 0;
+
+  const kindOf = (path: string): WorkspaceFileKind =>
+    !splittable || presented.has(path) ? "deliverable" : "working";
+
+  const outputs: WorkspaceFile[] = sessionEntries
+    .filter((entry) => {
+      if (
+        EXCLUDED_SESSION_PREFIXES.some((prefix) =>
           entry.path.startsWith(prefix),
-        ),
-    )
+        )
+      ) {
+        return false;
+      }
+      return (
+        entry.path.startsWith(PRIMARY_OUTPUT_PREFIX) ||
+        presented.has(entry.path)
+      );
+    })
     .map((entry) => {
       const filename = entry.path.split("/").pop() ?? entry.path;
       return {
         source: "output" as const,
+        kind: kindOf(entry.path),
         path: entry.path,
         filename,
-        // Best effort only, and it covers text formats alone — the viewer
-        // types a file from its NAME, which is all a sandbox output has.
-        // Sniffing the real type would mean reading every object.
-        mimeType:
-          declaredMimeFromFilename(filename) ?? "application/octet-stream",
+        // Best effort from the NAME, which is all a sandbox output has —
+        // sniffing the real type would mean reading every object to render
+        // a list.
+        //
+        // `mimeFromFilename`, not `declaredMimeFromFilename`: the latter
+        // covers TEXTUAL types only, so it answered `application/octet-stream`
+        // for every PNG, XLSX and PDF the agent produced, and the frontend
+        // carried a repair step to undo exactly that. An extension nobody
+        // has catalogued still lands on `octet-stream` — the viewer settles
+        // that one from the bytes it downloads anyway.
+        mimeType: mimeFromFilename(filename),
         size: entry.size,
         createdAt: entry.lastModified,
         driveDocumentId: filedHere.get(filename) ?? null,

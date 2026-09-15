@@ -51,6 +51,46 @@ export const recordScore = async (params: {
 };
 
 /**
+ * Put SEVERAL numeric scores on one trace, in one flush.
+ *
+ * `recordScore` flushes per call, which is right for a thumb and wrong for a
+ * set of counters published together at the end of a turn — six calls would be
+ * six round trips on the turn's critical path. Ids are derived from
+ * `${traceId}-${name}`, so a retried turn upserts its numbers instead of
+ * stacking a second set on the same trace.
+ *
+ * Soft-fail, like its sibling: a measurement that can break a turn is not
+ * worth having.
+ */
+export const recordScores = async (params: {
+  traceId: string;
+  scores: readonly { name: string; value: number; comment?: string }[];
+}): Promise<boolean> => {
+  if (!langfuseClient || params.scores.length === 0) return false;
+  try {
+    for (const score of params.scores) {
+      langfuseClient.score.create({
+        id: `${params.traceId}-${score.name}`,
+        traceId: params.traceId,
+        name: score.name,
+        value: score.value,
+        dataType: "NUMERIC",
+        environment: langfuseEnvironment,
+        ...(score.comment !== undefined ? { comment: score.comment } : {}),
+      });
+    }
+    await langfuseClient.score.flush();
+    return true;
+  } catch (err) {
+    console.warn(
+      "[langfuse] recordScores failed:",
+      err instanceof Error ? err.message : err,
+    );
+    return false;
+  }
+};
+
+/**
  * Delete a score by its (stable) id — used to REMOVE user feedback when the
  * user toggles a thumb off. Deletion lives on the legacy v1 scores endpoint;
  * the id is the same one `recordScore` upserts (`${traceId}-${name}`). Returns

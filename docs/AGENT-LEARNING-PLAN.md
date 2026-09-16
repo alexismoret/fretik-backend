@@ -84,11 +84,17 @@ Tokens » : le gain se mesure **tokens de recette inclus**, contre un agent
 vanille qui aurait le même budget.
 
 **Ordre de priorité.** Palier 0 (mesure) → Palier 1 (recettes dérivées sans
-LLM + préchauffage sandbox, le gain le plus sûr) → Palier 2 (skills apprises
-et notes par app, avec leur visibilité) → Palier 3 (optimiseur LLM et
+LLM, plus le préchauffage sandbox parce qu'il est trivial) → Palier 2 (skills
+apprises et notes par app, avec leur visibilité) → Palier 3 (optimiseur LLM et
 gouvernance v1, si les chiffres le justifient) → Palier 4 (exécution par le
 harnais). Environ 11 à 13 semaines pour une personne ; les paliers 3 et 4 sont
 conditionnels et peuvent ne jamais être construits.
+
+**Mesuré depuis, en production (§7) :** 91 % de l'horloge d'un run est le
+modèle qui génère, 3 % la sandbox. La latence ne s'achète donc qu'en
+**supprimant des allers-retours modèle**, chacun valant p50 11 s et p90 63 s.
+Cela confirme la direction du plan et rétrograde le préchauffage sandbox de
+« gain le plus sûr » à « ~2 %, à faire parce que c'est trivial ».
 
 ---
 
@@ -1022,7 +1028,11 @@ Repérés pendant l'analyse ; à instruire séparément, mais ils comptent pour
   dernier qu'on parallélise avec le recall du tour 1 (18 s de budget).
   `prepareSandboxForCode` (JWT, hydratation du contexte) reste sur le chemin du
   tool, il a besoin de `ctx`. Mesure : `startedAt → premier python` dans le
-  ledger. Quelques heures de travail, aucun risque.
+  ledger. Quelques heures de travail, aucun risque. **Mais l'ordre de grandeur
+  est désormais mesuré et il est petit** : 6-8 s une fois par run, contre 338 s
+  de run médian en production, soit ~2 %. À faire parce que c'est trivial, pas
+  parce que c'est un levier — le levier est en §7, et c'est le nombre
+  d'allers-retours modèle.
 - **Découper le SKILL PbyP** (246 lignes, 21 Ko) en un corps court (lectures,
   routage, recettes) et des références déjà séparées : à faire dans
   `guidance.md`, hors plan.
@@ -1358,6 +1368,48 @@ Ce couple de chiffres est la sortie utile : « 98 % ne portent rien, 6 %
 n'inventent rien » dit que le coût de ce workflow est de l'improvisation, pas
 de la répétition mécanique — donc que le levier y est le playbook et non une
 recette. C'est exactement la question 4 de §6, et elle se répond sans modèle.
+
+### La première mesure de production, et ce qu'elle déplace
+
+`bun run measure:run-latency` (paquet `ai`) lit la production par l'API HTTP de
+Langfuse — pas par un tunnel, pas par sa base. Sur la fenêtre du 2026-09-13 au
+2026-09-16, environnement `production`, 14 692 observations, 10 runs et 13
+tours de workflow :
+
+| ce qui dépense la seconde       | appels |   temps | part     |
+| ------------------------------- | -----: | ------: | -------- |
+| le modèle qui génère (`chat …`) |    191 | 4 035 s | **91 %** |
+| `e2b-python`                    |     67 |   151 s | 3 %      |
+| `web-fetch`                     |     10 |    49 s | 1 %      |
+| `read`                          |     37 |    38 s | 1 %      |
+| tout le reste, cumulé           |      — |  ~150 s | 3 %      |
+
+Tour de workflow : **p50 320 s, p90 831 s**. Seules les feuilles sont comptées,
+donc chaque seconde est attribuée une fois et une seule ; un parent (`workflow-turn`,
+`invoke_agent`, `step N`) ne dépense rien en propre.
+
+**Trois conséquences, et elles ne vont pas toutes dans le sens du plan v2.**
+
+1. **La latence d'un run, c'est le modèle qui écrit. Pas les outils.** 91 %
+   contre 3 % pour la sandbox. Toute optimisation qui accélère un outil joue
+   sur les 9 %. La seule chose qui déplace la latence est de **supprimer des
+   allers-retours modèle** — et c'est précisément ce que font une recette et
+   une fusion, puisque chaque appel d'outil retiré retire un aller-retour.
+2. **Un appel d'outil supprimé vaut p50 11 s, p90 63 s** — c'est la durée
+   d'une complétion. Sur un run à 338 s médians, retirer cinq appels (relecture
+   de skills et redécouverte de schéma) rend de l'ordre de 55 s, soit ~16 %.
+   C'est la première estimation chiffrée du gain du palier 1, et elle vient de
+   notre corpus, pas d'un papier.
+3. **Le préchauffage de la sandbox n'est pas « le gain le plus sûr » de §4.5.**
+   Il vise 6-8 s de bootstrap une fois par run, contre 338 s médians : ~2 %.
+   Réel, peu cher, mais ce n'est pas un titre. Le classement de §4.5 est corrigé
+   en conséquence.
+
+**Limites à dire.** 13 tours sur 3 jours, c'est peu, et le mix de production de
+cette fenêtre ne contient pas PbyP. Ce sont des ordres de grandeur, pas une
+baseline. Et cette mesure donne le **temps**, pas le **quoi** : combien d'appels
+sont de la relecture de skills ou de la redécouverte de schéma reste à lire dans
+la base par `workflows:profile`, qui n'a pas encore tourné sur la production.
 
 | palier                                                               | contenu                                                                                                                                                                                                                                                                                                                                                                                                                                                  | durée indicative | dépend de      |
 | -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- | -------------- |

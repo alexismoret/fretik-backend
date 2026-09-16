@@ -2,6 +2,11 @@ import db from "../../db";
 import type { FieldDefinition } from "../../db/schema";
 import { NON_WRITABLE_FIELD_TYPES } from "../../db/schema/field-types";
 import type { PageFieldDescriptor } from "../../schemas/pages";
+import {
+  loadSyncProvenance,
+  type SyncProvenance,
+  syncSourceIdsOf,
+} from "../collections/sync-provenance";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
 
 /**
@@ -99,7 +104,16 @@ const optionsOf = (
 const describeField = (
   definition: FieldDefinition,
   relationLook: Map<string, { icon?: string; color?: string }>,
+  syncSources: Map<string, SyncProvenance>,
 ): PageFieldDescriptor => {
+  // A synced column is writable by TYPE and read-only by OWNER — the same
+  // second axis the record write path applies, restated here for the same
+  // reason `UNWRITABLE_TYPES` is imported rather than copied: a page that
+  // offers the input gets a refusal on every save.
+  const source =
+    definition.syncSourceId === null
+      ? undefined
+      : syncSources.get(definition.syncSourceId);
   const target =
     definition.type === "relation"
       ? relationLook.get(
@@ -134,7 +148,12 @@ const describeField = (
     targetColor: target?.color,
     isTitle: definition.isTitle ? true : undefined,
     sortable: !UNSORTABLE_TYPES.has(definition.type),
-    writable: !UNWRITABLE_TYPES.has(definition.type),
+    writable:
+      !UNWRITABLE_TYPES.has(definition.type) &&
+      definition.syncSourceId === null,
+    synced: definition.syncSourceId === null ? undefined : true,
+    syncedAt: source?.lastSuccessAt?.toISOString(),
+    syncedFrom: source?.app,
   };
 };
 
@@ -147,6 +166,9 @@ export const buildPageFieldDescriptors = async (params: {
     collectionId: params.collectionId,
   });
   if (definitions.length === 0) return [];
+
+  // One read for every source feeding this collection — none when nothing does.
+  const syncSources = await loadSyncProvenance(syncSourceIdsOf(definitions));
 
   // A relation chip carries the TARGET type's icon and colour, which the
   // browser has no way to look up on a public page — resolve it here, once
@@ -173,6 +195,6 @@ export const buildPageFieldDescriptors = async (params: {
   }
 
   return definitions.map((definition) =>
-    describeField(definition, relationLook),
+    describeField(definition, relationLook, syncSources),
   );
 };

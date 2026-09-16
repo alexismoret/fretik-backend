@@ -5,9 +5,14 @@ import {
   externalAppMcpAuthKindEnum,
 } from "../db/schema/external-apps";
 import {
+  actionBatchSchema,
+  actionIncrementalSchema,
+  actionPaginationSchema,
   connectionOptionsDescriptorSchema,
   credentialsFormDescriptorSchema,
+  paramSpecSchema,
   providerTransportSchema,
+  returnSpecSchema,
 } from "../external-apps/manifest-schema";
 import { toolPolicyLevelSchema } from "./tool-policies";
 
@@ -31,6 +36,37 @@ import { toolPolicyLevelSchema } from "./tool-policies";
 // Provider catalogue (GET /external-apps/providers)
 // ============================================================================
 
+/**
+ * A read action's SIGNATURE, sent only when the caller asks for it
+ * (`?includeSignatures=true`).
+ *
+ * The catalogue deliberately shipped `{name, kind, summary}` and nothing else:
+ * it is fetched to draw a provider picker, and 301 actions' worth of parameter
+ * trees would be paid for by every caller that never renders one. The sync
+ * composer is the caller that does — it generates the argument form from
+ * `params` exactly as `DynamicCredentialsForm` generates the credentials one —
+ * so the signature is opt-in rather than default.
+ *
+ * READS ONLY, on both sides of the flag. A write's parameters belong to an
+ * approval card, which builds itself from the manifest server-side; putting
+ * them on this route would invite a client to compose a write from them.
+ */
+const readSignatureShape = {
+  /** Parameter tree, `ParamSpec` per argument. Absent on a write. */
+  params: z.record(z.string(), paramSpecSchema).optional(),
+  /**
+   * What the action answers: `{ref|list|page}` naming an entry of the
+   * provider's `types`, `{fields}` for an inline shape.
+   */
+  returns: returnSpecSchema.optional(),
+  /** How the action is walked past its first page — the sync's row source. */
+  pagination: actionPaginationSchema.optional(),
+  /** Several ids in one call, when the API takes them. */
+  batch: actionBatchSchema.optional(),
+  /** Bounded to what changed since a timestamp. */
+  incremental: actionIncrementalSchema.optional(),
+};
+
 export const providerActionEntrySchema = z.object({
   name: z.string().openapi({
     example: "send_email",
@@ -45,6 +81,7 @@ export const providerActionEntrySchema = z.object({
     description:
       "One-line description shown in the SDK docstring and SKILL.md.",
   }),
+  ...readSignatureShape,
 });
 export type ProviderActionEntry = z.infer<typeof providerActionEntrySchema>;
 
@@ -101,6 +138,13 @@ export const providerCatalogEntrySchema = z.object({
       "Provider categories. First slug is the root used by the frontend filter (e.g. `communication`, `productivity`, `crm`); subsequent slugs are fine-grained (e.g. `email`, `instant-messaging`, `calendar`).",
   }),
   actions: z.array(providerActionEntrySchema),
+  /**
+   * The named types an action's `returns` refers to (`{ ref: "Shipment" }` →
+   * `types.Shipment`). Sent with the signatures and never without them: on its
+   * own a `ref` is a name pointing at nothing, and a form that cannot resolve
+   * it has to call the action to find out what it answers.
+   */
+  types: z.record(z.string(), z.record(z.string(), paramSpecSchema)).optional(),
 });
 export type ProviderCatalogEntry = z.infer<typeof providerCatalogEntrySchema>;
 
@@ -272,6 +316,12 @@ export const connectionActionEntrySchema = z.object({
   kind: z.enum(["read", "write"]),
   summary: z.string(),
   defaultLevel: toolPolicyLevelSchema,
+  // Same opt-in signature as the provider catalogue, read from the connection's
+  // stored snapshot descriptor instead of a manifest — an MCP server is where a
+  // sync source's action list comes from when there is no hand-written
+  // provider. `tools/list` declares no pagination, so those three are normally
+  // absent here and the sync says "one call" rather than guessing.
+  ...readSignatureShape,
 });
 export type ConnectionActionEntry = z.infer<typeof connectionActionEntrySchema>;
 

@@ -93,9 +93,24 @@ export const createDescribeCollectionTool = () =>
         // agent the fields it actually asked for.
       }
 
+      // Where the rows come from, when they do not come from this workspace.
+      // The agent reads two things here it can act on: the columns it must not
+      // write, and the AGE of every figure it is about to quote.
+      const syncedFrom = type.syncedFrom;
+
       const payload = {
         key: type.key,
         recordCount,
+        ...(syncedFrom === undefined
+          ? {}
+          : {
+              syncedFrom: {
+                app: syncedFrom.app,
+                operation: syncedFrom.operation,
+                lastSuccessAt: syncedFrom.lastSuccessAt?.toISOString() ?? null,
+                note: "Columns marked `synced` are filled by this app and refuse any write. `manageCollection` action refreshSync re-pulls them.",
+              },
+            }),
         // The uuid every other tool means by `collectionId`. Given explicitly
         // because it is NOT derivable from the table name: `data.coll_<hex>`
         // drops the dashes, and a page dataset built from that hex silently
@@ -113,6 +128,7 @@ export const createDescribeCollectionTool = () =>
           description: f.description,
           config: f.config,
           isTitle: f.isTitle,
+          ...(f.syncSourceId === null ? {} : { synced: true as const }),
           // Exact value encoding for a write (tool or Python SDK) — the shared
           // hint, so e.g. money reads `{ amount, currencyCode }`, not "currency".
           writeFormat: describeFieldExpectation(f),

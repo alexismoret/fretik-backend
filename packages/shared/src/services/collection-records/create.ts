@@ -11,6 +11,7 @@ import type { RecordSharing } from "../../schemas/collection-sharing";
 import { computeRecordIdentity } from "../../schemas/record-shape";
 import { buildExtensionInsert } from "../collection-schema/record-io";
 import { reconcileRecordShares } from "../collection-sharing/reconcile";
+import { loadSyncSourceApps } from "../collections/sync-provenance";
 import {
   type EventActor,
   emitDomainEvent,
@@ -58,6 +59,11 @@ export const createCollectionRecord = async (input: {
   labelOverride?: string | null;
   documentId?: string | null;
   strict?: boolean;
+  /**
+   * Let this write fill the columns a sync source owns. The sync runner's
+   * capability, passed explicitly — see `validate.ts`, where the guard is.
+   */
+  allowSyncedFields?: boolean;
   relations?: RecordRelationInput[];
   // Cross-team sharing. Omitted (or `{ inherit: true }`) leaves the record
   // following its type's audience; a custom audience is validated as a subset of
@@ -75,6 +81,10 @@ export const createCollectionRecord = async (input: {
     fieldDefs,
     data: input.data,
     strict: input.strict,
+    allowSyncedFields: input.allowSyncedFields,
+    // No query unless a source fills one of these columns; the map is only
+    // there so the refusal can name the app.
+    syncSourceApps: await loadSyncSourceApps(fieldDefs),
   });
   // Resolve every location value to a FK into the per-team `locations` table
   // (geocoding a bare address written by an agent/SDK along the way).

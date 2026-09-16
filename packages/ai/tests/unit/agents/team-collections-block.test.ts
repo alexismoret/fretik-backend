@@ -22,6 +22,7 @@ const makeType = (
       key: string;
       type: TeamSchemaCollection["fields"][number]["type"];
       isTitle?: boolean;
+      synced?: boolean;
     }[];
   },
 ): TeamSchemaCollection => ({
@@ -36,6 +37,9 @@ const makeType = (
   viewName: over.viewName ?? "data.coll_deadbeef",
   fields: over.fields.map((f) => ({ ...f, isTitle: f.isTitle ?? false })),
   relations: over.relations ?? [],
+  // Absent unless a case sets one — `exactOptionalPropertyTypes` makes an
+  // explicit `undefined` a different thing from an absent key.
+  ...(over.syncedFrom === undefined ? {} : { syncedFrom: over.syncedFrom }),
 });
 
 describe("formatTeamCollectionsBlock", () => {
@@ -76,6 +80,43 @@ describe("formatTeamCollectionsBlock", () => {
     expect(block).toContain("value_amount, value_currency (money)");
     // The bare key would be a non-existent column.
     expect(block).not.toMatch(/\bvalue \(money\)/);
+  });
+
+  /**
+   * A synced column is queryable like any other and writable by nobody but its
+   * app. The agent reads BOTH facts here or nowhere: it would otherwise answer
+   * a question about this morning's snapshot as if it were live, and write an
+   * UPDATE the record path refuses.
+   */
+  it("tags a synced column and names the app, the action and the age", () => {
+    const block = formatTeamCollectionsBlock([
+      makeType({
+        key: "shipments",
+        fields: [
+          { key: "reference", type: "text", isTitle: true },
+          { key: "revenue", type: "number", synced: true },
+        ],
+        syncedFrom: {
+          app: "Shiptify",
+          operation: "list_shipments",
+          lastSuccessAt: new Date("2026-09-16T09:12:34.000Z"),
+        },
+      }),
+    ]);
+    expect(block).toContain("revenue (number, synced)");
+    // Not the title field, which is local.
+    expect(block).toContain("reference (text, title)");
+    expect(block).toContain(
+      "synced: Shiptify list_shipments, 2026-09-16 09:12",
+    );
+    expect(block).toContain("never UPDATE them");
+  });
+
+  it("says nothing about sync when nothing is synced", () => {
+    const block = formatTeamCollectionsBlock([
+      makeType({ key: "clients", fields: [{ key: "name", type: "text" }] }),
+    ]);
+    expect(block).not.toContain("synced");
   });
 
   it("excludes relation/rollup fields from the column list (not real columns)", () => {

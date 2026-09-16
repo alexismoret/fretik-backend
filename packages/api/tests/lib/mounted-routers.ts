@@ -4,6 +4,7 @@ import { approvalsRoutes } from "../../src/handlers/approvals";
 import { chatbotContextRoutes } from "../../src/handlers/chatbot-context";
 import { collectionRecordRoutes } from "../../src/handlers/collection-records";
 import { collectionSharingRoutes } from "../../src/handlers/collection-sharing";
+import { collectionSyncRoutes } from "../../src/handlers/collection-sync";
 import { collectionRoutes } from "../../src/handlers/collections";
 import { conversationRoutes } from "../../src/handlers/conversations";
 import { dashboardRoutes } from "../../src/handlers/dashboard";
@@ -59,6 +60,7 @@ export const MOUNTED_ROUTERS: Record<string, Probeable> = {
   "/chatbot-context": chatbotContextRoutes,
   "/collection-records": collectionRecordRoutes,
   "/collection-sharing": collectionSharingRoutes,
+  "/collection-sync": collectionSyncRoutes,
   "/collections": collectionRoutes,
   "/conversation": conversationRoutes,
   "/dashboard": dashboardRoutes,

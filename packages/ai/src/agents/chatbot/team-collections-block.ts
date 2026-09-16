@@ -16,7 +16,10 @@ import type { TeamSchemaCollection } from "@fretik/shared/services/collections/d
  * field that feeds it is tagged `, title` so the agent never invents a `name`
  * column. A `money` field `k` is shown as its two real columns `k_amount,
  * k_currency`. `source` / `document_id` still live on `collection_records` (join on
- * `id`) — see `<sql_rules>`. Returns "" when the team has no types.
+ * `id`) — see `<sql_rules>`. A column a connected app fills is tagged `, synced`
+ * and its type carries `; synced: <app> <action>, <when>`, so the agent knows
+ * both that the figures have an age and that they are not its to UPDATE.
+ * Returns "" when the team has no types.
  *
  * BOUNDED — this block lives in the dynamic suffix, re-rendered EVERY turn and
  * NOT prefix-cached, so its size is a real per-turn cost. Two guards keep it flat
@@ -47,18 +50,38 @@ const columnsForField = (f: {
   key: string;
   type: string;
   isTitle: boolean;
+  synced?: boolean;
 }): string => {
   // The title field carries the record's display name; its value is mirrored
   // into `_label`. Mark it so the agent filters on `_label` (or this key)
   // instead of guessing a bare `name`/`title` column.
   const title = f.isTitle ? ", title" : "";
+  // A column an app fills. Readable like any other, and the one thing the agent
+  // must know before writing: an UPDATE on it is refused, by name.
+  const synced = f.synced ? ", synced" : "";
   if (f.type === "money")
-    return `${f.key}_amount, ${f.key}_currency (money${title})`;
+    return `${f.key}_amount, ${f.key}_currency (money${title}${synced})`;
   if (f.type === "relation" || f.type === "rollup") return "";
   // A `location` column is a bigint FK into `locations`; the address/point is
   // reached by JOIN (see <sql_rules>).
-  if (f.type === "location") return `${f.key} (location fk→locations)`;
-  return `${f.key} (${f.type}${title})`;
+  if (f.type === "location") return `${f.key} (location fk→locations${synced})`;
+  return `${f.key} (${f.type}${title}${synced})`;
+};
+
+/**
+ * `; synced: Shiptify list_shipments, 2026-09-16 09:12` — the app, the action,
+ * and the AGE of every figure in the table. Three tokens because the age is
+ * what stops the agent answering "12 late shipments" about a snapshot taken
+ * this morning, and the action is what tells it a filter it wants may have to
+ * move upstream instead.
+ */
+const syncedSuffix = (t: TeamSchemaCollection): string => {
+  const origin = t.syncedFrom;
+  if (!origin) return "";
+  const when = origin.lastSuccessAt
+    ? origin.lastSuccessAt.toISOString().slice(0, 16).replace("T", " ")
+    : "never run";
+  return `; synced: ${origin.app} ${origin.operation}, ${when}`;
 };
 
 /** Full line: purpose + system columns + capped field columns + relations. */
@@ -78,7 +101,7 @@ const fullLine = (t: TeamSchemaCollection): string => {
           .map((r) => `${r.key} → ${r.toCollectionKey ?? "any"}`)
           .join(", ")
       : "—";
-  return `- **${t.key}**${pluralOf(t)}${purposeOf(t)}. table \`${t.viewName}\`; columns: ${cols}; relations: ${relations}`;
+  return `- **${t.key}**${pluralOf(t)}${purposeOf(t)}. table \`${t.viewName}\`; columns: ${cols}; relations: ${relations}${syncedSuffix(t)}`;
 };
 
 /** Compact line: purpose only, columns deferred to describeCollection. */
@@ -115,6 +138,17 @@ export const formatTeamCollectionsBlock = (
     }
     lines.push(line);
     chars += line.length + 1;
+  }
+  // One line for the whole block, not one clause per synced column: the rule is
+  // the same everywhere and the block is re-rendered every turn.
+  const anySynced = types.some(
+    (t) =>
+      t.syncedFrom !== undefined || t.fields.some((f) => f.synced === true),
+  );
+  if (anySynced) {
+    lines.push(
+      "- columns marked `synced` are filled by their app: query them freely, never UPDATE them (refreshSync re-pulls).",
+    );
   }
   return lines.join("\n");
 };

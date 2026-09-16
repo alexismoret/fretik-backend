@@ -1095,7 +1095,7 @@ export const pagePublishError = (definition: PageDefinition): string | null => {
     (dataset) => dataset.kind === "external",
   );
   if (external) {
-    return `Dataset "${external.id}" reads a connected app, which a published page may not do — an anonymous visitor would be spending the team's credentials. Sync it into a collection with a workflow and query that instead.`;
+    return `Dataset "${external.id}" reads a connected app, which a published page may not do — an anonymous visitor would be spending the team's credentials. Sync it into a collection (a sync source on that collection, or a workflow) and query that instead.`;
   }
   // Same rule, one step stronger: an operation WRITES — to a third party on the
   // team's credentials, or to the team's own records. A link anyone can open
@@ -1153,6 +1153,11 @@ export const describePageDataContract = (): string =>
     "                 Its rows ship `fields` too, inferred from the answer: the",
     "                 provider's key humanised, and a type only where every value",
     "                 agrees (`unknown` otherwise — do not format one blind).",
+    "CHOOSING BETWEEN THE TWO: volume, filtering, sorting or an aggregate → sync",
+    "the app into a collection and read it as a `collections` dataset (it is also",
+    "the only one that can be PUBLISHED). One instantaneous value, read fresh at",
+    "render → `external`. A synced column ships `synced` + `syncedAt` in its field",
+    "descriptor: say the age next to the figure, it is not live.",
     "",
     "## row shapes (collections datasets)",
     "A row is `{ id, label, …fields }`; `label` is the record's own title.",
@@ -1376,8 +1381,24 @@ export const PageFieldDescriptorSchema = z.object({
    * and the read-only system properties. Binding a form control to one of them
    * produces a save that reports success and changes nothing, because the write
    * path strips the key instead of refusing it.
+   *
+   * Also false for a SYNCED column (`synced` below): there the write path does
+   * refuse, by name — a form bound to one fails every save.
    */
   writable: z.boolean().optional(),
+  /**
+   * The column is filled by a connected app, not by this workspace.
+   *
+   * Three things follow for a page, and only the first is enforced server-side:
+   * it is read-only; its value is as old as `syncedAt`, which a figure on a
+   * dashboard should say rather than imply; and `syncedFrom` names the app it
+   * came from.
+   */
+  synced: z.boolean().optional(),
+  /** ISO timestamp of the last run that landed data. Absent = never succeeded. */
+  syncedAt: z.string().optional(),
+  /** The app filling it, as a person names it ("Shiptify"). */
+  syncedFrom: z.string().optional(),
 });
 export type PageFieldDescriptor = z.infer<typeof PageFieldDescriptorSchema>;
 

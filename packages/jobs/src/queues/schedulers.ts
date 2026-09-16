@@ -2,6 +2,7 @@ import {
   COLLECTION_INDEX_SWEEP_JOB,
   CONVERSATION_TASK_SWEEP_JOB,
   DREAMING_SWEEP_JOB,
+  EXTERNAL_SYNC_SWEEP_JOB,
   GC_DEMOTE_JOB,
   JOURNAL_SWEEP_JOB,
   MCP_SNAPSHOT_REFRESH_JOB,
@@ -69,6 +70,14 @@ const MODEL_ALERT_SWEEP_INTERVAL_MS = 5 * 60_000;
  * Redis after its own bucket has been drained and deleted.
  */
 const MODEL_TELEMETRY_ROLLUP_CRON = "10 * * * *";
+/**
+ * 60s — the collection-sync claim pass. A minute rather than the 15 s the other
+ * sweeps use because the tightest cadence a source can have is fifteen minutes
+ * (`SYNC_LIMITS.minIntervalMinutes`): sweeping four times as often would only
+ * re-read an empty partial index three extra times. A refresh a person asks for
+ * does not wait for this at all — it enqueues directly.
+ */
+const EXTERNAL_SYNC_SWEEP_INTERVAL_MS = 60_000;
 
 const CRON_OPTS = {
   removeOnComplete: { count: 30 },
@@ -151,6 +160,15 @@ export const registerSchedulers = async (): Promise<void> => {
     MODEL_TELEMETRY_ROLLUP_JOB,
     { pattern: MODEL_TELEMETRY_ROLLUP_CRON, tz: "UTC" },
     { name: MODEL_TELEMETRY_ROLLUP_JOB, opts: CRON_OPTS },
+  );
+  // Stays on the maintenance queue although the WORK it finds is long: the job
+  // itself is one `UPDATE … RETURNING` and one `addBulk`, and the runs it
+  // enqueues happen on the `external-sync` queue. That split is the whole
+  // reason a ten-minute sync can be scheduled from a concurrency-1 worker.
+  await maintenance.upsertJobScheduler(
+    EXTERNAL_SYNC_SWEEP_JOB,
+    { every: EXTERNAL_SYNC_SWEEP_INTERVAL_MS },
+    { name: EXTERNAL_SYNC_SWEEP_JOB, opts: CRON_OPTS },
   );
   // Dedicated queue — one pass can hold a `CREATE INDEX CONCURRENTLY` for
   // minutes, which on the concurrency-1 maintenance queue would stop the 15s

@@ -4,7 +4,7 @@ import { mockModule } from "../lib/mock-module";
 /**
  * The nightly timetable, pinned as data.
  *
- * `registerSchedulers` is imperative — thirteen `upsertJobScheduler` calls in a
+ * `registerSchedulers` is imperative — fourteen `upsertJobScheduler` calls in a
  * row — and nothing until now read it back. That matters because every claim it
  * makes is a claim about things NOT colliding, and a collision is silent:
  *
@@ -87,10 +87,10 @@ describe("scheduler identities", () => {
     for (const r of registrations) expect(r.template.name).toBe(r.id);
   });
 
-  test("the whole timetable is thirteen entries", () => {
+  test("the whole timetable is fourteen entries", () => {
     // A count, so that adding or removing a scheduled pass has to be a
     // deliberate edit to this file rather than a diff nobody reads.
-    expect(registrations).toHaveLength(13);
+    expect(registrations).toHaveLength(14);
   });
 });
 
@@ -100,6 +100,12 @@ describe("what may share the 15-second maintenance queue", () => {
       [
         "conversation-task-sweep",
         "dreaming-sweep",
+        // The collection-sync claim pass qualifies on the same rule as the
+        // rest: it is ONE `UPDATE … RETURNING` plus an `addBulk`, and the runs
+        // it finds — which can each spend ten minutes on a third party — happen
+        // on the `external-sync` queue. Enqueuing is cheap; being enqueued is
+        // not, and only the first half belongs here.
+        "external-sync-sweep",
         "gc-demote",
         "journal-sweep",
         "model-alert-sweep",

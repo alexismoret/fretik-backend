@@ -13,6 +13,7 @@ import {
   buildExtensionInsertBatch,
   extensionColumnCount,
 } from "../collection-schema/record-io";
+import { loadSyncSourceApps } from "../collections/sync-provenance";
 import { type EventActor, SYSTEM_ACTOR } from "../domain-events/emit";
 import { emitDomainEventsBulk } from "../domain-events/emit-bulk";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
@@ -27,8 +28,13 @@ import { buildCreateDiff } from "./create-diff";
 import { buildRecordDataValidator } from "./validate";
 import { collectMemberUserIds } from "./validate-members";
 
-/** Parameters the registry INSERT binds per row (see step 2 below). */
-const REGISTRY_PARAMS_PER_ROW = 13;
+/**
+ * Parameters the registry INSERT binds per row (see step 2 below). Fifteen
+ * since the sync provenance columns joined it (`external_id`,
+ * `sync_source_id`) — it is bound on every row whether or not a sync is
+ * involved, because a multi-row INSERT has one column list.
+ */
+const REGISTRY_PARAMS_PER_ROW = 15;
 /** System columns `buildExtensionInsertBatch` binds per row, before the fields. */
 const EXTENSION_SYS_PARAMS = 4;
 
@@ -55,6 +61,14 @@ export const recordWriteChunkSize = (
 export interface BulkCreateRow {
   data: Record<string, unknown>;
   relations?: RecordRelationInput[];
+  /**
+   * The upstream row's own id, for a record a `table` sync source creates. It
+   * is the upsert key of every later run (`collection_records_sync_external_uniq`
+   * over `(sync_source_id, external_id)`), so a row that lands without it can
+   * never be updated again — only duplicated. Set together with the call's
+   * `syncSourceId`; neither means anything alone.
+   */
+  externalId?: string;
 }
 
 /**
@@ -114,6 +128,21 @@ export const bulkCreateCollectionRecords = async (input: {
    * against the same table while the load is still going.
    */
   skipIndexReconcile?: boolean;
+  /**
+   * The sync source these records belong to, stamped on every row of the batch.
+   * Only a `table` source sets it: it OWNS the records it creates, which is what
+   * makes `external_id` a key and what the orphan policy acts on. A `lookup`
+   * source fills columns of records it does not own and attaches through
+   * `record_sync_state` instead.
+   */
+  syncSourceId?: string;
+  /**
+   * Let this batch fill the columns a sync source owns — the sync runner's
+   * first load. Explicit rather than derived from the actor: `connector` is
+   * also what the CSV import writes under, and an import may not overwrite a
+   * column an app feeds. See `validate.ts`.
+   */
+  allowSyncedFields?: boolean;
   actor?: EventActor;
 }): Promise<BulkCreateResult> => {
   const actor = input.actor ?? SYSTEM_ACTOR;
@@ -156,6 +185,10 @@ export const bulkCreateCollectionRecords = async (input: {
   const validator = buildRecordDataValidator({
     fieldDefs,
     strict: input.strict,
+    allowSyncedFields: input.allowSyncedFields,
+    // One query for the whole batch, and none at all when no column of this
+    // collection is synced — the map only names the app in a refusal.
+    syncSourceApps: await loadSyncSourceApps(fieldDefs),
   });
   for (const [index, raw] of input.rows.entries()) {
     try {
@@ -197,7 +230,7 @@ export const bulkCreateCollectionRecords = async (input: {
 
   // Size the chunk from what a row of THIS type actually binds: the widest of
   // the statements below is the extension insert (4 system columns + one per
-  // scalar column), and the registry insert binds a fixed 13.
+  // scalar column), and the registry insert binds a fixed 15.
   const chunkSize = recordWriteChunkSize(fieldDefs);
 
   /**
@@ -225,6 +258,11 @@ export const bulkCreateCollectionRecords = async (input: {
             createdByUserId: actor.actorUserId ?? null,
             updatedByActor: actor.actorType,
             updatedByUserId: actor.actorUserId ?? null,
+            // Read off the ORIGINAL row rather than carried through `Prepared`:
+            // validation may drop rows, and `p.index` is the only thing that
+            // still points at the caller's array after it has.
+            externalId: input.rows[p.index]?.externalId ?? null,
+            syncSourceId: input.syncSourceId ?? null,
           })),
         )
         .returning({ id: collectionRecords.id });

@@ -4,6 +4,7 @@ import { getAction, getProvider } from "../../../external-apps/registry";
 import { redis } from "../../../lib/redis";
 import { PAGE_LIMITS, type PageValue } from "../../../schemas/pages";
 import { canonicalHash } from "../../approvals/hash";
+import { resolveResultPath } from "../../collection-sync/result-path";
 import {
   registerExternalPageQueryExecutor,
   type ExternalPageQueryExecutor,
@@ -20,26 +21,6 @@ import { getSnapshotForConnection } from "../mcp/snapshot-store";
 import { mcpCallTool } from "../mcp/transport";
 import { executeReadAction } from "./read-executor";
 import { validateActionArgs } from "./validate-args";
-
-/**
- * Walk a plain dot path (`value.items[0].rows`) into an upstream answer.
- * Property and index steps only — a path is DATA, nothing evaluates. Returns
- * undefined the moment a step finds nothing.
- */
-const resolveResultPath = (payload: unknown, path: string): unknown => {
-  let current: unknown = payload;
-  for (const match of path.matchAll(/([A-Za-z_$][\w$]*)|\[(\d+)\]/g)) {
-    if (current === null || typeof current !== "object") return undefined;
-    const property = match[1];
-    if (property !== undefined) {
-      current = Reflect.get(current, property);
-    } else if (match[2] !== undefined) {
-      current = Array.isArray(current) ? current[Number(match[2])] : undefined;
-    }
-    if (current === undefined) return undefined;
-  }
-  return current;
-};
 
 /**
  * The page-dataset implementation of `ExternalPageQueryExecutor` — a READ over

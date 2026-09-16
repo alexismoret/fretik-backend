@@ -53,6 +53,7 @@ import {
 } from "@fretik/shared/services/external-apps/mcp/snapshot-store";
 import { isOrgAdmin } from "@fretik/shared/services/organization/member-role";
 import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
+import { z } from "zod";
 
 /**
  * `/external-apps/connect-session` + `/external-apps/connections/*` — the
@@ -115,24 +116,59 @@ const toDto = (row: ExternalAppConnection): ExternalAppConnectionResponse => ({
  * current snapshot so Settings → Tool permissions can render a per-tool policy
  * row (the static provider catalogue has no MCP actions). A connection still
  * preparing / errored has no snapshot, so `actions` stays null.
+ *
+ * `includeSignatures` is the same opt-in as `GET /providers`: a caller that
+ * has to BUILD a call — the sync composer, generating an argument form from
+ * `params` — asks for it; the permissions list, which only needs a name and a
+ * level, does not pay for a parameter tree per tool. Reads only, for the same
+ * reason there: a write is composed by the approval path.
  */
 const toConnectionDto = async (
   row: ExternalAppConnection,
+  options?: { includeSignatures?: boolean },
 ): Promise<ExternalAppConnectionResponse> => {
   const base = toDto(row);
   if (!isMcpConnection(row)) return base;
   const snapshot = await getSnapshotForConnection(row);
   if (snapshot === undefined) return base;
+  const withSignatures = options?.includeSignatures === true;
   const actions: ConnectionActionEntry[] = snapshot.descriptor.actions.map(
-    (a) => ({
-      name: a.name,
-      kind: a.kind,
-      summary: a.summary,
-      defaultLevel: a.approvalDefault,
-    }),
+    (a) => {
+      const entry = {
+        name: a.name,
+        kind: a.kind,
+        summary: a.summary,
+        defaultLevel: a.approvalDefault,
+      };
+      if (!withSignatures || a.kind !== "read") return entry;
+      // Spread — `exactOptionalPropertyTypes` keeps an explicit `undefined`
+      // distinct from an absent key. An MCP descriptor declares no pagination
+      // (`tools/list` has nowhere to say it), so those three are usually gone
+      // and a sync over this action honestly reports "one call".
+      return {
+        ...entry,
+        params: a.params,
+        returns: a.returns,
+        ...(a.pagination === undefined ? {} : { pagination: a.pagination }),
+        ...(a.batch === undefined ? {} : { batch: a.batch }),
+        ...(a.incremental === undefined ? {} : { incremental: a.incremental }),
+      };
+    },
   );
   return { ...base, actions };
 };
+
+/**
+ * Shared by the two routes that RETURN a connection to a caller who may be
+ * about to configure one. The write routes keep the lean DTO.
+ */
+const signatureQuerySchema = z.object({
+  // Query params arrive as strings; only the literal "true" opts in.
+  includeSignatures: z
+    .string()
+    .optional()
+    .transform((value) => value === "true"),
+});
 
 // ---- Routes ---------------------------------------------------------
 
@@ -239,8 +275,9 @@ const listRoute = createRoute({
   path: "/connections",
   summary: "List external-app connections the caller can use",
   description:
-    "Returns every team-scoped connection (shared with everyone in the team) plus the caller's user-scoped connections. Newest first.",
+    "Returns every team-scoped connection (shared with everyone in the team) plus the caller's user-scoped connections. Newest first. `includeSignatures=true` adds `params` / `returns` (and any declared pagination, batch or incremental capability) to the READ actions of an MCP connection's snapshot, so a form can be generated from them.",
   tags: ["ExternalApps"],
+  request: { query: signatureQuerySchema },
   responses: {
     200: {
       content: {
@@ -259,8 +296,10 @@ const getOneRoute = createRoute({
   method: "get",
   path: "/connections/{id}",
   summary: "Fetch a single connection",
+  description:
+    "`includeSignatures=true` adds the READ actions' `params` / `returns` and sync capabilities, as on the list route.",
   tags: ["ExternalApps"],
-  request: { params: paramsIdSchema },
+  request: { params: paramsIdSchema, query: signatureQuerySchema },
   responses: {
     200: {
       content: {
@@ -539,8 +578,11 @@ connectionsRoutes.openapi(listRoute, async (c) => {
   const user = c.get("user");
   if (!user) return c.json(forbidden("Authentication required"), 403);
 
+  const { includeSignatures } = c.req.valid("query");
   const rows = await listConnections(team.id, user.id);
-  const connections = await Promise.all(rows.map(toConnectionDto));
+  const connections = await Promise.all(
+    rows.map((row) => toConnectionDto(row, { includeSignatures })),
+  );
   return c.json({ connections }, 200);
 });
 
@@ -551,8 +593,9 @@ connectionsRoutes.openapi(getOneRoute, async (c) => {
   if (!user) return c.json(forbidden("Authentication required"), 403);
 
   const { id } = c.req.valid("param");
+  const { includeSignatures } = c.req.valid("query");
   const row = await getConnectionForCaller(id, team.id, user.id);
-  return c.json(await toConnectionDto(row), 200);
+  return c.json(await toConnectionDto(row, { includeSignatures }), 200);
 });
 
 connectionsRoutes.openapi(updateRoute, async (c) => {

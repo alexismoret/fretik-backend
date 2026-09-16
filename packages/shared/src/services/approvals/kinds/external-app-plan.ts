@@ -6,8 +6,10 @@ const iso = (d: Date | null): string => (d ?? new Date()).toISOString();
 
 /**
  * `external_app_plan` — a `run_plan([...])` write plan executed via Nango on
- * grant. `executePlan` writes partial results incrementally and marks the row
- * `consumed`; the sandbox wire shape is the raw per-op result array.
+ * grant. `executePlan` writes partial results incrementally, then closes the
+ * row `consumed` — or `failed` when nothing was written, so the agent can
+ * fix its payload and re-issue the identical call (`exec/plan-outcome.ts`).
+ * Either way the sandbox wire shape is the raw per-op result array.
  */
 export const externalAppPlanHandler: ApprovalKindHandler = {
   kind: "external_app_plan",

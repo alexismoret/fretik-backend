@@ -4,7 +4,7 @@ import type {
 } from "../../../db/schema";
 import { isRecord } from "../../../external-apps/json-access";
 import { getAction } from "../../../external-apps/registry";
-import { markConsumed, updatePartialResult } from "../../approvals/complete";
+import { updatePartialResult } from "../../approvals/complete";
 import { requireNangoRef } from "../connections/nango-ref";
 import { resolveConnection } from "../connections/resolve";
 import { buildRequest } from "./build-request";
@@ -14,6 +14,7 @@ import { extractFrameworkArgs } from "./framework-args";
 import { callHttpDirect } from "./http-direct";
 import { executeMcpWriteOp } from "./mcp-plan";
 import { callNangoProxy } from "./nango-proxy";
+import { finalizePlanRow } from "./plan-outcome";
 
 /**
  * Execute every operation of a granted (now `executing`) approval, with
@@ -26,8 +27,10 @@ import { callNangoProxy } from "./nango-proxy";
  *    mid-plan leaves a partial result on the row. A re-run lands on
  *    `executing`, the dispatcher surfaces `EXTERNAL_APP_PLAN_EXECUTING`
  *    with the partial trace, never a silent NULL.
- *  - On all-done, `markConsumed` transitions the row to its terminal
- *    state with the full result attached.
+ *  - On all-done, `finalizePlanRow` transitions the row to its terminal
+ *    state with the full result attached — `consumed`, or `failed` when
+ *    nothing was written (see `plan-outcome.ts` for why that distinction
+ *    is load-bearing rather than cosmetic).
  */
 
 const CONCURRENCY = 3;
@@ -53,6 +56,8 @@ export const executePlan = async (params: {
     { length: operations.length },
     () => null,
   );
+  /** Op indices whose failure does NOT prove nothing was written. */
+  const indeterminate = new Set<number>();
 
   const runOne = async (index: number): Promise<void> => {
     const op = operations[index];
@@ -154,6 +159,13 @@ export const executePlan = async (params: {
       results[index] = { ok: true, data: safeData };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      // A transfer that ran out of wall clock may have been accepted by the
+      // far end first, so "this wrote nothing" is a guess here and nowhere
+      // else. Matched on the NAME, not the class: `shared` must not import
+      // `providers`. Read by `finalizePlanRow` to warn before a retry.
+      if (error instanceof Error && error.name === "TransferDeadlineError") {
+        indeterminate.add(index);
+      }
       results[index] = { ok: false, error: message };
     } finally {
       // Persist what we have so far — partial result survives a crash.
@@ -181,6 +193,6 @@ export const executePlan = async (params: {
   const finalResults: ToolApprovalOpResult[] = results.map(
     (r) => r ?? { ok: false, error: "operation skipped" },
   );
-  await markConsumed(params.approval.id, finalResults);
+  await finalizePlanRow(params.approval.id, finalResults, indeterminate);
   return finalResults;
 };

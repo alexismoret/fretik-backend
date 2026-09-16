@@ -8,11 +8,19 @@ import { getAction } from "./registry";
  * `lookupHash` — the gate key for a write-action plan.
  *
  * sha256 over the plan's operations after stripping every param marked
- * `excludeFromHash: true` in the manifest (volatile free-text bodies, …).
+ * `excludeFromHash: true` in the manifest (volatile free-text bodies, …) and
+ * replacing every `hashAsDigest: true` one with a hash of its value.
  * Frozen at pending-creation; matched on re-run so the agent's re-executed
  * code finds the same grant. Modifying a stable field changes the hash and
  * correctly forces a fresh approval; regenerating an excluded field (a
  * message body) does not.
+ *
+ * The two flags differ in what a CHANGE means. A dropped field makes two
+ * different writes to the same target indistinguishable, so the second
+ * matches the first's consumed row and is replayed — reported as a success
+ * that never ran. That is fine for a body nobody diffs, and wrong for
+ * payload: `hashAsDigest` keeps the no-re-prompt property for a byte-identical
+ * re-send while making different content a different plan.
  *
  * Order-significant: the operations array's order is part of the hash —
  * `[reply, send]` and `[send, reply]` are distinct plans.
@@ -29,6 +37,10 @@ const stripExcluded = (
       // Param not declared by the manifest (would be rejected by validation
       // upstream) — keep it so the hash still discriminates.
       result[key] = value;
+      continue;
+    }
+    if (spec.hashAsDigest) {
+      result[key] = canonicalHash(value);
       continue;
     }
     if (spec.excludeFromHash) continue;

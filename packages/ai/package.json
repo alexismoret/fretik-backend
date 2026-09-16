@@ -23,6 +23,7 @@
     "evals:pages-compare": "bun run evals/page-compare.ts",
     "evals:transport-smoke": "bun run evals/transport-smoke.ts",
     "check": "bun run typecheck && bun run lint && bun run format:check",
+    "measure:run-latency": "bun run scripts/measure-run-latency.ts",
     "langfuse:seed-prompts": "bun run scripts/seed-langfuse-prompts.ts",
     "pages:measure-writes": "bun run scripts/measure-page-writes.ts",
     "langfuse:triage-cases": "bun run scripts/triage-eval-cases.ts",

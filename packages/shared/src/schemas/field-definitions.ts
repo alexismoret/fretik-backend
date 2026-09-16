@@ -169,6 +169,12 @@ export const fieldDefinitionResponseSchema = z.object({
   isTitle: z.boolean(),
   enabled: z.boolean(),
   displayOrder: z.number().int(),
+  // The sync source filling this field, when one does. Carried for the same
+  // reason as the index bookkeeping below — this schema describes the WHOLE
+  // row, and `/internal/pre-extract` ships stored definitions over HTTP. It
+  // also happens to be what tells pre-extract not to propose a value for a
+  // column an app owns. Defaulted, so no caller has to send it.
+  syncSourceId: z.uuid().nullable().default(null),
   // Index bookkeeping, carried so this schema still describes the whole row —
   // `/internal/pre-extract` ships stored field definitions over HTTP and types
   // them from here. Defaulted, so no caller has to send them.

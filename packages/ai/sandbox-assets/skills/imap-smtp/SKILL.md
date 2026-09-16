@@ -1,7 +1,7 @@
 ---
 name: imap-smtp
 description: Email over IMAP/SMTP — read, search, and send email on the user's connected mailbox for any standards-based provider (Gmail app password, OVH, Fastmail, custom servers, …).
-version: dfe6d94f548a
+version: 4d172c47f2de
 ---
 
 # Email (IMAP/SMTP) — 19 actions

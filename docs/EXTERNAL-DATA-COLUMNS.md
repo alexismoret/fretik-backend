@@ -100,7 +100,7 @@ système SQL existant, et comment gérer formules, index, pages, workflows ?
   (`workflow-trigger-sweep`), avec deux gardes anti-boucle
   (`isWorkflowOriginated`, `isImportedRecord`).
 - Déjà réservés mais **inutilisés** : `collection_records.source =
-  'connector'`, `domain_event_actor = 'connector'`, `worker_cursors`, le
+'connector'`, `domain_event_actor = 'connector'`, `worker_cursors`, le
   ledger `bulk_operations` (exactly-once par chunk). Aucune notion de clé
   externe, de curseur de sync ni de `synced_at`.
 - Le chatbot lit les vraies tables via `AI_DB_READONLY_URL` + RLS
@@ -127,16 +127,16 @@ système SQL existant, et comment gérer formules, index, pages, workflows ?
   `withConnectionSlot` (verrou Redis pour les connexions `serial`), Nango
   gère les credentials et 3 retries sur 5xx/429, deadline 50 s.
 - **Les pages ont déjà une source `external`** (`pages/sources/external.ts`
-  + `exec/page-query.ts`) : cache Redis par `(connexion, opération, args,
-  resultPath)` avec TTL 15 s–900 s (défaut 60), single-flight en mémoire,
-  budget de 120 questions distinctes/min/connexion, attente 45 s avec la
-  réponse tardive qui remplit quand même le cache, budget de 90 s par
-  rendu. Les colonnes sont **inférées** depuis 20 lignes
-  (`inferExternalFields`) et marquées `sortable: false`. Le commentaire de
-  tête dit explicitement : « WHAT THIS IS NOT FOR: large volumes… the
-  documented path for real volume is a workflow syncs the data into a
-  collection ». La publication d'une page avec dataset externe est refusée
-  (`pagePublishError`).
+  - `exec/page-query.ts`) : cache Redis par `(connexion, opération, args,
+resultPath)` avec TTL 15 s–900 s (défaut 60), single-flight en mémoire,
+    budget de 120 questions distinctes/min/connexion, attente 45 s avec la
+    réponse tardive qui remplit quand même le cache, budget de 90 s par
+    rendu. Les colonnes sont **inférées** depuis 20 lignes
+    (`inferExternalFields`) et marquées `sortable: false`. Le commentaire de
+    tête dit explicitement : « WHAT THIS IS NOT FOR: large volumes… the
+    documented path for real volume is a workflow syncs the data into a
+    collection ». La publication d'une page avec dataset externe est refusée
+    (`pagePublishError`).
 - Le chemin chatbot/sandbox n'est **pas caché** ; aucune table ne stocke de
   données tirées d'une app ; les syncs Nango ne sont pas utilisés ; le seam
   `ExternalAppTrigger` (`mode: webhook|poll`) est déclaré dans l'IR et vide
@@ -161,18 +161,18 @@ système SQL existant, et comment gérer formules, index, pages, workflows ?
 
 ## 2. Ce que font les autres (recherche externe, synthèse)
 
-| Produit | Modèle | Ce qu'on y perd / ce qu'on y gagne |
-| --- | --- | --- |
-| Salesforce Connect (external objects, OData / Apex adapter) | **Fédération live** par requête | Pas de formule, pas de roll-up, pas de `GROUP BY` ni d'agrégats, 4 jointures max, 1 000 lignes en sous-requête, tri délégué à la source ; 20 k callouts/h historiquement ; licence ≈ 4 000 $/mois par source de données |
-| Salesforce Data Cloud « zero copy » | Fédération vers un lakehouse, avec un mode **cache accéléré** recommandé par Salesforce lui-même | Pushdown vers Snowflake/BigQuery, pas vers des API SaaS ; les données ne sont pas des objets CRM |
-| Power BI | Import vs DirectQuery vs composite | DirectQuery : 1 M lignes, DAX restreint, pas de table calculée, 30–200 connexions max ; la réponse de Microsoft est l'hybride (Dual, agrégations pré-matérialisées) |
-| Airtable Sync | **Matérialisation** one-way, 5 min à 1 h | Champs synchronisés en lecture seule ; l'utilisateur ajoute formules, lookups et champs locaux à côté |
-| Coda Packs sync tables | Matérialisation avec schéma déclaré par le pack, `continuation` de pagination, 1 min par appel, 10 k lignes, manuel / horaire / quotidien ; two-way via `mutable` + `executeUpdate` par lots | La référence la plus propre pour la forme (A) |
-| Notion synced DB, Baserow data sync, Glide | Matérialisation | Read-only, plafonds de lignes (Notion 20 k), types aplatis (Baserow : texte/nombre/date/booléen seulement) |
-| HubSpot Data Sync, Attio, Folk, Twenty | ETL dans leur propre base (Ops Hub, Segment, reverse-ETL) | Aucun n'a de type d'attribut « live » |
-| NocoDB, Budibase | Live, **mais uniquement sur des bases SQL** | Le pushdown est total parce que la source est indexée |
-| Retool, Softr | Live sur API avec cache (Softr : 24 h) | Softr pousse sa propre base dès qu'il y a du trafic (Airtable : 5 req/s) |
-| Trino, FDW Postgres (Multicorn, Steampipe, Supabase Wrappers) | Fédération avec pushdown **spécifique à chaque connecteur** | Steampipe met un cache de 5 min par défaut ; Supabase Stripe FDW ne pousse le filtre que sur certaines colonnes ; « large result sets may experience slower performance » |
+| Produit                                                       | Modèle                                                                                                                                                                                       | Ce qu'on y perd / ce qu'on y gagne                                                                                                                                                                                      |
+| ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Salesforce Connect (external objects, OData / Apex adapter)   | **Fédération live** par requête                                                                                                                                                              | Pas de formule, pas de roll-up, pas de `GROUP BY` ni d'agrégats, 4 jointures max, 1 000 lignes en sous-requête, tri délégué à la source ; 20 k callouts/h historiquement ; licence ≈ 4 000 $/mois par source de données |
+| Salesforce Data Cloud « zero copy »                           | Fédération vers un lakehouse, avec un mode **cache accéléré** recommandé par Salesforce lui-même                                                                                             | Pushdown vers Snowflake/BigQuery, pas vers des API SaaS ; les données ne sont pas des objets CRM                                                                                                                        |
+| Power BI                                                      | Import vs DirectQuery vs composite                                                                                                                                                           | DirectQuery : 1 M lignes, DAX restreint, pas de table calculée, 30–200 connexions max ; la réponse de Microsoft est l'hybride (Dual, agrégations pré-matérialisées)                                                     |
+| Airtable Sync                                                 | **Matérialisation** one-way, 5 min à 1 h                                                                                                                                                     | Champs synchronisés en lecture seule ; l'utilisateur ajoute formules, lookups et champs locaux à côté                                                                                                                   |
+| Coda Packs sync tables                                        | Matérialisation avec schéma déclaré par le pack, `continuation` de pagination, 1 min par appel, 10 k lignes, manuel / horaire / quotidien ; two-way via `mutable` + `executeUpdate` par lots | La référence la plus propre pour la forme (A)                                                                                                                                                                           |
+| Notion synced DB, Baserow data sync, Glide                    | Matérialisation                                                                                                                                                                              | Read-only, plafonds de lignes (Notion 20 k), types aplatis (Baserow : texte/nombre/date/booléen seulement)                                                                                                              |
+| HubSpot Data Sync, Attio, Folk, Twenty                        | ETL dans leur propre base (Ops Hub, Segment, reverse-ETL)                                                                                                                                    | Aucun n'a de type d'attribut « live »                                                                                                                                                                                   |
+| NocoDB, Budibase                                              | Live, **mais uniquement sur des bases SQL**                                                                                                                                                  | Le pushdown est total parce que la source est indexée                                                                                                                                                                   |
+| Retool, Softr                                                 | Live sur API avec cache (Softr : 24 h)                                                                                                                                                       | Softr pousse sa propre base dès qu'il y a du trafic (Airtable : 5 req/s)                                                                                                                                                |
+| Trino, FDW Postgres (Multicorn, Steampipe, Supabase Wrappers) | Fédération avec pushdown **spécifique à chaque connecteur**                                                                                                                                  | Steampipe met un cache de 5 min par défaut ; Supabase Stripe FDW ne pousse le filtre que sur certaines colonnes ; « large result sets may experience slower performance »                                               |
 
 Trois patterns réutilisables ressortent :
 
@@ -238,7 +238,7 @@ collection_sync_sources
   created_by_user_id, timestamps
 ```
 
-- **kind = `table`** (forme A) : la source *possède* la collection. Les champs
+- **kind = `table`** (forme A) : la source _possède_ la collection. Les champs
   mappés sont créés par elle, en lecture seule ; l'utilisateur ajoute des
   champs locaux (formule, relation, rollup, notes) qui survivent aux syncs.
   Chaque record porte un id externe.
@@ -267,7 +267,7 @@ douane » venue d'Akanea).
   frontend, et formules/filtres/index continuent de raisonner sur le type
   réel.
 - `record_sync_state (record_id, sync_source_id, synced_at, content_hash,
-  status 'ok'|'error'|'missing', error, attempts)` : l'état par ligne et par
+status 'ok'|'error'|'missing', error, attempts)` : l'état par ligne et par
   source. Sert au diff (ne rien réécrire d'inchangé, donc aucun
   `domain_events`, aucune ré-indexation de carte sémantique), au
   rafraîchissement incrémental (les plus périmés d'abord), à l'affichage
@@ -275,16 +275,54 @@ douane » venue d'Akanea).
 
 ### 3.4 Le moteur de sync
 
-Nouvelle file BullMQ `external-sync` (concurrence 2–4, jamais sur la file
-maintenance à concurrence 1, même raison que `mcp-refresh`). Trois
-déclencheurs :
+**BullMQ et non Trigger.dev, et ce n'est pas une préférence.** Les deux rails
+existent dans le dépôt et la ligne de partage actuelle est cohérente :
+Trigger.dev exécute les runs d'agent durables, longs et visibles par
+l'utilisateur, avec humain dans la boucle ; BullMQ exécute la plomberie
+d'infrastructure qui écrit en base. Trois faits tranchent pour ce moteur.
 
-1. **Planifié** : un job répétable par source (`schedulers.ts`), intervalle
-   minimal 15 min, jitter pour étaler les équipes. Cadences proposées dans
+- **Les tasks Trigger.dev ne peuvent pas atteindre la base.** C'est délibéré
+  et écrit en tête de `packages/workflows/src/tasks/workflow-run.ts` : faire
+  tourner la boucle agent dans la task obligerait à exposer publiquement
+  Postgres, Redis et E2B. Les deux tasks existantes ne font que des appels
+  HTTP vers le service AI. Or un run de sync est à 90 % du travail base de
+  données, en chunks. L'y mettre voudrait dire exposer la base, ou inventer
+  une surface d'endpoints internes avec un aller-retour HTTP par lot.
+- **Le registre de providers est déjà dans le conteneur jobs.**
+  `@fretik/providers` y est en dépendance et dans le Dockerfile ; il manque
+  seulement l'import à effet de bord au boot. Le package `@fretik/workflows`
+  ne l'a pas, et l'y ajouter ferait entrer imapflow, nodemailer,
+  ews-javascript-api et ssh2-sftp-client dans le build Trigger.dev.
+- **Le verrou de connexion traverse trois processus.**
+  `withConnectionSlot` est pris côté API pour un rendu de page, côté AI pour
+  une lecture sandbox, et ici. Le `concurrencyKey` de Trigger.dev ne
+  sérialise que des runs Trigger et ne verrait pas le rendu de page : le lock
+  Redis reste nécessaire de toute façon.
+
+Ce que Trigger.dev fait mieux et qu'on ne prend pas : l'exécution durable à
+travers un déploiement, à laquelle le ledger `bulk_operations` répond ; le
+dashboard de runs, dont l'équivalent produit est la table
+`collection_sync_runs` ; la progression temps réel, qu'un polling sur cette
+même table couvre. Un cron ne descend pas non plus sous la minute, alors que
+les sweeps à 15 s restent BullMQ quoi qu'il arrive.
+
+Donc : nouvelle file BullMQ `external-sync`, concurrence 3, jamais sur la file
+maintenance à concurrence 1, même raison que `mcp-refresh` et
+`collection-index-sweep`. Trois déclencheurs :
+
+1. **Planifié** : un sweep à la minute réclame les sources échues
+   (`next_run_at <= now()`) et les met en file, exactement comme
+   `workflow-trigger-sweep` le fait pour les événements. **Pas un job
+   répétable par source** : ces objets vivent dans Redis, alors que la
+   planification d'une source appartient à la base qui possède déjà la
+   source. Un Redis vidé coûte alors un cycle, pas une sync silencieusement
+   morte, et il n'y a aucun objet de planification à créer ou détruire à
+   chaque source. La colonne `claimed_at` empêche deux replicas de
+   double-réclamer. Intervalle minimal 15 min. Cadences proposées dans
    l'UI : 15 min / 1 h / 6 h / 24 h / manuel (Airtable et Coda se tiennent
    là).
 2. **À la demande** : bouton « Rafraîchir » sur la collection ou le champ,
-   outil `manageCollection` du chatbot, et *à l'ouverture* de la collection
+   outil `manageCollection` du chatbot, et _à l'ouverture_ de la collection
    si `last_success_at` est plus vieux que `onOpenIfOlderThanMinutes`
    (déclenchement asynchrone : la page s'affiche avec les données
    matérialisées, le rafraîchissement arrive derrière et la liste se
@@ -336,7 +374,7 @@ Par ordre d'efficacité :
    C'est le mode par défaut à proposer dans l'UI quand l'action `list`
    existe ; le `get` unitaire est le repli.
 2. **Déclaration `batch` dans le manifeste** (phase 0) : `batch: { param:
-   "ids", maxItems: 20 }` sur une action de lecture qui accepte une liste
+"ids", maxItems: 20 }` sur une action de lecture qui accepte une liste
    (`ftp-sftp.get_entries` aujourd'hui, Graph `$batch` demain pour Outlook,
    Pbyp `query_items` avec `filter: {id: {_in: […]}}`). Le runner groupe.
 3. **Diff par hash** : une valeur inchangée ne produit ni `UPDATE`, ni
@@ -363,25 +401,25 @@ jamais une latence subie.
 
 ### 3.6 Mapping des types : `ParamSpec` → type de champ
 
-| `ParamSpec.type` | Champ | Remarque |
-| --- | --- | --- |
-| `string` | `text` (ou `url`/`phone` si le nom le suggère, proposé, pas imposé) | |
-| `integer`, `number` | `number` | |
-| `boolean` | `boolean` | |
-| `email` | `email` | |
-| `date` | `date` (`hasTime: false`) | |
-| `datetime` | `date` (`hasTime: true`) | |
-| `enum` | `select` avec `options` = `values` | couleurs par `fillOptionColors` |
-| `array` de `string`/`enum` | `multi_select` (`freeform: true`) | |
-| `object` | aplati un niveau : `address.city` → champ `address_city` ; l'utilisateur coche les sous-chemins | la même logique que `resultPath` |
-| `array` d'`object` | non mappable en V1 (proposer une seconde source `table` sur l'action de détail, ou une relation) | |
-| MCP `{fields: {}}` / Pbyp libre | inférence sur échantillon (réutiliser `inferExternalFields`), puis confirmation utilisateur | type `unknown` → `text` |
+| `ParamSpec.type`                | Champ                                                                                            | Remarque                         |
+| ------------------------------- | ------------------------------------------------------------------------------------------------ | -------------------------------- |
+| `string`                        | `text` (ou `url`/`phone` si le nom le suggère, proposé, pas imposé)                              |                                  |
+| `integer`, `number`             | `number`                                                                                         |                                  |
+| `boolean`                       | `boolean`                                                                                        |                                  |
+| `email`                         | `email`                                                                                          |                                  |
+| `date`                          | `date` (`hasTime: false`)                                                                        |                                  |
+| `datetime`                      | `date` (`hasTime: true`)                                                                         |                                  |
+| `enum`                          | `select` avec `options` = `values`                                                               | couleurs par `fillOptionColors`  |
+| `array` de `string`/`enum`      | `multi_select` (`freeform: true`)                                                                |                                  |
+| `object`                        | aplati un niveau : `address.city` → champ `address_city` ; l'utilisateur coche les sous-chemins  | la même logique que `resultPath` |
+| `array` d'`object`              | non mappable en V1 (proposer une seconde source `table` sur l'action de détail, ou une relation) |                                  |
+| MCP `{fields: {}}` / Pbyp libre | inférence sur échantillon (réutiliser `inferExternalFields`), puis confirmation utilisateur      | type `unknown` → `text`          |
 
 Un objet `money` amont (`amount` + `currency`) se mappe sur le type `money`
 existant via deux chemins. Les identifiants externes vers d'autres objets de
 la même app (ex. `shipper_id`) peuvent, en V2, se mapper sur une `relation`
 vers une autre collection synchronisée de la même connexion, résolue par
-`external_id` : c'est l'équivalent Fretik de l'*external lookup* Salesforce,
+`external_id` : c'est l'équivalent Fretik de l'_external lookup_ Salesforce,
 et le moment où le CRM devient un graphe. Hors V1.
 
 ### 3.7 Alternatives écartées
@@ -404,6 +442,11 @@ et le moment où le CRM devient un graphe. Hors V1.
   records ; mais on perdrait le contrôle du schéma, du typage, de la RLS et
   du journal, et les providers `custom-handler` / `http-direct` n'y
   passeraient pas. On garde Nango comme coffre-fort, rien de plus.
+- **Trigger.dev pour le moteur** : écarté pour les trois raisons de §3.4,
+  dont la première est structurelle et non contournable sans changer la
+  topologie réseau.
+- **Un job répétable BullMQ par source** : écarté au profit du sweep sur
+  `next_run_at` (§3.4), qui garde la base comme source de vérité.
 - **Laisser le workflow faire** (statu quo) : voir §0 point 10.
 
 ---
@@ -442,7 +485,7 @@ et le moment où le CRM devient un graphe. Hors V1.
 ### 4.3 Chatbot et outil SQL
 
 - `describe-team-schema.ts` : ajouter par collection `syncedFrom: { app,
-  operation, lastSuccessAt }` et par champ `synced: true`. L'agent sait
+operation, lastSuccessAt }` et par champ `synced: true`. L'agent sait
   qu'il ne doit pas écrire ces champs et peut répondre « données Outlook de
   9 h 12 ».
 - `manageCollection` / `manageField` : actions `setSyncSource`,
@@ -523,7 +566,7 @@ chacun). Le générateur SDK/SKILL les ignore : aucun impact sur le chatbot.
 - `services/collection-sync/` : `create-source.ts`, `update-source.ts`,
   `delete-source.ts` (que faire des champs : les convertir en champs locaux
   éditables, données conservées — un `UPDATE field_definitions SET
-  sync_source_id = NULL`), `preview.ts` (échantillon 20 lignes + inférence,
+sync_source_id = NULL`), `preview.ts` (échantillon 20 lignes + inférence,
   sans écrire), `run-table-sync.ts`, `run-lookup-sync.ts`, `walk-read.ts`
   (pagination générique), `project-row.ts` (mapping + hash),
   `schedule.ts`.
@@ -616,12 +659,12 @@ chacun). Le générateur SDK/SKILL les ignore : aucun impact sur le chatbot.
 
 ## 7. Phases et estimation
 
-| Phase | Contenu | Estimation | Livrable seul ? |
-| --- | --- | --- | --- |
-| **0 — Contrats** | `pagination`/`batch`/`incremental` dans le manifeste + déclaration sur les 11 providers ; `walk-read.ts` générique ; `external_id` + `record_sync_state` ; exposition `params`/`returns` sur `/providers` ; garde `connector:` dans le trigger sweep | 1 semaine | Oui : le parcours générique sert immédiatement au dataset `external` des pages (qui ne pagine pas aujourd'hui) |
-| **1 — Collection synchronisée (A)** | `collection_sync_sources`, services, runner `table`, file + scheduler, orphelins, aperçu, API, composer frontend, bandeau/refresh, `describe-team-schema`, outil `manageCollection`, publication de pages autorisée, tests d'intégration sur Postgres réel | 3 semaines | Oui, c'est la valeur principale |
-| **2 — Champ synchronisé (B)** | runner `lookup`, résolution `{"$field"}`, groupage `batch`, déclenchement sur événement via `journal-sweep`, priorité viewport, `FieldEditorDrawer`, cellules lecture seule, `SourceChip` | 2 semaines | Oui |
-| **3 — Consolidation** | Webhooks via le seam `ExternalAppTrigger` (fraîcheur quasi temps réel là où le provider le permet), relations par `external_id` entre collections d'une même app, écriture inverse avec approval, télémétrie (`usage_metrics` : appels, lignes, durée par source), connexions personnelles en `lookup` privé | 2 semaines + | Chaque item indépendant |
+| Phase                               | Contenu                                                                                                                                                                                                                                                                                                      | Estimation   | Livrable seul ?                                                                                                |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------ | -------------------------------------------------------------------------------------------------------------- |
+| **0 — Contrats**                    | `pagination`/`batch`/`incremental` dans le manifeste + déclaration sur les 11 providers ; `walk-read.ts` générique ; `external_id` + `record_sync_state` ; exposition `params`/`returns` sur `/providers` ; garde `connector:` dans le trigger sweep                                                         | 1 semaine    | Oui : le parcours générique sert immédiatement au dataset `external` des pages (qui ne pagine pas aujourd'hui) |
+| **1 — Collection synchronisée (A)** | `collection_sync_sources`, services, runner `table`, file + scheduler, orphelins, aperçu, API, composer frontend, bandeau/refresh, `describe-team-schema`, outil `manageCollection`, publication de pages autorisée, tests d'intégration sur Postgres réel                                                   | 3 semaines   | Oui, c'est la valeur principale                                                                                |
+| **2 — Champ synchronisé (B)**       | runner `lookup`, résolution `{"$field"}`, groupage `batch`, déclenchement sur événement via `journal-sweep`, priorité viewport, `FieldEditorDrawer`, cellules lecture seule, `SourceChip`                                                                                                                    | 2 semaines   | Oui                                                                                                            |
+| **3 — Consolidation**               | Webhooks via le seam `ExternalAppTrigger` (fraîcheur quasi temps réel là où le provider le permet), relations par `external_id` entre collections d'une même app, écriture inverse avec approval, télémétrie (`usage_metrics` : appels, lignes, durée par source), connexions personnelles en `lookup` privé | 2 semaines + | Chaque item indépendant                                                                                        |
 
 Total A + B avec UI : **6 semaines**, 8 avec la consolidation. Les phases 0
 et 1 se testent avec Shiptify (`list_shipments`, id stable, pagination

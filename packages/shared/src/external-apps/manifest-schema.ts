@@ -258,6 +258,88 @@ export const providerConcurrencySchema = z.object({
 });
 export type ProviderConcurrency = z.infer<typeof providerConcurrencySchema>;
 
+/**
+ * How a READ action is walked past its first answer.
+ *
+ * It exists because pagination here is genuinely not uniform and never was
+ * declared anywhere a machine could read: Front returns cursor pages
+ * (`{page: X}` + `page_token`), most providers take `limit`/`offset`, Planner
+ * and SharePoint set `paginate: true` and are walked server-side by the proxy,
+ * and Akanea has no paging at all and says so in prose. A collection sync has
+ * to pull EVERY row, so it needs that fact as data rather than as a convention
+ * in an action's name.
+ *
+ * Absent, the walker infers: `returns: {page}` → cursor with `page_token`,
+ * `paginate: true` → already whole, anything else → one call. Declaring it is
+ * how a provider corrects a wrong inference, never how it invents a capability
+ * the API lacks.
+ */
+export const actionPaginationSchema = z.object({
+  kind: z.enum([
+    /** `page_token` in, `page_token` out. */
+    "cursor",
+    /** `limit` + `offset`, where the offset counts ROWS. */
+    "offset",
+    /**
+     * `limit` + a 1-based PAGE INDEX. Not a dialect of `offset`: Directus'
+     * `page` is `1` for the first page where an offset is `0`, so walking one
+     * as the other either skips the first page or re-reads it forever. Pbyp is
+     * the case, and it is why this kind exists rather than a cast.
+     */
+    "page-number",
+    /** The executor already returns every page (`paginate: true`). */
+    "auto",
+    /** One call is all there is. Narrow the filter instead. */
+    "none",
+  ]),
+  /** Param carrying the page size. Defaults to `limit`. */
+  limitParam: z.string().optional(),
+  /** Largest page size the API accepts — asking for more is an error, not a cap. */
+  maxLimit: z.number().int().positive().optional(),
+  /** `cursor` only — param carrying the token. Defaults to `page_token`. */
+  tokenParam: z.string().optional(),
+  /** `cursor` only — key of the next token in the answer. Defaults to `page_token`. */
+  tokenPath: z.string().optional(),
+  /** `offset` only — param carrying the offset. Defaults to `offset`. */
+  offsetParam: z.string().optional(),
+  /** `page-number` only — param carrying the index. Defaults to `page`. */
+  pageParam: z.string().optional(),
+});
+export type ActionPagination = z.infer<typeof actionPaginationSchema>;
+
+/**
+ * This read accepts SEVERAL ids in one call.
+ *
+ * The one declaration that turns a per-row refresh from N calls into N/max.
+ * Only `ftp-sftp.get_entries` qualifies today; Outlook's `$batch` writes and
+ * Pbyp's `query_items(filter: {id: {_in: […]}})` are the obvious next two.
+ * Declaring it is a promise about the ANSWER too: the rows must come back in a
+ * shape the caller can re-key by id, or batching silently mixes records up.
+ */
+export const actionBatchSchema = z.object({
+  /** Param taking the id list. */
+  param: z.string().min(1),
+  /** Ids per call. */
+  maxItems: z.number().int().min(2).max(500),
+});
+export type ActionBatch = z.infer<typeof actionBatchSchema>;
+
+/**
+ * This read can be bounded to what changed since a timestamp.
+ *
+ * What turns an hourly full pull into a delta — Front's `updated_after`,
+ * Shiptify's `created_date_from`. The sync binds the source's own
+ * `lastSuccessAt` to it, and DROPS the key on the first run so the seeding
+ * pass sees everything.
+ */
+export const actionIncrementalSchema = z.object({
+  /** Param taking the lower bound. */
+  param: z.string().min(1),
+  /** Wire format the API expects for it. */
+  format: z.enum(["iso", "date", "epoch-seconds", "epoch-millis"]),
+});
+export type ActionIncremental = z.infer<typeof actionIncrementalSchema>;
+
 export const actionSchema = z.object({
   /** Snake-case action name, unique within the provider, e.g. `send_email`. */
   name: z
@@ -311,6 +393,15 @@ export const actionSchema = z.object({
    * action's result.
    */
   handler: z.string().optional(),
+  /**
+   * Read-only capability declarations, consumed by the collection-sync walker
+   * (`services/collection-sync/walk-read.ts`). None of them changes how the
+   * agent calls the action, and the SDK/SKILL generator ignores all three — a
+   * manifest that declares nothing behaves exactly as it did.
+   */
+  pagination: actionPaginationSchema.optional(),
+  batch: actionBatchSchema.optional(),
+  incremental: actionIncrementalSchema.optional(),
 });
 export type ManifestAction = z.infer<typeof actionSchema>;
 
@@ -877,6 +968,24 @@ export const providerManifestSchema = z
         });
       }
       names.add(action.name);
+
+      // The three sync capabilities describe how a READ is walked, batched or
+      // bounded. On a write they would describe nothing, and a reader that
+      // believed them would page through a side effect.
+      if (action.kind !== "read") {
+        for (const capability of [
+          "pagination",
+          "batch",
+          "incremental",
+        ] as const) {
+          if (action[capability] !== undefined) {
+            ctx.addIssue({
+              code: "custom",
+              message: `action "${action.name}" declares \`${capability}\` but is a write — those describe how a read is walked`,
+            });
+          }
+        }
+      }
 
       // Transport-specific action requirements.
       // `nango-proxy` and `http-direct` both go through the declarative

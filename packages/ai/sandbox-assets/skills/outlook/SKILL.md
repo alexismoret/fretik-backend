@@ -1,7 +1,7 @@
 ---
 name: outlook
 description: Microsoft Outlook — read and send email, organize mail folders, and manage calendar events and contacts on the user's connected Outlook account.
-version: fd2da5f63d6e
+version: 86e604fdc007
 ---
 
 # Microsoft Outlook — 38 actions

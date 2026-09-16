@@ -82,7 +82,7 @@ guaranteed and does not need to be.
 | **verify / codegen** | CI `check` job + husky                             | package scripts                            | `db:check`, `file-types:sync --check`, `measure:tokens`, `lint-migrations`                   |
 | **migrations**       | service boot, `RUN_MIGRATIONS=true`                | `db/migrations.ts`                         | `drizzle/*`                                                                                  |
 | **release tasks**    | service boot, after migrations, once per `GIT_SHA` | ledger (§8)                                | `langfuse-seed-prompts`, `models-audit`                                                      |
-| **periodic**         | the jobs container                                 | BullMQ schedulers (`queues/schedulers.ts`) | model sync 00:30, bench 01:15, dreaming 03:00, GC 04:00                                      |
+| **periodic**         | the jobs container                                 | BullMQ schedulers (`queues/schedulers.ts`) | model sync 00:30, bench 01:15, dreaming 03:00, GC 04:00, collection-sync sweep every 60 s    |
 | **ad-hoc operator**  | **inside** the container, via `docker exec`        | operator guard                             | `models:admin`, `models:bench`, backfills, `memory:audit`, `grant:super-admin`, `db:migrate` |
 | **evals**            | a laptop, against a reachable non-prod service     | `evals/*`                                  | `evals:gate` — see `packages/ai/evals/RUNBOOK.md`                                            |
 | **authoring**        | a laptop, writes S3 only (never the database)      | package scripts                            | `changelog:media` — see `CHANGELOG-AUTHORING.md` in fretik-app                               |
@@ -546,7 +546,92 @@ and a reindex is pessimistic — say which it was.
 does not exist yet either; both belong to the prewarm work, and until then a
 restart leaves the index cold and the first queries slow.
 
-## 10. Nango — the credential vault
+## 10. Collection sync — external-app-fed columns
+
+The engine behind `docs/EXTERNAL-DATA-COLUMNS.md`. Operationally it is one more
+BullMQ queue, and everything a team can see about it lives in its own tables,
+not in a dashboard.
+
+### The rails
+
+| Piece             | Where                                                                  |
+| ----------------- | ---------------------------------------------------------------------- |
+| Declarations      | `collection_sync_sources` (one row per "this app fills these columns") |
+| Run history       | `collection_sync_runs` — latest 20 per source, trimmed post-insert     |
+| Per-row freshness | `record_sync_state` (record × source, with the content hash)           |
+| Sweep             | `EXTERNAL_SYNC_SWEEP_JOB`, maintenance queue, every 60 s               |
+| Runner            | the `external-sync` queue + worker, concurrency 3, own queue           |
+| Services          | `@fretik/shared/services/collection-sync/*`                            |
+
+**Why its own queue.** One table run walks a third party page by page and can
+hold a worker for minutes. On the concurrency-1 maintenance queue that is
+head-of-line blocking for the 15 s journal and workflow-trigger sweeps — the
+same reason `mcp-refresh` and `collection-index-sweep` were moved out.
+
+**Why a sweep and not one repeatable job per source.** A repeatable job is Redis
+state; a source's schedule belongs to the database that already owns the source.
+The sweep claims what is due (`next_run_at <= now()`, `claimed_at` guarding
+against a second replica) exactly as `workflow-trigger-sweep` claims events. A
+flushed Redis costs a cycle, not a silently dead sync.
+
+**Why not Trigger.dev.** Its tasks cannot reach Postgres — deliberately, see the
+header of `packages/workflows/src/tasks/workflow-run.ts` — and a sync run is
+almost entirely database work. Full reasoning in `docs/EXTERNAL-DATA-COLUMNS.md`
+§3.4.
+
+### What the jobs container needs
+
+`@fretik/jobs` now imports `@fretik/providers` at boot for the registration side
+effect: a sync dispatches provider read actions, and the registry is populated by
+that import alone. The package was already a dependency and already in the
+Dockerfile, so this costs nothing at build time — but a jobs image built without
+it will fail every run with "unknown operation".
+
+No new secret. The sync reads through the team's existing
+`external_app_connections`, so Nango holds the credentials exactly as it does
+for the chatbot and for page datasets.
+
+### Reading the state
+
+```sql
+-- Sources that are failing, worst first.
+SELECT s.id, s.provider_key, s.operation, s.consecutive_failures,
+       s.last_error_at, left(s.last_error, 120) AS err
+FROM collection_sync_sources s
+WHERE s.consecutive_failures > 0
+ORDER BY s.consecutive_failures DESC, s.last_error_at DESC;
+
+-- What a source has been doing, and what it costs upstream.
+SELECT status, trigger, started_at, finished_at,
+       created_count, updated_count, unchanged_count, failed_count, upstream_calls
+FROM collection_sync_runs
+WHERE sync_source_id = '<id>'
+ORDER BY started_at DESC LIMIT 20;
+
+-- Stuck claims: a runner that died mid-flight holds `claimed_at`.
+SELECT id, provider_key, operation, claimed_at
+FROM collection_sync_sources
+WHERE claimed_at < now() - interval '30 minutes';
+```
+
+**`unchanged_count` is the number to watch.** It is the share of rows whose hash
+was identical, so nothing was written, no `domain_events` row was emitted and no
+record card was re-embedded. A source whose `unchanged_count` is near zero on
+every run is either genuinely volatile or mapping a field that changes on every
+read (a timestamp, a computed total) — the second is a mapping bug that costs an
+embedding per row per run.
+
+### Turning it off
+
+A source is disabled with `enabled = false` (the user's switch in the UI) and
+that is the whole kill switch: the sweep's index is partial on `enabled`, so a
+disabled source is not even visible to it. Disabling never deletes data. To stop
+the engine estate-wide, stop enqueueing: remove `EXTERNAL_SYNC_SWEEP_JOB` from
+`registerSchedulers` and redeploy — the worker then simply has nothing to pull.
+
+---
+
+## 11. Nango — the credential vault
 
 Self-hosted, and used for one thing: storing every external-app credential
 encrypted. `nango-proxy` providers (Outlook, SharePoint, Planner) also route

@@ -294,6 +294,7 @@ export const exchangeManifest: ProviderManifest = {
           description: "Skip the first N messages (newest-first)",
         },
       },
+      pagination: { kind: "offset", maxLimit: 100 },
       returns: { list: "Message" },
     },
     {
@@ -323,6 +324,7 @@ export const exchangeManifest: ProviderManifest = {
         limit: { type: "integer", min: 1, max: 100, default: 25 },
         offset: { type: "integer", min: 0, max: 100000, default: 0 },
       },
+      pagination: { kind: "offset", maxLimit: 100 },
       returns: { list: "Message" },
     },
     {
@@ -339,6 +341,7 @@ export const exchangeManifest: ProviderManifest = {
         limit: { type: "integer", min: 1, max: 100, default: 25 },
         offset: { type: "integer", min: 0, max: 100000, default: 0 },
       },
+      pagination: { kind: "offset", maxLimit: 100 },
       returns: { list: "Message" },
     },
     {
@@ -392,6 +395,7 @@ export const exchangeManifest: ProviderManifest = {
         limit: { type: "integer", min: 1, max: 100, default: 50 },
         offset: { type: "integer", min: 0, max: 100000, default: 0 },
       },
+      pagination: { kind: "offset", maxLimit: 100 },
       returns: { list: "CalendarEvent" },
     },
     {
@@ -415,6 +419,7 @@ export const exchangeManifest: ProviderManifest = {
         limit: { type: "integer", min: 1, max: 100, default: 50 },
         offset: { type: "integer", min: 0, max: 100000, default: 0 },
       },
+      pagination: { kind: "offset", maxLimit: 100 },
       returns: { list: "Contact" },
     },
 

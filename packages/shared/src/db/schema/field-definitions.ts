@@ -13,6 +13,7 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 import { organization, team } from "./auth-schema";
+import { collectionSyncSources } from "./collection-sync";
 import { collections } from "./collections";
 import { type FieldDefinitionConfig, FIELD_TYPES } from "./field-types";
 
@@ -79,6 +80,25 @@ export const fieldDefinitions = pgTable(
       .$type<FieldDefinitionConfig>()
       .notNull()
       .default({}),
+
+    /**
+     * The sync source that fills this field, when one does.
+     *
+     * A field carrying this is READ-ONLY to everyone but the sync runner: the
+     * record write path refuses it for a user, an agent and a page form alike
+     * (`services/collection-records/validate.ts`). The TYPE is untouched — a
+     * synced number is a `number` field over a `numeric` column, so formulas,
+     * the literal-cast filters and the on-demand indexes keep working on it
+     * exactly as they do on a hand-typed one. That is the whole design.
+     *
+     * `set null` on delete: removing a source must not destroy the columns it
+     * filled. They become ordinary local fields, keeping their data, and the
+     * user can edit them from that moment on.
+     */
+    syncSourceId: uuid("sync_source_id").references(
+      () => collectionSyncSources.id,
+      { onDelete: "set null" },
+    ),
 
     aiExtractionEnabled: boolean("ai_extraction_enabled")
       .notNull()
@@ -152,6 +172,11 @@ export const fieldDefinitions = pgTable(
     index("field_definitions_team_collection_idx")
       .on(table.teamId, table.collectionId)
       .where(sql`team_id IS NOT NULL`),
+    // "Which columns does this source fill" — read on every source
+    // serialization, every delete, and every write-path guard.
+    index("field_definitions_sync_source_idx")
+      .on(table.syncSourceId)
+      .where(sql`sync_source_id IS NOT NULL`),
   ],
 );
 

@@ -11,6 +11,10 @@ import { markTurnDiscarded } from "./discarded-turns";
  * the transcript stops being a record of anything. Three is what the big
  * assistants settle on, and it is enforced HERE rather than in the UI — the
  * frontend's disabled pencil is a courtesy, this is the rule.
+ *
+ * A RETRY does not spend it. Re-running the same question changes nothing
+ * about what was asked, so the transcript still says what it always said; the
+ * cap exists to stop the question from being rewritten, not to ration answers.
  */
 export const MAX_USER_MESSAGE_EDITS = 3;
 
@@ -21,7 +25,13 @@ export type RewindRefusal =
 export type RewindResult =
   | {
       ok: true;
-      /** The edit count the caller must stamp on the re-saved message. */
+      /**
+       * The edit count the caller must stamp on the re-saved message — read
+       * from the locked row, not from the request. Unchanged after a retry,
+       * and stamped all the same: the re-save carries client-supplied
+       * metadata, so a client that sent back `editCount: 0` would otherwise
+       * win itself three fresh edits on every retry.
+       */
       nextEditCount: number;
       /** Turn ids whose output the rewind just deleted (now unwanted). */
       discardedTurnIds: string[];
@@ -56,14 +66,25 @@ const editCountOf = (metadata: Record<string, unknown> | null): number => {
  *
  * Runs in a transaction with the anchor row locked: two tabs racing the same
  * edit must not both pass the limit check.
+ *
+ * Two callers, one rewind. An EDIT re-sends the message with new wording and
+ * spends one of its three; a RETRY re-sends it verbatim and spends nothing, so
+ * it is neither counted nor refused once the budget is gone. Both delete
+ * everything after the anchor — that part is the same operation, which is why
+ * it is one function and not two.
  */
 export const rewindConversationToUserMessage = async (params: {
   conversationId: string;
   messageId: string;
   /** Caller — must be the message's author. */
   userId: string;
+  /**
+   * `true` for an edit (new wording): checks the budget and spends one.
+   * `false` for a retry (same wording): neither checks nor spends.
+   */
+  countsAsEdit: boolean;
 }): Promise<RewindResult> => {
-  const { conversationId, messageId, userId } = params;
+  const { conversationId, messageId, userId, countsAsEdit } = params;
 
   const outcome = await db.transaction(async (tx): Promise<RewindResult> => {
     const [anchor] = await tx
@@ -91,7 +112,7 @@ export const rewindConversationToUserMessage = async (params: {
     if (anchor.authorId !== userId) {
       return { ok: false, reason: "not-the-author", editCount };
     }
-    if (editCount >= MAX_USER_MESSAGE_EDITS) {
+    if (countsAsEdit && editCount >= MAX_USER_MESSAGE_EDITS) {
       return { ok: false, reason: "limit-reached", editCount };
     }
 
@@ -115,7 +136,7 @@ export const rewindConversationToUserMessage = async (params: {
 
     return {
       ok: true,
-      nextEditCount: editCount + 1,
+      nextEditCount: countsAsEdit ? editCount + 1 : editCount,
       discardedTurnIds,
       deletedMessages: deleted.length,
     };

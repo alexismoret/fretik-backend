@@ -2476,10 +2476,19 @@ const cancelTurnForRewind = async (
   return activeStreamId;
 };
 
-/** Merge the server-owned edit bookkeeping into a re-sent message's metadata. */
-const withEditMetadata = (
+/**
+ * Merge the server-owned rewind bookkeeping into a re-sent message's metadata.
+ *
+ * `editCount` comes from the row the rewind locked and is stamped on BOTH
+ * paths, retries included, where it is simply unchanged. It has to be: the
+ * metadata underneath it is whatever the browser sent back, so a client that
+ * returned `editCount: 0` on each retry would hand itself three fresh edits
+ * every time. `editedAt` moves only when the wording did.
+ */
+const withRewindMetadata = (
   base: unknown,
   editCount: number,
+  edited: boolean,
 ): Record<string, unknown> => {
   // The client's metadata is `unknown` by the SDK's typing and arrives from a
   // browser, so anything that is not a plain object is simply replaced.
@@ -2487,7 +2496,11 @@ const withEditMetadata = (
     typeof base === "object" && base !== null && !Array.isArray(base)
       ? { ...base }
       : {};
-  return { ...existing, editCount, editedAt: new Date().toISOString() };
+  return {
+    ...existing,
+    editCount,
+    ...(edited ? { editedAt: new Date().toISOString() } : {}),
+  };
 };
 
 /** HTTP status for a refused rewind. Never 409 — see the call site. */
@@ -2549,6 +2562,7 @@ chatbotRoutes.post("/stream", async (c) => {
     mentionsAssistant,
     reasoningLevel,
     editedMessageId,
+    retriedMessageId,
   } = parsed.data;
 
   const conversation = await timeStage(
@@ -2612,24 +2626,32 @@ chatbotRoutes.post("/stream", async (c) => {
         })
       : null;
 
-  // An EDIT re-sends a message that is already in the thread, so the
-  // conversation rewinds to it before anything else happens: the turn below
-  // then answers the new wording against a history that no longer holds what
-  // the old wording produced (`loadConversationForAgent` reads the same rows).
+  // An EDIT re-sends a message already in the thread with NEW wording; a RETRY
+  // re-sends it verbatim because the user wants another answer to the same
+  // question. Either way the conversation rewinds to that message before
+  // anything else happens: the turn below then answers against a history that
+  // no longer holds what the previous attempt produced
+  // (`loadConversationForAgent` reads the same rows).
   //
   // The order here is the whole trick. Cancel first — a running turn is
   // precisely what would write into the gap the rewind opens — then delete
   // everything after the message, then let the ordinary `saveMessage` below
-  // upsert the new wording onto the same row (id, `seq` and `created_at`
-  // survive, so the bubble stays where it is and keeps its original time).
+  // upsert it onto the same row (id, `seq` and `created_at` survive, so the
+  // bubble stays where it is and keeps its original time).
+  //
+  // What the two modes do NOT share is the budget. Only an edit is counted
+  // against `MAX_USER_MESSAGE_EDITS` and only an edit can be refused for having
+  // spent it: the cap exists so the question cannot be rewritten indefinitely,
+  // and a retry rewrites nothing.
+  const rewoundMessageId = editedMessageId ?? retriedMessageId;
+  const countsAsEdit = editedMessageId !== undefined;
   let editCount: number | null = null;
-  if (editedMessageId) {
-    if (!lastUser || lastUser.id !== editedMessageId) {
+  if (rewoundMessageId) {
+    if (!lastUser || lastUser.id !== rewoundMessageId) {
       return c.json(
         {
-          code: "INVALID_EDIT",
-          message:
-            "editedMessageId must name the last user message of this request.",
+          code: "INVALID_REWIND",
+          message: `${countsAsEdit ? "editedMessageId" : "retriedMessageId"} must name the last user message of this request.`,
         },
         400,
       );
@@ -2644,8 +2666,9 @@ chatbotRoutes.post("/stream", async (c) => {
       "rewind",
       rewindConversationToUserMessage({
         conversationId,
-        messageId: editedMessageId,
+        messageId: rewoundMessageId,
         userId: user.id,
+        countsAsEdit,
       }),
     );
     if (!rewound.ok) {
@@ -2657,8 +2680,10 @@ chatbotRoutes.post("/stream", async (c) => {
           code:
             rewound.reason === "limit-reached"
               ? "EDIT_LIMIT_REACHED"
-              : "EDIT_REFUSED",
-          message: `Cannot edit this message (${rewound.reason}).`,
+              : countsAsEdit
+                ? "EDIT_REFUSED"
+                : "RETRY_REFUSED",
+          message: `Cannot ${countsAsEdit ? "edit" : "retry"} this message (${rewound.reason}).`,
           editCount: rewound.editCount,
           maxEdits: MAX_USER_MESSAGE_EDITS,
         },
@@ -2667,7 +2692,11 @@ chatbotRoutes.post("/stream", async (c) => {
     }
     editCount = rewound.nextEditCount;
     console.info(
-      `[chatbot] conversation ${conversationId} rewound to ${editedMessageId} — edit ${editCount}/${MAX_USER_MESSAGE_EDITS}, ${rewound.deletedMessages} message(s) dropped` +
+      `[chatbot] conversation ${conversationId} rewound to ${rewoundMessageId} — ` +
+        (countsAsEdit
+          ? `edit ${editCount}/${MAX_USER_MESSAGE_EDITS}`
+          : `retry (edit ${editCount}/${MAX_USER_MESSAGE_EDITS} untouched)`) +
+        `, ${rewound.deletedMessages} message(s) dropped` +
         (cancelledTurnId ? `, turn ${cancelledTurnId} discarded` : ""),
     );
   }
@@ -2683,7 +2712,7 @@ chatbotRoutes.post("/stream", async (c) => {
         metadata:
           editCount === null
             ? lastUser.metadata
-            : withEditMetadata(lastUser.metadata, editCount),
+            : withRewindMetadata(lastUser.metadata, editCount, countsAsEdit),
         authorId: user.id,
         // Keep the client's wire id (uuid via the frontend's `generateId`)
         // so the bubble the sender already rendered survives rehydration
@@ -2710,9 +2739,10 @@ chatbotRoutes.post("/stream", async (c) => {
       // — covers human-to-human asides that never start an assistant turn,
       // and lets viewers paint the sender's bubble before the answer streams.
       //
-      // An edit announces itself differently: a viewer that merely appended
-      // the message would keep the exchange the rewind just deleted sitting
-      // underneath it, so `message-edited` means "reload, don't merge".
+      // A rewind — edit or retry — announces itself differently: a viewer that
+      // merely appended the message would keep the exchange the rewind just
+      // deleted sitting underneath it, so `message-edited` means "reload,
+      // don't merge". `editCount` is non-null on exactly those two paths.
       await timeStage(
         preludeTimings,
         "publishAdded",

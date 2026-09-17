@@ -469,5 +469,20 @@ export const ChatStreamRequestSchema = z.object({
     description:
       "Thinking depth for this turn. Absent uses the team default, then the model's own default.",
   }),
+  /**
+   * This turn re-sends an EXISTING user message with new wording, so the
+   * conversation rewinds to it: the active turn is cancelled and everything
+   * after that message is deleted before the new one starts. Must be the id of
+   * the last user message in `messages` — the client truncates its own thread
+   * at the same point (`chat.sendMessage({ messageId })`), and the two halves
+   * describe one operation.
+   *
+   * Refused past `MAX_USER_MESSAGE_EDITS`, and only for the message's own
+   * author. Absent on every ordinary send.
+   */
+  editedMessageId: z.uuid().optional().openapi({
+    description:
+      "Id of the user message being re-sent with new wording. Rewinds the conversation to it.",
+  }),
 });
 export type ChatStreamRequest = z.infer<typeof ChatStreamRequestSchema>;

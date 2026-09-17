@@ -3,6 +3,7 @@ import { readUIMessageStream } from "ai";
 import { sql } from "drizzle-orm";
 import db from "../../db";
 import { aiMessages } from "../../db/schema";
+import { isTurnDiscarded } from "./discarded-turns";
 
 /**
  * Incremental turn persistence. Consumes a tee of the turn's PRE-scrub
@@ -44,6 +45,11 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
  * Upsert one in-progress assistant message. Insert wins when the row is
  * new; on conflict the update is gated on the existing row still being
  * partial (same-conversation check included, mirroring `saveMessages`).
+ *
+ * A DISCARDED turn writes nothing at all. The user rewound the conversation
+ * past this turn — its rows were deleted — so an insert here would put a
+ * stale answer back into the thread, below the message that replaced its
+ * prompt. See `discarded-turns.ts`.
  */
 export const upsertPartialMessage = async (params: {
   conversationId: string;
@@ -51,6 +57,7 @@ export const upsertPartialMessage = async (params: {
   message: UIMessage;
 }): Promise<void> => {
   const { conversationId, turnId, message } = params;
+  if (await isTurnDiscarded(turnId)) return;
   const metadata: Record<string, unknown> = {
     ...(isRecord(message.metadata) ? message.metadata : {}),
     partial: true,

@@ -27,7 +27,6 @@ const previewResponseSchema = z.object({
   organizationLogo: z.string().nullable().optional(),
   inviterName: z.string().optional(),
   inviterImage: z.string().nullable().optional(),
-  teamId: z.string().nullable().optional(),
   teamName: z.string().nullable().optional(),
   expiresAt: z.date().optional(),
   hasAccount: z.boolean().optional(),

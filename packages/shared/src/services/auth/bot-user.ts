@@ -14,7 +14,30 @@
 import { eq, sql } from "drizzle-orm";
 import db from "../../db";
 import { member, team, teamMember, teamSettings, user } from "../../db/schema";
-import { teamMembershipKey } from "../../lib/team-membership-key";
+
+/**
+ * Better Auth 1.7's `team_member.membership_key`:
+ * base64url(sha256(JSON.stringify([teamId, userId]))), unpadded.
+ *
+ * Recomputed here because the bot user is inserted directly rather than
+ * through Better Auth's `addTeamMember` — see the call site. A NULL key would
+ * work (lookups fall back to the (teamId, userId) pair) but would leave the
+ * single-column uniqueness boundary unenforced for exactly the row we control.
+ */
+const teamMembershipKey = async (
+  teamId: string,
+  userId: string,
+): Promise<string> => {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(JSON.stringify([teamId, userId])),
+  );
+  return Buffer.from(digest)
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+};
 
 /**
  * Deterministic email used for a team's bot user. Non-routable domain so the

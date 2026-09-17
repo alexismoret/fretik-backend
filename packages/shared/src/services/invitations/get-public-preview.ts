@@ -1,8 +1,7 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 
 import db from "../../db";
-import { user } from "../../db/schema";
-import { findOrganizationMemberByEmail } from "../organization/find-member-by-email";
+import { member, user } from "../../db/schema";
 
 /**
  * Public-safe projection of an organization invitation, shown on the
@@ -21,7 +20,6 @@ export interface PublicInvitationPreview {
   organizationLogo?: string | null;
   inviterName?: string;
   inviterImage?: string | null;
-  teamId?: string | null;
   teamName?: string | null;
   expiresAt?: Date;
   /**
@@ -39,13 +37,39 @@ export interface PublicInvitationPreview {
   alreadyMember?: boolean;
 }
 
-const hasAccountForEmail = async (email: string): Promise<boolean> => {
+/**
+ * The account behind an address, and whether it already belongs to the
+ * inviting organization.
+ *
+ * Read here rather than through the organization plugin's adapter because this
+ * runs on a PUBLIC Hono route, outside any Better Auth endpoint — there is no
+ * `AuthContext` to hand `getOrgAdapter`. The comparison is case-insensitive:
+ * `user.email` is stored as the account entered it.
+ */
+const accountStateForEmail = async (
+  email: string,
+  organizationId: string,
+): Promise<{ hasAccount: boolean; alreadyMember: boolean }> => {
+  const normalized = email.trim().toLowerCase();
+
   const rows = await db
-    .select({ id: user.id })
+    .select({ userId: user.id, memberId: member.id })
     .from(user)
-    .where(eq(sql`lower(${user.email})`, email.trim().toLowerCase()))
+    .leftJoin(
+      member,
+      and(
+        eq(member.userId, user.id),
+        eq(member.organizationId, organizationId),
+      ),
+    )
+    .where(eq(sql`lower(${user.email})`, normalized))
     .limit(1);
-  return rows.length > 0;
+
+  const row = rows[0];
+  return {
+    hasAccount: row !== undefined,
+    alreadyMember: row?.memberId != null,
+  };
 };
 
 export const getPublicInvitationPreview = async (
@@ -85,15 +109,10 @@ export const getPublicInvitationPreview = async (
     teamName = team?.name ?? null;
   }
 
-  const existingMember = await findOrganizationMemberByEmail({
-    organizationId: invitation.organizationId,
-    email: invitation.email,
-  });
-  // A member necessarily has an account; only pay for the second read when
-  // there is no membership to prove it. Case-insensitive because `user.email`
-  // is stored as the account entered it.
-  const account =
-    existingMember !== null || (await hasAccountForEmail(invitation.email));
+  const account = await accountStateForEmail(
+    invitation.email,
+    invitation.organizationId,
+  );
 
   return {
     found: true,
@@ -104,10 +123,9 @@ export const getPublicInvitationPreview = async (
     organizationLogo: organization.logo,
     inviterName: inviter.name,
     inviterImage: inviter.image,
-    teamId: invitation.teamId,
     teamName,
     expiresAt: invitation.expiresAt,
-    hasAccount: account,
-    alreadyMember: Boolean(existingMember),
+    hasAccount: account.hasAccount,
+    alreadyMember: account.alreadyMember,
   };
 };

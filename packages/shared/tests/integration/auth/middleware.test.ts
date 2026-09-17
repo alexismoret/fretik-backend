@@ -49,9 +49,25 @@ interface FakeSession {
 /** The session Better Auth will answer with; `null` means "not signed in". */
 let session: { user: { id: string }; session: FakeSession } | null = null;
 
+/**
+ * `mockModule` spreads the real MODULE, but the override it is handed replaces
+ * that export wholesale — so a bare `{ api: { getSession } }` would hand every
+ * other file in the run an `auth` with exactly one endpoint on it. That is not
+ * hypothetical: `--isolate` contains the module registry but NOT the
+ * `mock.module` registration, and `invitations/auth-endpoints.test.ts` (which
+ * drives the real `auth.api.*`) died with "signUpEmail is not a function" at
+ * whatever `--seed` ordered this file first.
+ *
+ * So the double stands for ONE endpoint and delegates the rest, which is what
+ * `tests/lib/mock-module.ts` asks of every override.
+ */
+const realAuth = (await import("../../../src/lib/auth")).auth;
+
 await mockModule("../../src/lib/auth", {
   auth: {
+    ...realAuth,
     api: {
+      ...realAuth.api,
       getSession: () => Promise.resolve(session),
     },
   },

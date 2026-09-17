@@ -18,6 +18,13 @@ const rowToUiMessage = (row: typeof aiMessages.$inferSelect): UIMessage => {
     // Surfaced so a resuming client can trim the active turn's partial
     // messages before replaying the turn log (and flag interrupted turns).
     ...(row.turnId ? { turnId: row.turnId } : {}),
+    // When the message was sent, for the timestamp under a user bubble. LAST
+    // in the spread on purpose: the client stamps its own clock so a
+    // just-sent message has a time before it has a row, and that guess must
+    // lose to the column the instant history is read back. The column also
+    // survives an edit (the rewind re-saves the row in place), so the
+    // timestamp keeps saying when the message was first sent.
+    createdAt: row.createdAt.toISOString(),
   };
   return {
     id: row.id,

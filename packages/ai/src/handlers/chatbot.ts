@@ -30,6 +30,10 @@ import {
   publishConversationEvent,
   subscribeConversationEvents,
 } from "@fretik/shared/services/ai/conversation-events";
+import {
+  isTurnDiscarded,
+  markTurnDiscarded,
+} from "@fretik/shared/services/ai/discarded-turns";
 import { getConversation } from "@fretik/shared/services/ai/get";
 import { markConversationRead } from "@fretik/shared/services/ai/members/mark-read";
 import { applyMentions } from "@fretik/shared/services/ai/members/mention";
@@ -45,6 +49,10 @@ import {
   publishTyping,
   removePresent,
 } from "@fretik/shared/services/ai/presence";
+import {
+  MAX_USER_MESSAGE_EDITS,
+  rewindConversationToUserMessage,
+} from "@fretik/shared/services/ai/rewind";
 import { drainTurnLogToHistory } from "@fretik/shared/services/ai/turn-drain";
 import {
   getTurnLogStatus,
@@ -1520,6 +1528,19 @@ export const runChatbotTurn = async (
       //    left this turn's `partial` rows in history, which is what an
       //    interrupted turn is supposed to show.
       let persistError: unknown;
+      // A turn the user rewound past writes NOTHING — not the messages (they
+      // would land under the message that replaced their prompt, since the
+      // rewind deleted the rows this write would otherwise have upserted in
+      // place) and not the `chat.turn` journal entry (an answer nobody kept
+      // is not an episode worth distilling). The teardown below still runs:
+      // the slot release is a compare-and-swap the new turn already won, and
+      // `turn-ended` for a dead streamId is a no-op on every viewer.
+      const discarded = await isTurnDiscarded(params.resumableStreamId);
+      if (discarded) {
+        console.info(
+          `${params.logPrefix} turn ${params.resumableStreamId} was rewound away — skipping persistence`,
+        );
+      }
       // Persist the turn's messages AND journal its `chat.turn` boundary in
       // ONE transaction — the outbox guarantee (both commit or neither). The
       // event feeds memory recall + future workflow triggers; dedup-keyed on
@@ -1527,35 +1548,37 @@ export const runChatbotTurn = async (
       // Payload carries previews + tool names so the distiller can build an
       // episode without reloading the turn.
       try {
-        await db.transaction(async (tx) => {
-          const persisted = await persistAssistantMessages(
-            params.conversationId,
-            params.history,
-            finalMessages,
-            params.resumableStreamId ?? null,
-            tx,
-          );
-          if (!params.conversationId) return;
-          const lastMessageId = finalMessages[finalMessages.length - 1]?.id;
-          await emitDomainEvent({
-            tx,
-            organizationId: params.callOptions.organizationId,
-            teamId: params.callOptions.teamId,
-            type: "chat.turn",
-            actor: {
-              actorType: "agent",
-              actorUserId: params.callOptions.userId ?? null,
-              conversationId: params.conversationId,
-              agentKey: "chatbot",
-            },
-            payload: buildChatTurnPayload(
+        if (!discarded) {
+          await db.transaction(async (tx) => {
+            const persisted = await persistAssistantMessages(
+              params.conversationId,
               params.history,
-              persisted,
-              lastMessageId,
-            ),
-            dedupKey: lastMessageId ? `chat.turn:${lastMessageId}` : null,
+              finalMessages,
+              params.resumableStreamId ?? null,
+              tx,
+            );
+            if (!params.conversationId) return;
+            const lastMessageId = finalMessages[finalMessages.length - 1]?.id;
+            await emitDomainEvent({
+              tx,
+              organizationId: params.callOptions.organizationId,
+              teamId: params.callOptions.teamId,
+              type: "chat.turn",
+              actor: {
+                actorType: "agent",
+                actorUserId: params.callOptions.userId ?? null,
+                conversationId: params.conversationId,
+                agentKey: "chatbot",
+              },
+              payload: buildChatTurnPayload(
+                params.history,
+                persisted,
+                lastMessageId,
+              ),
+              dedupKey: lastMessageId ? `chat.turn:${lastMessageId}` : null,
+            });
           });
-        });
+        }
       } catch (err) {
         // Rethrown at the very end — the teardown below runs first.
         persistError = err;
@@ -2431,6 +2454,64 @@ chatbotRoutes.use("*", registryWarmMiddleware);
 chatbotRoutes.use("/stream", chatbotRateLimitMiddleware);
 
 /**
+ * Kill whatever turn is running for a conversation AND make sure its output
+ * never reaches history.
+ *
+ * The first two steps are `POST /:id/stop`'s: publish on the abort channel,
+ * clear the slot. The discard marker is the third, and it is what makes this
+ * safe to call in front of a rewind — the producer keeps unwinding for a
+ * moment after the abort, and its `onFinish` would otherwise re-insert the
+ * very rows the rewind is about to delete, landing a stale answer under the
+ * message that replaced its prompt. Marked BEFORE the abort so the turn cannot
+ * finish in the gap.
+ */
+const cancelTurnForRewind = async (
+  conversationId: string,
+): Promise<string | null> => {
+  const activeStreamId = await getConversationActiveStream(conversationId);
+  if (!activeStreamId) return null;
+  await markTurnDiscarded(activeStreamId);
+  await redis.publish(getAbortChannel(activeStreamId), "1");
+  await clearConversationActiveStream(conversationId, activeStreamId);
+  return activeStreamId;
+};
+
+/**
+ * Merge the server-owned rewind bookkeeping into a re-sent message's metadata.
+ *
+ * `editCount` comes from the row the rewind locked and is stamped on BOTH
+ * paths, retries included, where it is simply unchanged. It has to be: the
+ * metadata underneath it is whatever the browser sent back, so a client that
+ * returned `editCount: 0` on each retry would hand itself three fresh edits
+ * every time. `editedAt` moves only when the wording did.
+ */
+const withRewindMetadata = (
+  base: unknown,
+  editCount: number,
+  edited: boolean,
+): Record<string, unknown> => {
+  // The client's metadata is `unknown` by the SDK's typing and arrives from a
+  // browser, so anything that is not a plain object is simply replaced.
+  const existing =
+    typeof base === "object" && base !== null && !Array.isArray(base)
+      ? { ...base }
+      : {};
+  return {
+    ...existing,
+    editCount,
+    ...(edited ? { editedAt: new Date().toISOString() } : {}),
+  };
+};
+
+/** HTTP status for a refused rewind. Never 409 — see the call site. */
+const REWIND_REFUSAL_STATUS = {
+  "not-found": 404,
+  "not-a-user-message": 403,
+  "not-the-author": 403,
+  "limit-reached": 422,
+} as const;
+
+/**
  * POST /chatbot/stream — main entry from the Nuxt app.
  *
  * Flow:
@@ -2480,6 +2561,8 @@ chatbotRoutes.post("/stream", async (c) => {
     mentionedUserIds,
     mentionsAssistant,
     reasoningLevel,
+    editedMessageId,
+    retriedMessageId,
   } = parsed.data;
 
   const conversation = await timeStage(
@@ -2543,6 +2626,81 @@ chatbotRoutes.post("/stream", async (c) => {
         })
       : null;
 
+  // An EDIT re-sends a message already in the thread with NEW wording; a RETRY
+  // re-sends it verbatim because the user wants another answer to the same
+  // question. Either way the conversation rewinds to that message before
+  // anything else happens: the turn below then answers against a history that
+  // no longer holds what the previous attempt produced
+  // (`loadConversationForAgent` reads the same rows).
+  //
+  // The order here is the whole trick. Cancel first — a running turn is
+  // precisely what would write into the gap the rewind opens — then delete
+  // everything after the message, then let the ordinary `saveMessage` below
+  // upsert it onto the same row (id, `seq` and `created_at` survive, so the
+  // bubble stays where it is and keeps its original time).
+  //
+  // What the two modes do NOT share is the budget. Only an edit is counted
+  // against `MAX_USER_MESSAGE_EDITS` and only an edit can be refused for having
+  // spent it: the cap exists so the question cannot be rewritten indefinitely,
+  // and a retry rewrites nothing.
+  const rewoundMessageId = editedMessageId ?? retriedMessageId;
+  const countsAsEdit = editedMessageId !== undefined;
+  let editCount: number | null = null;
+  if (rewoundMessageId) {
+    if (!lastUser || lastUser.id !== rewoundMessageId) {
+      return c.json(
+        {
+          code: "INVALID_REWIND",
+          message: `${countsAsEdit ? "editedMessageId" : "retriedMessageId"} must name the last user message of this request.`,
+        },
+        400,
+      );
+    }
+    const cancelledTurnId = await timeStage(
+      preludeTimings,
+      "cancelForRewind",
+      cancelTurnForRewind(conversationId),
+    );
+    const rewound = await timeStage(
+      preludeTimings,
+      "rewind",
+      rewindConversationToUserMessage({
+        conversationId,
+        messageId: rewoundMessageId,
+        userId: user.id,
+        countsAsEdit,
+      }),
+    );
+    if (!rewound.ok) {
+      // Deliberately never 409: the client transport reads that status as "a
+      // turn is already streaming, attach to it instead", which would swallow
+      // the refusal and leave the user looking at a truncated thread.
+      return c.json(
+        {
+          code:
+            rewound.reason === "limit-reached"
+              ? "EDIT_LIMIT_REACHED"
+              : countsAsEdit
+                ? "EDIT_REFUSED"
+                : "RETRY_REFUSED",
+          message: `Cannot ${countsAsEdit ? "edit" : "retry"} this message (${rewound.reason}).`,
+          editCount: rewound.editCount,
+          maxEdits: MAX_USER_MESSAGE_EDITS,
+        },
+        REWIND_REFUSAL_STATUS[rewound.reason],
+      );
+    }
+    editCount = rewound.nextEditCount;
+    console.info(
+      `[chatbot] conversation ${conversationId} rewound to ${rewoundMessageId} — ` +
+        (countsAsEdit
+          ? `edit ${editCount}/${MAX_USER_MESSAGE_EDITS}`
+          : `retry (edit ${editCount}/${MAX_USER_MESSAGE_EDITS} untouched)`) +
+        `, ${rewound.deletedMessages} message(s) dropped` +
+        (cancelledTurnId ? `, turn ${cancelledTurnId} discarded` : ""),
+    );
+  }
+
   if (lastUser) {
     const savedUserMessage = await timeStage(
       preludeTimings,
@@ -2551,7 +2709,10 @@ chatbotRoutes.post("/stream", async (c) => {
         conversationId,
         role: "user",
         parts: lastUser.parts,
-        metadata: lastUser.metadata,
+        metadata:
+          editCount === null
+            ? lastUser.metadata
+            : withRewindMetadata(lastUser.metadata, editCount, countsAsEdit),
         authorId: user.id,
         // Keep the client's wire id (uuid via the frontend's `generateId`)
         // so the bubble the sender already rendered survives rehydration
@@ -2577,15 +2738,29 @@ chatbotRoutes.post("/stream", async (c) => {
       // Surface the new user message to other connected viewers right away
       // — covers human-to-human asides that never start an assistant turn,
       // and lets viewers paint the sender's bubble before the answer streams.
+      //
+      // A rewind — edit or retry — announces itself differently: a viewer that
+      // merely appended the message would keep the exchange the rewind just
+      // deleted sitting underneath it, so `message-edited` means "reload,
+      // don't merge". `editCount` is non-null on exactly those two paths.
       await timeStage(
         preludeTimings,
         "publishAdded",
-        publishConversationEvent(conversationId, {
-          type: "message-added",
-          messageId: savedUserMessage.id,
-          role: "user",
-          authorId: user.id,
-        }),
+        publishConversationEvent(
+          conversationId,
+          editCount === null
+            ? {
+                type: "message-added",
+                messageId: savedUserMessage.id,
+                role: "user",
+                authorId: user.id,
+              }
+            : {
+                type: "message-edited",
+                messageId: savedUserMessage.id,
+                authorId: user.id,
+              },
+        ),
       );
     }
   }

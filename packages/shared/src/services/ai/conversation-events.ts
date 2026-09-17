@@ -21,6 +21,8 @@ export interface PresenceViewer {
  *  - `turn-ended` → stop the fan-out, lift the gate,
  *  - `message-added` → refetch history (covers human-to-human asides
  *    that don't start an assistant turn),
+ *  - `message-edited` → the thread was REWOUND to that message: everything
+ *    after it is gone, so a viewer must reload rather than merge,
  *  - `presence` / `typing` → roster + "X is typing…".
  *
  * Cross-replica by design (Redis pub/sub): the streamer and the viewers
@@ -33,6 +35,11 @@ export type ConversationEvent =
       type: "message-added";
       messageId: string;
       role: string;
+      authorId: string | null;
+    }
+  | {
+      type: "message-edited";
+      messageId: string;
       authorId: string | null;
     }
   | { type: "presence"; viewers: PresenceViewer[] }

@@ -9,13 +9,14 @@ Calling a write action directly raises — it never executes.
 """
 
 from typing import Any, Literal, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from ._runtime import FretikActionError, Operation, _call_read
 
 
 # ── Types ─────────────────────────────────────────────────────────
 
 class PlannerTask(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     etag: str
     title: str
@@ -33,11 +34,13 @@ class PlannerTask(BaseModel):
 
 
 class PlannerLabel(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     name: str
 
 
 class PlannerTaskDetails(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     etag: str
     checklist: list[dict[str, Any]]
@@ -46,6 +49,7 @@ class PlannerTaskDetails(BaseModel):
 
 
 class PlannerPlan(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     etag: str
     title: str
@@ -54,6 +58,7 @@ class PlannerPlan(BaseModel):
 
 
 class PlannerBucket(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     etag: str
     name: str
@@ -62,6 +67,7 @@ class PlannerBucket(BaseModel):
 
 
 class WriteResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str | None = None
     etag: str | None = None
 

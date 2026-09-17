@@ -9,13 +9,14 @@ Calling a write action directly raises — it never executes.
 """
 
 from typing import Any, Literal, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from ._runtime import FretikActionError, Operation, _call_read
 
 
 # ── Types ─────────────────────────────────────────────────────────
 
 class ItemQuantity(BaseModel):
+    model_config = ConfigDict(extra="allow")
     item_code: str | None = None
     client_code_id: str | None = None
     client_name: str | None = None
@@ -39,6 +40,7 @@ class ItemQuantity(BaseModel):
 
 
 class StockMovement(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: int | None = None
     item_code: str | None = None
     client_code_id: str | None = None
@@ -60,6 +62,7 @@ class StockMovement(BaseModel):
 
 
 class Reception(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: int | None = None
     client_code_id: str | None = None
     order_reference: str | None = None
@@ -82,6 +85,7 @@ class Reception(BaseModel):
 
 
 class Preparation(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: int | None = None
     client_code_id: str | None = None
     order_reference: str | None = None
@@ -103,6 +107,7 @@ class Preparation(BaseModel):
 
 
 class StockLine(BaseModel):
+    model_config = ConfigDict(extra="allow")
     reception_id: int | None = None
     preparation_id: int | None = None
     item_code: str | None = None
@@ -120,6 +125,7 @@ class StockLine(BaseModel):
 
 
 class SsccLine(BaseModel):
+    model_config = ConfigDict(extra="allow")
     preparation_id: int | None = None
     sscc: str | None = None
     pallet_number: str | None = None
@@ -130,6 +136,7 @@ class SsccLine(BaseModel):
 
 
 class Item(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: int | None = None
     item_code: str | None = None
     client_code_id: str | None = None
@@ -151,6 +158,7 @@ class Item(BaseModel):
 
 
 class FlowStatus(BaseModel):
+    model_config = ConfigDict(extra="allow")
     errors: list[str]
     flow_id: int | None = None
     flow_status: str | None = None
@@ -159,6 +167,7 @@ class FlowStatus(BaseModel):
 
 
 class EntityIntegrationStatus(BaseModel):
+    model_config = ConfigDict(extra="allow")
     errors: list[str]
     entity_id: int | None = None
     status: str | None = None
@@ -166,6 +175,7 @@ class EntityIntegrationStatus(BaseModel):
 
 
 class IntegrationResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
     flow_ids: list[int]
     entity_ids: list[int]
     references: list[str]

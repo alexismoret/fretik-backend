@@ -9,13 +9,14 @@ Calling a write action directly raises — it never executes.
 """
 
 from typing import Any, Literal, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from ._runtime import FretikActionError, Operation, _call_read
 
 
 # ── Types ─────────────────────────────────────────────────────────
 
 class Me(BaseModel):
+    model_config = ConfigDict(extra="allow")
     user_id: str
     email: str
     name: str
@@ -28,6 +29,7 @@ class Me(BaseModel):
 
 
 class Profile(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: int
     entity_id: int
     entity_name: str
@@ -36,6 +38,7 @@ class Profile(BaseModel):
 
 
 class FieldDoc(BaseModel):
+    model_config = ConfigDict(extra="allow")
     collection: str
     field: str
     type: str
@@ -48,6 +51,7 @@ class FieldDoc(BaseModel):
 
 
 class StoredFile(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     filename_download: str
     type: str
@@ -55,6 +59,7 @@ class StoredFile(BaseModel):
 
 
 class Event(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: int
     code: str
     type_id: int
@@ -68,6 +73,7 @@ class Event(BaseModel):
 
 
 class EventType(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: int
     code: str
     modules: list[str]
@@ -76,6 +82,7 @@ class EventType(BaseModel):
 
 
 class Gateway(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: int
     external_code: str
     gateway_type: int
@@ -85,11 +92,13 @@ class Gateway(BaseModel):
 
 
 class StatusCount(BaseModel):
+    model_config = ConfigDict(extra="allow")
     shipping_status: str
     count: int
 
 
 class Counter(BaseModel):
+    model_config = ConfigDict(extra="allow")
     counter: str
     month_key: str
     pattern: str

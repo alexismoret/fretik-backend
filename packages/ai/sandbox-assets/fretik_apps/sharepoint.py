@@ -9,13 +9,14 @@ Calling a write action directly raises — it never executes.
 """
 
 from typing import Any, Literal, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from ._runtime import FretikActionError, Operation, _call_read
 
 
 # ── Types ─────────────────────────────────────────────────────────
 
 class Site(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     name: str
     display_name: str
@@ -26,6 +27,7 @@ class Site(BaseModel):
 
 
 class Library(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     name: str
     web_url: str
@@ -34,6 +36,7 @@ class Library(BaseModel):
 
 
 class DriveItem(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     name: str
     is_folder: bool
@@ -52,6 +55,7 @@ class DriveItem(BaseModel):
 
 
 class FileDownload(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     name: str
     content_type: str
@@ -61,6 +65,7 @@ class FileDownload(BaseModel):
 
 
 class ItemVersion(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     last_modified_at: str
     size_bytes: int | None = None
@@ -68,6 +73,7 @@ class ItemVersion(BaseModel):
 
 
 class Permission(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     roles: list[str]
     granted_to: list[str]
@@ -79,6 +85,7 @@ class Permission(BaseModel):
 
 
 class ShareLink(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     link_url: str
     link_type: str
@@ -87,6 +94,7 @@ class ShareLink(BaseModel):
 
 
 class SharePointList(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     name: str
     display_name: str
@@ -97,6 +105,7 @@ class SharePointList(BaseModel):
 
 
 class ListColumn(BaseModel):
+    model_config = ConfigDict(extra="allow")
     name: str
     display_name: str
     type: str
@@ -107,6 +116,7 @@ class ListColumn(BaseModel):
 
 
 class ListItem(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     fields: dict[str, Any]
     web_url: str | None = None
@@ -117,6 +127,7 @@ class ListItem(BaseModel):
 
 
 class SitePage(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     name: str
     title: str
@@ -128,6 +139,7 @@ class SitePage(BaseModel):
 
 
 class SearchHit(BaseModel):
+    model_config = ConfigDict(extra="allow")
     kind: Literal["driveItem", "listItem", "list", "drive", "site"]
     id: str
     name: str
@@ -141,6 +153,7 @@ class SearchHit(BaseModel):
 
 
 class UploadSession(BaseModel):
+    model_config = ConfigDict(extra="allow")
     upload_url: str
     expires_at: str | None = None
 

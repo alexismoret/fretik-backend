@@ -84,6 +84,14 @@ def _spill_attachments(data: Any) -> Any:
 
     Walks lists and nested dicts so an action returning `list[Attachment]`
     (or any future shape containing attachments) is covered too.
+
+    A spill that FAILS sets `download_error` on the same dict and leaves the
+    source field in place. It does not raise: `ftp-sftp.download_files` takes
+    up to 20 paths and promises that a file that fails comes back marked while
+    the rest still arrive, so one bad item may not take the other nineteen
+    with it. The caller decides — which is why every action whose whole point
+    is the bytes must check, and why the generated result models allow extra
+    fields (pydantic's default would drop `download_error` on the floor).
     """
     if isinstance(data, dict):
         if not data.get("sandbox_path"):
@@ -112,10 +120,12 @@ def _write_base64_to_spill(data: dict[str, Any], b64: str) -> None:
         with open(path, "wb") as f:
             f.write(base64.b64decode(b64))
         data["sandbox_path"] = path
-    except (ValueError, OSError):
-        # Malformed base64 or write failure — keep the original field so
-        # the failure surfaces upstream rather than silently losing the
-        # payload.
+    except (ValueError, OSError) as exc:
+        # Malformed base64 or write failure. Keep the original field AND say
+        # why on the payload: "surfaces upstream" was only ever true of the
+        # field, never of the reason, and a caller reading `sandbox_path is
+        # None` cannot tell a refusal from a bug.
+        data["download_error"] = f"{type(exc).__name__}: {exc}"
         return
     data["content_base64"] = None
 
@@ -139,9 +149,13 @@ def _write_url_to_spill(data: dict[str, Any], url: str) -> None:
                     break
                 f.write(chunk)
         data["sandbox_path"] = path
-    except (urllib.error.URLError, OSError, TimeoutError):
-        # Network failure or write failure — keep `download_url` so the
-        # caller can retry manually or surface the error.
+    except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        # Network or write failure — keep `download_url` so the caller can
+        # retry manually, and record WHY next to it. A sandbox egress refusal
+        # arrives here as a killed TLS handshake with no message of its own
+        # (see `services/e2b/network-policy.ts`), so without this line the
+        # only trace a blocked host leaves is an absent `sandbox_path`.
+        data["download_error"] = f"{type(exc).__name__}: {exc}"
         return
     data["download_url"] = None
 

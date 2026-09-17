@@ -15,9 +15,11 @@
     {{ teamLabel }}
   </mj-text>
   {{/if}}
+  {{#if roleLabel}}
   <mj-text font-size="14px" color="#6b7280" padding-top="4px">
     {{ roleLabel }}
   </mj-text>
+  {{/if}}
 
   <mj-button
     href="{{acceptUrl}}"

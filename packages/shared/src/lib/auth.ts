@@ -6,10 +6,7 @@ import { betterAuth, type BetterAuthOptions } from "better-auth/minimal";
 import { emailOTP, organization, twoFactor } from "better-auth/plugins";
 import db from "../db";
 import * as schema from "../db/schema";
-import {
-  generateOrganizationInvitation,
-  generateOtpEmail,
-} from "../emails/generators";
+import { generateOtpEmail } from "../emails/generators";
 import { bootstrapTeamWithBotUser } from "../services/auth/bot-user";
 import { getUserLocaleByEmail } from "../services/auth/get-user-locale";
 import {
@@ -22,8 +19,14 @@ import { seedSystemOntology } from "../services/collections/seed-system-types";
 import { applyDocumentFieldTemplate } from "../services/field-definitions/apply-template";
 import { duplicateOrgDefsToTeam } from "../services/field-definitions/duplicate-org-to-team";
 import { getTeamLocale } from "../services/field-definitions/get-locale";
+import { sendOrganizationInvitationEmail } from "../services/invitations/send-invitation-email";
 import { scrubWorkflowNotificationRecipient } from "../services/workflows/scrub-notification-recipient";
-import { OTP_EXPIRY_SECONDS } from "./auth-constants";
+import {
+  INVITATION_EXPIRY_SECONDS,
+  MAX_MEMBERS_PER_TEAM,
+  OTP_EXPIRY_SECONDS,
+} from "./auth-constants";
+import { organizationTeamInvitationHooks } from "./auth-hooks";
 import {
   invalidateOrgTeamMembershipCache,
   invalidateTeamMembershipCache,
@@ -203,6 +206,16 @@ const options = {
     },
   },
 
+  /**
+   * Request hooks. A `before` hook that returns a value short-circuits the
+   * endpoint, which is the only seam in front of the organization plugin's own
+   * guards — see `auth-hooks.ts` for what it intercepts and, more importantly,
+   * for the conditions under which it does NOT.
+   */
+  hooks: {
+    before: organizationTeamInvitationHooks,
+  },
+
   databaseHooks: {
     user: {
       create: {
@@ -249,7 +262,7 @@ const options = {
       // users who have never verified. The emailed link is itself the
       // ownership proof, so disable that requirement.
       requireEmailVerificationOnInvitation: false,
-      invitationExpiresIn: 60 * 60 * 24 * 7,
+      invitationExpiresIn: INVITATION_EXPIRY_SECONDS,
       cancelPendingInvitationsOnReInvite: true,
       organizationHooks: {
         afterCreateOrganization: async (data) => {
@@ -312,28 +325,19 @@ const options = {
         },
       },
 
+      // Only ever reached for an invitation into the organization: the
+      // "existing member joins one more team" case is served by
+      // `organizationTeamInvitationHooks`, which sends its own email through
+      // the same service.
       sendInvitationEmail: async (data) => {
-        // Localize to the inviting team's language (the invitee usually has
-        // no account yet, so per-user language isn't available).
-        const lang = data.invitation.teamId
-          ? await getTeamLocale(data.invitation.teamId)
-          : "en";
-        const { subject, html } = await generateOrganizationInvitation(
-          {
-            invitationId: data.id,
-            inviterName: data.inviter.user.name,
-            organizationName: data.organization.name,
-            role: data.role,
-            teamId: data.invitation.teamId,
-            expiresAt: data.invitation.expiresAt,
-          },
-          lang,
-        );
-
-        await sendEmail({
-          to: { email: data.email },
-          subject,
-          html,
+        await sendOrganizationInvitationEmail({
+          invitationId: data.id,
+          email: data.email,
+          inviterName: data.inviter.user.name,
+          organizationName: data.organization.name,
+          role: data.role,
+          teamId: data.invitation.teamId ?? null,
+          expiresAt: data.invitation.expiresAt,
         });
       },
 
@@ -349,7 +353,7 @@ const options = {
           // fall back to the same default the column carries.
           return settings?.maxAgencies ?? 10;
         },
-        maximumMembersPerTeam: 50,
+        maximumMembersPerTeam: MAX_MEMBERS_PER_TEAM,
         allowRemovingAllTeams: false,
       },
     }),

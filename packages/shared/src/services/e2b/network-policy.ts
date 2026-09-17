@@ -3,6 +3,7 @@ import {
   DEFAULT_ORGANIZATION_SANDBOX_POLICY,
   type OrganizationSandboxPolicy,
 } from "../../schemas/sandbox-policy";
+import { detectBackendHost, SANDBOX_EGRESS_TIERS } from "./egress-tiers";
 
 /**
  * Egress policy for the code sandbox. Default is deny-all
@@ -11,8 +12,9 @@ import {
  * The policy is composed from TIERS rather than one list, because the four
  * sources answer to different owners and change at different times: our own
  * backend host comes from the deployment, provider hosts from the team's live
- * connections, the registries from this file, and the extra domains from an
- * org admin. Composition is a pure function so every combination is testable
+ * connections, the registries from `egress-tiers.ts`, and the extra domains
+ * from an org admin. Composition is a pure function so every combination is
+ * testable
  * without a sandbox; see `services/e2b/apply-egress.ts` for where it is
  * applied, which is EVERY code-running turn and not only at creation.
  *
@@ -31,38 +33,7 @@ import {
  *    what `services/e2b/egress-hint.ts` exists to translate.
  */
 
-export const SANDBOX_EGRESS_TIERS = {
-  /**
-   * Public package registries. `pip install` / `npm install` / `apt-get
-   * install` are the one legitimate reason agent code reaches the internet
-   * directly, and the bundled Office skills prescribe installs the happy path
-   * would otherwise fail on.
-   *
-   * Every host is exact. `api.github.com` is deliberately ABSENT: nothing
-   * installs through it, and it is where a compromised turn would POST a gist.
-   */
-  packages: [
-    // Python
-    "pypi.org",
-    "files.pythonhosted.org",
-    // Node
-    "registry.npmjs.org",
-    // Git-sourced dependencies and raw references. `codeload` serves tarballs,
-    // `objects.` serves release assets that `github.com` redirects to.
-    "github.com",
-    "codeload.github.com",
-    "raw.githubusercontent.com",
-    "objects.githubusercontent.com",
-    // Debian. Read off the running template, not assumed: its apt sources are
-    // trixie on `deb.debian.org` for BOTH main and security
-    // (`deb.debian.org/debian-security`), so `security.debian.org` would be a
-    // dead entry. NodeSource is the Node 20 repo the E2B base image adds —
-    // without it every `apt-get update` pays a TLS timeout and prints a
-    // fetch warning the agent then tries to debug.
-    "deb.debian.org",
-    "deb.nodesource.com",
-  ],
-} as const;
+export { detectBackendHost, SANDBOX_EGRESS_TIERS };
 
 export interface SandboxNetworkPolicy {
   allowOut: string[];
@@ -86,31 +57,6 @@ export interface SandboxNetworkPolicyInput {
    */
   brokeredJwt?: string;
 }
-
-/**
- * Host of the backend the sandbox SDK calls back into.
- *
- * Exact, including a dev tunnel's rotating subdomain. The previous version
- * allowed the whole `*.tunnl.gg` wildcard so a fresh `dev.sh` would work
- * without recycling live sandboxes — which also meant any tunnel on that
- * service, including an attacker's, was reachable. The policy is now
- * re-applied on every code-running turn, so a rotated host is picked up on the
- * next turn and the wildcard buys nothing.
- *
- * `null` for missing / unparseable / localhost, so the caller drops the tier.
- */
-export const detectBackendHost = (): string | null => {
-  const raw = Bun.env.FRETIK_BACKEND_INTERNAL_URL;
-  if (raw === undefined || raw === "") return null;
-  let host: string;
-  try {
-    host = new URL(raw).hostname;
-  } catch {
-    return null;
-  }
-  if (host === "" || host === "localhost") return null;
-  return host;
-};
 
 /** Compose the tiers into what `Sandbox.create` / `updateNetwork` take. */
 export const buildSandboxNetworkPolicy = (

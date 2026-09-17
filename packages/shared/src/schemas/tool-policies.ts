@@ -289,6 +289,10 @@ export const BUILTIN_TOOL_POLICY_CATALOG: Record<
     // had one door open. It reads a site's own `sitemap.xml`, which is as
     // outbound as the other two.
     readTool("webMap"),
+    // Fetches bytes into the workspace, where `read` and `python` can open
+    // them. `read`-kind because what it does to the outside world is a GET:
+    // the write it performs is to the team's own sandbox.
+    readTool("downloadFile"),
     readTool("searchIcons"),
   ]),
 };

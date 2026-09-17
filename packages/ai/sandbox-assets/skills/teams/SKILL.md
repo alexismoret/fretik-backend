@@ -1,7 +1,7 @@
 ---
 name: teams
 description: Microsoft Teams — read and send chat messages, and manage meetings and calls on the user's connected Teams account.
-version: ad9057ba0b7e
+version: d1c9e4480f0d
 ---
 
 # Microsoft Teams — 21 actions

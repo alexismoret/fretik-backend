@@ -2,12 +2,14 @@ import {
   boolean,
   decimal,
   integer,
+  jsonb,
   pgTable,
   text,
   timestamp,
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
+import type { OrganizationSandboxPolicy } from "../../schemas/sandbox-policy";
 import { organization, team, user } from "./auth-schema";
 
 /**
@@ -34,6 +36,16 @@ export const organizationSettings = pgTable("organization_settings", {
       length: 60,
     },
   ),
+
+  // What the code sandbox may reach on the network. One jsonb rather than a
+  // column per knob, for the reason `team_ai_settings` gives: the shape will
+  // grow (an HTTP-method restriction, a per-tier switch) and none of those are
+  // worth a migration. Sparse — `{}` means "never configured", which
+  // `resolveSandboxPolicy` reads as the default, so no backfill is needed.
+  sandboxPolicy: jsonb("sandbox_policy")
+    .$type<Partial<OrganizationSandboxPolicy>>()
+    .default({})
+    .notNull(),
 
   // Timestamps
   createdAt: timestamp("created_at", { mode: "date", withTimezone: true })

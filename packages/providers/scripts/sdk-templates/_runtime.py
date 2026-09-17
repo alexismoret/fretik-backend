@@ -9,6 +9,15 @@ until granted).
 The auth file at /workspace/.fretik/auth.json is re-written by the backend
 before every agent turn — so this module re-reads it on every call() and
 the JWT rotates without restarting the Jupyter kernel.
+
+Under the `proxy` transport that file carries an EMPTY jwt: the credential is
+added to outbound requests by the platform's egress proxy and never exists in
+this sandbox at all. No Authorization header is sent in that case.
+
+/workspace/.fretik/egress.json lists the hosts this turn may reach. A host
+outside it is not refused — the firewall accepts the TCP handshake and then
+kills the TLS one — so a download to one would surface as an unexplained
+protocol error. Checking the list first is what turns that into a sentence.
 """
 
 # AUTO-GENERATED via scripts/generate-sdk.ts — do not edit by hand.
@@ -19,6 +28,7 @@ import json
 import os
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass
@@ -139,7 +149,56 @@ def _write_base64_to_spill(data: dict[str, Any], b64: str) -> None:
     data["content_base64"] = None
 
 
+_EGRESS_FILE = "/workspace/.fretik/egress.json"
+_egress_cache: dict[str, Any] = {"mtime": None, "allow": None}
+
+
+def _egress_allows(host: str) -> bool | None:
+    """Whether this turn's egress policy admits `host`.
+
+    None when the policy is unknown (file absent or unreadable) — the caller
+    then tries the request rather than refusing on a guess. Cached by mtime:
+    the backend rewrites the file whenever the policy changes.
+    """
+    try:
+        mtime = os.path.getmtime(_EGRESS_FILE)
+        if _egress_cache["mtime"] != mtime:
+            with open(_EGRESS_FILE, "r", encoding="utf-8") as f:
+                _egress_cache["allow"] = json.load(f).get("allow_out") or []
+            _egress_cache["mtime"] = mtime
+    except (OSError, ValueError):
+        return None
+    allow = _egress_cache["allow"]
+    if allow is None:
+        return None
+    host = host.lower()
+    for entry in allow:
+        entry = str(entry).lower()
+        if entry.startswith("*."):
+            # A leading wildcard matches subdomains at any depth, never the
+            # apex — the same rule the platform's firewall applies.
+            if host.endswith(entry[1:]):
+                return True
+        elif host == entry:
+            return True
+    return False
+
+
 def _write_url_to_spill(data: dict[str, Any], url: str) -> None:
+    host = urllib.parse.urlparse(url).hostname or ""
+    if _egress_allows(host) is False:
+        # Refuse here rather than let the firewall kill the TLS handshake: it
+        # accepts the connection first, so the failure would arrive as
+        # `UNEXPECTED_EOF_WHILE_READING` and read like a broken server.
+        # `download_url` is kept so the caller can hand it to `downloadFile`,
+        # which fetches from the backend and is not bound by this policy.
+        data["download_error"] = (
+            f"EGRESS_BLOCKED: {host} is not on this sandbox's network "
+            "allowlist. Use the assistant's downloadFile tool on the "
+            "download_url instead, or ask an organization admin to allow the "
+            "domain in Settings → Sandbox & internet."
+        )
+        return
     os.makedirs(_DOWNLOAD_SPILL_DIR, exist_ok=True)
     safe_name = _sanitize_filename(data.get("name", "file"))
     path = os.path.join(
@@ -216,14 +275,20 @@ def _post(payload: dict[str, Any]) -> Any:
     # URL points at a Cloudflare-fronted tunnel (e.g. tunnl.gg in dev).
     # A descriptive UA bypasses that rule and helps server logs identify
     # SDK traffic.
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "fretik-apps-sdk/1.0",
+    }
+    # Empty under the proxy transport: the egress proxy adds the credential on
+    # the way out, and sending `Bearer ` would be a malformed header the
+    # backend rejects before it ever looks at the injected one.
+    jwt = auth.get("jwt") or ""
+    if jwt:
+        headers["Authorization"] = f"Bearer {jwt}"
     req = urllib.request.Request(
         f"{auth['backend_url']}/sandbox/exec",
         data=body,
-        headers={
-            "Authorization": f"Bearer {auth['jwt']}",
-            "Content-Type": "application/json",
-            "User-Agent": "fretik-apps-sdk/1.0",
-        },
+        headers=headers,
         method="POST",
     )
     try:

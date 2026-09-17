@@ -1,6 +1,9 @@
 import { consumeSandboxApprovalPending } from "@fretik/shared/services/approvals/sandbox-signal";
+import { getAppliedEgress } from "@fretik/shared/services/e2b/apply-egress";
+import { explainBlockedEgress } from "@fretik/shared/services/e2b/egress-hint";
 import { restartPythonKernel } from "@fretik/shared/services/e2b/restart-python-kernel";
 import { runInSandbox } from "@fretik/shared/services/e2b/run-in-sandbox";
+import type { SandboxLease } from "@fretik/shared/services/e2b/types";
 import { tool } from "ai";
 import { z } from "zod";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
@@ -115,6 +118,7 @@ export const createPythonTool = () =>
       "",
       "Filesystem layout under `/workspace` (persists across calls, shared with `bash`):",
       "  - `attachments/` — user uploads in this conversation",
+      "  - `downloads/` — files fetched from a URL with `downloadFile`; read them exactly like an upload",
       "  - `outputs/` — files you create here are surfaced to the user via `presentFiles`",
       "  - `outputs/results/` — auto-captured rich Jupyter outputs (DataFrame HTML, matplotlib plots) keyed by toolCallId; readable like any other workspace file",
       "  - `drive/` — Drive documents downloaded with `download_drive_document`",
@@ -125,7 +129,7 @@ export const createPythonTool = () =>
       "",
       "Restart semantics: pass `restart: true` to wipe the kernel (variables, imports) before running this code; the filesystem is preserved. The `bash` tool has its own heavier `restart` that nukes the whole sandbox including `/workspace` — use that only for filesystem corruption.",
       "",
-      "Sandbox: 1 vCPU, 1.5 GB memory, 5 min wall-clock timeout, root, /workspace as cwd. Outbound internet is restricted to a curated allowlist (PyPI, GitHub, Fretik, common B2B service APIs) — `pip install` works for those. Note: a `pip install` from `bash` is invisible to a kernel that already imported the package; restart the Python kernel (`restart: true`) to pick it up.",
+      "Sandbox: 1 vCPU, 1.5 GB memory, 5 min wall-clock timeout, root, /workspace as cwd. Outbound internet is an allowlist — the package registries (PyPI, npm, GitHub, Debian), Fretik, and the team's connected apps — so `pip install` works and any other URL is fetched with `downloadFile` rather than `requests`. Note: a `pip install` from `bash` is invisible to a kernel that already imported the package; restart the Python kernel (`restart: true`) to pick it up.",
       "",
       "Pre-installed libraries:",
       "- Data: pandas, numpy, pyarrow",
@@ -168,13 +172,19 @@ export const createPythonTool = () =>
       // to nothing. Carry the elapsed time into the cost of the run it
       // enabled — the closest owner there is.
       const prepareStartedAt = Date.now();
+      let lease: SandboxLease;
       try {
-        await prepareSandboxForCode({
+        lease = await prepareSandboxForCode({
           conversationId,
           organizationId: ctx.organizationId,
           teamId: ctx.teamId,
           userId: ctx.userId,
           traceId: ctx.traceId,
+          // Which connected apps this turn may stream bytes from, for the
+          // egress policy. Already loaded for the prompt, so it costs nothing.
+          providerKeys: (ctx.externalAppConnections ?? []).map(
+            (c) => c.providerKey,
+          ),
         });
       } catch (err) {
         return mapE2BError(err, "while preparing sandbox workspace");
@@ -283,11 +293,20 @@ export const createPythonTool = () =>
           // carry a UUID, which would indicate a malformed exception
           // from the SDK and is worth surfacing to the model verbatim.
         }
+        // A host the egress policy does not allow fails as a killed TLS
+        // handshake naming no policy, so without this the model reads it as a
+        // broken server and retries, or starts debugging TLS.
+        const egressHint = explainBlockedEgress({
+          code,
+          errorText: `${result.error.name}: ${result.error.value}\n${result.error.traceback ?? ""}`,
+          allowOut: getAppliedEgress(lease.sandboxId),
+        });
         return {
           error: `${result.error.name}: ${result.error.value}`,
           code: TOOL_ERROR_CODES.PYTHON_ERROR,
           stdout: result.stdout,
           stderr: result.error.traceback ?? result.stderr,
+          ...(egressHint === undefined ? {} : { hint: egressHint }),
         };
       }
 

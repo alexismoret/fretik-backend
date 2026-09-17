@@ -1,0 +1,1 @@
+ALTER TABLE "organization_settings" ADD COLUMN "sandbox_policy" jsonb DEFAULT '{}' NOT NULL;

@@ -130,9 +130,14 @@ SharePoint — not a per-user reconnect dance.
 
 Downloads and uploads move bytes between the agent's E2B sandbox and
 `<tenant>.sharepoint.com` (Graph hands out pre-authenticated URLs on that
-host, not on `graph.microsoft.com`). `*.sharepoint.com` is on the sandbox
-allowlist in `@fretik/shared/services/e2b/network-policy.ts` for that reason
-— removing it silently breaks `download_file` and every upload.
+host, not on `graph.microsoft.com`). `*.sharepoint.com` is declared as
+`sandboxEgressHosts` on this provider's manifest for that reason — removing it
+silently breaks `download_file` and every upload.
+
+The host reaches the sandbox's allowlist only while the team has an **active**
+SharePoint connection: the policy is rebuilt from the live connections on every
+code-running turn (`services/e2b/provider-egress.ts`), so disconnecting the app
+is what closes the host. There is no second list to edit.
 
 ## 6. Cross-app flows and the account-overlap trap
 

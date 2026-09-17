@@ -1,4 +1,7 @@
+import { getAppliedEgress } from "@fretik/shared/services/e2b/apply-egress";
+import { explainBlockedEgress } from "@fretik/shared/services/e2b/egress-hint";
 import { runInSandbox } from "@fretik/shared/services/e2b/run-in-sandbox";
+import type { SandboxLease } from "@fretik/shared/services/e2b/types";
 import { tool } from "ai";
 import { z } from "zod";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
@@ -93,7 +96,7 @@ export const createBashTool = () =>
       "- Use for `pip install <pkg>` for one-off packages (then `restart: true` on the next `python` call to pick it up).",
       "- For viewing a single file → use `read` instead (reads documents/images as text, line numbering).",
       "- For pandas / numpy / chart generation / structured data work → use `python` instead (don't `bash python3 -c \"...\"` — you'd lose the persistent kernel).",
-      "- For HTTP fetches → use `searchWeb` / `webFetch` (sandbox egress is restricted to PyPI / GitHub / Fretik / common B2B service APIs).",
+      "- For HTTP fetches → use `downloadFile` (a file's bytes) or `searchWeb` / `webFetch` (a page's text). `curl` / `wget` only reach the allowlist: the package registries (PyPI, npm, GitHub, Debian), Fretik, and the team's connected apps — `apt-get install` works.",
       "- Each call is a fresh `bash -c` subprocess. Env vars, shell variables, `cd`, aliases, `source`d files do NOT persist between calls. Chain with `&&` / `;` / `|` / heredocs in one call when needed.",
       "- Files under `/workspace` DO persist across calls. Files you create under `attachments/` or `outputs/` are auto-mirrored to durable storage — call `presentFiles` to surface generated files to the user.",
       "- Sandbox: 1 vCPU, 1.5 GB memory, 5 min wall-clock, root.",
@@ -125,13 +128,19 @@ export const createBashTool = () =>
       // to nothing. Carry the elapsed time into the cost of the run it
       // enabled — the closest owner there is.
       const prepareStartedAt = Date.now();
+      let lease: SandboxLease;
       try {
-        await prepareSandboxForCode({
+        lease = await prepareSandboxForCode({
           conversationId,
           organizationId: ctx.organizationId,
           teamId: ctx.teamId,
           userId: ctx.userId,
           traceId: ctx.traceId,
+          // Which connected apps this turn may stream bytes from, for the
+          // egress policy. Already loaded for the prompt, so it costs nothing.
+          providerKeys: (ctx.externalAppConnections ?? []).map(
+            (c) => c.providerKey,
+          ),
         });
       } catch (err) {
         return mapE2BError(err, "while preparing sandbox workspace");
@@ -186,11 +195,21 @@ export const createBashTool = () =>
       }
 
       if (result.error) {
+        // A host the egress policy does not allow fails as a killed TLS
+        // handshake naming no policy, so without this the model reads it as a
+        // broken server and retries. Added to the envelope rather than to the
+        // stderr text: the command's own output stays what the command said.
+        const egressHint = explainBlockedEgress({
+          code: command,
+          errorText: `${result.error.name}: ${result.error.value}\n${result.stderr}`,
+          allowOut: getAppliedEgress(lease.sandboxId),
+        });
         return {
           error: `${result.error.name}: ${result.error.value}`,
           code: TOOL_ERROR_CODES.NON_ZERO_EXIT,
           stdout: result.stdout,
           stderr: result.stderr,
+          ...(egressHint === undefined ? {} : { hint: egressHint }),
           ...(description ? { description } : {}),
         };
       }

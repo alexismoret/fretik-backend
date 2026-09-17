@@ -818,6 +818,12 @@ const EXTERNAL_APPS_SKILL_TARBALL_SANDBOX_PATH = (
   providerKey: string,
 ): string => `/tmp/fretik-external-apps-skill-${providerKey}.tar.gz`;
 const EXTERNAL_APPS_AUTH_FILE = `${WORKSPACE_ROOT}/.fretik/auth.json`;
+/**
+ * This turn's egress allowlist, so the in-sandbox SDK can refuse a host with
+ * a sentence instead of a killed TLS handshake. Read-only from the guest's
+ * point of view; the backend rewrites it whenever the policy changes.
+ */
+const SANDBOX_EGRESS_FILE = `${WORKSPACE_ROOT}/.fretik/egress.json`;
 
 /**
  * Bundle every `.py` under `sandbox-assets/fretik_apps/` into a gzipped
@@ -1156,36 +1162,69 @@ const pushMcpConnectionOverlay = async (
 };
 
 /**
- * Write `/workspace/.fretik/auth.json` with the per-turn sandbox JWT,
- * the backend URL the SDK should call back, and the turn id.
+ * What the in-sandbox SDK is told about this turn.
  *
- * The Python SDK's `_runtime.py` re-reads this file on every `call()`
- * so a fresh JWT minted by the chatbot handler at turn start propagates
- * to the long-lived Jupyter kernel without restart. Overwrite semantics
- * — never appended; the previous turn's JWT is replaced.
- *
- * Called per-turn from `handlers/chatbot.ts` BEFORE the agent stream
- * starts. Idempotent.
+ * `jwt` is empty under the proxy transport: the credential is added to
+ * outbound requests by E2B's egress proxy and never exists in the VM. The key
+ * is still written, and `_runtime.py` sends no `Authorization` when it is
+ * empty — a sandbox bootstrapped with an older SDK copy sends `Bearer ` and
+ * the proxy replaces the header anyway, so the switch needs no coordination
+ * with sandboxes already running.
  */
-export const writeSandboxAuthFile = async (
+export interface SandboxTurnFiles {
+  jwt: string;
+  backendUrl: string;
+  turnId: string;
+  /** Hosts this turn's egress policy allows, for the SDK's own fast-fail. */
+  allowedHosts: readonly string[];
+  egressMode: string;
+}
+
+/**
+ * Write `/workspace/.fretik/auth.json` and `/workspace/.fretik/egress.json`
+ * for the current turn, in one round trip.
+ *
+ * The Python SDK's `_runtime.py` re-reads both on every `call()` so a fresh
+ * turn propagates to the long-lived Jupyter kernel without a restart — the
+ * kernel's `os.environ` is frozen at kernel start, which is why these are
+ * files and not env vars. Overwrite semantics; the previous turn's values are
+ * replaced.
+ *
+ * `egress.json` is what lets the SDK say "this host is not on the allowlist"
+ * instead of surfacing the killed TLS handshake a blocked host actually
+ * produces.
+ */
+export const writeSandboxTurnFiles = async (
   conversationId: string,
-  payload: { jwt: string; backendUrl: string; turnId: string },
+  payload: SandboxTurnFiles,
 ): Promise<void> => {
   // No `makeSandboxDir` first: `files.write` creates the parent directories
   // it needs ("Writing to a file at path that doesn't exist creates the
-  // necessary directories" — E2B SDK). This runs on EVERY turn, including
-  // turns that never touch the sandbox otherwise, so the extra round-trip was
-  // pure overhead on the request path.
-  const body = JSON.stringify({
-    jwt: payload.jwt,
-    backend_url: payload.backendUrl,
-    turn_id: payload.turnId,
-  });
-  await writeSandboxFile(
-    conversationId,
-    EXTERNAL_APPS_AUTH_FILE,
-    new TextEncoder().encode(body),
-  );
+  // necessary directories" — E2B SDK). This runs on EVERY code-running turn,
+  // so the extra round-trip was pure overhead on the request path.
+  const encoder = new TextEncoder();
+  await writeSandboxFiles(conversationId, [
+    {
+      path: EXTERNAL_APPS_AUTH_FILE,
+      bytes: encoder.encode(
+        JSON.stringify({
+          jwt: payload.jwt,
+          backend_url: payload.backendUrl,
+          turn_id: payload.turnId,
+        }),
+      ),
+    },
+    {
+      path: SANDBOX_EGRESS_FILE,
+      bytes: encoder.encode(
+        JSON.stringify({
+          mode: payload.egressMode,
+          allow_out: payload.allowedHosts,
+          updated_at: new Date().toISOString(),
+        }),
+      ),
+    },
+  ]);
 };
 
 const touchFretikInitMarker = async (conversationId: string): Promise<void> => {

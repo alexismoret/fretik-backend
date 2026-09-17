@@ -92,6 +92,20 @@ await mockModuleStrict("@fretik/shared/services/e2b/restart-python-kernel", {
   },
 });
 
+/**
+ * The allowlist actually applied to this sandbox. It is a module-level cache
+ * filled by a real `updateNetwork` call, so it is a boundary — and it is what
+ * decides whether a failure gets an egress hint at all.
+ */
+await mockModuleStrict("@fretik/shared/services/e2b/apply-egress", {
+  getAppliedEgress: () => [
+    "pypi.org",
+    "files.pythonhosted.org",
+    "deb.debian.org",
+  ],
+  applySandboxEgress: async () => undefined,
+});
+
 // Stub the Redis-backed approval signal so the tool's post-run consume()
 // doesn't reach for a real Redis. `nextPendingApprovalId` lets a test drive
 // the swallowed-ApprovalPending → approval_pending fallback path.
@@ -341,5 +355,51 @@ describe("python tool", () => {
     expect(result.code).toBe("PYTHON_ERROR");
     expect(result.error).toBe("NameError: name 'df' is not defined");
     expect(result.stderr).toContain("NameError");
+  });
+
+  /**
+   * A host outside the sandbox's allowlist does not refuse the connection —
+   * the firewall accepts the TCP handshake and kills the TLS one. The error
+   * text below is verbatim from a live sandbox (`smoke-sandbox-egress.ts`),
+   * and names no policy at all, so without the hint the model reads a broken
+   * server and retries it.
+   */
+  test("a blocked host turns into a hint naming the host and the way in", async () => {
+    setRunResult({
+      exitCode: 1,
+      error: {
+        name: "URLError",
+        value:
+          "<urlopen error [SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1032)>",
+      },
+    });
+
+    const result = (await execPython("conv-egress", {
+      code: 'import urllib.request\nurllib.request.urlopen("https://files.example.org/data.csv")',
+    })) as { code: string; hint?: string };
+
+    expect(result.code).toBe("PYTHON_ERROR");
+    expect(result.hint).toContain("files.example.org");
+    expect(result.hint).toContain("downloadFile");
+  });
+
+  test("the same failure against an ALLOWED host gets no hint", async () => {
+    // A reset while installing from PyPI is a reset. Calling it "blocked"
+    // would send the agent after a policy that is not the problem — which is
+    // the only way the hint above can do harm.
+    setRunResult({
+      exitCode: 1,
+      error: {
+        name: "SSLError",
+        value:
+          "HTTPSConnectionPool(host='pypi.org', port=443): Max retries exceeded with url: /simple/pandas/",
+      },
+    });
+
+    const result = (await execPython("conv-egress", {
+      code: 'import requests\nrequests.get("https://pypi.org/simple/pandas/")',
+    })) as { code: string; hint?: string };
+
+    expect(result.hint).toBeUndefined();
   });
 });

@@ -68,6 +68,9 @@ export const teamsManifest: ProviderManifest = {
   // tell the agent this provider substitutes for any "message" / "video
   // call" request. Explicitly NOT `calendar` — Outlook owns it.
   categories: ["communication", "instant-messaging", "video-call"],
+  // A Teams message attachment is a OneDrive/SharePoint link, so its bytes
+  // come from the tenant host — same reason as the SharePoint manifest.
+  sandboxEgressHosts: ["*.sharepoint.com"],
   // ChannelMessage.Read.All, TeamMember.Read.All, Channel.ReadBasic.All,
   // Team.ReadBasic.All, Presence.Read.All, User.ReadBasic.All and
   // Files.Read.All typically require tenant admin consent in business

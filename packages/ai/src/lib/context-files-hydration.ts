@@ -8,8 +8,18 @@ import {
   uploadContextSidecar,
 } from "@fretik/shared/lib/ai-context-storage";
 import { sanitizeSessionPath } from "@fretik/shared/lib/chatbot-session-storage";
-import { signSandboxJwt } from "@fretik/shared/lib/external-apps/sandbox-jwt";
+import {
+  canBrokerSandboxJwt,
+  signSandboxJwt,
+} from "@fretik/shared/lib/external-apps/sandbox-jwt";
+import { applySandboxEgress } from "@fretik/shared/services/e2b/apply-egress";
+import {
+  buildSandboxNetworkPolicy,
+  detectBackendHost,
+} from "@fretik/shared/services/e2b/network-policy";
+import { collectProviderEgressHosts } from "@fretik/shared/services/e2b/provider-egress";
 import type { SandboxLease } from "@fretik/shared/services/e2b/types";
+import { getOrganizationSandboxPolicy } from "@fretik/shared/services/organization/sandbox-policy";
 import { eq } from "drizzle-orm";
 import { extname } from "node:path";
 import {
@@ -21,7 +31,7 @@ import {
   prepareSandbox,
   WORKSPACE_DIRS,
   writeFile,
-  writeSandboxAuthFile,
+  writeSandboxTurnFiles,
 } from "./conversation-storage";
 import { hydrateMemoryTree } from "./memory-hydration";
 
@@ -70,12 +80,13 @@ interface HydrationContext {
 const lastHydratedTurnBySandbox = new Map<string, string>();
 
 /**
- * Last turn for which a given sandbox got its `fretik_apps` auth file, by
- * `sandboxId`. Same shape and same reason as `lastHydratedTurnBySandbox`:
- * several `python` / `bash` calls in one turn must not re-mint the JWT, and
- * the next turn must, because the file carries that turn's `turn_id`.
+ * Last turn for which a given sandbox had its egress policy applied and its
+ * credential set up, by `sandboxId`. Same shape and same reason as
+ * `lastHydratedTurnBySandbox`: several `python` / `bash` calls in one turn
+ * must not re-mint the JWT or re-send the policy, and the next turn must —
+ * the credential is per turn, and the policy may have changed since.
  */
-const lastAuthTurnBySandbox = new Map<string, string>();
+const lastTurnSetupBySandbox = new Map<string, string>();
 
 const sidecarBasenameFor = (filename: string): string => {
   const ext = extname(filename);
@@ -213,31 +224,43 @@ export const hydrateContextFiles = async (
 };
 
 /**
- * Mint this turn's sandbox JWT (HS256, 1 h TTL) and write it to
- * `/workspace/.fretik/auth.json`, which the in-sandbox `fretik_apps` SDK
- * reads to authenticate its calls back to the backend.
+ * Everything the sandbox needs to be told before this turn's code runs: which
+ * hosts it may reach, and how it authenticates back to us.
  *
- * Called from `prepareSandboxForCode` rather than at turn start. `fretik_apps`
- * lives INSIDE the sandbox and is only reachable through `python` / `bash`,
- * both of which funnel through here — so writing it lazily covers every path
- * that can actually use it, while a turn that never runs code no longer pays
- * for the sandbox acquisition this write used to force (see the header of
- * `loadExternalApps`).
+ * Both used to be settled elsewhere and once. The egress policy was baked at
+ * `Sandbox.create`, so a sandbox kept whatever was true the first time its
+ * conversation ran code. The credential was written into the workspace, where
+ * the agent — which runs as root — could read it and, with one allowed host,
+ * send it anywhere.
  *
- * Best-effort and memoised per (sandbox, turn): a failure warns and lets code
- * execution proceed, exactly as the turn-start version did — `fretik_apps`
- * calls then fail with an auth error the agent can report, rather than the
- * whole turn dying.
+ * Now both are recomputed per turn and applied together:
+ *
+ *  - the policy composes the org's mode, the team's ACTIVE connections and
+ *    the package tiers, and goes out through `updateNetwork` (~180 ms), which
+ *    replaces allow/deny/rules atomically on a running or just-resumed
+ *    sandbox;
+ *  - under the `proxy` transport the JWT rides IN that policy as a per-host
+ *    header rule, so E2B's egress proxy adds it on the way out and the guest
+ *    never holds it. Dropping the rule is what revokes it.
+ *
+ * Best-effort and memoised per (sandbox, turn), as the credential write always
+ * was: a failure warns and lets execution proceed rather than killing a turn
+ * over a settings read. The one failure that is NOT tolerable is a policy that
+ * did not apply while the credential was supposed to be inside it — that would
+ * leave the SDK unauthenticated with no way to say so, hence the fallback to
+ * writing the token for that turn.
  */
-const ensureSandboxAuthFile = async (ctx: {
+const ensureSandboxTurnSetup = async (ctx: {
   conversationId: string;
   organizationId: string;
   teamId: string;
   userId: string;
   turnId: string;
-  sandboxId: string;
+  lease: SandboxLease;
+  providerKeys: readonly string[];
 }): Promise<void> => {
-  if (lastAuthTurnBySandbox.get(ctx.sandboxId) === ctx.turnId) return;
+  const { sandboxId } = ctx.lease;
+  if (lastTurnSetupBySandbox.get(sandboxId) === ctx.turnId) return;
 
   const sandboxJwtSecret = Bun.env.SANDBOX_JWT_SECRET;
   const backendUrl = Bun.env.FRETIK_BACKEND_INTERNAL_URL;
@@ -248,28 +271,78 @@ const ensureSandboxAuthFile = async (ctx: {
     backendUrl === ""
   ) {
     console.warn(
-      "[external-apps] SANDBOX_JWT_SECRET/FRETIK_BACKEND_INTERNAL_URL missing — fretik_apps calls will fail",
+      "[sandbox-turn] SANDBOX_JWT_SECRET/FRETIK_BACKEND_INTERNAL_URL missing — fretik_apps calls will fail",
     );
     return;
   }
 
   try {
-    const jwt = await signSandboxJwt({
+    const orgPolicy = await getOrganizationSandboxPolicy(ctx.organizationId);
+    const providerHosts = collectProviderEgressHosts(ctx.providerKeys);
+    const { token, jti } = await signSandboxJwt({
       conversationId: ctx.conversationId,
       teamId: ctx.teamId,
       userId: ctx.userId,
       organizationId: ctx.organizationId,
       turnId: ctx.turnId,
+      sandboxId,
     });
-    await writeSandboxAuthFile(ctx.conversationId, {
-      jwt,
+
+    // The credential rides in the policy, so the guest never holds it. The
+    // only reason not to is that the proxy has no TLS to terminate.
+    const backendHost = detectBackendHost();
+    const brokerable = canBrokerSandboxJwt() && backendHost !== null;
+    const policy = buildSandboxNetworkPolicy({
+      backendHost,
+      orgPolicy,
+      providerHosts,
+      brokeredJwt: brokerable ? token : undefined,
+    });
+
+    if (!brokerable) {
+      console.error(
+        "[sandbox-turn] cannot broker the sandbox credential (FRETIK_BACKEND_INTERNAL_URL must be https) — writing it into the workspace, where agent code can read it",
+      );
+    }
+    let jwtForWorkspace = brokerable ? "" : token;
+
+    try {
+      const applied = await applySandboxEgress(
+        ctx.lease.sandbox,
+        sandboxId,
+        policy,
+      );
+      if (applied.applied && applied.durationMs > 1_000) {
+        console.warn(
+          `[sandbox-turn] updateNetwork took ${applied.durationMs.toString()} ms for ${sandboxId}`,
+        );
+      }
+    } catch (error) {
+      // The policy carries the credential, so a failed update means the SDK
+      // has no way to authenticate. Degrading beats failing the turn: the
+      // token is still bound to this sandbox and dies with it. Logged as an
+      // error because it is the one path that puts a credential in the guest.
+      console.error(
+        "[sandbox-turn] updateNetwork failed — writing the credential into the workspace for this turn:",
+        error instanceof Error ? error.message : error,
+      );
+      jwtForWorkspace = token;
+    }
+
+    await writeSandboxTurnFiles(ctx.conversationId, {
+      jwt: jwtForWorkspace,
       backendUrl,
       turnId: ctx.turnId,
+      allowedHosts: policy.allowOut,
+      egressMode: orgPolicy.egressMode,
     });
-    lastAuthTurnBySandbox.set(ctx.sandboxId, ctx.turnId);
+    console.info(
+      `[sandbox-turn] sandbox=${sandboxId} jti=${jti} mode=${orgPolicy.egressMode} hosts=${policy.allowOut.length.toString()} credential=${jwtForWorkspace === "" ? "brokered" : "in-workspace"}`,
+    );
+    lastTurnSetupBySandbox.set(sandboxId, ctx.turnId);
   } catch (error) {
     console.warn(
-      "[external-apps] writeSandboxAuthFile failed — fretik_apps calls will fail this turn:",
+      "[sandbox-turn] turn setup failed — fretik_apps calls will fail this turn:",
       error instanceof Error ? error.message : error,
     );
   }
@@ -298,21 +371,25 @@ export const prepareSandboxForCode = async (ctx: {
   teamId: string;
   userId: string | undefined;
   traceId: string | undefined;
+  /** Provider keys of the team's active connections, for the egress tier. */
+  providerKeys?: readonly string[];
 }): Promise<SandboxLease> => {
   const lease = await prepareSandbox(ctx.conversationId);
 
-  // This turn's `fretik_apps` credential. Runs before hydration so a slow
-  // context pull can't leave the SDK unauthenticated for a code call that
-  // only needs the API. `traceId` IS the turn id — the same value the
-  // turn-start version passed as `turnId` (`callOptions.traceId`).
+  // This turn's egress policy and `fretik_apps` credential. Runs before
+  // hydration so a slow context pull can't leave the SDK unauthenticated, or
+  // the sandbox on a stale allowlist, for a code call that only needs the API.
+  // `traceId` IS the turn id — the same value the turn-start version passed as
+  // `turnId` (`callOptions.traceId`).
   if (ctx.userId !== undefined && ctx.traceId !== undefined) {
-    await ensureSandboxAuthFile({
+    await ensureSandboxTurnSetup({
       conversationId: ctx.conversationId,
       organizationId: ctx.organizationId,
       teamId: ctx.teamId,
       userId: ctx.userId,
       turnId: ctx.traceId,
-      sandboxId: lease.sandboxId,
+      lease,
+      providerKeys: ctx.providerKeys ?? [],
     });
   }
 

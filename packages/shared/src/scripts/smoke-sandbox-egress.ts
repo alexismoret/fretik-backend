@@ -188,16 +188,25 @@ const main = async (): Promise<void> => {
   /** The backend probes also need somewhere to send the injected credential. */
   const canProbeBackend = hasSecret && backendHost !== "";
 
-  const mintJwt = async (): Promise<string> =>
-    signSandboxJwt({
-      conversationId: randomUUID(),
-      teamId: randomUUID(),
-      userId: randomUUID(),
-      organizationId: randomUUID(),
-      turnId,
-    });
+  // A throwaway identity: the probe only needs a token the backend will
+  // VERIFY, so that "Missing bearer token" versus anything else tells us
+  // whether the proxy injected the header.
+  const mintJwt = async (sandboxId: string): Promise<string> =>
+    (
+      await signSandboxJwt({
+        conversationId: randomUUID(),
+        teamId: randomUUID(),
+        userId: randomUUID(),
+        organizationId: randomUUID(),
+        turnId,
+        sandboxId,
+      })
+    ).token;
 
-  const jwt1 = hasSecret ? await mintJwt() : "";
+  // The create-time rules are built before the sandbox exists, so this one
+  // names no sandbox. It still settles what the probe asks: a backend that
+  // answers anything other than "Missing bearer token" saw the header.
+  const jwt1 = hasSecret ? await mintJwt("pending-at-create") : "";
 
   console.info(
     `template=${E2B_TEMPLATE} echo=${echoHost} backend=${backendHost === "" ? "<skipped>" : backendHost} jwt=${hasSecret ? `signed (${jwt1.length.toString()} chars)` : "<no SANDBOX_JWT_SECRET>"}`,
@@ -512,7 +521,7 @@ const main = async (): Promise<void> => {
       `state restored for ${resumed.sandboxId}`,
     );
 
-    const jwt2 = hasSecret ? await mintJwt() : "";
+    const jwt2 = hasSecret ? await mintJwt(resumed.sandboxId) : "";
     // The new list DROPS the echo host and ADDS api.github.com: if the update
     // merged instead of replacing, the echo host would still answer.
     const flippedAllow = [

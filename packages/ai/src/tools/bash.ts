@@ -132,6 +132,11 @@ export const createBashTool = () =>
           teamId: ctx.teamId,
           userId: ctx.userId,
           traceId: ctx.traceId,
+          // Which connected apps this turn may stream bytes from, for the
+          // egress policy. Already loaded for the prompt, so it costs nothing.
+          providerKeys: (ctx.externalAppConnections ?? []).map(
+            (c) => c.providerKey,
+          ),
         });
       } catch (err) {
         return mapE2BError(err, "while preparing sandbox workspace");

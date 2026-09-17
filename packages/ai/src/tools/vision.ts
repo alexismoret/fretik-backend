@@ -11,12 +11,14 @@ import {
   readExtractionImage,
 } from "@fretik/shared/services/file-extraction/storage";
 import { tool } from "ai";
+import { SHA256 } from "bun";
 import { z } from "zod";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
 import {
   fileExists,
   readFile,
   resolveWorkspacePath,
+  WORKSPACE_DIRS,
 } from "../lib/conversation-storage";
 import {
   getPdfPageCount,
@@ -132,7 +134,7 @@ export const createVisionTool = () =>
         .string()
         .min(1)
         .describe(
-          "Workspace-relative or absolute path under '/workspace/'. Accepts .png, .jpg, .jpeg, .webp, .gif, .pdf, .mp4, .webm, .mov, and extracted-figure paths ('attachments/<file>/img-N.jpeg').",
+          "Workspace-relative or absolute path under '/workspace/'. Accepts .png, .jpg, .jpeg, .webp, .gif, .pdf, .mp4, .webm, .mov, and extracted-figure paths ('<dir>/<file>/img-N.jpeg').",
         ),
       question: z
         .string()
@@ -166,24 +168,42 @@ export const createVisionTool = () =>
         };
       }
 
-      // Extracted figure (`attachments/<file>/img-N.ext`): a virtual
-      // path minted by `read` — the pixels live in the extraction cache
-      // on S3, not in the sandbox. Resolved DB-first, zero E2B.
+      // Extracted figure (`<dir>/<file>/img-N.ext`): a virtual path
+      // minted by `read` — the pixels live in the extraction cache on S3,
+      // not in the sandbox.
       const figure = parseExtractedImagePath(resolved.relative);
       if (figure) {
+        const documentPath = `${figure.dir}/${figure.filename}`;
         const figureMiss = {
-          error: `No extracted figure ${figure.imageId} for ${figure.attachmentFilename}. read("attachments/${figure.attachmentFilename}") shows the available figure refs.`,
+          error: `No extracted figure ${figure.imageId} for ${figure.filename}. read("${documentPath}") shows the available figure refs.`,
           code: TOOL_ERROR_CODES.FILE_NOT_FOUND,
         };
-        const fileRow = await db.query.aiChatFiles.findFirst({
-          where: { conversationId, filename: figure.attachmentFilename },
-          columns: { fileHash: true },
-        });
-        if (!fileRow?.fileHash) return figureMiss;
+        // The cache is keyed by content, so all this needs is the hash.
+        // An attachment carries one in its row (zero E2B); anything else
+        // — a downloaded PDF, a generated one — is hashed from the bytes
+        // the sandbox holds, which is the same answer by a longer road.
+        let fileHash: string | null = null;
+        if (figure.dir === WORKSPACE_DIRS.attachments) {
+          const fileRow = await db.query.aiChatFiles.findFirst({
+            where: { conversationId, filename: figure.filename },
+            columns: { fileHash: true },
+          });
+          fileHash = fileRow?.fileHash ?? null;
+        } else if (await fileExists(conversationId, documentPath)) {
+          try {
+            fileHash = SHA256.hash(
+              await readFile(conversationId, documentPath),
+              "hex",
+            );
+          } catch {
+            fileHash = null;
+          }
+        }
+        if (!fileHash) return figureMiss;
         const extractionRow = await db.query.fileExtractions.findFirst({
           where: {
             organizationId: ctx.organizationId,
-            fileHash: fileRow.fileHash,
+            fileHash,
           },
           columns: { imageIds: true },
         });
@@ -191,11 +211,7 @@ export const createVisionTool = () =>
           return figureMiss;
         }
         const imageBytes = await readExtractionImage(
-          buildExtractionImageKey(
-            ctx.organizationId,
-            fileRow.fileHash,
-            figure.imageId,
-          ),
+          buildExtractionImageKey(ctx.organizationId, fileHash, figure.imageId),
         );
         if (!imageBytes) return figureMiss;
         const figureMime = extractedImageContentType(figure.imageId);

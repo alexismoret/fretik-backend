@@ -1,7 +1,7 @@
 ---
 name: teams
 description: Microsoft Teams — read and send chat messages, and manage meetings and calls on the user's connected Teams account.
-version: 66a3823c695a
+version: ad9057ba0b7e
 ---
 
 # Microsoft Teams — 21 actions
@@ -96,14 +96,13 @@ run_plan([teams.create_chat.op(member_user_ids=["<aad-user-id-from-matches>"])])
 
 Messages with file attachments expose `attachments[].content_url` (OneDrive /
 SharePoint sharing link). Pass it to `download_message_attachment` — the
-binary is auto-spilled to `Attachment.sandbox_path`, ready for `vision`,
-`pypdf`, `pillow`, etc.
+binary is auto-spilled to `Attachment.sandbox_path`.
 
 ```python
 msg = teams.get_chat_message(chat_id="19:…", message_id="170…")
 if msg.attachments:
     att = teams.download_message_attachment(content_url=msg.attachments[0]["content_url"])
-    # att.sandbox_path → "/workspace/attachments/abc12345_report.pdf"
+    # att.sandbox_path → "/workspace/downloads/abc12345_report.pdf"
 ```
 
 Only file-reference attachments (OneDrive / SharePoint) are supported.

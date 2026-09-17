@@ -286,7 +286,7 @@ export const teamsManifest: ProviderManifest = {
         type: "string",
         optional: true,
         description:
-          "Short-lived pre-authenticated OneDrive direct download URL. Fetch with `urllib.request.urlopen(...)` and write to `/workspace/attachments/<name>` from the Python sandbox.",
+          "Short-lived pre-authenticated OneDrive direct download URL. Fetch with `urllib.request.urlopen(...)` and write to `/workspace/downloads/<name>` from the Python sandbox.",
       },
       sandbox_path: {
         type: "string",

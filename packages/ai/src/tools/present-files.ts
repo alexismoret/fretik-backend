@@ -182,7 +182,7 @@ export const createPresentFilesTool = () =>
             error: {
               path: requested,
               code: TOOL_ERROR_CODES.READ_ONLY_PATH,
-              message: `${head}/ is platform-owned — only files you generated yourself in attachments/ or outputs/ can be presented.`,
+              message: `${head}/ is platform-owned — only files under attachments/, downloads/ or outputs/ can be presented.`,
             },
           };
         }

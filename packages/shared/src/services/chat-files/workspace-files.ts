@@ -11,23 +11,30 @@ import { listPresentedFiles } from "./presented-files";
 /**
  * Everything a conversation has produced or been given, as one list.
  *
- * A conversation holds files from two places that have nothing in common
- * structurally, and the reader does not care about the difference:
+ * A conversation holds files that got here three ways, and only the first
+ * is structurally different from the others:
  *
  *  - ATTACHMENTS the user sent, which are rows in `ai_chat_files` and carry
  *    their own `documentId` once promoted;
- *  - OUTPUTS the agent wrote, which have no row anywhere. They are S3 objects
- *    under the conversation's session prefix and nothing more, so their name,
- *    size and date come from the listing itself.
+ *  - DOWNLOADS the agent brought in, whatever the source;
+ *  - OUTPUTS the agent wrote.
+ *
+ * The last two have no row anywhere. They are S3 objects under the
+ * conversation's session prefix and nothing more, so their name, size and
+ * date come from the listing itself.
+ *
+ * Downloads are their own family rather than folded into either neighbour,
+ * because the panel answers "how did this get here": the user did not
+ * attach them, and the agent did not produce them.
  *
  * That asymmetry is why "is this already in the Drive?" is answered by a
  * separate call (`resolveDriveState`) rather than inlined here: for an
- * attachment it is a column, for an output it costs reading and hashing the
- * bytes. Answering it for every file on every panel open would download the
- * whole workspace to render a list.
+ * attachment it is a column, for anything else it costs reading and hashing
+ * the bytes. Answering it for every file on every panel open would download
+ * the whole workspace to render a list.
  */
 
-export type WorkspaceFileSource = "attachment" | "output";
+export type WorkspaceFileSource = "attachment" | "download" | "output";
 
 /**
  * Whether the agent handed this file over (`presentFiles`) or merely left
@@ -39,12 +46,13 @@ export type WorkspaceFileKind = "deliverable" | "working";
 export interface WorkspaceFile {
   source: WorkspaceFileSource;
   /**
-   * Deliverable vs working-out. Attachments are always `deliverable`:
-   * the user chose to put them here, so nothing about them is a
-   * by-product.
+   * Deliverable vs working-out. Attachments and downloads are always
+   * `deliverable`: someone chose to bring the file into the conversation
+   * — the user by attaching it, the agent by going to fetch it — so
+   * nothing about either is a by-product.
    */
   kind: WorkspaceFileKind;
-  /** Session-relative for outputs (`outputs/report.xlsx`), bare for attachments. */
+  /** Session-relative for outputs and downloads (`outputs/report.xlsx`), bare for attachments. */
   path: string;
   filename: string;
   mimeType: string;
@@ -94,6 +102,19 @@ const EXCLUDED_SESSION_PREFIXES = [
  * announced to the user, and the panel showed nothing.
  */
 const PRIMARY_OUTPUT_PREFIX = "outputs/";
+
+/**
+ * Where a download lands, whatever fetched it — the sandbox SDK spilling a
+ * provider's `download_*`, or a URL pulled through the egress allowlist.
+ * Mirrored to S3 like `outputs/`, so these objects survive the sandbox
+ * being paused — which is what makes them listable here at all.
+ *
+ * Same "keep the two in step" caveat as `EXCLUDED_SESSION_PREFIXES`:
+ * `WORKSPACE_DIRS.downloads` in `@fretik/ai/lib/conversation-storage` and
+ * `_DOWNLOAD_SPILL_DIR` in the providers' `_runtime.py` are the same
+ * contract spelled three times, in three languages.
+ */
+const DOWNLOAD_PREFIX = "downloads/";
 
 /**
  * Documents this conversation put in the Drive, keyed by filename.
@@ -185,7 +206,7 @@ export const listConversationWorkspaceFiles = async (args: {
   const kindOf = (path: string): WorkspaceFileKind =>
     !splittable || presented.has(path) ? "deliverable" : "working";
 
-  const outputs: WorkspaceFile[] = sessionEntries
+  const fromSession: WorkspaceFile[] = sessionEntries
     .filter((entry) => {
       if (
         EXCLUDED_SESSION_PREFIXES.some((prefix) =>
@@ -196,14 +217,18 @@ export const listConversationWorkspaceFiles = async (args: {
       }
       return (
         entry.path.startsWith(PRIMARY_OUTPUT_PREFIX) ||
+        entry.path.startsWith(DOWNLOAD_PREFIX) ||
         presented.has(entry.path)
       );
     })
     .map((entry) => {
       const filename = entry.path.split("/").pop() ?? entry.path;
+      const isDownload = entry.path.startsWith(DOWNLOAD_PREFIX);
       return {
-        source: "output" as const,
-        kind: kindOf(entry.path),
+        source: isDownload ? ("download" as const) : ("output" as const),
+        // A download is never working-out: it was brought in because the
+        // task needed it, which is the same standing an attachment has.
+        kind: isDownload ? ("deliverable" as const) : kindOf(entry.path),
         path: entry.path,
         filename,
         // Best effort from the NAME, which is all a sandbox output has —
@@ -223,9 +248,9 @@ export const listConversationWorkspaceFiles = async (args: {
       };
     });
 
-  // Newest first across both families — the deliverable someone just asked
-  // about is the one they want at the front.
-  return [...outputs, ...attachments].sort((a, b) => {
+  // Newest first across every family — the file someone just asked about
+  // is the one they want at the front.
+  return [...fromSession, ...attachments].sort((a, b) => {
     const left = a.createdAt?.getTime() ?? 0;
     const right = b.createdAt?.getTime() ?? 0;
     return right - left;

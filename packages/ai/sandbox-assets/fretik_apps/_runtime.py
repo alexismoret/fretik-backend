@@ -43,14 +43,22 @@ def _safe_pattern(pattern: str) -> str | None:
     return pattern
 
 
-# Canonical sandbox directory for downloaded attachments. Same path the
-# rest of the agent's file tools already speak (`vision`, `read`,
-# `presentFiles`, `resolveWorkspacePath`) — see `conversation-storage.ts:
-# WORKSPACE_DIRS.attachments`. Files written here are S3-mirrored so
-# they survive sandbox expiry and can be surfaced to the user with
-# presentFiles. The base64 blob itself NEVER reaches the agent — see
-# `_spill_attachments`.
-_ATTACHMENT_SPILL_DIR = "/workspace/attachments"
+# Canonical sandbox directory for anything the agent DOWNLOADED, whatever
+# fetched it — see `conversation-storage.ts: WORKSPACE_DIRS.downloads`.
+# Files written here are S3-mirrored so they survive sandbox expiry, and
+# every file tool reads them by path (`read`, `vision`, `extract`,
+# `presentFiles`).
+#
+# NOT `attachments/`, which it used to be: that directory means "the user
+# gave me this file" and is the only one backed by `ai_chat_files` rows.
+# Spilling there stated something false about who provided the file — and
+# cost more than a wrong label, because `read` resolves an `attachments/`
+# path through those rows and answered `File not found` for every file a
+# provider downloaded, pointing the agent at a `<file_attachments>` block
+# the file was never in.
+#
+# The base64 blob itself NEVER reaches the agent — see `_spill_attachments`.
+_DOWNLOAD_SPILL_DIR = "/workspace/downloads"
 
 
 def _sanitize_filename(name: str) -> str:
@@ -73,7 +81,8 @@ def _spill_attachments(data: Any) -> Any:
     This is the load-bearing safety net for every provider's download-
     attachment action: the agent NEVER receives the raw base64 in its
     context, only an `Attachment` whose `sandbox_path` it can open with
-    any file-consuming tool (vision, presentFiles, pypdf, pillow, etc.).
+    any file-consuming tool (`read`, `vision`, `extract`, presentFiles,
+    pypdf, pillow, etc.).
 
     Two shapes are covered:
       - `content_base64` — provider returned base64 inline (Outlook,
@@ -111,10 +120,10 @@ def _spill_attachments(data: Any) -> Any:
 
 
 def _write_base64_to_spill(data: dict[str, Any], b64: str) -> None:
-    os.makedirs(_ATTACHMENT_SPILL_DIR, exist_ok=True)
+    os.makedirs(_DOWNLOAD_SPILL_DIR, exist_ok=True)
     safe_name = _sanitize_filename(data.get("name", "file"))
     path = os.path.join(
-        _ATTACHMENT_SPILL_DIR, f"{uuid.uuid4().hex[:8]}_{safe_name}"
+        _DOWNLOAD_SPILL_DIR, f"{uuid.uuid4().hex[:8]}_{safe_name}"
     )
     try:
         with open(path, "wb") as f:
@@ -131,10 +140,10 @@ def _write_base64_to_spill(data: dict[str, Any], b64: str) -> None:
 
 
 def _write_url_to_spill(data: dict[str, Any], url: str) -> None:
-    os.makedirs(_ATTACHMENT_SPILL_DIR, exist_ok=True)
+    os.makedirs(_DOWNLOAD_SPILL_DIR, exist_ok=True)
     safe_name = _sanitize_filename(data.get("name", "file"))
     path = os.path.join(
-        _ATTACHMENT_SPILL_DIR, f"{uuid.uuid4().hex[:8]}_{safe_name}"
+        _DOWNLOAD_SPILL_DIR, f"{uuid.uuid4().hex[:8]}_{safe_name}"
     )
     try:
         req = urllib.request.Request(

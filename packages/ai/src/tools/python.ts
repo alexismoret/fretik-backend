@@ -1,6 +1,9 @@
 import { consumeSandboxApprovalPending } from "@fretik/shared/services/approvals/sandbox-signal";
+import { getAppliedEgress } from "@fretik/shared/services/e2b/apply-egress";
+import { explainBlockedEgress } from "@fretik/shared/services/e2b/egress-hint";
 import { restartPythonKernel } from "@fretik/shared/services/e2b/restart-python-kernel";
 import { runInSandbox } from "@fretik/shared/services/e2b/run-in-sandbox";
+import type { SandboxLease } from "@fretik/shared/services/e2b/types";
 import { tool } from "ai";
 import { z } from "zod";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
@@ -168,8 +171,9 @@ export const createPythonTool = () =>
       // to nothing. Carry the elapsed time into the cost of the run it
       // enabled — the closest owner there is.
       const prepareStartedAt = Date.now();
+      let lease: SandboxLease;
       try {
-        await prepareSandboxForCode({
+        lease = await prepareSandboxForCode({
           conversationId,
           organizationId: ctx.organizationId,
           teamId: ctx.teamId,
@@ -288,11 +292,20 @@ export const createPythonTool = () =>
           // carry a UUID, which would indicate a malformed exception
           // from the SDK and is worth surfacing to the model verbatim.
         }
+        // A host the egress policy does not allow fails as a killed TLS
+        // handshake naming no policy, so without this the model reads it as a
+        // broken server and retries, or starts debugging TLS.
+        const egressHint = explainBlockedEgress({
+          code,
+          errorText: `${result.error.name}: ${result.error.value}\n${result.error.traceback ?? ""}`,
+          allowOut: getAppliedEgress(lease.sandboxId),
+        });
         return {
           error: `${result.error.name}: ${result.error.value}`,
           code: TOOL_ERROR_CODES.PYTHON_ERROR,
           stdout: result.stdout,
           stderr: result.error.traceback ?? result.stderr,
+          ...(egressHint === undefined ? {} : { hint: egressHint }),
         };
       }
 

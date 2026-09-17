@@ -340,6 +340,11 @@ export const WEB_TOOL_NAMES: ReadonlySet<string> = new Set([
   "searchWeb",
   "webFetch",
   "webMap",
+  // Fetches from this process, like `webMap` — no vendor, so `AI_WEB_TOOLS_-
+  // ENABLED` is the only thing that can take it away. Listed here so an
+  // operator turning the web off turns ALL of it off: leaving a downloader
+  // active would be an open egress under a closed switch.
+  "downloadFile",
 ]);
 
 /**
@@ -357,6 +362,8 @@ export const isWebToolAvailable = (name: string): boolean => {
   if (name === "searchWeb") return isSearchConfigured();
   if (name === "webFetch") return isFetchConfigured();
   if (name === "webMap") return true;
+  // `downloadFile` reads the URL itself — nothing to configure.
+  if (name === "downloadFile") return true;
   return true;
 };
 

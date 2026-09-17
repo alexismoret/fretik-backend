@@ -92,6 +92,11 @@ export const timeouts = () => ({
   fetch: num(process.env.AI_WEB_FETCH_TIMEOUT_MS, 30_000),
   map: num(process.env.AI_WEB_MAP_TIMEOUT_MS, 15_000),
   /**
+   * A file download, which is bytes rather than a page read: the deadline has
+   * to cover tens of megabytes off a slow origin, not one HTML document.
+   */
+  download: num(process.env.AI_DOWNLOAD_TIMEOUT_MS, 60_000),
+  /**
    * Per-page deadline for a link-preview read (`page-meta.ts`). Short on
    * purpose: the batch runs in parallel and is pure garnish, so one slow
    * origin must not hold the search behind it. Measured on 20 sites, the
@@ -207,6 +212,28 @@ export const mapUserAgent = (): string =>
 export const previewUserAgent = (): string =>
   process.env.AI_WEB_PREVIEW_USER_AGENT ??
   "FretikBot/1.0 (+https://fretik.com/bot; link preview)";
+
+/**
+ * Size ceilings for `downloadFile`, in bytes.
+ *
+ * `perFile` matches the OCR ceiling (`MISTRAL_OCR_MAX_FILE_BYTES`), so a file
+ * this tool accepts is one `read` can still make sense of. `perCall` is the
+ * one the sandbox imposes: `/workspace` is a 256 MiB tmpfs shared with
+ * everything else the turn is doing, so ten files at the per-file ceiling
+ * would fill it.
+ */
+export const downloadLimits = () => ({
+  perFile: num(process.env.AI_DOWNLOAD_MAX_BYTES, 50_000_000),
+  perCall: num(process.env.AI_DOWNLOAD_MAX_TOTAL_BYTES, 100_000_000),
+});
+
+/**
+ * User-Agent for a file download. Same honesty as the crawler above: this
+ * request leaves our own egress, so the origin deserves to know who is asking.
+ */
+export const downloadUserAgent = (): string =>
+  process.env.AI_DOWNLOAD_USER_AGENT ??
+  "FretikBot/1.0 (+https://fretik.com/bot; file download)";
 
 /**
  * Pages read to attach preview metadata to a search or a fetch. Costs no vendor

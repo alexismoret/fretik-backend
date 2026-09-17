@@ -66,12 +66,29 @@ const tmpl = Template()
   //   - tesseract-ocr     → pdf skill: the OCR path prescribes `pytesseract`,
   //                         which is only a wrapper — without this binary it
   //                         imports fine and then fails at the first call.
+  //   - ghostscript       → the PDF operations no Python library does well:
+  //                         flatten, downsample an oversized deliverable,
+  //                         rasterise a file `pdftoppm` chokes on. Agents
+  //                         reimplement these page-by-page in pypdf otherwise.
+  //   - qpdf              → lossless PDF surgery (split, merge, linearise,
+  //                         decrypt) and the repair pass — a file pypdf
+  //                         refuses usually opens after `--qdf
+  //                         --replace-input`, which is a one-line recovery
+  //                         instead of a dead end.
+  //   - ripgrep           → searching a hydrated workspace. `grep -r` walks
+  //                         `attachments/`, `outputs/` and the skill bundles
+  //                         every time; `rg` is the same call and respects
+  //                         binary files by default.
+  // The rest of what the skills reach for is already in the base image —
+  // measured on a live sandbox, NOT assumed: imagemagick (v7, `magick`, with
+  // no PDF policy restriction to undo), zip/unzip, jq, and the Liberation +
+  // DejaVu font families LibreOffice needs for faithful PDF output.
   // `--no-install-recommends` keeps the layer small (libreoffice's
   // suggested deps add ~400MB of unused packages).
   .runCmd(
     [
       "apt-get update",
-      "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pandoc libreoffice-core libreoffice-writer libreoffice-calc libreoffice-impress poppler-utils xxd file tesseract-ocr",
+      "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pandoc libreoffice-core libreoffice-writer libreoffice-calc libreoffice-impress poppler-utils xxd file tesseract-ocr ghostscript qpdf ripgrep",
       "apt-get clean",
       "rm -rf /var/lib/apt/lists/*",
     ].join(" && "),

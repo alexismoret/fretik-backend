@@ -96,7 +96,7 @@ export const createBashTool = () =>
       "- Use for `pip install <pkg>` for one-off packages (then `restart: true` on the next `python` call to pick it up).",
       "- For viewing a single file → use `read` instead (reads documents/images as text, line numbering).",
       "- For pandas / numpy / chart generation / structured data work → use `python` instead (don't `bash python3 -c \"...\"` — you'd lose the persistent kernel).",
-      "- For HTTP fetches → use `searchWeb` / `webFetch` (sandbox egress is restricted to PyPI / GitHub / Fretik / common B2B service APIs).",
+      "- For HTTP fetches → use `downloadFile` (a file's bytes) or `searchWeb` / `webFetch` (a page's text). `curl` / `wget` only reach the allowlist: the package registries (PyPI, npm, GitHub, Debian), Fretik, and the team's connected apps — `apt-get install` works.",
       "- Each call is a fresh `bash -c` subprocess. Env vars, shell variables, `cd`, aliases, `source`d files do NOT persist between calls. Chain with `&&` / `;` / `|` / heredocs in one call when needed.",
       "- Files under `/workspace` DO persist across calls. Files you create under `attachments/` or `outputs/` are auto-mirrored to durable storage — call `presentFiles` to surface generated files to the user.",
       "- Sandbox: 1 vCPU, 1.5 GB memory, 5 min wall-clock, root.",

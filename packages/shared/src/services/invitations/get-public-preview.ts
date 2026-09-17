@@ -1,4 +1,8 @@
+import { eq, sql } from "drizzle-orm";
+
 import db from "../../db";
+import { user } from "../../db/schema";
+import { findOrganizationMemberByEmail } from "../organization/find-member-by-email";
 
 /**
  * Public-safe projection of an organization invitation, shown on the
@@ -17,9 +21,32 @@ export interface PublicInvitationPreview {
   organizationLogo?: string | null;
   inviterName?: string;
   inviterImage?: string | null;
+  teamId?: string | null;
   teamName?: string | null;
   expiresAt?: Date;
+  /**
+   * An account already exists for the invited address. Lets the page open on
+   * "sign in" instead of walking the invitee into a sign-up that can only
+   * fail. NOT an enumeration oracle: it answers for the one address the
+   * invitation was mailed to, to whoever holds that mailed link.
+   */
+  hasAccount?: boolean;
+  /**
+   * That account is already a member of the inviting organization, so this
+   * invitation grants one more TEAM rather than entry to the organization.
+   * The page says so instead of welcoming them somewhere they already are.
+   */
+  alreadyMember?: boolean;
 }
+
+const hasAccountForEmail = async (email: string): Promise<boolean> => {
+  const rows = await db
+    .select({ id: user.id })
+    .from(user)
+    .where(eq(sql`lower(${user.email})`, email.trim().toLowerCase()))
+    .limit(1);
+  return rows.length > 0;
+};
 
 export const getPublicInvitationPreview = async (
   invitationId: string,
@@ -30,6 +57,7 @@ export const getPublicInvitationPreview = async (
       email: true,
       role: true,
       status: true,
+      organizationId: true,
       teamId: true,
       expiresAt: true,
     },
@@ -57,6 +85,16 @@ export const getPublicInvitationPreview = async (
     teamName = team?.name ?? null;
   }
 
+  const existingMember = await findOrganizationMemberByEmail({
+    organizationId: invitation.organizationId,
+    email: invitation.email,
+  });
+  // A member necessarily has an account; only pay for the second read when
+  // there is no membership to prove it. Case-insensitive because `user.email`
+  // is stored as the account entered it.
+  const account =
+    existingMember !== null || (await hasAccountForEmail(invitation.email));
+
   return {
     found: true,
     status: invitation.status,
@@ -66,7 +104,10 @@ export const getPublicInvitationPreview = async (
     organizationLogo: organization.logo,
     inviterName: inviter.name,
     inviterImage: inviter.image,
+    teamId: invitation.teamId,
     teamName,
     expiresAt: invitation.expiresAt,
+    hasAccount: account,
+    alreadyMember: Boolean(existingMember),
   };
 };

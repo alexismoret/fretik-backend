@@ -90,11 +90,12 @@ gouvernance v1, si les chiffres le justifient) → Palier 4 (exécution par le
 harnais). Environ 11 à 13 semaines pour une personne ; les paliers 3 et 4 sont
 conditionnels et peuvent ne jamais être construits.
 
-**Mesuré depuis, en production (§7) :** 91 % de l'horloge d'un run est le
-modèle qui génère, 3 % la sandbox. La latence ne s'achète donc qu'en
-**supprimant des allers-retours modèle**, chacun valant p50 11 s et p90 63 s.
-Cela confirme la direction du plan et rétrograde le préchauffage sandbox de
-« gain le plus sûr » à « ~2 %, à faire parce que c'est trivial ».
+**Mesuré depuis, en production (§7) — 36 runs, 48 tours, 7 jours :** **94 % de
+l'horloge** d'un run et **87 % de sa facture** sont le modèle qui génère ; la
+sandbox est à 2 %. La latence ne s'achète donc qu'en **supprimant des
+allers-retours modèle**, chacun valant ~28 s en moyenne, et un tour en dépense
+14,6. Cela confirme la direction du plan et rétrograde le préchauffage sandbox
+de « gain le plus sûr » à « ~2 %, à faire parce que c'est trivial ».
 
 ---
 
@@ -130,9 +131,19 @@ Cela confirme la direction du plan et rétrograde le préchauffage sandbox de
   d'outils _stateless_, par lots avec hystérésis pour ne pas casser le cache
   préfixe — mesure dans `services/compaction/microcompact.ts:47-52` : un
   effacement naïf refacturait 58-97 k tokens non cachés pour en économiser
-  1,5 k) ; résumé seulement au seuil de contexte. Le résultat d'un `read` de
+  1,5 k) ; résumé au seuil de contexte. Le résultat d'un `read` de
   skill est microcompactable, celui d'un `python` ne l'est pas
   (`chatbot/tools.ts:138-143`).
+- **Refondu et déployé le 2026-09-18, et ça change deux choses pour ce plan.**
+  `AGENT_CONTEXT_CEILING_TOKENS` passe de 100 000 à **180 000** (genou de la
+  courbe sur 62 128 générations rejouées : −77 % de compactions pour +4,3 points
+  de facture) ; la compaction s'appuie sur un **point de reprise** persistant,
+  garde une queue verbatim, et tourne **en avance du tour suivant** plutôt que
+  devant l'utilisateur. Surtout : **le préfixe n'est plus une constante, il est
+  mesuré en direct** (`usage.inputTokens` − historique compté à l'aller), et le
+  cap de compaction en est dérivé — `compactionCapForCeiling(plafond) =
+plafond − préfixe mesuré`. Conséquence directe en 4.2 : tout ce qu'on rend
+  dans le prompt se paie deux fois, en tokens ET en budget d'historique.
 - Aucune réutilisation de solutions passées : pas de few-shot d'historique,
   pas de cache de résultats d'outils entre tours ou conversations, pas de
   « conversation similaire ». Le cache de recall est en mémoire, 15 s, pour
@@ -148,7 +159,15 @@ Cela confirme la direction du plan et rétrograde le préchauffage sandbox de
 - Exécution : Trigger.dev (`packages/workflows/src/tasks/workflow-run.ts`)
   pilote des tours via `POST /internal/trigger/runs/:runId/turn` ;
   `WORKFLOW_TURN_MAX_STEPS = 50`, historique limité à 40 messages +
-  microcompaction, `NO_PROGRESS` après 2 tours, budget de tokens (6 M par
+  microcompaction **et, depuis le 2026-09-18, compaction résumante à chaque
+  tour** (`compactConversation` avec `compactionCapForCeiling(…, "workflow")`
+  — affordable ici et nulle part ailleurs, parce que la fenêtre de 40 messages
+  rend le coût plat dans la longueur du run et qu'un résumé de ~15 s entre deux
+  tours de plusieurs minutes n'a personne qui l'attend). **En mémoire
+  seulement : les lignes `ai_messages` restent intactes**, et les points de
+  reprise vivent dans `ai_conversation_checkpoints` — c'est ce qui laisse le
+  ledger de 4.1 et `workflows:profile` lire la trajectoire complète d'un run,
+  compacté ou non. `NO_PROGRESS` après 2 tours, budget de tokens (6 M par
   défaut), re-ancrage tous les 10 steps, concurrence 3 par workflow.
 - Contexte : prompt système **byte-stable pour tout le run** (bloc playbook
   sans statut), message de pilotage par tour (tâche courante, table des
@@ -198,9 +217,20 @@ update` dans le chat.
 - `ai_episodes` : distillation des conversations (chat **et** runs réussis
   non-test, cron limité à 1/24 h par workflow), digests d'activité de records,
   consolidation « dreaming » à 03:00, démotion à 90 j sans recall. La
-  distillation lit **uniquement les parties texte** des messages, 500
-  caractères par message, et son prompt exclut la mécanique outil. Les runs
-  échoués ne sont pas distillés (`journal-sweep.ts:220-222`).
+  distillation lit **uniquement les parties texte** des messages et son prompt
+  exclut la mécanique outil. Les runs échoués ne sont pas distillés
+  (`journal-sweep.ts:220-222`).
+- **Corrigé et déployé le 2026-09-18, et ça renforce le constat plutôt que de
+  l'invalider.** La coupe à 500 caractères par message est supprimée (elle
+  mordait avant le budget global : 95 % des messages de run étaient tronqués et
+  9 % du budget seulement était utilisé — un run `succeeded` s'est retrouvé
+  enregistré comme inachevé) ; le budget passe à 60 000 caractères, rognés tête
+  et queue. Mais `textOfParts` ne garde toujours **que** les parts
+  `type === "text"` : **ni appel d'outil, ni résultat d'outil, ni
+  raisonnement** — et le distilleur lit les lignes `ai_messages` directement,
+  donc compaction, point de reprise et queue verbatim n'ont aucun effet sur la
+  mémoire. Le corpus procédural reste écrit chaque jour et jamais ouvert ; c'est
+  exactement ce que 4.1 va lire.
 - Recall : 5 bras (ancres → graphe ; RAG mémoires+épisodes+records ;
   documents ; workflows+pages), sélecteur déterministe, juge sur 43 % des tours,
   bloc ≤ 2 000 caractères. `<standing_memory>` : 600 tokens rendus sans LLM.
@@ -800,6 +830,17 @@ réutilisable. Elle se recalcule à chaque run et ne s'accumule pas.
   `openrouter-cache.ts` met un seul breakpoint sur le message système : un
   `<workflow_context>` plus gros est un bloc caché plus gros, sans
   interaction.
+- **Ce qu'on rend dans le prompt se paie DEUX fois — contrainte apparue avec la
+  refonte compaction du 2026-09-18, à ne pas rater.** Le préfixe n'est plus une
+  constante : il est mesuré à chaque pas, et le cap de compaction en est dérivé
+  (`compactionCapForCeiling(plafond) = plafond − préfixe mesuré`). Rendre 8 k
+  tokens de corps de skills fait donc monter le préfixe mesuré de 8 k et
+  **baisser le budget d'historique d'autant** — sur un plafond de 180 000 et un
+  préfixe de ~35 000, le cap passe de ~145 000 à ~137 000, soit −5,5 %
+  d'historique avant que la compaction ne morde. C'est supportable et c'est le
+  bon compromis (un `read` coûte un step, ~28 s mesurées en §7), mais le
+  plafond de 8 k cesse d'être une règle de confort : c'est une part du budget
+  d'historique du run, et le mode `shadow` doit mesurer les deux.
 - **Le prompt ordonne encore le `read`.** `<tool_routing>` ligne 1 impose un
   `read("skills/<name>/SKILL.md")` avant tout `python` ; un modèle qui voit
   cette règle relira le corps et le step économisé disparaît. Une phrase
@@ -1029,7 +1070,7 @@ Repérés pendant l'analyse ; à instruire séparément, mais ils comptent pour
   `prepareSandboxForCode` (JWT, hydratation du contexte) reste sur le chemin du
   tool, il a besoin de `ctx`. Mesure : `startedAt → premier python` dans le
   ledger. Quelques heures de travail, aucun risque. **Mais l'ordre de grandeur
-  est désormais mesuré et il est petit** : 6-8 s une fois par run, contre 338 s
+  est désormais mesuré et il est petit** : 6-8 s une fois par run, contre 309 s
   de run médian en production, soit ~2 %. À faire parce que c'est trivial, pas
   parce que c'est un levier — le levier est en §7, et c'est le nombre
   d'allers-retours modèle.
@@ -1371,45 +1412,55 @@ recette. C'est exactement la question 4 de §6, et elle se répond sans modèle.
 
 ### La première mesure de production, et ce qu'elle déplace
 
-`bun run measure:run-latency` (paquet `ai`) lit la production par l'API HTTP de
-Langfuse — pas par un tunnel, pas par sa base. Sur la fenêtre du 2026-09-13 au
-2026-09-16, environnement `production`, 14 692 observations, 10 runs et 13
-tours de workflow :
+`bun run langfuse:metrics -- runs workflow-turn 7 production` (paquet `ai`) lit
+la production par l'API de Langfuse — pas par un tunnel, pas par sa base.
+**36 runs, 48 tours, 7 jours, environnement de production seulement**, chaque
+seconde attribuée à la feuille qui l'a dépensée :
 
-| ce qui dépense la seconde       | appels |   temps | part     |
-| ------------------------------- | -----: | ------: | -------- |
-| le modèle qui génère (`chat …`) |    191 | 4 035 s | **91 %** |
-| `e2b-python`                    |     67 |   151 s | 3 %      |
-| `web-fetch`                     |     10 |    49 s | 1 %      |
-| `read`                          |     37 |    38 s | 1 %      |
-| tout le reste, cumulé           |      — |  ~150 s | 3 %      |
+| ce qui dépense la seconde                | appels |    temps |     part |   coût |
+| ---------------------------------------- | -----: | -------: | -------: | -----: |
+| le modèle qui génère (`chat deepseek …`) |    700 | 19 486 s | **94 %** | 2,78 $ |
+| `e2b-python`                             |    246 |    456 s |      2 % | 0,06 $ |
+| `e2b-bash`                               |     97 |    168 s |      1 % | 0,02 $ |
+| `read`                                   |     92 |     80 s |      0 % |      — |
+| tout le reste, cumulé                    |      — |   ~466 s |      3 % | 0,32 $ |
 
-Tour de workflow : **p50 320 s, p90 831 s**. Seules les feuilles sont comptées,
-donc chaque seconde est attribuée une fois et une seule ; un parent (`workflow-turn`,
-`invoke_agent`, `step N`) ne dépense rien en propre.
+Tour : **p50 255 s, p90 885 s, max 40 min.** Run : **p50 309 s, p90 35 min.**
+Coût total 3,18 $, soit ~0,09 $ par run, dont **87 % pour le modèle**.
 
 **Trois conséquences, et elles ne vont pas toutes dans le sens du plan v2.**
 
-1. **La latence d'un run, c'est le modèle qui écrit. Pas les outils.** 91 %
-   contre 3 % pour la sandbox. Toute optimisation qui accélère un outil joue
-   sur les 9 %. La seule chose qui déplace la latence est de **supprimer des
-   allers-retours modèle** — et c'est précisément ce que font une recette et
-   une fusion, puisque chaque appel d'outil retiré retire un aller-retour.
-2. **Un appel d'outil supprimé vaut p50 11 s, p90 63 s** — c'est la durée
-   d'une complétion. Sur un run à 338 s médians, retirer cinq appels (relecture
-   de skills et redécouverte de schéma) rend de l'ordre de 55 s, soit ~16 %.
-   C'est la première estimation chiffrée du gain du palier 1, et elle vient de
-   notre corpus, pas d'un papier.
+1. **La latence d'un run, c'est le modèle qui écrit. Pas les outils.** 94 % de
+   l'horloge et 87 % de la facture. Toute optimisation qui accélère un outil
+   joue sur les 6 % restants. La seule chose qui déplace la latence est de
+   **supprimer des allers-retours modèle** — et c'est précisément ce que font
+   une recette et une fusion, puisque chaque appel d'outil retiré retire un
+   aller-retour. Le plan visait juste, pour une raison qu'il n'avait pas.
+2. **Un appel d'outil supprimé vaut ~28 s en moyenne** (19 486 s / 700
+   complétions). Les 48 tours dépensent 700 complétions, soit **14,6 par
+   tour** ; les 92 `read` font 1,9 par tour. Supprimer la relecture de skills
+   rend donc de l'ordre de 50 s sur un tour médian de 255 s — **~20 %**, et
+   c'est la première estimation du gain du palier 1 issue de notre corpus.
 3. **Le préchauffage de la sandbox n'est pas « le gain le plus sûr » de §4.5.**
-   Il vise 6-8 s de bootstrap une fois par run, contre 338 s médians : ~2 %.
-   Réel, peu cher, mais ce n'est pas un titre. Le classement de §4.5 est corrigé
-   en conséquence.
+   Il vise 6-8 s de bootstrap une fois par run, contre 309 s médians : ~2 %.
+   Réel, peu cher, mais ce n'est pas un titre. §4.5 est corrigé en conséquence.
 
-**Limites à dire.** 13 tours sur 3 jours, c'est peu, et le mix de production de
-cette fenêtre ne contient pas PbyP. Ce sont des ordres de grandeur, pas une
-baseline. Et cette mesure donne le **temps**, pas le **quoi** : combien d'appels
-sont de la relecture de skills ou de la redécouverte de schéma reste à lire dans
-la base par `workflows:profile`, qui n'a pas encore tourné sur la production.
+**Limites à dire.** 48 tours sur 7 jours, c'est peu, et rien ne dit que PbyP
+est dans cette fenêtre. Ce sont des ordres de grandeur, pas une baseline. Et
+cette mesure donne le **temps**, pas le **quoi** : combien de ces 700
+complétions suivent une relecture de skill ou une redécouverte de schéma reste
+à lire dans la base par `workflows:profile`.
+
+**Deux chiffres d'une première version de cette mesure étaient faux, et la
+manière dont ils l'étaient vaut d'être consignée.** Un script maison balayait
+l'environnement entier par pagination curseur : il rendait 13 tours là où une
+requête par trace en trouve 48 — une pagination qui s'arrête tôt sans rien
+dire. Et il ne filtrait pas l'environnement : sur la même fenêtre, 97 tours
+non filtrés = 36 de production + 61 du laptop du développeur. Les deux défauts
+poussaient dans le même sens : un chiffre plausible, présenté comme une mesure
+de production. Le script est supprimé au profit de `langfuse:metrics`, qui
+documentait déjà que `fields` est une projection opt-in — la raison pour
+laquelle le premier passage concluait à tort que le coût n'existait plus.
 
 | palier                                                               | contenu                                                                                                                                                                                                                                                                                                                                                                                                                                                  | durée indicative | dépend de      |
 | -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- | -------------- |

@@ -1,6 +1,7 @@
 import { and, eq, gt } from "drizzle-orm";
 import db from "../../db";
 import { aiMessages } from "../../db/schema";
+import { deleteCheckpointsFrom } from "./checkpoints";
 import { markTurnDiscarded } from "./discarded-turns";
 
 /**
@@ -115,6 +116,12 @@ export const rewindConversationToUserMessage = async (params: {
     if (countsAsEdit && editCount >= MAX_USER_MESSAGE_EDITS) {
       return { ok: false, reason: "limit-reached", editCount };
     }
+
+    // Same transaction as the deletion, and `>=` not `>`: the anchor row
+    // itself survives a rewind (the caller re-saves it in place with new
+    // wording), so a checkpoint cutting exactly on it would survive the FK
+    // cascade while summarising the question the user has just replaced.
+    await deleteCheckpointsFrom(conversationId, anchor.seq, tx);
 
     const deleted = await tx
       .delete(aiMessages)

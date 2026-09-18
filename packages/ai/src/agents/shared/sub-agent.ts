@@ -10,6 +10,8 @@ import {
   summarizeRunUsage,
   type StepUsage,
 } from "../../lib/turn-usage";
+import { buildTurnBoundaryResume } from "../../services/compaction/turn-boundary";
+import { contextCeilingReached } from "./context-ceiling";
 import { continuableResponseMessages } from "./resume-messages";
 import { getRuntimeContext, type AgentRuntimeContext } from "./runtime-context";
 
@@ -98,6 +100,20 @@ export interface CreateSubAgentExecuteConfig<
    * was — the point is that the choice happens at execute time, not at import.
    */
   subAgent: (ctx: AgentRuntimeContext) => Agent<CALL_OPTIONS, TOOLS>;
+  /**
+   * The ceiling THIS delegate's stop condition uses, read from the same set
+   * that built it (`AgentSet.contextCeiling`).
+   *
+   * Resolved per call for the same reason `subAgent` is: the model can be a
+   * per-turn decision, and a ceiling lowered by a narrow window belongs to the
+   * model, not to the tool. Omitted falls back to the absolute constant, which
+   * is the right answer for every model in the registry today — the smallest
+   * measured window is 125 952 tokens, which still leaves the absolute 100 000
+   * intact after the output reserve. It stops being the right answer the day a
+   * narrower model is added, and a boundary loop asking a question its agent
+   * did not answer would simply never fire.
+   */
+  contextCeiling?: (ctx: AgentRuntimeContext) => number;
   /**
    * A second agent to run ONCE when the first came back having produced
    * nothing — the reasoning-only zombie (`agent-builder.ts` logs it): the model
@@ -252,6 +268,20 @@ const FALLBACK_MIN_MS = 5 * 60 * 1000;
  * ending on its own. Same definition as `lib/model-detectors.ts`, which files
  * the incident this branch recovers from.
  */
+/**
+ * A backstop, not the bound — see the chat turn's `BOUNDARY_BACKSTOP` for the
+ * argument.
+ *
+ * `buildTurnBoundaryResume` refuses any resume that does not cut the carried
+ * transcript to at most `BOUNDARY_MAX_RATIO` of its size, so the loop below
+ * converges geometrically whatever this number is. It is higher than the chat
+ * turn's because a delegate has nobody waiting on the next token and its whole
+ * reason to exist is that its loop can be long without the parent paying for
+ * the length — the page builder runs up to 80 steps behind one tool call.
+ * It replaced a hard limit of 3 that was derived from nothing.
+ */
+const SUB_AGENT_BOUNDARY_BACKSTOP = 12;
+
 const upstreamCut = (finishReason: string): boolean =>
   finishReason !== "stop" &&
   finishReason !== "tool-calls" &&
@@ -362,6 +392,45 @@ export const createSubAgentExecute = <
       // after four useful steps paid for those four twice and the second
       // model could not see what the first had learned.
       let history = continuableResponseMessages(result.responseMessages);
+
+      // ---- Context boundary ----
+      // The ceiling ends the loop while the delegate still wanted to work
+      // (`tool-calls`), so it resumes — from a summary of what it did instead
+      // of the transcript of it. The briefing stays verbatim: `generate`
+      // re-sends `[...messages, ...history]`, so replacing `history` with the
+      // summary keeps the task and drops only its accumulated weight.
+      //
+      // This is the biggest single exposure in the product: the page builder
+      // runs up to 80 steps behind one tool call, and its context grows on
+      // every one of them.
+      const boundaryPrefix = `[sub-agent:${ctx.agentKey ?? "unknown"}]`;
+      for (
+        let boundary = 0;
+        boundary < SUB_AGENT_BOUNDARY_BACKSTOP &&
+        result.finishReason === "tool-calls" &&
+        contextCeilingReached(result.steps, config.contextCeiling?.(ctx));
+        boundary += 1
+      ) {
+        const resume = await buildTurnBoundaryResume({
+          messages: history,
+          teamId: ctx.teamId,
+          logPrefix: boundaryPrefix,
+        });
+        // Nothing on the ladder reduced. Return what the run has rather than
+        // re-run it on a context that did not get smaller.
+        if (resume === null) break;
+        history = [resume.message];
+        result = await generate(config.subAgent(ctx), retryDeadline(), history);
+        usage = mergeUsage(usage, summarizeRunUsage(result.steps));
+        // `?? salvaged` and not `?? undefined`: a resumed run whose salvage
+        // comes back empty must not erase what the cut run had already
+        // produced — the files are on disk either way.
+        salvaged = (await config.salvage?.(result, ctx)) ?? salvaged;
+        history = [
+          resume.message,
+          ...continuableResponseMessages(result.responseMessages),
+        ];
+      }
 
       const spent = (): boolean =>
         salvaged === undefined && changedNothing(result, config.hasSideEffect);

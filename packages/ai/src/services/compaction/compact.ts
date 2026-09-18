@@ -1,6 +1,8 @@
 import { getLiveStateSync } from "@fretik/shared/services/model-registry/live";
 import type { UIMessage } from "ai";
+import { parseIntEnv } from "../../agents/shared/env";
 import type { ModelProfile } from "../../lib/model-registry/types";
+import { withNamedTrace } from "../../lib/trace-tool";
 import { microcompactMessages } from "./microcompact";
 import { getCompactUserSummaryMessage } from "./prompt";
 import {
@@ -8,8 +10,13 @@ import {
   extractRuntimeState,
   formatRuntimeStateForSummary,
 } from "./runtime-state-attachments";
-import { parseSummariserMaxTokens, summariseMessages } from "./summarizer";
+import {
+  parseSummariserMaxTokens,
+  serialiseMessageBlocks,
+  summariseMessages,
+} from "./summarizer";
 import { estimateMessagesTokens } from "./token-estimator";
+import { mechanicalSummary } from "./turn-boundary";
 
 /**
  * Conversation compaction — full alignment with Claude Code's pattern
@@ -35,9 +42,10 @@ import { estimateMessagesTokens } from "./token-estimator";
  *      finds the cumulative activation set after compaction —
  *      without any code changes in `dynamic-tools.ts`.
  *   5. **Replacement**: return `[summaryUserMessage,
- *      syntheticReplayAssistantMessage?]`. There is NO "kept verbatim
- *      tail" — that was a Fretik divergence from CC that this rewrite
- *      removes (Sprint A §3.3 hard-cap → CC effective-window pattern).
+ *      syntheticReplayAssistantMessage?, ...verbatimTail]` — the
+ *      summary covers everything up to the tail, and the last few
+ *      messages are carried through untouched. See
+ *      `KEEP_TAIL_TOKENS` for why the tail exists and what bounds it.
  *
  * Soft-fail policy: when the summariser fails (timeout, rate limit,
  * unrecoverable PTL, malformed output) we return the microcompacted
@@ -94,11 +102,27 @@ const SUMMARISER_MAX_TOKENS = parseSummariserMaxTokens(
  * to CC's 83.5% on Sonnet but derived rather than tuned, so it stays
  * correct for any model swap or per-conversation override (C8): the
  * threshold always follows the profile passed by the caller.
+ *
+ * `maxThresholdTokens` caps that derivation at an ABSOLUTE number.
+ * The derived figure answers "will the next call fit"; on a 1M-context
+ * model it answers yes until ~960K, which is far past the point where
+ * accuracy has already gone (see `agents/shared/context-ceiling.ts` for
+ * the measured fall). Callers that care about staying accurate — not
+ * merely about fitting — pass the ceiling here. Nothing changes for a
+ * caller that does not: `min` can only lower the threshold.
  */
-export const getCompactionThresholdTokens = (profile: ModelProfile): number =>
-  effectiveContextLength(profile) -
-  SUMMARISER_MAX_TOKENS -
-  AUTOCOMPACT_BUFFER_TOKENS;
+export const getCompactionThresholdTokens = (
+  profile: ModelProfile,
+  maxThresholdTokens?: number,
+): number => {
+  const derived =
+    effectiveContextLength(profile) -
+    SUMMARISER_MAX_TOKENS -
+    AUTOCOMPACT_BUFFER_TOKENS;
+  return maxThresholdTokens === undefined
+    ? derived
+    : Math.min(derived, maxThresholdTokens);
+};
 
 /**
  * The context window a request can actually use, which is NOT the catalogue
@@ -178,7 +202,142 @@ export interface CompactConversationOptions {
    * compaction itself.
    */
   onProgress?: CompactionProgressCallback;
+  /**
+   * Absolute cap on the threshold — see `getCompactionThresholdTokens`.
+   * Omitted keeps the window-derived value.
+   */
+  maxThresholdTokens?: number;
+  /**
+   * Fired once, on the success path only, with everything needed to PERSIST
+   * the compaction as a checkpoint.
+   *
+   * A callback rather than a richer return type because the two consumers are
+   * unrelated: the turn needs the messages now, the checkpoint writer needs
+   * the artefact later and must not make the turn wait for it. Callers that
+   * pass nothing keep the previous, purely in-memory behaviour — which is
+   * still the right one for a path with no conversation to attach to.
+   */
+  onCompacted?: (artifact: CompactionArtifact) => void;
+  /**
+   * Conversation to file the Langfuse `compaction` observation under.
+   *
+   * Needed because compaction is no longer always inside a turn. Moving the
+   * summariser to `compactAheadOfNextTurn` moved it out of `chatbot-turn`'s
+   * span, and `telemetryFor("compaction")` does NOT name anything on its own —
+   * AI SDK v7 hardcodes the span name to `chat <model>` and files the
+   * functionId under `gen_ai.agent.name`. The package convention lists
+   * `compaction` among the stable trace names; without an opened observation
+   * the async path lands in the same anonymous bucket as every agent turn, and
+   * "what does compaction cost" stops being answerable by a query. Verified
+   * 2026-09-18: zero observations named `compaction` in 30 days.
+   *
+   * Omitted leaves tracing alone, which is right for the callers that have no
+   * conversation to attach to.
+   */
+  traceSessionId?: string;
 }
+
+/** What a compaction produced, in the form a checkpoint stores it. */
+export interface CompactionArtifact {
+  /**
+   * The ASSEMBLED handoff message, not the raw summariser output — storing
+   * the assembled text is what lets a resumed window reproduce byte-for-byte
+   * what the turn that wrote it used, instead of re-deriving it under
+   * whatever the prompt code says at read time.
+   */
+  summary: string;
+  activatedTools: string[];
+  tokensBefore: number;
+  tokensAfter: number;
+  /**
+   * How many trailing messages of the input the summary does NOT cover, because
+   * they were kept verbatim.
+   *
+   * The checkpoint's cut has to move back by exactly this many, or the tail is
+   * summarised AND left in the window on the next turn — or worse, summarised
+   * and then excluded from it. The caller translates this count into a row,
+   * which it can do because compaction preserves the array's length and order.
+   */
+  keptTailCount: number;
+}
+
+/**
+ * How much of the most recent conversation survives a compaction verbatim.
+ *
+ * A summary is lossy by construction, and the loss is not spread evenly over
+ * what it folds: the oldest exchanges are the ones a summary represents well —
+ * the outcome is what mattered about them — while the newest are the ones the
+ * next turn is most likely to be ABOUT, where the exact wording, the number,
+ * the file path and the user's phrasing are the content. Folding those into
+ * prose is where a compacted conversation starts answering questions about
+ * itself from memory. Anthropic's context editing keeps a tail of tool uses for
+ * the same reason, and Gemini CLI keeps 30 % of the history.
+ *
+ * 12 000 tokens is a BOUND, not a measurement — roughly the last couple of
+ * exchanges on ordinary traffic. Nothing in either eval family measures what it
+ * buys: both probe recall of OLD history, which is precisely the half a summary
+ * is good at, so they would score a tail at zero. The case that would measure it
+ * ("what did you just tell me") does not exist yet, which is why this is a
+ * tunable with a conservative default rather than a derived figure.
+ *
+ * Bounded a second time, as a fraction of the threshold, and that is the bound
+ * that makes it safe: a tail free to grow with the history would carry the
+ * conversation straight back over the threshold, compacting on every turn
+ * forever. At a quarter of the threshold, a compaction always lands the next
+ * turn at a quarter of the cap or less, whatever the tail budget says.
+ */
+const KEEP_TAIL_TOKENS = parseIntEnv("COMPACTION_KEEP_TAIL_TOKENS", {
+  fallback: 12_000,
+  min: 0,
+  max: 200_000,
+});
+const KEEP_TAIL_MAX_THRESHOLD_FRACTION = 0.25;
+
+/**
+ * Split a history into the part a summary replaces and the part it precedes.
+ *
+ * Walks backwards while the tail fits its budget and stops at the first message
+ * that would not. No alignment on turn boundaries, deliberately: a tool call and
+ * its result live in the SAME `UIMessage`, so there is no pair a split between
+ * messages can break, and the only other candidate rule — "start the tail at a
+ * user message" — would throw away the single most recent answer whenever that
+ * answer is the only thing that fits, which is the exact case the tail exists
+ * for.
+ *
+ * The head always keeps at least one message — a summariser with nothing to
+ * read produces nothing to hand over. It is a floor, not a live branch: the
+ * caller is here only because the history is OVER the threshold, and the budget
+ * is at most a quarter of it, so a tail can never reach the first message.
+ */
+const splitVerbatimTail = (
+  messages: UIMessage[],
+  profile: ModelProfile,
+  budget: number,
+): { head: UIMessage[]; tail: UIMessage[] } => {
+  if (budget <= 0 || messages.length < 2) return { head: messages, tail: [] };
+  let used = 0;
+  let start = messages.length;
+  while (start > 1) {
+    const candidate = messages[start - 1];
+    if (candidate === undefined) break;
+    // Per message, so the estimator's per-message memo is what answers here —
+    // this walk costs nothing a turn has not already paid.
+    const cost = estimateMessagesTokens([candidate], profile);
+    if (used + cost > budget) break;
+    used += cost;
+    start -= 1;
+  }
+  return { head: messages.slice(0, start), tail: messages.slice(start) };
+};
+
+/**
+ * Verbatim tail the mechanical rung may copy when the summariser does not
+ * answer. Sized against the cap it has to fit under, not against the transcript
+ * it folds: at roughly two characters per token on tool output, 24 000
+ * characters is about 12 000 tokens — a fifth of a 65 000-token cap, so the
+ * result reduces even when the transcript barely exceeded it.
+ */
+const MECHANICAL_VERBATIM_BUDGET_CHARS = 24_000;
 
 const safeProgress = (
   cb: CompactionProgressCallback | undefined,
@@ -204,8 +363,9 @@ export const compactConversation = async (
   messages: UIMessage[],
   options: CompactConversationOptions,
 ): Promise<UIMessage[]> => {
-  const { onProgress, profile, teamId } = options;
-  const threshold = getCompactionThresholdTokens(profile);
+  const { onProgress, profile, teamId, maxThresholdTokens, onCompacted } =
+    options;
+  const threshold = getCompactionThresholdTokens(profile, maxThresholdTokens);
 
   // Step 1 — microcompact (always cheap, often skips the summariser).
   const microcompacted = microcompactMessages(messages);
@@ -222,18 +382,62 @@ export const compactConversation = async (
   }
 
   // Step 3 — full summarisation.
+  //
+  // The observation opens HERE and not around the whole function, because
+  // above this line is the fast path that most turns take: naming the trace
+  // earlier would file one empty `compaction` root per turn and bury the
+  // handful that did real work under thousands that did none.
+  const { head, tail } = splitVerbatimTail(
+    microcompacted,
+    profile,
+    Math.min(
+      KEEP_TAIL_TOKENS,
+      Math.floor(threshold * KEEP_TAIL_MAX_THRESHOLD_FRACTION),
+    ),
+  );
   console.info(
-    `[compaction] starting tokens=${totalTokens.toString()} threshold=${threshold.toString()} messageCount=${microcompacted.length.toString()}`,
+    `[compaction] starting tokens=${totalTokens.toString()} threshold=${threshold.toString()} messageCount=${microcompacted.length.toString()} keptTail=${tail.length.toString()}`,
   );
   safeProgress(onProgress, { phase: "started", tokensBefore: totalTokens });
-  const summary = await summariseMessages(microcompacted, teamId);
+  const llmSummary = await (options.traceSessionId === undefined
+    ? summariseMessages(head, teamId)
+    : withNamedTrace(
+        "compaction",
+        {
+          sessionId: options.traceSessionId,
+          metadata: {
+            tokensBefore: totalTokens.toString(),
+            threshold: threshold.toString(),
+          },
+        },
+        () => summariseMessages(head, teamId),
+      ));
 
-  if (summary === null) {
-    console.warn(
-      `[compaction] summariser_failed tokens=${totalTokens.toString()} returning_microcompacted_history`,
+  // Rung two, for when the summariser does not answer.
+  //
+  // Returning the history untouched here was a silent guarantee of a wasted
+  // turn: the caller has already decided the history is over the cap, so the
+  // request built from it is over the ceiling too, and the turn dies at step
+  // zero having done nothing. Measured 2026-09-18 on a workflow run — the
+  // summariser timed out at its 90-second budget on 2 of 10 attempts, and each
+  // failure cost exactly one such turn.
+  //
+  // The turn boundary already owns a ladder for the identical problem, and the
+  // two sides agree on the same `string[]` block shape (`serialiseMessageBlocks`
+  // for `UIMessage`, `serialiseModelMessageBlocks` for `ModelMessage`), so the
+  // rung is reused rather than rewritten. It is a weaker handover than five
+  // written sections; it is a handover, which is the whole difference from
+  // no compaction at all.
+  const summary =
+    llmSummary ??
+    mechanicalSummary(
+      serialiseMessageBlocks(head),
+      MECHANICAL_VERBATIM_BUDGET_CHARS,
     );
-    safeProgress(onProgress, { phase: "failed", tokensBefore: totalTokens });
-    return microcompacted;
+  if (llmSummary === null) {
+    console.warn(
+      `[compaction] summariser_failed tokens=${totalTokens.toString()} falling_back=mechanical`,
+    );
   }
 
   // Step 4 — runtime-state extraction (active tools + pending tasks).
@@ -248,7 +452,7 @@ export const compactConversation = async (
     parts: [{ type: "text", text: summaryText }],
     metadata: {
       type: "compaction_summary",
-      compactedMessageCount: microcompacted.length,
+      compactedMessageCount: head.length,
       estimatedTokensBefore: totalTokens,
       estimatedTokensAfter: 0, // updated below
       createdAt: new Date().toISOString(),
@@ -260,10 +464,26 @@ export const compactConversation = async (
   );
 
   const compacted: UIMessage[] = replayMessage
-    ? [summaryMessage, replayMessage]
-    : [summaryMessage];
+    ? [summaryMessage, replayMessage, ...tail]
+    : [summaryMessage, ...tail];
 
   const tokensAfter = estimateMessagesTokens(compacted, profile);
+
+  // The same invariant the turn-boundary ladder enforces: a compaction that
+  // does not reduce is not a compaction. It cannot bite on the LLM rung, whose
+  // output is bounded by `SUMMARISER_MAX_TOKENS`; it is here for the mechanical
+  // one, which reproduces every distinct error verbatim and can therefore
+  // outgrow a transcript made of few enormous messages. Returning the
+  // microcompacted history then is no improvement — but it is honest, and it is
+  // strictly better than swapping a history for something larger.
+  if (tokensAfter >= totalTokens) {
+    console.warn(
+      `[compaction] rejected reason=no_reduction tokensBefore=${totalTokens.toString()} tokensAfter=${tokensAfter.toString()} kind=${llmSummary === null ? "mechanical" : "llm"}`,
+    );
+    safeProgress(onProgress, { phase: "failed", tokensBefore: totalTokens });
+    return microcompacted;
+  }
+
   // Patch the metadata in place — the message is still ours, no
   // sharing concerns. Doing it post-hoc avoids a double-estimation.
   const md = summaryMessage.metadata as CompactionSummaryMetadata;
@@ -272,7 +492,7 @@ export const compactConversation = async (
   const reductionPct =
     totalTokens > 0 ? Math.round((1 - tokensAfter / totalTokens) * 100) : 0;
   console.info(
-    `[compaction] succeeded tokensBefore=${totalTokens.toString()} tokensAfter=${tokensAfter.toString()} reduction=${reductionPct.toString()}% summarisedMessages=${microcompacted.length.toString()} activatedToolsPreserved=${runtimeState.activatedTools.length.toString()}`,
+    `[compaction] succeeded tokensBefore=${totalTokens.toString()} tokensAfter=${tokensAfter.toString()} reduction=${reductionPct.toString()}% summarisedMessages=${head.length.toString()} keptTail=${tail.length.toString()} activatedToolsPreserved=${runtimeState.activatedTools.length.toString()}`,
   );
   safeProgress(onProgress, {
     phase: "succeeded",
@@ -280,6 +500,23 @@ export const compactConversation = async (
     tokensAfter,
     reductionPct,
   });
+  if (onCompacted) {
+    try {
+      onCompacted({
+        summary: summaryText,
+        activatedTools: runtimeState.activatedTools,
+        tokensBefore: totalTokens,
+        tokensAfter,
+        keptTailCount: tail.length,
+      });
+    } catch (err) {
+      // Same policy as `onProgress`: a listener is an observer, and an
+      // observer that throws must not cost the turn its compacted history.
+      console.warn(
+        `[compaction] onCompacted callback threw: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
 
   return compacted;
 };

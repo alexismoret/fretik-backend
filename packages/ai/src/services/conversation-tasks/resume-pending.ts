@@ -9,10 +9,7 @@ import {
   setConversationActiveStream,
 } from "@fretik/shared/services/ai/active-stream";
 import { publishConversationEvent } from "@fretik/shared/services/ai/conversation-events";
-import {
-  loadConversationForAgent,
-  saveMessages,
-} from "@fretik/shared/services/ai/messages";
+import { saveMessages } from "@fretik/shared/services/ai/messages";
 import { openTurnLog } from "@fretik/shared/services/ai/turn-log";
 import {
   claimCompletedConversationTasks,
@@ -31,6 +28,7 @@ import {
   resolveChatModelForProfile,
   resolveFlagshipProfileKey,
 } from "../../lib/model-registry/resolve";
+import { loadAgentWindow } from "../compaction/checkpoint-window";
 import {
   CONVERSATION_TASK_CONTINUATIONS,
   type TaskLine,
@@ -149,7 +147,7 @@ const runResume = async (params: { conversationId: string }): Promise<void> => {
       byUserId: "",
     });
 
-    const history = await loadConversationForAgent(conversationId, 30);
+    const history = (await loadAgentWindow(conversationId, 30)).messages;
     const actingUserId = built.actingUserId ?? conversation.userId;
     const callOptions: ChatbotCallOptions = {
       organizationId: conversation.organizationId,

@@ -491,11 +491,18 @@ export type ModelRole =
  * - `chat`: reasoning enabled + max_tokens budget + usage accounting.
  * - `preextract`: reasoning effort minimal + throughput-sorted routing.
  * - `active-memory`: reasoning effort low.
- * - `bare`: no settings object at all (vision, compaction, cheap-tasks
- *   call sites own their per-call options).
+ * - `compaction`: the profile's provider policy + a bounded thinking budget.
+ * - `bare`: the profile's provider policy only (vision, cheap-tasks call
+ *   sites own their reasoning/usage options).
  */
 export type RoleSettingsKind =
-  "chat" | "page-build" | "preextract" | "active-memory" | "recall" | "bare";
+  | "chat"
+  | "page-build"
+  | "preextract"
+  | "active-memory"
+  | "recall"
+  | "compaction"
+  | "bare";
 
 export interface RoleBinding {
   role: ModelRole;

@@ -598,6 +598,11 @@ export const createBuildPageTool = <TTools extends ToolSet>(deps: {
     profileKey?: string,
   ) => Agent<ChatbotCallOptions, TTools>;
   /**
+   * The ceiling the resolved builder stops at — see
+   * `SubAgentConfig.contextCeiling`. Per profile, like the builder itself.
+   */
+  resolvePageBuilderCeiling?: (profileKey?: string) => number;
+  /**
    * Finish the build of a run that died before it could — `salvagePageProject`
    * in `services/page-project/salvage.ts`. Injected rather than imported so
    * this module keeps no runtime edge to the page services (and through them
@@ -668,6 +673,10 @@ export const createBuildPageTool = <TTools extends ToolSet>(deps: {
     };
   };
 
+  // Captured so the arrow below keeps the narrowed type; reading the optional
+  // off `deps` inside the closure would widen it back to `undefined`.
+  const ceilingResolver = deps.resolvePageBuilderCeiling;
+
   const execute = createSubAgentExecute<
     ChatbotCallOptions,
     TTools,
@@ -680,6 +689,12 @@ export const createBuildPageTool = <TTools extends ToolSet>(deps: {
     subAgent: (ctx) => deps.resolvePageBuilder(ctx.pageBuildProfileKey),
     fallbackSubAgent: (ctx) =>
       deps.resolvePageBuilderFallback(ctx.pageBuildProfileKey),
+    ...(ceilingResolver
+      ? {
+          contextCeiling: (ctx: AgentRuntimeContext) =>
+            ceilingResolver(ctx.pageBuildProfileKey),
+        }
+      : {}),
     // What a retry must not duplicate. Everything the builder does before it
     // saves — the environment guide, a component API lookup, a dry run against
     // the data — leaves nothing behind, and a build that died in that opening

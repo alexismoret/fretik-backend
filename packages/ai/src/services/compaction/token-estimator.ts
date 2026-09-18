@@ -1,21 +1,15 @@
+import { estimateTokens } from "@fretik/shared/lib/token-estimate";
 import { isFileUIPart, type UIMessage } from "ai";
 import type { ModelProfile } from "../../lib/model-registry/types";
 import { mediaModality, resolveAttachmentIngestion } from "../native-input";
 
 /**
- * Cheap chars/4 token heuristic. The BPE tokenisers used by most upstream
- * models (cl100k_base, o200k_base, MiniMax tokenizer) land in a narrow band
- * around 3.5-4 chars per token for English and 2.5-3 for dense CJK text. We
- * use 4 as a conservative ceiling — slightly over-estimates English, mildly
- * under-estimates CJK, which is the right bias for a compaction threshold:
- * kicks in a hair earlier than the true token count rather than later.
- *
- * Same heuristic Anthropic uses internally
- * (`claude-code/src/utils/tokens.ts`) and what every other `CHEAP_MODEL`
- * consumer implicitly assumes when sizing a prompt.
+ * Re-exported, not redefined: the heuristic and the argument for its bias live
+ * in `@fretik/shared/lib/token-estimate`, which the page-history valve and the
+ * AI-context budget read from the same place. Four independent copies of
+ * `length / 4` is four things that agree by coincidence.
  */
-export const estimateTokens = (text: string): number =>
-  Math.ceil(text.length / 4);
+export { estimateTokens };
 
 /**
  * Rough token count for a `UIMessage[]`. Serialises the whole array via
@@ -63,19 +57,33 @@ const nativeMediaSurcharge = (
 };
 
 /**
- * Rough token count for a `UIMessage[]`. Pass the active `profile` so
- * media it would send native is costed (otherwise the tiny file-part URL
- * is all that's counted). Without a profile — or for tool-mediated parts —
- * the estimate is the historical `JSON.stringify` baseline unchanged.
+ * Token count for a `UIMessage[]`. Pass the active `profile` so media it would
+ * send native is costed (otherwise the tiny file-part URL is all that is
+ * counted).
+ *
+ * Counted message by message rather than over one `JSON.stringify` of the
+ * array, because the counter is now a real tokeniser and a real tokeniser costs
+ * real time — 404 ms on a 1.36 MB window, paid on every turn if nothing is
+ * remembered. A message is the right unit: it is immutable once settled, a
+ * window holds thirty of them, and a turn adds one or two, so a steady-state
+ * turn tokenises what arrived and reads the rest out of the memo.
  */
 export const estimateMessagesTokens = (
   messages: UIMessage[],
   profile?: ModelProfile,
 ): number => {
   try {
-    const base = estimateTokens(JSON.stringify(messages));
+    let base = 0;
+    for (const message of messages) base += estimateTokens(serialise(message));
     return profile ? base + nativeMediaSurcharge(messages, profile) : base;
   } catch {
     return 0;
   }
 };
+
+/**
+ * One message as the bytes that stand in for it. `JSON.stringify` per message
+ * rather than per array keeps the memo key stable when a NEIGHBOUR changes,
+ * which is the whole point of counting per message.
+ */
+const serialise = (message: UIMessage): string => JSON.stringify(message);

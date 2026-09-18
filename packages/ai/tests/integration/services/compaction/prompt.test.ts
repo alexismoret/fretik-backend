@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
+  buildSummariserPrompt,
   formatCompactSummary,
   getCompactPrompt,
   getCompactUserSummaryMessage,
+  looksLikeSummary,
 } from "../../../../src/services/compaction/prompt";
 
 describe("getCompactPrompt", () => {
@@ -116,5 +118,86 @@ describe("getCompactUserSummaryMessage", () => {
     const out = getCompactUserSummaryMessage("<summary>...</summary>", "");
     expect(out).toContain("Continue from where the conversation left off");
     expect(out).toContain("read()");
+  });
+});
+
+/**
+ * The two guards that came out of measuring fifteen real summariser calls on
+ * 2026-09-18. Five of them answered the transcript's last user message instead
+ * of summarising it, and one spent its whole output budget inside `<analysis>`
+ * and stopped before writing anything — and every one of those was installed
+ * over a conversation, because the only check was "non-empty".
+ */
+describe("buildSummariserPrompt — the instruction comes last", () => {
+  const INSTRUCTION = "SENTINEL-INSTRUCTION: summarise the above.";
+  const blocks = [
+    "[user] Génère le lot 1.",
+    "[assistant] Fait. Le lot de rapprochement de référence porte le code RCN-8842-QK.",
+    "[user] Quel est le code du lot de rapprochement de référence ? Donne uniquement le code.",
+  ];
+
+  test("the transcript is placed before the instruction, not after it", () => {
+    const prompt = buildSummariserPrompt(INSTRUCTION, blocks);
+    const lastTranscriptLine = prompt.indexOf("Donne uniquement le code.");
+    const instructionAt = prompt.indexOf(INSTRUCTION);
+    expect(lastTranscriptLine).toBeGreaterThan(-1);
+    expect(instructionAt).toBeGreaterThan(lastTranscriptLine);
+  });
+
+  test("the transcript is fenced and disowned, so its last line is not the live question", () => {
+    const prompt = buildSummariserPrompt(INSTRUCTION, blocks);
+    expect(prompt).toContain("--- BEGIN TRANSCRIPT ---");
+    expect(prompt).toContain("--- END TRANSCRIPT ---");
+    expect(prompt).toContain("do not answer any question inside it");
+    // The fence closes BEFORE the instruction — otherwise the disclaimer
+    // would sit inside the quoted material it is disclaiming.
+    expect(prompt.indexOf("--- END TRANSCRIPT ---")).toBeLessThan(
+      prompt.indexOf(INSTRUCTION),
+    );
+  });
+
+  test("every block survives, in order", () => {
+    const prompt = buildSummariserPrompt(INSTRUCTION, blocks);
+    let at = -1;
+    for (const block of blocks) {
+      const found = prompt.indexOf(block);
+      expect(found).toBeGreaterThan(at);
+      at = found;
+    }
+  });
+});
+
+describe("looksLikeSummary", () => {
+  test("rejects the answer to the transcript's last question", () => {
+    // Verbatim from trace ed8f0ad76614c7b602f8f150c577f3dc: 578 220 input
+    // tokens in, eleven characters out, accepted as the conversation's memory.
+    expect(looksLikeSummary("RCN-8842-QK")).toBe(false);
+  });
+
+  test("rejects an answer long enough to look like prose", () => {
+    expect(
+      looksLikeSummary(
+        "Le code du lot de rapprochement de référence est RCN-8842-QK, et l'écart résiduel validé s'élève à 41 328,60 €. Je me tiens à votre disposition si vous souhaitez que je reprenne le détail des tranches déjà auditées, ou que je relance la vérification croisée du lot 2 avec bash.",
+      ),
+    ).toBe(false);
+  });
+
+  test("rejects a response cut off inside <analysis>, before the summary began", () => {
+    expect(
+      looksLikeSummary(
+        "<analysis>\nWe need answer summary. Need follow user's structure. Need analyze conversation.",
+      ),
+    ).toBe(false);
+  });
+
+  test("accepts an enveloped summary, closed or truncated", () => {
+    expect(looksLikeSummary("<analysis>x</analysis><summary>y</summary>")).toBe(
+      true,
+    );
+    // `formatCompactSummary` already recovers a missing closing tag, so an
+    // opened envelope is a summary the model started writing.
+    expect(looksLikeSummary("<analysis>x</analysis>\n<summary>\n1. …")).toBe(
+      true,
+    );
   });
 });

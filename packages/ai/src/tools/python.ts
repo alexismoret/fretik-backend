@@ -10,7 +10,10 @@ import { getRuntimeContext } from "../agents/shared/runtime-context";
 import { prepareSandboxForCode } from "../lib/context-files-hydration";
 import { mirrorSandboxChanges } from "../lib/conversation-storage";
 import { E2B_PRICE_PER_SECOND } from "../lib/e2b-cost";
-import { maybePersistLargeOutput } from "../lib/persisted-output";
+import {
+  boundErrorStream,
+  maybePersistLargeOutput,
+} from "../lib/persisted-output";
 import { withSlot } from "../lib/rate-limit";
 import { TOOL_ERROR_CODES } from "../lib/tool-error-codes";
 import { traceExternalCall } from "../lib/trace-tool";
@@ -301,11 +304,26 @@ export const createPythonTool = () =>
           errorText: `${result.error.name}: ${result.error.value}\n${result.error.traceback ?? ""}`,
           allowOut: getAppliedEgress(lease.sandboxId),
         });
+        // Bounded BEFORE the return, which is where the barrier has to sit:
+        // this branch is above `maybePersistLargeOutput` in the file, so a
+        // failing cell used to hand back whatever the sandbox printed, however
+        // much that was. The envelope's shape is preserved — the model, the
+        // error-code registry and the frontend all read these exact fields.
         return {
           error: `${result.error.name}: ${result.error.value}`,
           code: TOOL_ERROR_CODES.PYTHON_ERROR,
-          stdout: result.stdout,
-          stderr: result.error.traceback ?? result.stderr,
+          stdout: await boundErrorStream(
+            result.stdout,
+            conversationId,
+            toolCallId,
+            "stdout",
+          ),
+          stderr: await boundErrorStream(
+            result.error.traceback ?? result.stderr,
+            conversationId,
+            toolCallId,
+            "stderr",
+          ),
           ...(egressHint === undefined ? {} : { hint: egressHint }),
         };
       }

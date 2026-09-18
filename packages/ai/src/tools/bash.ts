@@ -8,7 +8,10 @@ import { getRuntimeContext } from "../agents/shared/runtime-context";
 import { prepareSandboxForCode } from "../lib/context-files-hydration";
 import { mirrorSandboxChanges } from "../lib/conversation-storage";
 import { E2B_PRICE_PER_SECOND } from "../lib/e2b-cost";
-import { maybePersistLargeOutput } from "../lib/persisted-output";
+import {
+  boundErrorStream,
+  maybePersistLargeOutput,
+} from "../lib/persisted-output";
 import { withSlot } from "../lib/rate-limit";
 import { TOOL_ERROR_CODES } from "../lib/tool-error-codes";
 import { traceExternalCall } from "../lib/trace-tool";
@@ -204,11 +207,25 @@ export const createBashTool = () =>
           errorText: `${result.error.name}: ${result.error.value}\n${result.stderr}`,
           allowOut: getAppliedEgress(lease.sandboxId),
         });
+        // Bounded BEFORE the return — see the same branch in `python.ts`. A
+        // non-zero exit is the commonest way a command produces a huge stream
+        // (a build log, a failing test suite, a `cat` of the wrong file), and
+        // it was the one path with no cap on it at all.
         return {
           error: `${result.error.name}: ${result.error.value}`,
           code: TOOL_ERROR_CODES.NON_ZERO_EXIT,
-          stdout: result.stdout,
-          stderr: result.stderr,
+          stdout: await boundErrorStream(
+            result.stdout,
+            conversationId,
+            toolCallId,
+            "stdout",
+          ),
+          stderr: await boundErrorStream(
+            result.stderr,
+            conversationId,
+            toolCallId,
+            "stderr",
+          ),
           ...(egressHint === undefined ? {} : { hint: egressHint }),
           ...(description ? { description } : {}),
         };

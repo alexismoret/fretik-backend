@@ -26,8 +26,10 @@ import { textIncludes } from "../text-match";
 import {
   type ChainFixtures,
   ensureWorkflowConventionMemory,
+  HEAVY_WORKFLOW_TOKEN,
   makeContradictionPair,
   makeConventionCluster,
+  makeHeavyWorkflowRun,
   makeOneOffCluster,
   makeWorkflowRun,
   waitForMemoryVectors,
@@ -94,7 +96,8 @@ const writtenFrom = (
  */
 const runWorkflowTurn = async (
   runId: string,
-): Promise<{ status: string; detail: string }> => {
+  turnIndex = 1,
+): Promise<{ status: string; detail: string; usage?: TurnUsageFrame }> => {
   const base = process.env.AI_SERVICE_URL ?? "";
   const key = process.env.TRIGGER_CALLBACK_KEY ?? "";
   if (!base || !key) {
@@ -106,7 +109,7 @@ const runWorkflowTurn = async (
   const res = await fetch(`${base}/internal/trigger/runs/${runId}/turn`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Trigger-Key": key },
-    body: JSON.stringify({ turnIndex: 1, wrapUp: false }),
+    body: JSON.stringify({ turnIndex, wrapUp: false }),
   });
   if (!res.ok || !res.body) {
     return { status: "failed", detail: `HTTP ${res.status.toString()}` };
@@ -129,7 +132,96 @@ const runWorkflowTurn = async (
     typeof parsed.status === "string"
       ? parsed.status
       : "unknown";
-  return { status, detail: dataLine.slice(0, 300) };
+  return { status, detail: dataLine.slice(0, 300), usage: readUsage(parsed) };
+};
+
+/**
+ * The run odometer as the `result` frame carries it — cumulative over the run,
+ * not per turn (`handlers/workflow.ts::emitUsage`).
+ */
+interface TurnUsageFrame {
+  totalTokens?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedInputTokens?: number;
+}
+
+const readUsage = (parsed: unknown): TurnUsageFrame | undefined => {
+  if (typeof parsed !== "object" || parsed === null) return undefined;
+  if (!("usage" in parsed)) return undefined;
+  const usage: unknown = parsed.usage;
+  if (typeof usage !== "object" || usage === null) return undefined;
+  const num = (key: string): number | undefined => {
+    if (!(key in usage)) return undefined;
+    const value: unknown = (usage as Record<string, unknown>)[key];
+    return typeof value === "number" ? value : undefined;
+  };
+  return {
+    totalTokens: num("totalTokens"),
+    inputTokens: num("inputTokens"),
+    outputTokens: num("outputTokens"),
+    cachedInputTokens: num("cachedInputTokens"),
+  };
+};
+
+/**
+ * Hard stop on the eval's turn loop.
+ *
+ * The orchestrator has no such bound — its only limit is the run's wall-clock
+ * budget, which is what let run `01a0af4e` spend 42 minutes and ~6.1 M tokens
+ * producing nothing on 2026-09-17. An eval needs a bound that is not a clock,
+ * because a clock makes the measurement depend on how fast the provider
+ * answered that afternoon.
+ */
+const MAX_EVAL_TURNS = 12;
+
+export interface WorkflowRunOutcome {
+  status: string;
+  turns: number;
+  detail: string;
+  /** Cumulative, read off the last `result` frame. */
+  usage?: TurnUsageFrame;
+}
+
+/**
+ * Drive a run to completion, the way the orchestrator does.
+ *
+ * This is `tasks/workflow-run.ts`'s loop minus Trigger.dev: increment
+ * `turnIndex` while the turn says `continue`, stop on a terminal status. It
+ * is the missing half of the harness — `BACKLOG.md` records that "the whole
+ * workflow path" had no coverage and that a workflow change was validated by
+ * replaying a real run and reading the trace, and a single hardcoded
+ * `turnIndex: 1` is why: a one-turn run never reloads its own history, so the
+ * context ceiling, the turn boundary and the run budget were all unreachable.
+ *
+ * `needs_approval` is terminal HERE and only here: an eval has nobody to
+ * approve, so parking on a wait token would hang the suite. A fixture that
+ * reaches it has mis-specified its playbook, and the status says so.
+ */
+const runWorkflowToCompletion = async (
+  runId: string,
+): Promise<WorkflowRunOutcome> => {
+  let usage: TurnUsageFrame | undefined;
+  for (let turnIndex = 1; turnIndex <= MAX_EVAL_TURNS; turnIndex++) {
+    // eslint-disable-next-line no-await-in-loop -- a run's turns are serial by
+    // definition: turn N+1 reads the history turn N wrote.
+    const turn = await runWorkflowTurn(runId, turnIndex);
+    usage = turn.usage ?? usage;
+    if (turn.status !== "continue") {
+      return {
+        status: turn.status,
+        turns: turnIndex,
+        detail: turn.detail,
+        usage,
+      };
+    }
+  }
+  return {
+    status: "turn_limit",
+    turns: MAX_EVAL_TURNS,
+    detail: `run non terminé après ${MAX_EVAL_TURNS.toString()} tours`,
+    usage,
+  };
 };
 
 /** What the run actually wrote — assistant text only, tool parts dropped. */
@@ -489,6 +581,54 @@ export const CHAIN_CASES: ChainEvalCase[] = [
         // without a photo in it.
         failures.push(
           "output: la procédure rédigée n'applique pas la convention (contrôle qualité photo)",
+        );
+      }
+      return { text: lines.join("\n\n"), failures };
+    },
+  },
+  {
+    id: "chain-workflow-multi-turn-ceiling",
+    e2e: true,
+    description:
+      "A run driven to completion over MANY turns, heavy enough to cross the context ceiling twice. Asserts the three things a one-turn case structurally cannot: that the run converges at all, that the turn boundary carried a fact stated in the first task across the cut, and that the odometer counts the turn that ended the run (the 2026-09-17 incident reported `5589501 > 6000000`, a message that refutes itself, because the abandoning turn was the one missing from the total).",
+    run: async (fx) => {
+      const failures: string[] = [];
+      const lines: string[] = [];
+
+      const { runId, conversationId } = await makeHeavyWorkflowRun(fx);
+      const outcome = await runWorkflowToCompletion(runId);
+      lines.push(
+        `[run] status=${outcome.status} turns=${outcome.turns.toString()} tokens=${(outcome.usage?.totalTokens ?? 0).toString()} cached=${(outcome.usage?.cachedInputTokens ?? 0).toString()}`,
+      );
+
+      if (outcome.status === "failed") {
+        failures.push(`run: le run a échoué — ${outcome.detail}`);
+      }
+      if (outcome.status === "turn_limit") {
+        // Non-convergence IS the incident. A run that keeps answering
+        // `continue` forever is what spent 42 minutes producing nothing.
+        failures.push(`run: ${outcome.detail}`);
+      }
+      if (outcome.turns < 2) {
+        failures.push(
+          "run: un seul tour — la fixture n'a pas chargé assez de contexte pour mesurer quoi que ce soit",
+        );
+      }
+
+      const total = outcome.usage?.totalTokens ?? 0;
+      if (total === 0) {
+        // `addUsage` added zeroes on an abandoned turn until 2026-09-17, so a
+        // zero here is a live regression of the odometer, not a quiet run.
+        failures.push(
+          "usage: le compteur du run est à zéro — aucun tour n'a été compté",
+        );
+      }
+
+      const output = await assistantTextFor(conversationId);
+      lines.push(`[output]\n${output.slice(-2_000) || "NONE"}`);
+      if (!has(output, HEAVY_WORKFLOW_TOKEN)) {
+        failures.push(
+          `boundary: le code d'audit ${HEAVY_WORKFLOW_TOKEN}, donné à la première tâche, n'a pas survécu à la traversée du plafond`,
         );
       }
       return { text: lines.join("\n\n"), failures };

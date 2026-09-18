@@ -30,13 +30,46 @@ const MIN_MESSAGES = 4;
 const WORKFLOW_MIN_MESSAGES = 2;
 /** Transcript tail — mirrors `loadConversationForAgent`'s window ×2. */
 const MAX_MESSAGES = 60;
-/** Per-message clip: enough to carry intent, not full tool dumps. */
-const MAX_MESSAGE_CHARS = 500;
 /**
- * Total transcript ceiling (~3k tokens). When the clipped tail still
- * overflows, the OLDEST messages drop first — recency wins for memory.
+ * Total transcript ceiling (~15k tokens), and the ONLY size rule that decides
+ * anything. The OLDEST messages drop first — recency wins for memory.
+ *
+ * It replaced a flat 500-character clip per message, which is the defect this
+ * number exists to close. Measured over 30 days of production: the clip bit on
+ * **95 % of workflow messages** and **51 % of chat messages**, the distiller
+ * received **17.6 %** of a run's narration and **12.1 %** of a chat's — while
+ * using **9 %** of the 12 000-character budget it was already allowed. The two
+ * constants were not cooperating; one of them was doing all the cutting and it
+ * was the wrong one.
+ *
+ * What that cost is not abstract. A run of `Export EDI Fatton` finished
+ * **succeeded**, 5 files generated and acknowledged by the FTP server, and its
+ * episode reads *"la transcription s'arrête avant la fin de l'extraction ; les
+ * tâches `generer-fichiers` et `upload-ftp` restent à exécuter"* — because the
+ * conversation was two rows, the assistant's 4 561-character report was cut at
+ * 500, and the cut landed mid-sentence during the extraction. The model was
+ * right about its input and wrong about the world, and that wrong conclusion is
+ * now a durable memory. The recap it never saw also carried the one fact worth
+ * remembering: a generation step had been marked closed with no file on disk,
+ * and the agent regenerated all five before sending.
+ *
+ * 60 000 is derived, not guessed: it carries **100 %** of production workflow
+ * runs and **95.9 %** of chats WHOLE (12 000 carried 92.6 % / 78.6 % — the
+ * budget was nearly right all along). Sending everything whole costs ~1.9 M
+ * input tokens a month against the 1.25 BILLION the chat turns already spend —
+ * 0.15 % — on a model whose window is 997 952.
  */
-const MAX_TRANSCRIPT_CHARS = 12_000;
+const MAX_TRANSCRIPT_CHARS = 60_000;
+/**
+ * Below this, a clipped line carries no usable content and is dropped instead.
+ * Above it, a message too long for the budget is CLIPPED rather than skipped —
+ * which is the part that must not be got wrong: the previous walk simply
+ * stopped at the first line that did not fit, and with the per-message clip
+ * gone that would return an EMPTY transcript for exactly the heaviest
+ * conversations (the largest single message measured in production is 567 864
+ * characters, and it is the newest one).
+ */
+const MIN_CLIPPED_LINE_CHARS = 1_000;
 const MAX_CANDIDATE_RECORDS = 40;
 /** Off the hot path — sized for the slowest eligible model, see `extract-mentions.ts`. */
 const DISTILL_TIMEOUT_MS = 120_000;
@@ -63,6 +96,7 @@ Output strict JSON, nothing else:
 
 - title: ≤100 chars, specific enough to identify this conversation among hundreds.
 - summary: markdown, target ~1500 characters. Capture what the user wanted, what was concluded or produced, decisions and their reasons, unresolved points, and durable facts or preferences revealed. Skip pleasantries, tool mechanics, step-by-step narration.
+- The transcript is an excerpt: assistant and user messages only (no tool calls), newest kept first, […] where text was omitted. Report what the messages show — never a gap, or the excerpt's edge, as work left undone.
 - salientRecordIds: ids picked FROM the candidate_records list only — the records this conversation is genuinely about, most salient first. Never invent an id; unsure → omit it. None → [].
 - NEVER copy secrets (passwords, API keys, tokens) or personal data unrelated to the work into the summary — describe that they were handled, not their values.
 - Write title and summary in the conversation's language.`;
@@ -74,7 +108,7 @@ const parseDistillOutput = (
   return parsed.success ? parsed.data : null;
 };
 
-interface TranscriptLine {
+export interface TranscriptLine {
   role: "user" | "assistant";
   text: string;
 }
@@ -99,20 +133,97 @@ const textOfParts = (parts: UIMessage["parts"]): string => {
   return chunks.join("\n").trim();
 };
 
-/** Oldest-first lines joined under the total ceiling — oldest drop first. */
-const renderTranscript = (lines: TranscriptLine[]): string => {
-  const rendered = lines.map(
-    (l) =>
-      `${l.role === "user" ? "User" : "Assistant"}: ${l.text.slice(0, MAX_MESSAGE_CHARS)}`,
-  );
+/**
+ * Message rows → the lines a transcript is built from: TEXT only, in order.
+ *
+ * Tool calls, tool results and reasoning never reach the distiller — the
+ * summary is asked for outcomes, and a tool dump is both the wrong material
+ * and where the pathological sizes live (the largest single text message in
+ * production is 567 864 characters; the parts around it are larger still).
+ *
+ * Exported because the repair script has to reproduce EXACTLY this input to
+ * decide which episodes the old per-message clip damaged. Two copies of this
+ * loop would answer that question against a transcript the service never built.
+ */
+export const toTranscriptLines = (
+  rows: {
+    role: string;
+    parts: UIMessage["parts"];
+    metadata: Record<string, unknown> | null;
+  }[],
+  isWorkflowRun: boolean,
+): TranscriptLine[] => {
+  const lines: TranscriptLine[] = [];
+  for (const row of rows) {
+    if (row.role !== "user" && row.role !== "assistant") continue;
+    // Workflow steering recitations (turn ≥2) are near-identical harness
+    // boilerplate ("Continue the run. Current task: …") — they'd bias the
+    // episode toward playbook recitation. Turn 1 stays: it names the trigger.
+    if (
+      isWorkflowRun &&
+      row.role === "user" &&
+      isLaterSteeringMessage(row.metadata)
+    ) {
+      continue;
+    }
+    const text = textOfParts(row.parts);
+    if (text.length === 0) continue;
+    lines.push({ role: row.role, text });
+  }
+  return lines;
+};
+
+/**
+ * Keep the head and the tail of a message that does not fit, around an explicit
+ * marker.
+ *
+ * Head-only was the old rule and it is the wrong one for this content: an
+ * assistant's report opens with narration and CLOSES with what it produced —
+ * the deliverables, the anomalies, the numbers. Cutting from the front throws
+ * away the conclusion and keeps the preamble. Marking the gap matters as much
+ * as the halves: an unmarked cut reads as the end of the work rather than the
+ * end of the excerpt, which is precisely how an episode came to report a
+ * finished run as unfinished.
+ */
+const clipAround = (text: string, budget: number): string => {
+  const marker = "\n\n[…]\n\n";
+  const room = budget - marker.length;
+  if (room <= 0) return text.slice(0, budget);
+  const head = Math.ceil(room / 2);
+  return `${text.slice(0, head)}${marker}${text.slice(text.length - (room - head))}`;
+};
+
+/**
+ * Oldest-first lines under the total ceiling — oldest drop first, and the one
+ * that straddles the edge is clipped rather than dropped.
+ *
+ * Walking backwards is what makes recency win. Clipping the straddling line
+ * instead of stopping at it is what stops the walk from returning nothing when
+ * the NEWEST message is on its own larger than the whole budget.
+ */
+export const renderTranscript = (lines: TranscriptLine[]): string => {
   let total = 0;
   const kept: string[] = [];
-  for (let i = rendered.length - 1; i >= 0; i--) {
-    const line = rendered[i];
-    if (line === undefined) continue;
-    if (total + line.length > MAX_TRANSCRIPT_CHARS) break;
-    total += line.length;
-    kept.unshift(line);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = lines[i];
+    if (l === undefined) continue;
+    const prefix = l.role === "user" ? "User: " : "Assistant: ";
+    // The blank line this entry will be joined with counts against the budget
+    // too, or `total` measures something the caller never sends. Small — two
+    // characters per entry, 118 on a full window — and the reason to fix it is
+    // not the size but that a ceiling which does not bound the string is not a
+    // ceiling.
+    const separator = kept.length > 0 ? 2 : 0;
+    const remaining = MAX_TRANSCRIPT_CHARS - total - separator - prefix.length;
+    if (l.text.length <= remaining) {
+      total += separator + prefix.length + l.text.length;
+      kept.unshift(prefix + l.text);
+      continue;
+    }
+    if (remaining >= MIN_CLIPPED_LINE_CHARS) {
+      kept.unshift(prefix + clipAround(l.text, remaining));
+    }
+    break;
   }
   return kept.join("\n\n");
 };
@@ -169,23 +280,7 @@ export const distillConversation = async (input: {
     limit: MAX_MESSAGES,
   });
   rows.reverse();
-  const lines: TranscriptLine[] = [];
-  for (const row of rows) {
-    if (row.role !== "user" && row.role !== "assistant") continue;
-    // Workflow steering recitations (turn ≥2) are near-identical harness
-    // boilerplate ("Continue the run. Current task: …") — they'd bias the
-    // episode toward playbook recitation. Turn 1 stays: it names the trigger.
-    if (
-      workflowRun &&
-      row.role === "user" &&
-      isLaterSteeringMessage(row.metadata)
-    ) {
-      continue;
-    }
-    const text = textOfParts(row.parts);
-    if (text.length === 0) continue;
-    lines.push({ role: row.role, text });
-  }
+  const lines = toTranscriptLines(rows, workflowRun !== undefined);
   // A workflow run is steering + final summary at minimum — 2 lines is a
   // real, distillable run; the chat threshold would skip every short run.
   const minLines = workflowRun ? WORKFLOW_MIN_MESSAGES : MIN_MESSAGES;

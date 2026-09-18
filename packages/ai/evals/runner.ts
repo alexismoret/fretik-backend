@@ -91,6 +91,7 @@ export const runCase = async (
       label: `${suite.name}/${c.id}`,
       prompt: c.prompt,
       fixtures: c.fixtures,
+      history: c.history,
     });
   } catch (err) {
     console.warn(

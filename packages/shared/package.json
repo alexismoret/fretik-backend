@@ -22,6 +22,8 @@
     "e2b:smoke": "bun --env-file=../ai/.env run src/scripts/smoke-sandbox-egress.ts",
     "file-types:sync": "bun run src/scripts/sync-file-types-to-frontend.ts",
     "grant:super-admin": "bun --env-file=.env run src/scripts/grant-super-admin.ts",
+    "repair:oversized-messages": "bun --env-file=.env run src/scripts/repair-oversized-messages.ts",
+    "repair:workflow-notifications": "bun --env-file=../../.env run src/scripts/repair-workflow-notifications.ts",
     "s3:sweep": "bun --env-file=../../.env run src/scripts/sweep-orphan-s3.ts",
     "seed:demo-workspace": "bun --env-file=.env run src/scripts/seed-demo-workspace.ts"
   },
@@ -65,6 +67,7 @@
     "e2b": "^2.50.0",
     "exceljs": "^4.4.0",
     "file-type": "^22.0.2",
+    "gpt-tokenizer": "^3.4.0",
     "handlebars": "^4.7.9",
     "hono": "^4.13.5",
     "hono-rate-limiter": "^0.5.3",

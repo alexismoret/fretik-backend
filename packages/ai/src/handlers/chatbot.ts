@@ -39,7 +39,7 @@ import { markConversationRead } from "@fretik/shared/services/ai/members/mark-re
 import { applyMentions } from "@fretik/shared/services/ai/members/mention";
 import {
   deleteStalePartialMessages,
-  loadConversationForAgent,
+  loadParticipantIds,
   saveMessage,
   saveMessages,
 } from "@fretik/shared/services/ai/messages";
@@ -113,6 +113,11 @@ import {
 import type { ChatbotTools } from "../agents/chatbot/tools";
 import type { AgentSet } from "../agents/shared/agent-builder";
 import {
+  compactionCapForCeiling,
+  contextCeilingReached,
+  type ContextCeilingStep,
+} from "../agents/shared/context-ceiling";
+import {
   assembleContextFragments,
   ATTACHED_FILES_UNAVAILABLE,
   buildConversationAttachedFilesBlock,
@@ -168,7 +173,17 @@ import { chatbotRateLimitMiddleware } from "../middlewares/chatbot-rate-limit";
 import { internalMiddleware } from "../middlewares/internal";
 import { registryWarmMiddleware } from "../middlewares/registry-warm";
 import { sendChatbotFinishedEmailIfEnabled } from "../services/chatbot-finished-email";
-import { compactConversation } from "../services/compaction/compact";
+import {
+  compactAheadOfNextTurn,
+  loadAgentWindow,
+  persistCheckpoint,
+  type AgentWindowResult,
+} from "../services/compaction/checkpoint-window";
+import {
+  compactConversation,
+  type CompactionArtifact,
+} from "../services/compaction/compact";
+import { buildTurnBoundaryResume } from "../services/compaction/turn-boundary";
 import { generateConversationTitle } from "../services/conversation-title/generate";
 import {
   hasNativeFileParts,
@@ -398,9 +413,10 @@ const persistAssistantMessages = async (
   await saveMessages(
     conversationId,
     assistantMessages.map((m) => ({
-      // Wire id preserved (uuid v7 minted by `generateMessageId`) — DB ids
-      // stay identical to what the client already rendered, and the upsert
-      // makes a recorder-then-onFinish double write converge in place.
+      // Wire id preserved (uuid v7, minted once per turn by
+      // `openAssistantMessage`) — DB ids stay identical to what the client
+      // already rendered, and the upsert makes a recorder-then-onFinish double
+      // write converge in place.
       id: isUuid(m.id) ? m.id : undefined,
       role: "assistant" as const,
       parts: m.parts,
@@ -409,11 +425,14 @@ const persistAssistantMessages = async (
     })),
     tx,
   );
-  // The recorder writes under the WIRE id, and that id changes whenever the
-  // turn merges a second `toUIMessageStream` (failover, dead-step
-  // continuation). Its pre-rename row is never overwritten by the write above
-  // and would surface as a duplicate assistant message holding a prefix of
-  // these same parts. Scoped to this turn and to rows still marked partial.
+  // The recorder writes under the WIRE id. That id used to change whenever the
+  // turn merged a second `toUIMessageStream` (failover, dead-step
+  // continuation), leaving a pre-rename row the write above never overwrites —
+  // a duplicate assistant message holding a prefix of these same parts.
+  // `openAssistantMessage` removed the rename, so this now sweeps history
+  // written before it and closes the window between the recorder's first flush
+  // and a turn whose final ids differ for any other reason. Scoped to this turn
+  // and to rows still marked partial.
   if (turnId !== null) {
     await deleteStalePartialMessages({
       conversationId,
@@ -485,7 +504,13 @@ const maybeStartAutoTitle = (
   if (
     params.conversationId === undefined ||
     params.callOptions.userId === undefined ||
-    params.history.some((m) => m.role === "assistant")
+    params.history.some((m) => m.role === "assistant") ||
+    // "No assistant message in the window" and "first turn of the
+    // conversation" were the same question only while the window WAS the whole
+    // history. Anchored on a checkpoint, a 300-turn conversation can present a
+    // window with no assistant message in it — and would be re-titled from
+    // whatever was said last.
+    params.agentWindow?.checkpoint != null
   ) {
     return null;
   }
@@ -711,6 +736,23 @@ const linkChatFilesToMessage = async (
 interface RunChatbotTurnParams {
   conversationId: string | undefined;
   history: UIMessage[];
+  /**
+   * The window `history` came from, carrying the cut a checkpoint written
+   * after this turn must use.
+   *
+   * Absent on the stateless `/invoke` path, which has no conversation to
+   * anchor one to. Never re-derived here: the cut has to be the window the
+   * turn actually READ, and asking the database for the end of the history
+   * after the turn has answered would put that answer outside both the
+   * summary and the next window.
+   */
+  agentWindow?: AgentWindowResult;
+  /**
+   * Conversation members at load time, frozen into any checkpoint this turn
+   * writes. A summary is built from text already carrying `[Name]:` prefixes,
+   * so the roster is part of what was summarised.
+   */
+  participantIds?: string[];
   callOptions: ChatbotCallOptions;
   /**
    * If present, this turn's SSE output is buffered under this id so
@@ -1465,6 +1507,48 @@ export const runChatbotTurn = async (
   // — there is no longer a 422 hard-fail envelope.
   const COMPACTION_PART_ID = "compaction-status";
 
+  /**
+   * The absolute ceiling on a CHAT's between-turn compaction — the same
+   * per-turn context ceiling every other agent uses.
+   *
+   * It sat at three times that figure until the persisted checkpoint landed,
+   * and the reason was never the chat's tolerance for a big context: it was
+   * that nothing STORED a compaction summary. `compactConversation` worked in
+   * memory and the next turn reloaded the same rows, so a threshold at the
+   * ceiling put a fresh summariser call (10-40 s measured on 100 K+ inputs) in
+   * front of every message of every conversation past 100 K — measured, 22 %
+   * of them. 300 000 was the number that still caught the pathology actually
+   * observed (a conversation starting EVERY step at 327 681 tokens, 2.69 M
+   * tokens for one user message) without paying that on ordinary traffic.
+   *
+   * `loadAgentWindow` now starts a conversation at its last checkpoint and
+   * `persistCheckpoint` writes the next one after the turn commits, so the
+   * summariser runs once per cut instead of once per message. The constant
+   * that held the line is no longer needed, and the chat compacts where
+   * everything else does.
+   *
+   * Where everything else does is NOT the ceiling itself, though: the ceiling
+   * counts the whole request and this counts the history, so they are set one
+   * prefix apart. `compactionCapForCeiling` explains what happened the day
+   * they were equal.
+   */
+  const CHATBOT_COMPACTION_CAP = compactionCapForCeiling(
+    agentSet.contextCeiling,
+    agentSet.agentId,
+  );
+
+  /**
+   * What this turn's compaction produced, if it fired — persisted as a
+   * checkpoint once the turn's own messages have committed.
+   *
+   * Declared out here because the two halves live in different closures:
+   * `turnBody` runs the compaction, `onFinish` knows whether the turn was
+   * rewound away and whether its messages actually landed. Writing it from
+   * `turnBody` would checkpoint turns that were discarded or failed to
+   * persist.
+   */
+  let compactionArtifact: CompactionArtifact | null = null;
+
   // Post-turn bookkeeping nothing downstream waits on: closing the Stop
   // channel, shipping the turn's spans, dropping the in-process usage ledger.
   // Kept OFF the client's end-of-turn path on purpose. `onFinish` runs inside
@@ -1587,6 +1671,51 @@ export const runChatbotTurn = async (
           err instanceof Error ? err.message : err,
         );
       }
+      // The resume point, written only once the turn's own rows have
+      // committed: the checkpoint cuts BELOW them, so a checkpoint that
+      // outlived a rolled-back persistence would summarise up to a point the
+      // conversation never reached.
+      if (
+        !discarded &&
+        persistError === undefined &&
+        params.conversationId &&
+        params.agentWindow
+      ) {
+        const artifact: CompactionArtifact | null = compactionArtifact;
+        if (artifact !== null) {
+          void persistCheckpoint({
+            conversationId: params.conversationId,
+            window: params.agentWindow,
+            summary: artifact.summary,
+            activatedTools: artifact.activatedTools,
+            participantIds: params.participantIds ?? [],
+            kind: "llm",
+            tokensBefore: artifact.tokensBefore,
+            tokensAfter: artifact.tokensAfter,
+            keptTailCount: artifact.keptTailCount,
+            teamId: params.callOptions.teamId,
+            ...(params.resumableStreamId
+              ? { turnId: params.resumableStreamId }
+              : {}),
+          });
+        } else {
+          // Nothing compacted in front of THIS turn, which is the ordinary
+          // case — so this is where we find out whether the NEXT one would
+          // have to. Doing it now costs the user nothing; doing it then costs
+          // them the summariser.
+          void compactAheadOfNextTurn({
+            conversationId: params.conversationId,
+            profile: modelProfile,
+            capTokens: CHATBOT_COMPACTION_CAP,
+            participantIds: params.participantIds ?? [],
+            teamId: params.callOptions.teamId,
+            logPrefix: params.logPrefix,
+            ...(params.resumableStreamId
+              ? { turnId: params.resumableStreamId }
+              : {}),
+          });
+        }
+      }
       // Release the active-stream slot so the next turn can start without
       // tripping the 409 idempotence guard. Compare-and-swap on the streamId
       // keeps us safe from clearing a fresher turn.
@@ -1689,6 +1818,71 @@ export const runChatbotTurn = async (
       let recoveryKind: string | undefined;
       let recoveryErrorReason: string | undefined;
 
+      /**
+       * Open the turn's ONE assistant message, before anything is written into
+       * it. Idempotent; every producer calls it, nobody has to know whether it
+       * ran.
+       *
+       * Without it the turn opened its message by accident, at whatever moment
+       * the first merged stream happened to emit `start` — and a compaction
+       * card is written well before that. The client reader keys on the id it is
+       * accumulating: a write while that id does not match the last message in
+       * the list PUSHES a new bubble instead of replacing it, and a `start`
+       * chunk RENAMES the accumulator. So the card was pushed under the reader's
+       * own provisional id, the model's `start` renamed the accumulator to a
+       * fresh uuid, and the next write pushed a second time. Measured
+       * 2026-09-18: one `<article data-role=assistant>` holding only the card,
+       * then a second holding the card and the answer.
+       *
+       * Naming the message up front fixes the ordering, and `sendStart: false`
+       * on every merged stream keeps it fixed — a merged stream that emitted its
+       * own `start` would rename the accumulator again and push again, which is
+       * also what split a failover's answer across two bubbles.
+       *
+       * LAZY, not at the top of `execute`: a turn that dies before producing
+       * anything writes an error frame and no message, and an assistant bubble
+       * opened for it would be an empty one — on screen, and in the row the turn
+       * recorder would flush for it.
+       *
+       * The id follows the SDK's own rule (`getResponseUIMessageId`): continue
+       * the last message when the history ends on an assistant one, otherwise
+       * mint a uuid v7, which `saveMessages` then persists verbatim.
+       */
+      const lastHistoryMessage = params.history.at(-1);
+      const responseMessageId =
+        lastHistoryMessage?.role === "assistant"
+          ? lastHistoryMessage.id
+          : randomUUIDv7();
+      let messageOpened = false;
+      const openAssistantMessage = (): void => {
+        if (messageOpened) return;
+        messageOpened = true;
+        writer.write({ type: "start", messageId: responseMessageId });
+      };
+
+      /**
+       * Open the message on a merged stream's FIRST chunk, not when it is
+       * merged.
+       *
+       * `writer.merge` is called the moment the provider call is open, and the
+       * first chunk arrives whole seconds later — a message opened at merge
+       * time is an empty assistant bubble for all of that wait, sitting next to
+       * the "preparing…" placeholder. Enqueuing after the open, rather than
+       * tapping after it like `tapFirstChunk` does for TTFT, is what keeps the
+       * `start` in front of the chunk that needed it.
+       */
+      const openedOnFirstChunk = <C>(
+        stream: ReadableStream<C>,
+      ): ReadableStream<C> =>
+        stream.pipeThrough(
+          new TransformStream<C, C>({
+            transform(chunk, controller) {
+              openAssistantMessage();
+              controller.enqueue(chunk);
+            },
+          }),
+        );
+
       // Stream the fallback model into the SAME writer and fold its
       // result into the turn's trace. Shared by two callers: zombie
       // recovery (primary finished empty → `notice: true`, a visible
@@ -1705,6 +1899,7 @@ export const runChatbotTurn = async (
         recoveryKind = opts.recovery;
         try {
           if (opts.notice) {
+            openAssistantMessage();
             const noticeId = randomUUIDv7();
             // All three chunks MUST carry the same id: `processUIMessageStream`
             // throws `UIMessageStreamError` on a `text-delta` whose id has no
@@ -1745,30 +1940,33 @@ export const runChatbotTurn = async (
               : {}),
           });
           writer.merge(
-            dropChunksAfterAbort(
-              tapFirstChunk(
-                toUIMessageStream<ChatbotTools>({
-                  stream: fallbackResult.stream,
-                  // uuid v7 wire ids — persisted verbatim by `saveMessages`
-                  // so DB ids ≡ stream ids (stable Vue keys across reloads).
-                  generateMessageId: randomUUIDv7,
-                  onError: recordStreamError,
-                  messageMetadata: ({ part }) => {
-                    if (part.type !== "finish") return undefined;
-                    // Failover (zombie or transparent) always serves the fallback
-                    // agent — flagged for the eval harness.
-                    return buildTurnMessageMetadata(
-                      part,
-                      "fallback",
-                      modelProfile.key,
-                      getActiveTraceId(),
-                      readTurnUsage(usageKey),
-                    );
-                  },
-                }),
-                emitTtft,
+            openedOnFirstChunk(
+              dropChunksAfterAbort(
+                tapFirstChunk(
+                  toUIMessageStream<ChatbotTools>({
+                    stream: fallbackResult.stream,
+                    // The turn's message is already open and already named —
+                    // see `openAssistantMessage`. A second `start` would rename
+                    // the client's accumulator and split the answer in two.
+                    sendStart: false,
+                    onError: recordStreamError,
+                    messageMetadata: ({ part }) => {
+                      if (part.type !== "finish") return undefined;
+                      // Failover (zombie or transparent) always serves the fallback
+                      // agent — flagged for the eval harness.
+                      return buildTurnMessageMetadata(
+                        part,
+                        "fallback",
+                        modelProfile.key,
+                        getActiveTraceId(),
+                        readTurnUsage(usageKey),
+                      );
+                    },
+                  }),
+                  emitTtft,
+                ),
+                abortController.signal,
               ),
-              abortController.signal,
             ),
           );
           const [fbFinish, fbText] = await Promise.all([
@@ -1788,6 +1986,7 @@ export const runChatbotTurn = async (
             console.error(
               `${params.logPrefix} fallback also zombied (finish=${fbFinish})`,
             );
+            openAssistantMessage();
             const finalId = randomUUIDv7();
             // Same id across the three chunks — see the note on the notice above.
             writer.write({ type: "text-start", id: finalId });
@@ -1827,42 +2026,48 @@ export const runChatbotTurn = async (
       /** Final-step text at/above this length reads as a real answer, not a
        * dead announcement (observed dead steps: 86 and 396 chars). */
       const DEAD_STEP_TEXT_CEILING = 600;
-      const runContinuation = async (
-        baseMessages: ModelMessage[],
-        partialMessages: ModelMessage[],
-      ): Promise<void> => {
-        turnFlags.failoverAttempted = true;
-        const messages = [
-          ...baseMessages,
-          ...partialMessages,
-          { role: "user" as const, content: CONTINUATION_NUDGE },
-        ];
-        const attempt = async (
-          agent: AgentSet<ChatbotCallOptions, ChatbotTools>["primary"],
-          kind: string,
-          servedBy: "primary" | "fallback",
-        ): Promise<boolean> => {
-          recoveryKind = kind;
-          if (servedBy === "fallback") servedByTurn = "fallback";
-          const contResult = await agent.stream({
-            messages,
-            options: callOptionsWithFiles,
-            abortSignal: abortController.signal,
-            onStepEnd: onTurnStep,
-            ...(reasoningOverride !== undefined
-              ? {
-                  providerOptions: {
-                    openrouter: { reasoning: reasoningOverride },
-                  },
-                }
-              : {}),
-          });
-          writer.merge(
+      /**
+       * Stream one continuation of THIS turn into the same writer, and fold
+       * its output into the turn's trace.
+       *
+       * Two callers with different reasons and the same wire: the dead-step
+       * recovery below, which re-sends the whole partial turn plus a nudge,
+       * and the context boundary, which re-sends a summary of it instead.
+       */
+      const streamContinuation = async (
+        messages: ModelMessage[],
+        agent: AgentSet<ChatbotCallOptions, ChatbotTools>["primary"],
+        kind: string,
+        servedBy: "primary" | "fallback",
+      ): Promise<{
+        finishReason: string;
+        steps: readonly ContextCeilingStep[];
+        responseMessages: ModelMessage[];
+      }> => {
+        recoveryKind = kind;
+        if (servedBy === "fallback") servedByTurn = "fallback";
+        const contResult = await agent.stream({
+          messages,
+          options: callOptionsWithFiles,
+          abortSignal: abortController.signal,
+          onStepEnd: onTurnStep,
+          ...(reasoningOverride !== undefined
+            ? {
+                providerOptions: {
+                  openrouter: { reasoning: reasoningOverride },
+                },
+              }
+            : {}),
+        });
+        writer.merge(
+          openedOnFirstChunk(
             dropChunksAfterAbort(
               tapFirstChunk(
                 toUIMessageStream<ChatbotTools>({
                   stream: contResult.stream,
-                  generateMessageId: randomUUIDv7,
+                  // Same message as the steps before it — a continuation IS the
+                  // turn continuing. See `openAssistantMessage`.
+                  sendStart: false,
                   onError: recordStreamError,
                   messageMetadata: ({ part }) => {
                     if (part.type !== "finish") return undefined;
@@ -1879,14 +2084,107 @@ export const runChatbotTurn = async (
               ),
               abortController.signal,
             ),
-          );
-          const [contFinish, contText] = await Promise.all([
+          ),
+        );
+        const [contFinish, contText, steps, responseMessages] =
+          await Promise.all([
             contResult.finishReason,
             contResult.text,
+            contResult.steps,
+            contResult.responseMessages,
           ]);
-          visibleOutput = [visibleOutput, contText ?? ""]
-            .filter((s) => s.length > 0)
-            .join("\n");
+        visibleOutput = [visibleOutput, contText ?? ""]
+          .filter((s) => s.length > 0)
+          .join("\n");
+        // Same rule as `runFallbackModel`: the continuation owns the trace's
+        // finish reason only when it produced the visible answer.
+        if ((contText ?? "").trim().length > 0) traceFinishReason = contFinish;
+        return { finishReason: contFinish, steps, responseMessages };
+      };
+
+      /**
+       * A backstop, not the bound.
+       *
+       * The bound is the reduction invariant: `buildTurnBoundaryResume`
+       * refuses to return a resume that is not at most `BOUNDARY_MAX_RATIO`
+       * of what it folded, so each crossing at least halves the carried
+       * context and the loop is geometrically convergent on its own. This
+       * number exists only so that a bug in that arithmetic costs a bounded
+       * number of turns rather than an unbounded one — it should never be the
+       * reason a turn ends, and the log line says so when it is.
+       *
+       * It replaced a hard limit of 2 that came from nowhere: two crossings
+       * was neither measured nor derived, and it ended turns that were
+       * converging perfectly well.
+       */
+      const BOUNDARY_BACKSTOP = 8;
+
+      /**
+       * The context boundary, mid-answer.
+       *
+       * The ceiling stop-condition ends the loop while the model still wanted
+       * to work, which on its own would hand the user a truncated answer. So
+       * the turn continues — from a summary of everything so far instead of
+       * everything so far. From the provider's side this is a new user turn:
+       * previous reasoning is "Allowed" to be absent, nothing signed spans the
+       * boundary, and thinking is live again on the resume. Nothing is written
+       * to the wire about it; the user sees one answer, produced in two calls.
+       */
+      const runBoundaryContinuation = async (
+        baseMessages: ModelMessage[],
+        partialMessages: ModelMessage[],
+      ): Promise<void> => {
+        let carried: ModelMessage[] = [...baseMessages, ...partialMessages];
+        for (let boundary = 1; boundary <= BOUNDARY_BACKSTOP; boundary += 1) {
+          const resume = await buildTurnBoundaryResume({
+            messages: carried,
+            teamId: params.callOptions.teamId,
+            logPrefix: params.logPrefix,
+          });
+          // Nothing on the ladder reduced — not the summariser, not the
+          // mechanical pass, not truncation. Keep the partial answer rather
+          // than restart the model on a context that did not get smaller.
+          if (resume === null) return;
+          const outcome = await streamContinuation(
+            [resume.message],
+            agentSet.primary,
+            "context-boundary",
+            "primary",
+          );
+          if (
+            !contextCeilingReached(outcome.steps, agentSet.contextCeiling) ||
+            outcome.finishReason !== "tool-calls"
+          ) {
+            return;
+          }
+          carried = [resume.message, ...outcome.responseMessages];
+        }
+        console.warn(
+          `${params.logPrefix} turn hit the boundary backstop (${BOUNDARY_BACKSTOP.toString()} crossings) — the reduction invariant should have converged before this`,
+        );
+      };
+
+      const runContinuation = async (
+        baseMessages: ModelMessage[],
+        partialMessages: ModelMessage[],
+      ): Promise<void> => {
+        turnFlags.failoverAttempted = true;
+        const messages = [
+          ...baseMessages,
+          ...partialMessages,
+          { role: "user" as const, content: CONTINUATION_NUDGE },
+        ];
+        const attempt = async (
+          agent: AgentSet<ChatbotCallOptions, ChatbotTools>["primary"],
+          kind: string,
+          servedBy: "primary" | "fallback",
+        ): Promise<boolean> => {
+          const { finishReason: contFinish } = await streamContinuation(
+            messages,
+            agent,
+            kind,
+            servedBy,
+          );
           // Recovered iff the continuation's final step either ran a tool
           // (flags updated live by onTurnStep) or delivered substantial text.
           return (
@@ -1949,8 +2247,26 @@ export const runChatbotTurn = async (
             // Threshold follows the SERVING model's context window — the
             // profile resolved above (header override or `chat` binding).
             profile: modelProfile,
+            // …capped in absolute terms, which is what actually binds on a
+            // wide-window model: derived from a 1M window the threshold is
+            // ~960K, so a conversation measured starting EVERY step at 327 681
+            // tokens (2026-09-17, 2.69M tokens for one user message and two
+            // mid-turn cache breaks) was never once above it.
+            maxThresholdTokens: CHATBOT_COMPACTION_CAP,
+            // Names the observation `compaction` instead of letting it land as
+            // an anonymous `chat <model>` beside the turn's own generation —
+            // the only way the summariser's cost is separable from the agent's.
+            ...(params.conversationId
+              ? { traceSessionId: params.conversationId }
+              : {}),
             // Summariser honours the team's workhorse pick (C8b).
             teamId: params.callOptions.teamId,
+            // Captured, not written here: `onFinish` is the only place that
+            // knows whether this turn was rewound away mid-stream and whether
+            // its messages actually committed.
+            onCompacted: (artifact) => {
+              compactionArtifact = artifact;
+            },
             onProgress: (event) => {
               // The shared `id` makes consecutive writes UPDATE the
               // single existing data part on the client (started → done
@@ -1958,6 +2274,12 @@ export const runChatbotTurn = async (
               // The frontend renders this part as a UChatTool with a
               // loader while phase==='running' and transitions to a
               // success / failure state on the final write.
+              //
+              // The card is the first thing a turn ever puts on the wire, and
+              // for a long time it was also what opened the turn's message by
+              // accident — see `openAssistantMessage` for the two bubbles that
+              // produced.
+              openAssistantMessage();
               if (event.phase === "started") {
                 writer.write({
                   type: "data-compaction",
@@ -2038,34 +2360,39 @@ export const runChatbotTurn = async (
         // the eval harness over SSE). Full per-turn observability —
         // tool calls, RAG hits, latency, cost — lives in Langfuse.
         writer.merge(
-          dropChunksAfterAbort(
-            tapFirstChunk(
-              toUIMessageStream<ChatbotTools>({
-                stream: result.stream,
-                generateMessageId: randomUUIDv7,
-                // A provider `error` part (e.g. empty pool) surfaces through
-                // the INNER stream's onError, not the outer one — route it to
-                // the same mapper so both surfaces agree on the wire frame.
-                onError: recordStreamError,
-                messageMetadata: ({ part }) => {
-                  if (part.type !== "finish") return undefined;
-                  // `servedBy` reports which agent answered under which profile;
-                  // the eval harness reads it over SSE so a silent failover to
-                  // the fallback model is flagged, not scored as the candidate.
-                  // `getActiveTraceId()` is this turn's active span, sent live AND
-                  // persisted so the feedback control scores the right trace.
-                  return buildTurnMessageMetadata(
-                    part,
-                    servedBy,
-                    modelProfile.key,
-                    getActiveTraceId(),
-                    readTurnUsage(usageKey),
-                  );
-                },
-              }),
-              emitTtft,
+          openedOnFirstChunk(
+            dropChunksAfterAbort(
+              tapFirstChunk(
+                toUIMessageStream<ChatbotTools>({
+                  stream: result.stream,
+                  // The id is minted and written by `openAssistantMessage`; the
+                  // model's own `start` would only rename it, and renaming is
+                  // what the client turns into a second bubble.
+                  sendStart: false,
+                  // A provider `error` part (e.g. empty pool) surfaces through
+                  // the INNER stream's onError, not the outer one — route it to
+                  // the same mapper so both surfaces agree on the wire frame.
+                  onError: recordStreamError,
+                  messageMetadata: ({ part }) => {
+                    if (part.type !== "finish") return undefined;
+                    // `servedBy` reports which agent answered under which profile;
+                    // the eval harness reads it over SSE so a silent failover to
+                    // the fallback model is flagged, not scored as the candidate.
+                    // `getActiveTraceId()` is this turn's active span, sent live AND
+                    // persisted so the feedback control scores the right trace.
+                    return buildTurnMessageMetadata(
+                      part,
+                      servedBy,
+                      modelProfile.key,
+                      getActiveTraceId(),
+                      readTurnUsage(usageKey),
+                    );
+                  },
+                }),
+                emitTtft,
+              ),
+              abortController.signal,
             ),
-            abortController.signal,
           ),
         );
 
@@ -2132,6 +2459,23 @@ export const runChatbotTurn = async (
           // (overridden inside runFallbackModel if its fallback answers).
           visibleOutput = finalText ?? "";
           traceFinishReason = finishReason;
+          // Context boundary, checked FIRST: the ceiling ends a loop that was
+          // still working, so `finishReason` is `tool-calls` — which is also
+          // what an ordinary step-cap stop looks like, hence the explicit
+          // ceiling test rather than a reason match. The continuation produces
+          // the rest of the answer, so the zombie / dead-step tests below must
+          // not also fire on the same turn.
+          const ceilingCut =
+            finishReason === "tool-calls" &&
+            contextCeilingReached(
+              await result.steps,
+              // The SAME number the stop condition used, published by the set
+              // rather than re-derived: on a narrow model the resolved ceiling
+              // sits below the absolute one, and asking the absolute question
+              // here would leave a real ceiling stop unrecognised — no
+              // boundary, no continuation, half an answer.
+              agentSet.contextCeiling,
+            );
           const isBudgetExhausted =
             finishReason === "other" || finishReason === "length";
           const hasNoVisibleText = (finalText ?? "").trim().length === 0;
@@ -2160,7 +2504,12 @@ export const runChatbotTurn = async (
             !turnFlags.lastStepCalledTool &&
             turnFlags.lastStepVisibleChars < DEAD_STEP_TEXT_CEILING &&
             !turnFlags.failoverAttempted;
-          if (primaryZombied) {
+          if (ceilingCut) {
+            await runBoundaryContinuation(
+              modelMessages,
+              await result.responseMessages,
+            );
+          } else if (primaryZombied) {
             console.error(
               `${params.logPrefix} primary zombied (finish=${finishReason}) — chaining to fallback model`,
             );
@@ -2855,11 +3204,12 @@ chatbotRoutes.post("/stream", async (c) => {
   // Load last N messages from DB for the agent's memory window. 30 is
   // the Phase 8 default — compaction collapses the older portion when
   // the total exceeds 12K tokens.
-  const history = await timeStage(
+  const window = await timeStage(
     preludeTimings,
     "loadHistory",
-    loadConversationForAgent(conversationId, 30),
+    loadAgentWindow(conversationId, 30),
   );
+  const history = window.messages;
 
   // Attribute speakers when the conversation is collaborative (≥2 members).
   // Solo conversations are left untouched — see buildSpeakerContext.
@@ -2909,6 +3259,8 @@ chatbotRoutes.post("/stream", async (c) => {
   return runChatbotTurn({
     conversationId,
     history: speakerHistory,
+    agentWindow: window,
+    participantIds: conversation.members.map((m) => m.userId),
     callOptions,
     prefetchedGather,
     routeStartedAt,
@@ -3527,9 +3879,33 @@ chatbotInternalRoutes.post("/invoke", async (c) => {
     );
   }
 
-  const history: UIMessage[] = conversationId
-    ? await loadConversationForAgent(conversationId, 30)
-    : messages;
+  /**
+   * The window, KEPT — not read for its `messages` and thrown away.
+   *
+   * Dropping it was a real defect and an expensive one. `onFinish` writes the
+   * checkpoint only when `agentWindow` is present, so this route read
+   * checkpoints and never wrote one: every turn on a long conversation
+   * reloaded the whole history and ran a fresh summariser. Measured 2026-09-18
+   * on a 340 000-token conversation over four two-turn probes — 8 turns, 8 full
+   * summariser runs, `compaction=29 634…60 776 ms` on every one of them,
+   * including the turns that should have opened on a checkpoint written three
+   * seconds earlier.
+   *
+   * It matters most exactly where it is least visible: `/invoke` is the
+   * server-to-server route, so the turns paying that were workflow nodes and
+   * evals, where nobody is watching a spinner and the cost shows up only on
+   * the bill.
+   */
+  const window = conversationId
+    ? await loadAgentWindow(conversationId, 30)
+    : null;
+  const history: UIMessage[] = window ? window.messages : messages;
+  // Read rather than defaulted to `[]`: an empty cast is one the reader's
+  // `participants_changed` guard can never reject, because it only engages at
+  // two or more. See `loadParticipantIds`.
+  const participantIds = conversationId
+    ? await loadParticipantIds(conversationId)
+    : [];
 
   const callOptions: ChatbotCallOptions = {
     organizationId: context.organizationId,
@@ -3556,6 +3932,8 @@ chatbotInternalRoutes.post("/invoke", async (c) => {
   return runChatbotTurn({
     conversationId,
     history,
+    ...(window ? { agentWindow: window } : {}),
+    participantIds,
     callOptions,
     agentSet,
     modelProfile,

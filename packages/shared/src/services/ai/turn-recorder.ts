@@ -155,6 +155,14 @@ export const recordTurnIncrementally = async (params: {
       // Only uuid wire ids can be persisted (uuid PK column); the chatbot
       // producer mints uuid v7 ids, so this only skips foreign callers.
       if (!UUID_RE.test(message.id)) continue;
+      // A message with nothing in it yet. The producer now names the turn's
+      // message up front, with a `start` chunk that arrives before any content
+      // (see `openAssistantMessage` in the chatbot handler), and the reader
+      // emits a snapshot for it — parts empty. Persisting that would put an
+      // empty assistant row in history at the top of every turn, visible as a
+      // blank interrupted bubble if the turn then died, and handed to the model
+      // as a content-less assistant message on the next one.
+      if (message.parts.length === 0) continue;
       latest.set(message.id, message);
       dirty.add(message.id);
       // Inline cadence — see the module docblock for why no timer. The

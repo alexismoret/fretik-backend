@@ -155,7 +155,7 @@ describe("loopGuardVerdict — input validation the tool never saw", () => {
 });
 
 describe("loopGuardVerdict — identical calls", () => {
-  test("counts a trailing run of byte-identical calls, successes included", () => {
+  test("counts byte-identical calls in the window, successes included", () => {
     const repeated = steps(
       Array.from({ length: 4 }, () => [ok("managePage", { action: "list" })]),
     );
@@ -181,13 +181,46 @@ describe("loopGuardVerdict — identical calls", () => {
     expect(loopGuardVerdict(repeated).identical?.count).toBe(2);
   });
 
-  test("a changed argument breaks the run", () => {
-    const repeated = steps([
+  test("a different call does not reset the count — the 2026-09-17 shape", () => {
+    // The runaway sent the SAME `read` six times, never twice in a row. Under
+    // a trailing-run counter the axis peaked at 1 of the 8 needed to abort
+    // while the turn burned 40 minutes; the window sees all six.
+    const interleaved = steps(
+      Array.from({ length: 6 }, (_, i) => [
+        [ok("read", { path: "outputs/invoice_data.json" })],
+        [ok("python", { code: `attempt ${i.toString()}` })],
+      ]).flat(),
+    );
+    expect(loopGuardVerdict(interleaved).identical).toEqual({
+      count: 6,
+      toolName: "read",
+    });
+  });
+
+  test("the dominant identity wins, not the most recent one", () => {
+    const mixed = steps([
+      [ok("read", { path: "a.vue" })],
       [ok("read", { path: "a.vue" })],
       [ok("read", { path: "a.vue" })],
       [ok("read", { path: "b.vue" })],
     ]);
-    expect(loopGuardVerdict(repeated).identical?.count).toBe(1);
+    expect(loopGuardVerdict(mixed).identical).toEqual({
+      count: 3,
+      toolName: "read",
+    });
+  });
+
+  test("a repeat that scrolled out of the window is forgotten", () => {
+    // Two identical reads, then 16 distinct calls: the window holds only the
+    // distinct ones, so the pair is gone and the axis reads 1.
+    const scrolled = steps([
+      [ok("read", { path: "a.vue" })],
+      [ok("read", { path: "a.vue" })],
+      ...Array.from({ length: 16 }, (_, i) => [
+        ok("python", { code: i.toString() }),
+      ]),
+    ]);
+    expect(loopGuardVerdict(scrolled).identical?.count).toBe(1);
   });
 });
 

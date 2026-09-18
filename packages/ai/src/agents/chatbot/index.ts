@@ -17,6 +17,7 @@ import { salvagePageProject } from "../../services/page-project/salvage";
 import { createBuildPageTool } from "../../tools/build-page";
 import { createDispatchAgentTool } from "../../tools/dispatch-agent";
 import {
+  AGENT_STEP_MAX_OUTPUT_TOKENS,
   buildAgentSet,
   buildToolsContext,
   type AgentRuntimeContextBase,
@@ -495,6 +496,7 @@ const makeSubAgentPrimarySet = (
     id: "chatbot.sub.primary",
     buildTools: buildSubAgentTools,
     systemPrompt: subAgentSystemPrompt,
+    maxOutputTokens: AGENT_STEP_MAX_OUTPUT_TOKENS,
     model,
     fallbackModel: resolveModel("chat-fallback"),
     stopWhen: [
@@ -541,6 +543,7 @@ const makeSubAgentCheapSet = (
     id: "chatbot.sub.cheap",
     buildTools: buildSubAgentTools,
     systemPrompt: subAgentSystemPrompt,
+    maxOutputTokens: AGENT_STEP_MAX_OUTPUT_TOKENS,
     model,
     fallbackModel: resolveModel("chat"),
     stopWhen: [
@@ -598,6 +601,10 @@ const makePageBuilderSet = (
     id: PAGE_BUILDER_AGENT_ID,
     buildTools: buildPageBuilderTools,
     systemPrompt: pageBuilderSystemPrompt,
+    // The builder writes whole SFCs through `pageWrite`, so its output cap is
+    // also its file-size cap. 32 000 tokens ≈ a 1 200-line component, which is
+    // above anything the review budget lets through in one step.
+    maxOutputTokens: AGENT_STEP_MAX_OUTPUT_TOKENS,
     model,
     // Its OWN fallback role, under the page-build envelope. `chat-fallback`
     // served here until 2026-09-14 — resolved under the chat envelope, so a
@@ -659,6 +666,10 @@ export const dispatchAgentTool = createDispatchAgentTool({
   // registry held while this module was loading.
   primary: () => subAgentPrimarySet().primary,
   cheap: () => subAgentCheapSet().primary,
+  // The ceiling the delegate's own stop condition uses. Read off the same set,
+  // never re-derived: the boundary loop has to recognise the stop the agent
+  // made, and two derivations drift the moment a model's window moves.
+  contextCeiling: () => subAgentPrimarySet().contextCeiling,
 });
 
 /**
@@ -672,6 +683,10 @@ export const buildPageTool = createBuildPageTool({
   // turn's own options. Passing `pageBuilderSet.primary` here is what pinned
   // every page in the product to one profile for months.
   resolvePageBuilder: (profileKey) => getPageBuilderSet(profileKey).primary,
+  // Same set, same number — see `dispatchAgentTool` above. The page builder is
+  // the biggest single exposure: up to 80 steps behind one tool call.
+  resolvePageBuilderCeiling: (profileKey) =>
+    getPageBuilderSet(profileKey).contextCeiling,
   // The set has carried a fallback model all along; nothing reached for it. A
   // build that comes back having written nothing now gets the one retry the
   // parent turn has had since C4.
@@ -698,6 +713,7 @@ const makeChatbotAgentSet = (
         buildPage: buildPageTool,
       }),
     systemPrompt: chatbotSystemPrompt,
+    maxOutputTokens: AGENT_STEP_MAX_OUTPUT_TOKENS,
     model,
     fallbackModel: resolveModel("chat-fallback"),
     // Stop the agent loop on either of two conditions:

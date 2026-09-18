@@ -3,6 +3,13 @@ import { z } from "zod";
 import type { ChatbotCallOptions } from "../agents/chatbot";
 import { buildChatbotTool } from "../agents/shared/chatbot-tool";
 import { createSubAgentExecute } from "../agents/shared/sub-agent";
+import { boundedText } from "../lib/persisted-output";
+
+/**
+ * Cap on a delegate's returned summary. Generous for prose (~6 000 tokens) and
+ * far below what 25 steps of a sub-agent can emit.
+ */
+const SUB_AGENT_SUMMARY_BUDGET_CHARS = 24_000;
 
 /**
  * `dispatchAgent` tool — delegate an encapsulated sub-task to a fresh
@@ -86,6 +93,8 @@ export const createDispatchAgentTool = <TTools extends ToolSet>(deps: {
    */
   primary: () => Agent<ChatbotCallOptions, TTools>;
   cheap: () => Agent<ChatbotCallOptions, TTools>;
+  /** The ceiling those agents stop at — see `SubAgentConfig.contextCeiling`. */
+  contextCeiling?: () => number;
 }) => {
   const inputSchema = dispatchAgentInputSchema;
 
@@ -107,7 +116,16 @@ export const createDispatchAgentTool = <TTools extends ToolSet>(deps: {
   const formatSubAgentResult = (
     result: GenerateTextResult<TTools, Record<string, unknown>, never>,
   ): { summary: string; incomplete?: boolean; finishReason?: string } => {
-    const text = result.text.trim();
+    // A delegate runs up to 25 steps behind one tool call and its `text` came
+    // back raw — the one result in the product with no cap at all. Bounded
+    // rather than persisted: this is the delegate's PROSE, and everything it
+    // produced lives in the sandbox under paths the summary names, so there is
+    // nothing here to re-read that is not already reachable. A summary that
+    // needs 24 000 characters has stopped being a summary.
+    const text = boundedText(
+      result.text.trim(),
+      SUB_AGENT_SUMMARY_BUDGET_CHARS,
+    );
     const finishReason = result.finishReason;
     if (finishReason === "stop") {
       return { summary: text };
@@ -147,6 +165,7 @@ export const createDispatchAgentTool = <TTools extends ToolSet>(deps: {
     ReturnType<typeof formatSubAgentResult>
   >({
     subAgent: () => deps.primary(),
+    ...(deps.contextCeiling ? { contextCeiling: deps.contextCeiling } : {}),
     buildMessages: ({ task }) => [{ role: "user", content: task }],
     buildCallOptions: (_input, ctx) => ({
       teamId: ctx.teamId,
@@ -171,6 +190,7 @@ export const createDispatchAgentTool = <TTools extends ToolSet>(deps: {
     ReturnType<typeof formatSubAgentResult>
   >({
     subAgent: () => deps.cheap(),
+    ...(deps.contextCeiling ? { contextCeiling: deps.contextCeiling } : {}),
     buildMessages: ({ task }) => [{ role: "user", content: task }],
     buildCallOptions: (_input, ctx) => ({
       teamId: ctx.teamId,

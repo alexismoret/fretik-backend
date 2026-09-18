@@ -18,6 +18,13 @@
  *   incident of this kind ran for hours, self-propagating through conversation
  *   history, and was found by a person reading an answer.
  *
+ * - **BYOK cost carry** (`lib/byok-cost.ts`) — UNCONDITIONAL. It moves the
+ *   charge an upstream billed our own key from `usage.raw`, which the SDK
+ *   discards when it aggregates a step, onto `providerMetadata`, which it
+ *   keeps. Without it every BYOK call reports a cost of zero to all three
+ *   readers below — and a host that reports zero wins the pool's cost
+ *   comparison against every host that reports honestly.
+ *
  * - **Passive telemetry** (`lib/model-telemetry.ts`) — UNCONDITIONAL, for the
  *   same reason. It records what our own traffic measured about each upstream
  *   (decode rate, time to first token, cost, failures) so the registry can
@@ -33,6 +40,7 @@
  */
 import { type EmbeddingModelV4, type LanguageModelV4 } from "@ai-sdk/provider";
 import { wrapEmbeddingModel, wrapLanguageModel } from "ai";
+import { byokCostCarrierMiddleware } from "./byok-cost";
 import { langfuseEnabled } from "./langfuse";
 import {
   type CostEstimator,
@@ -68,6 +76,10 @@ export const instrumentModel = (
     middleware: [
       ...(langfuseEnabled ? [costCaptureMiddleware(estimateCost)] : []),
       detectorMiddleware(ctx),
+      // Above the telemetry so its timings stay innermost, but below
+      // everything that READS a cost: this is what makes a BYOK charge
+      // visible to them at all.
+      byokCostCarrierMiddleware,
       // Last, so it wraps closest to the model and its timings measure the
       // upstream rather than the middleware above it.
       telemetryMiddleware({

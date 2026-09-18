@@ -239,15 +239,68 @@ const asRecord = (value: unknown): Record<string, unknown> | undefined =>
     ? (value as Record<string, unknown>)
     : undefined;
 
+const finite = (value: unknown): number | undefined =>
+  typeof value === "number" && Number.isFinite(value) ? value : undefined;
+
+/**
+ * What the UPSTREAM billed our own key, read from the RAW usage block.
+ *
+ * `undefined` on every non-BYOK call, and the distinction is the whole
+ * difficulty. Measured 2026-09-18 against the live API:
+ * `cost_details.upstream_inference_cost` comes back on EVERY call, BYOK or
+ * not. On an ordinary one it merely restates the billed figure (`cost`
+ * 4.65e-6, `upstream_inference_cost` 4.65e-6 — the aggregator's own cost
+ * basis), so adding the two would double the price of the whole non-BYOK
+ * fleet, silently and everywhere at once. Only `is_byok` separates "a second
+ * charge" from "the same charge twice", and it exists ONLY here: the SDK's
+ * curated `providerMetadata` drops it. Hence `byokCostCarrierMiddleware`,
+ * which lifts the result of this function somewhere the readers can reach.
+ *
+ * `cache_discount` is deliberately NOT subtracted: it is already deducted.
+ * Verified to the cent on gen-1789732704-UCuhIabUd0wUAffHENJz — 14 830
+ * uncached + 16 640 cached prompt tokens + 768 completion at BaseTen's
+ * published rates come to exactly the $0.0025935 reported, where the same
+ * tokens priced without the cache rate come to $0.00429078 and the difference
+ * is exactly the $0.00169728 quoted as the discount. Subtracting it would
+ * count the saving twice and under-report every cached call.
+ */
+export const readByokUpstreamCost = (rawUsage: unknown): number | undefined => {
+  const raw = asRecord(rawUsage);
+  if (raw?.is_byok !== true) return undefined;
+  const upstream = finite(asRecord(raw.cost_details)?.upstream_inference_cost);
+  // A zero here is not a bill, and carrying it would claim a BYOK share that
+  // does not exist — a free model reports exactly that shape.
+  return upstream !== undefined && upstream > 0 ? upstream : undefined;
+};
+
+/**
+ * Where `byokCostCarrierMiddleware` parks the figure above, inside this
+ * transport's own metadata namespace.
+ *
+ * Exported so the writer and the reader below cannot drift apart. The name is
+ * deliberately NOT one of OpenRouter's: nothing on the wire is spelled this
+ * way, so a reader of a live payload can tell at a glance that this field is
+ * ours.
+ */
+export const BYOK_UPSTREAM_COST_KEY = "fretikByokUpstreamCostUsd";
+
 export const extractOpenRouterReport = (
   metadata: unknown,
 ): GenerationReport => {
   const meta = asRecord(asRecord(metadata)?.openrouter);
   if (!meta) return {};
-  const cost = asRecord(meta.usage)?.cost;
+  const usage = asRecord(meta.usage);
+  const billed = finite(usage?.cost);
+  const byok = finite(usage?.[BYOK_UPSTREAM_COST_KEY]);
   return {
-    costUsd:
-      typeof cost === "number" && Number.isFinite(cost) ? cost : undefined,
+    // The two charges are SUMMED because they are two different invoices for
+    // one call: the aggregator's (a BYOK fee, often zero) and the upstream's,
+    // paid straight off our own key. Reporting the aggregator's alone is what
+    // made a BYOK generation read as free — it bills $0, so `costUsd` was 0
+    // and the model looked like the cheapest host in the fleet, to a cost
+    // dashboard and to the pool comparison alike.
+    costUsd: byok === undefined ? billed : (billed ?? 0) + byok,
+    ...(byok === undefined ? {} : { byokUpstreamCostUsd: byok }),
     servingProvider:
       typeof meta.provider === "string"
         ? normalizeProviderName(meta.provider)

@@ -52,8 +52,10 @@
 import db from "@fretik/shared/db";
 import { aiEpisodes, aiMessages } from "@fretik/shared/db/schema";
 import { assertOperatorTarget } from "@fretik/shared/lib/operator-guard";
+import { getLiveSnapshotSync } from "@fretik/shared/services/model-registry/live";
 import { and, asc, desc, eq, isNotNull, lt } from "drizzle-orm";
 import process from "node:process";
+import { ensureModelRegistryWarm } from "../src/lib/model-registry/resolve";
 import {
   distillConversation,
   renderTranscript,
@@ -221,6 +223,28 @@ if (!apply) {
     ].join("\n"),
   );
   process.exit(0);
+}
+
+// The registry is PROCESS state, and a script is a process nothing warmed.
+//
+// `getLiveStateSync` is synchronous by design — model construction cannot await
+// — so a cold snapshot does not reload on demand, it answers `undefined` for
+// every key. The distiller then throws `No model profile for key
+// "deepseek-v4-flash"` about a row that is published, enabled and healthy, and
+// because `resolveModelForTeam` catches that and falls back to the SAME code
+// default, it throws twice per episode. Measured 2026-09-18 on the first
+// production run of this script: 238 identical failures, and the dry run could
+// not have caught it — it resolves no model at all.
+//
+// `ensureModelRegistryWarm` is the door, and it is a no-op once warm. The
+// check below is what turns a cold registry into one refusal instead of one per
+// episode: an empty map is a real state that `ensureModelRegistryWarm` leaves
+// alone by design, so warming is not proof that anything is in there.
+await ensureModelRegistryWarm();
+if (getLiveSnapshotSync() === undefined) {
+  throw new Error(
+    "The model registry is cold — every episode would fail to resolve a model. Check the database is reachable, then `bun run models:sync` (jobs package) if it is a fresh one.",
+  );
 }
 
 let repaired = 0;

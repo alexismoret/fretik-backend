@@ -1,8 +1,85 @@
+import { currentWorkflowTask } from "@fretik/shared/schemas/workflows";
 import { completeCurrentTask } from "@fretik/shared/services/workflows/complete-current-task";
+import { getWorkflowRunRow } from "@fretik/shared/services/workflows/get-run";
 import { tool } from "ai";
 import { z } from "zod";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
+import { fileExists } from "../lib/conversation-storage";
 import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
+
+/**
+ * File-ish tokens inside the `deliverable` sentence: a workspace-relative path
+ * or a bare filename with an extension. Matched conservatively — a token has to
+ * carry a dot and an extension of 1-8 word characters — because a false match
+ * refuses a task that was legitimately done.
+ */
+const PATH_TOKEN =
+  /(?:^|[\s"'`(,])((?:[\w.-]+\/)*[\w.-]+\.[A-Za-z0-9]{1,8})(?=$|[\s"'`),.;:!?])/g;
+
+const namedPaths = (deliverable: string): string[] => {
+  const paths = new Set<string>();
+  for (const match of deliverable.matchAll(PATH_TOKEN)) {
+    const path = match[1];
+    // A bare `1.5` or `v2.0` clears the regex but is not a file.
+    if (path !== undefined && /[A-Za-z]/.test(path.split(".").pop() ?? "")) {
+      paths.add(path);
+    }
+  }
+  return [...paths];
+};
+
+/**
+ * The completion check. Returns a tool error to send back instead of closing
+ * the task, or `null` when the close may proceed.
+ *
+ * Refuses in exactly two cases, both recoverable by the agent on the spot:
+ * a declared expected output closed `completed` with nothing said about where
+ * it is, and a named file path that does not exist in the workspace. Anything
+ * else — `skipped`, `failed`, a task with no declared output, a deliverable
+ * that names values rather than files — passes through untouched.
+ */
+const checkDeliverable = async (params: {
+  outcome: "completed" | "skipped" | "failed";
+  deliverable: string | undefined;
+  runId: string;
+  conversationId: string | undefined;
+}): Promise<ReturnType<typeof toolError> | null> => {
+  if (params.outcome !== "completed") return null;
+  const run = await getWorkflowRunRow({ id: params.runId });
+  if (!run) return null;
+  const current = currentWorkflowTask(run.taskStates);
+  const expected = current?.expectedOutput?.trim();
+  if (expected === undefined || expected.length === 0) return null;
+
+  const stated = params.deliverable?.trim() ?? "";
+  if (stated.length === 0) {
+    return toolError(
+      TOOL_ERROR_CODES.INVALID_ARGS,
+      `Task "${current?.key ?? ""}" declares an expected output and cannot be closed as completed without one.`,
+      `Expected output: ${expected}\nRe-send completeTask with \`deliverable\` naming where that output is — the file paths you produced (e.g. "outputs/report.xlsx"), or the values themselves if it is not a file. If it does not exist yet, produce it first; if it cannot be produced, close the task with outcome "failed".`,
+    );
+  }
+
+  const paths = namedPaths(stated);
+  if (paths.length === 0 || params.conversationId === undefined) return null;
+
+  const missing: string[] = [];
+  for (const path of paths) {
+    // A storage failure must not block a task that is genuinely done: an
+    // unreachable sandbox reads as "cannot disprove", never as "missing".
+    const exists = await fileExists(params.conversationId, path).catch(
+      () => true,
+    );
+    if (!exists) missing.push(path);
+  }
+  if (missing.length === 0) return null;
+
+  return toolError(
+    TOOL_ERROR_CODES.INVALID_ARGS,
+    `The deliverable names ${missing.length.toString()} file(s) that do not exist in the workspace: ${missing.join(", ")}.`,
+    `Produce them, then re-send completeTask with the paths that exist. Check the real paths with \`bash\` (\`ls outputs/\`) before retrying — a task is not done because its summary says so. If the work cannot be done, close it with outcome "failed" and say why in \`summary\`.`,
+  );
+};
 
 /**
  * `completeTask` — the workflow executor's ONLY way to advance through its
@@ -27,6 +104,13 @@ export const createCompleteTaskTool = () =>
         .describe(
           "One line, shown on the run timeline: what was produced, or why skipped/failed.",
         ),
+      deliverable: z
+        .string()
+        .max(1000)
+        .optional()
+        .describe(
+          "Required with `completed` when the task declares an expected output: WHERE that output is. Name the file paths you produced (`outputs/report.xlsx`), or state the values themselves when the output is not a file. Every path named here is checked against the workspace.",
+        ),
       fatal: z
         .boolean()
         .optional()
@@ -34,7 +118,7 @@ export const createCompleteTaskTool = () =>
           "With outcome `failed`: also abandon all remaining tasks and end the run.",
         ),
     }),
-    execute: async ({ outcome, summary, fatal }, options) => {
+    execute: async ({ outcome, summary, deliverable, fatal }, options) => {
       const ctx = getRuntimeContext(options);
       if (ctx.workflowRunId === undefined) {
         return toolError(
@@ -42,6 +126,25 @@ export const createCompleteTaskTool = () =>
           "completeTask is only available inside a workflow run.",
         );
       }
+      // ---- Completion check ----
+      // A task that declares an expected output may not be closed `completed`
+      // on an assertion alone. On 2026-09-17 a run closed `generer-fichiers`
+      // ("Un jeu de 5 fichiers plats par facture") with a summary describing
+      // the PREVIOUS task's work and zero files in existence, then spent 34
+      // more minutes doing that work while the harness steered it toward the
+      // task after it. Nothing in the loop could notice, because nothing asked.
+      //
+      // The check is deterministic, never a judgment on the prose: whatever
+      // FILE PATHS the model names are looked up in the live workspace. Naming
+      // no path is a valid answer — plenty of tasks deliver values, not files —
+      // so a text deliverable can never be refused by this.
+      const checked = await checkDeliverable({
+        outcome,
+        deliverable,
+        runId: ctx.workflowRunId,
+        conversationId: ctx.conversationId,
+      });
+      if (checked !== null) return checked;
       const result = await completeCurrentTask({
         runId: ctx.workflowRunId,
         outcome,

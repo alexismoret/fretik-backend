@@ -26,6 +26,14 @@ interface OrganizationInvitationParams {
   role: string;
   teamId?: string | null;
   expiresAt: Date;
+  /**
+   * The invitee already belongs to the organization; this invitation only
+   * adds one more team. Swaps the subject + body for copy that doesn't
+   * welcome them somewhere they already are, and drops the role line — their
+   * organization role is NOT changed by accepting (see
+   * `services/invitations/accept-team-invitation.ts`).
+   */
+  existingMember?: boolean;
 }
 
 /**
@@ -49,16 +57,28 @@ export const generateOrganizationInvitation = async (
     teamName = team?.name;
   }
 
-  const message = teamName
-    ? t("organizationInvitation.messageWithTeam", {
+  // An existing member is only ever invited to a TEAM (the organization
+  // invitation would have been refused), so the team name is always there on
+  // that branch — but fall back to the generic copy rather than render a
+  // sentence with a hole in it.
+  const isTeamAccessForMember = Boolean(params.existingMember && teamName);
+
+  const message = isTeamAccessForMember
+    ? t("organizationInvitation.messageExistingMember", {
         inviterName: params.inviterName,
         teamName,
         organizationName: params.organizationName,
       })
-    : t("organizationInvitation.message", {
-        inviterName: params.inviterName,
-        organizationName: params.organizationName,
-      });
+    : teamName
+      ? t("organizationInvitation.messageWithTeam", {
+          inviterName: params.inviterName,
+          teamName,
+          organizationName: params.organizationName,
+        })
+      : t("organizationInvitation.message", {
+          inviterName: params.inviterName,
+          organizationName: params.organizationName,
+        });
 
   const formattedExpiresAt = params.expiresAt.toLocaleDateString(
     dateLocale(lang),
@@ -80,11 +100,15 @@ export const generateOrganizationInvitation = async (
       teamLabel: teamName
         ? t("organizationInvitation.teamLabel", { teamName })
         : "",
-      roleLabel: t("organizationInvitation.roleLabel", {
-        roleName: params.role,
-      }),
+      // Empty string omits the line (the template guards it with `{{#if}}`):
+      // announcing a role we are not going to apply would be a lie.
+      roleLabel: isTeamAccessForMember
+        ? ""
+        : t("organizationInvitation.roleLabel", { roleName: params.role }),
       acceptUrl,
-      cta: t("organizationInvitation.cta"),
+      cta: isTeamAccessForMember
+        ? t("organizationInvitation.ctaExistingMember")
+        : t("organizationInvitation.cta"),
       expiration: t("organizationInvitation.expiration", {
         expiresAt: formattedExpiresAt,
       }),
@@ -93,9 +117,11 @@ export const generateOrganizationInvitation = async (
     lang,
   );
 
-  const subject = t("organizationInvitation.subject", {
-    organizationName: params.organizationName,
-  });
+  const subject = isTeamAccessForMember
+    ? t("organizationInvitation.subjectExistingMember", { teamName })
+    : t("organizationInvitation.subject", {
+        organizationName: params.organizationName,
+      });
 
   return { subject, html };
 };

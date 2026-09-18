@@ -4,6 +4,7 @@ import type { LangfusePromptRef } from "../../lib/langfuse-prompts";
 import type { ModelProfile } from "../../lib/model-registry/types";
 import type { NativeIngestionPlan } from "../../services/native-input/prepare-model-messages";
 import type { DynamicToolManager } from "./dynamic-tools";
+import type { StepCallBudget } from "./step-call-budget";
 
 /**
  * @warning MUTATION CONTRACT — READ BEFORE ADDING A NEW TOOL
@@ -117,6 +118,18 @@ export type AgentRuntimeContext = {
    * rebuild the `activeTools` allow-list.
    */
   dynamicToolManager: DynamicToolManager;
+  /**
+   * How many tool calls are left in the CURRENT step. Reset per step by the
+   * loop guard's `prepareStep` wrapper and claimed by `guardToolExecute`, the
+   * one place every tool call passes through. Optional so the many hand-built
+   * contexts in tests need not carry it; `prepareCall` always sets it.
+   *
+   * It is a counter, so it breaks the idempotence rule above on purpose —
+   * option (a) of the contract: the mutation is routed through a manager that
+   * owns the invariant. Counting twice can only REFUSE a call, never admit one
+   * past the cap, which is the safe direction.
+   */
+  stepCallBudget?: StepCallBudget;
   /**
    * Rendered `{{attachedFilesBlock}}` fragment for the system
    * prompt. Computed by the handler from the last user message's

@@ -18,6 +18,7 @@ import { copyObject, uploadToS3 } from "../../../lib/s3";
 import { ERROR_CODES } from "../../../schemas/errors";
 import { resolveDocumentRecordId } from "../../collection-records/resolve-document-record";
 import { emitDomainEvent, type EventActor } from "../../domain-events/emit";
+import { deleteStaleDocumentPreviewPdfs } from "../preview";
 import { enqueueDocumentProcessing } from "../processing-queue";
 import { scheduleDocumentVectorRefresh } from "../vector-refresh-queue";
 import {
@@ -339,6 +340,11 @@ export const replaceDocumentContent = async (args: {
       return { updated: updatedDocument, version: versionRow };
     }),
   );
+
+  // The bytes moved, so any PDF rendition of the previous content is now
+  // unreachable — its key carries the old hash. Reap it here rather than
+  // waiting for the document to be deleted.
+  await deleteStaleDocumentPreviewPdfs(documentId, fileHash);
 
   const freedBytes = await trimDocumentVersions(documentId);
   if (freedBytes > 0) {

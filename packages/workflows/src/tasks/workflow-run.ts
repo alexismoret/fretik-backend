@@ -80,8 +80,9 @@ class TurnHttpError extends Error {
 
 /**
  * Execute one turn against the AI service and return its terminal `result`
- * SSE event. `task-update` events are mirrored into run metadata live so
- * the browser's Realtime subscription sees the timeline move mid-turn.
+ * SSE event. `task-update` and `usage` events are mirrored into run metadata
+ * live so the browser's Realtime subscription sees the timeline move — and the
+ * token counter climb — mid-turn.
  */
 const callTurn = async (params: {
   runId: string;
@@ -146,6 +147,20 @@ const callTurn = async (params: {
             metadata.set("taskStates", frame.taskStates);
           } catch {
             // ignore malformed frames — the terminal result is authoritative
+          }
+        }
+        // The odometer. `workflow_runs.usage` is only written when a turn
+        // ends, so through the 42-minute run of 2026-09-17 every gauge on the
+        // run page held the figure it had at minute zero. Same best-effort
+        // contract as `task-update`: the committed result stays authoritative.
+        if (event === "usage" && data.length > 0) {
+          try {
+            const frame = WorkflowTurnResultSchema.pick({ usage: true }).parse(
+              JSON.parse(data),
+            );
+            metadata.set("usage", frame.usage);
+          } catch {
+            // ignore malformed frames
           }
         }
         if (event === "result" && data.length > 0) {

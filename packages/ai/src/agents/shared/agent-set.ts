@@ -39,49 +39,234 @@ const toolFailureCode = (output: unknown): string | null => {
     : null;
 };
 
+/**
+ * The code for a call the tool never ran: the SDK validated the arguments,
+ * refused them, and emitted a `tool-error` part instead of a result. That part
+ * is NOT in `step.toolResults` — the SDK derives those from `tool-result`
+ * parts alone — so until 2026-09-14 this whole class of failure was invisible
+ * to the guard. It is the class that produced the worst loop measured in
+ * production: 26 calls in four minutes, none of them counted.
+ */
+export const INVALID_INPUT_CODE = "INVALID_INPUT";
+
+/**
+ * How many recent tool outcomes the guard weighs — on BOTH axes.
+ *
+ * Counting only a STRICTLY TRAILING run of failures is what let the 2026-09-14
+ * loop run: the model alternated a malformed `managePage {action:"update"}`
+ * with a `managePage {action:"list"}` that SUCCEEDED, and every success reset
+ * the counter to zero. A window forgives an interleaved success without
+ * forgetting the failures around it. 16 is two full alternations past the
+ * abort threshold — wide enough that the pathological pattern trips, narrow
+ * enough that eight failures spread over a long healthy run do not.
+ *
+ * That fix was applied to ONE of the two axes, and the 2026-09-17 runaway is
+ * what the other one cost: the same `read` went out SIX times byte-identical
+ * over a 50-step turn and the identical-call counter never passed 1 of 8,
+ * because any interleaved call reset it. Replayed over the real sequence, a
+ * window steers the model 30 minutes earlier. A window is also strictly more
+ * sensitive than a trailing run — a run of N identical calls is N occurrences
+ * inside the last N — so nothing the old counter caught can escape this one.
+ */
+const LOOP_GUARD_WINDOW = 16;
+
 export interface ToolErrorRun {
   count: number;
   toolName: string;
   code: string;
 }
 
+export interface LoopGuardVerdict {
+  /** The dominant (tool, code) failure inside the window, if any failed. */
+  failure: ToolErrorRun | null;
+  /** The most-repeated call identity inside the window, successful or not. */
+  identical: { count: number; toolName: string } | null;
+}
+
+/** One tool call's outcome, as the guard sees it. */
+interface ToolOutcome {
+  toolName: string;
+  /** Tool name + arguments, so two spellings of one call are one call. */
+  identity: string;
+  /** null = the call succeeded. */
+  code: string | null;
+}
+
+/** The shape the guard needs from a step — structural, so a test can build one. */
+export interface LoopGuardStep {
+  content?: readonly {
+    type: string;
+    toolName?: string;
+    input?: unknown;
+    output?: unknown;
+  }[];
+  toolResults: readonly {
+    toolName: string;
+    input?: unknown;
+    output: unknown;
+  }[];
+}
+
 /**
- * The TRAILING run of tool results where the same tool failed with the same
- * error code, across step boundaries (parallel same-step failures count).
- * Any success, different code, or different tool resets it. Instrument of the
- * loop guard: prod showed a 17-call identical-failure loop with no brake.
+ * JSON with its object keys in a fixed order, so two calls that differ only in
+ * how the model serialised them compare equal. `caption` is dropped: it is a
+ * user-facing label the model is told to vary per call, and a guard that let a
+ * reworded caption pass for a new attempt would never see a repeat.
  */
-export const trailingToolErrorRun = (
-  steps: ReadonlyArray<{
-    toolResults: ReadonlyArray<{ toolName: string; output: unknown }>;
-  }>,
-): ToolErrorRun | null => {
-  let run: ToolErrorRun | null = null;
-  for (const step of steps) {
-    for (const tr of step.toolResults) {
-      const code = toolFailureCode(tr.output);
-      if (code === null) {
-        run = null;
-      } else if (run && run.toolName === tr.toolName && run.code === code) {
-        run = { count: run.count + 1, toolName: run.toolName, code: run.code };
-      } else {
-        run = { count: 1, toolName: tr.toolName, code };
-      }
-    }
+const stableJson = (value: unknown): string => {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([key]) => key !== "caption")
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`);
+    return `{${entries.join(",")}}`;
   }
-  return run;
+  return JSON.stringify(value) ?? "null";
 };
 
 /**
- * Hard backstop of the loop guard: end the turn once the same tool has failed
- * with the same error code `limit` times in a row. The softer steer fires
- * earlier (the `[loop-guard]` message injected in `prepareStep` — see
- * `agent-builder.ts`); this stops the burn when the model ignores it.
+ * Past this, an identity is a digest of itself. A `pageWrite` carries the
+ * files it writes — tens of thousands of characters — and the guard needs to
+ * know only whether two calls are the same, never what they said. Length is
+ * part of the key, so a collision would have to match both.
+ */
+const IDENTITY_DIGEST_OVER = 4_096;
+
+const identityOf = (toolName: string, input: unknown): string => {
+  const json = stableJson(input);
+  return json.length > IDENTITY_DIGEST_OVER
+    ? `${toolName}(#${json.length.toString()}:${Bun.hash(json).toString(36)})`
+    : `${toolName}(${json})`;
+};
+
+/**
+ * Identities, cached against the SDK's own part objects.
+ *
+ * The guard re-reads the WHOLE run on every step — once from `prepareStep`,
+ * once from `stopWhen` — so serialising every past call each time is quadratic
+ * in the length of the run and linear in the weight of what the calls carry.
+ * A page builder writing a forty-file project would pay that hundreds of
+ * times. `steps` only ever grows, and the SDK never rewrites a step it has
+ * already recorded, so keying on the part object serialises each call exactly
+ * once; the entries die with the steps that hold them.
+ */
+const identities = new WeakMap<object, string>();
+
+const identityFor = (
+  source: object,
+  toolName: string,
+  input: unknown,
+): string => {
+  const cached = identities.get(source);
+  if (cached !== undefined) return cached;
+  const identity = identityOf(toolName, input);
+  identities.set(source, identity);
+  return identity;
+};
+
+/**
+ * Every tool outcome of the run, oldest first — results AND the input
+ * validations the SDK refused before the tool ran.
+ */
+export const toolOutcomes = (
+  steps: readonly LoopGuardStep[],
+): ToolOutcome[] => {
+  const outcomes: ToolOutcome[] = [];
+  for (const step of steps) {
+    const parts = (step.content ?? []).filter(
+      (part) => part.type === "tool-result" || part.type === "tool-error",
+    );
+    if (parts.length > 0) {
+      for (const part of parts) {
+        const toolName = part.toolName ?? "unknown";
+        outcomes.push({
+          toolName,
+          identity: identityFor(part, toolName, part.input),
+          code:
+            part.type === "tool-error"
+              ? INVALID_INPUT_CODE
+              : toolFailureCode(part.output),
+        });
+      }
+      continue;
+    }
+    for (const tr of step.toolResults) {
+      outcomes.push({
+        toolName: tr.toolName,
+        identity: identityFor(tr, tr.toolName, tr.input),
+        code: toolFailureCode(tr.output),
+      });
+    }
+  }
+  return outcomes;
+};
+
+/**
+ * What the loop guard reads: how badly one (tool, code) pair is failing inside
+ * the recent window, and whether the model is re-sending one identical call.
+ *
+ * The two are separate questions. A tool that keeps refusing the same wrong
+ * arguments is a call to FIX; a call repeated byte for byte — even a
+ * succeeding one — is a model that has stopped making progress, which is the
+ * shape of a runaway that costs money without failing anything.
+ *
+ * Both are read over the SAME window, for the same reason: what makes a repeat
+ * pathological is how dense it is in recent activity, not whether it happens to
+ * be adjacent to itself.
+ */
+export const loopGuardVerdict = (
+  steps: readonly LoopGuardStep[],
+): LoopGuardVerdict => {
+  const outcomes = toolOutcomes(steps);
+  const window = outcomes.slice(-LOOP_GUARD_WINDOW);
+
+  const tally = new Map<string, ToolErrorRun>();
+  const repeats = new Map<string, { count: number; toolName: string }>();
+  for (const outcome of window) {
+    const seenIdentity = repeats.get(outcome.identity);
+    repeats.set(outcome.identity, {
+      count: (seenIdentity?.count ?? 0) + 1,
+      toolName: outcome.toolName,
+    });
+    if (outcome.code === null) continue;
+    const key = `${outcome.toolName} ${outcome.code}`;
+    const seen = tally.get(key);
+    tally.set(key, {
+      count: (seen?.count ?? 0) + 1,
+      toolName: outcome.toolName,
+      code: outcome.code,
+    });
+  }
+  let failure: ToolErrorRun | null = null;
+  for (const run of tally.values()) {
+    if (failure === null || run.count > failure.count) failure = run;
+  }
+
+  let identical: LoopGuardVerdict["identical"] = null;
+  for (const repeat of repeats.values()) {
+    if (identical === null || repeat.count > identical.count)
+      identical = repeat;
+  }
+
+  return { failure, identical };
+};
+
+/** How far the guard has gone, on whichever axis is worst. */
+export const loopGuardSeverity = (verdict: LoopGuardVerdict): number =>
+  Math.max(verdict.failure?.count ?? 0, verdict.identical?.count ?? 0);
+
+/**
+ * Hard backstop of the loop guard: end the turn once the guard's worst axis
+ * reaches `limit`. Two softer stages fire first — the `[loop-guard]` steer and
+ * then the withdrawal of every tool, both in `prepareStep` (see
+ * `agent-builder.ts`); this is what stops the burn when the model ignores
+ * both, or when there is no tool left to withdraw.
  */
 export const stopOnRepeatedToolErrors = <TTools extends ToolSet>(
   limit: number,
 ): StopCondition<TTools> => {
-  return ({ steps }) => (trailingToolErrorRun(steps)?.count ?? 0) >= limit;
+  return ({ steps }) => loopGuardSeverity(loopGuardVerdict(steps)) >= limit;
 };
 
 /**

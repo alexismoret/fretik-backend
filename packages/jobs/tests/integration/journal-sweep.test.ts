@@ -43,7 +43,8 @@ import { assertDisposableRedis } from "../lib/integration-guard";
  * the default, so asking for no watermark at all gets you the full 15 seconds.
  */
 
-process.env["MEMORY_SWEEP_WATERMARK_MS"] = "1";
+const WATERMARK_MS = 1;
+process.env["MEMORY_SWEEP_WATERMARK_MS"] = WATERMARK_MS.toString();
 process.env["MEMORY_CRON_DISTILL_TTL_S"] = "60";
 // Still a real debounce (the delay assertions below depend on it being > 0),
 // short enough that a worker can reach the job inside a test.
@@ -57,6 +58,34 @@ let fx: JobsTestFixture;
 
 const jobIn = async (queue: Queue, jobId: string): Promise<Job | undefined> =>
   (await queue.getJob(jobId)) ?? undefined;
+
+/**
+ * Sweep, but never inside the watermark of the events just emitted.
+ *
+ * `readEventsAfter` selects `recorded_at <= now() - watermark`, so an emit
+ * followed straight away by a sweep is a race against the clock: if both
+ * statements land in the same millisecond of the database clock, the event is
+ * invisible and the sweep legitimately enqueues nothing. Every test in this
+ * file writes events and immediately expects the sweep to have seen them, so
+ * every one of them was rolling that die — which is how CI produced a lone
+ * `expect(job).toBeDefined()` failure on a run where the other eight passed.
+ *
+ * Proven rather than assumed: raising the watermark to 250 ms makes the
+ * immediate sweep find nothing 100% of the time, and the same sweep after
+ * this wait finds the job.
+ *
+ * Both sides read ONE clock — `recorded_at` defaults to the database's `now()`
+ * and so does the comparison — so waiting out the window in real time closes
+ * the race rather than widening it. The margin is generous against a 1 ms
+ * watermark and costs the file about a tenth of a second in total.
+ */
+const sweep = async (): Promise<void> => {
+  await pastWatermark();
+  await runJournalSweep();
+};
+
+/** The wait on its own, for the one sweep a test needs to observe rejecting. */
+const pastWatermark = (): Promise<void> => Bun.sleep(WATERMARK_MS + 9);
 
 /** Poll until a job reaches a state, or give up loudly rather than hang. */
 const waitForState = async (
@@ -108,7 +137,7 @@ describe("resolve fan-out", () => {
       payload: { note: "integration" },
     });
 
-    await runJournalSweep();
+    await sweep();
 
     const job = await jobIn(getMemoryResolveQueue(), `resolve-${event.id}`);
     expect(job?.data).toMatchObject({
@@ -131,7 +160,7 @@ describe("resolve fan-out", () => {
       subjectRecordId: recordId,
     });
 
-    await runJournalSweep();
+    await sweep();
 
     expect(
       await jobIn(getMemoryResolveQueue(), `resolve-${event.id}`),
@@ -152,7 +181,7 @@ describe("the debounce, against the key space that defines it", () => {
       });
 
     await turn();
-    await runJournalSweep();
+    await sweep();
     const first = await jobIn(
       getMemoryDistillQueue(),
       `distill-${conversationId}`,
@@ -170,7 +199,7 @@ describe("the debounce, against the key space that defines it", () => {
     await Bun.sleep(5);
 
     await turn();
-    await runJournalSweep();
+    await sweep();
     const second = await jobIn(
       getMemoryDistillQueue(),
       `distill-${conversationId}`,
@@ -206,7 +235,7 @@ describe("the debounce, against the key space that defines it", () => {
       actor: { actorType: "system" },
       subjectRecordId: recordId,
     });
-    await runJournalSweep();
+    await sweep();
     expect(await jobIn(queue, jobId)).toBeDefined();
 
     const worker = new Worker(
@@ -229,7 +258,7 @@ describe("the debounce, against the key space that defines it", () => {
       actor: { actorType: "system" },
       subjectRecordId: recordId,
     });
-    await runJournalSweep();
+    await sweep();
 
     const requeued = await jobIn(queue, jobId);
     expect(requeued).toBeDefined();
@@ -250,7 +279,7 @@ describe("the debounce, against the key space that defines it", () => {
       actor: { actorType: "system" },
       subjectRecordId: recordId,
     });
-    await runJournalSweep();
+    await sweep();
     expect((await jobIn(queue, `card-${recordId}`))?.delay).toBeGreaterThan(0);
 
     await emitDomainEvent({
@@ -260,7 +289,7 @@ describe("the debounce, against the key space that defines it", () => {
       actor: { actorType: "system" },
       payload: { recordId },
     });
-    await runJournalSweep();
+    await sweep();
 
     const job = await jobIn(queue, `card-${recordId}`);
     expect(job?.data).toMatchObject({ recordId, op: "delete" });
@@ -287,7 +316,7 @@ describe("workflow runs distill immediately, under two gates", () => {
       { status: "succeeded", triggerType: "manual" },
       conversationId,
     );
-    await runJournalSweep();
+    await sweep();
 
     const job = await jobIn(
       getMemoryDistillQueue(),
@@ -305,7 +334,7 @@ describe("workflow runs distill immediately, under two gates", () => {
       { status: "succeeded", triggerType: "manual", isTest: true },
       testConv,
     );
-    await runJournalSweep();
+    await sweep();
 
     expect(
       await jobIn(getMemoryDistillQueue(), `distill-${failedConv}`),
@@ -327,7 +356,7 @@ describe("workflow runs distill immediately, under two gates", () => {
       { status: "succeeded", triggerType: "cron", workflowId },
       first,
     );
-    await runJournalSweep();
+    await sweep();
     expect(
       await jobIn(getMemoryDistillQueue(), `distill-${first}`),
     ).toBeDefined();
@@ -336,7 +365,7 @@ describe("workflow runs distill immediately, under two gates", () => {
       { status: "succeeded", triggerType: "cron", workflowId },
       second,
     );
-    await runJournalSweep();
+    await sweep();
     expect(
       await jobIn(getMemoryDistillQueue(), `distill-${second}`),
     ).toBeUndefined();
@@ -351,7 +380,7 @@ describe("workflow runs distill immediately, under two gates", () => {
       },
       other,
     );
-    await runJournalSweep();
+    await sweep();
     expect(
       await jobIn(getMemoryDistillQueue(), `distill-${other}`),
     ).toBeDefined();
@@ -374,6 +403,10 @@ describe("workflow runs distill immediately, under two gates", () => {
       conversationId,
     );
     try {
+      // The same watermark race as `sweep()`, but the sweep has to be
+      // observed rejecting — an invisible event makes it SUCCEED, and
+      // `rejection` then fails on a run where nothing was wrong.
+      await pastWatermark();
       const err = await rejection(runJournalSweep());
       expect(err.message).toContain("redis went away");
     } finally {
@@ -382,7 +415,7 @@ describe("workflow runs distill immediately, under two gates", () => {
     expect(await redis.get(cronKey)).toBeNull();
 
     // The replay now succeeds, which is the whole point of giving it back.
-    await runJournalSweep();
+    await sweep();
     expect(await jobIn(queue, `distill-${conversationId}`)).toBeDefined();
     await redis.del(cronKey);
   });

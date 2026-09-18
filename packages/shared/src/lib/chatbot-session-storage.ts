@@ -203,18 +203,24 @@ export const deleteSessionFile = async (
 /**
  * Delete every file under a conversation's session folder. Called
  * from the API conversation DELETE handler after the DB cascade has
- * reaped `ai_chat_files` rows. Uses the bulk `deleteObjects` to stay
- * fast on folders with many files; per-object failures are logged
- * and skipped.
+ * reaped `ai_chat_files` rows, and from the workflow delete for each of
+ * its runs. Uses the bulk `deleteObjects` to stay fast on folders with
+ * many files; per-object failures are logged and skipped.
+ *
+ * `listSessionPaths`, NOT `listSessionFiles`: the latter keeps the
+ * legacy flat semantics and drops every key containing a `/`, which
+ * since the move to a per-conversation workspace is very nearly all of
+ * them. Deleting a conversation reaped whatever happened to sit at the
+ * session root and left every `attachments/…` and `outputs/…` object
+ * behind — the user's uploads and the agent's deliverables both — with
+ * nothing pointing at them any more.
  */
 export const deleteSessionFolder = async (
   conversationId: string,
 ): Promise<void> => {
-  const basenames = await listSessionFiles(conversationId);
-  if (basenames.length === 0) return;
-  const keys = basenames.map((basename) =>
-    buildSessionKey(conversationId, basename),
-  );
+  const paths = await listSessionPaths(conversationId);
+  if (paths.length === 0) return;
+  const keys = paths.map((path) => buildSessionKey(conversationId, path));
   await deleteObjects(keys);
 };
 

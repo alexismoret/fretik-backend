@@ -100,6 +100,7 @@ export const fooManifest: ProviderManifest = {
 | whatsapp        | `communication` | `instant-messaging`                           |
 | twilio          | `communication` | `sms`, `voice`                                |
 | front           | `communication` | `shared-inbox`, `email`                       |
+| ftp-sftp        | `storage`       | `file-storage`                                |
 | google-drive    | `storage`       | `file-storage`                                |
 | onedrive        | `storage`       | `file-storage`                                |
 | dropbox         | `storage`       | `file-storage`                                |
@@ -176,6 +177,76 @@ chatbot writes. Default to `false` — agent context is precious.
 - Provider catalogue facts (display name, icon, scopes) → manifest top
   level.
 - Per-action knobs the agent picks per call → action `params`.
+
+## 4b. `credentialsForm` — the three capabilities beyond a flat field list
+
+Most forms need none of these. Reach for one only when the plain list
+cannot express what the provider needs.
+
+### `secretEnvelope` — more (or longer) secrets than Nango has slots
+
+Nango validates credential bodies with strict per-auth-mode schemas, and the
+caps are hard:
+
+| Template             | auth_mode | Accepted fields        | Cap                              |
+| -------------------- | --------- | ---------------------- | -------------------------------- |
+| `private-api-basic`  | `BASIC`   | `username`, `password` | 1024 each                        |
+| `private-api-bearer` | `API_KEY` | `apiKey`               | 4096 (1024 before Nango v0.71.6) |
+
+A provider needing a THIRD secret, or one LONGER than 1024 characters, fits
+in neither. `ftp-sftp` is both at once: username + password OR private key +
+passphrase, where an RSA key is 1.7-3.3 KB on its own.
+
+**The envelope moves the slot problem, and widens the size problem to 4096 —
+it does not remove it.** Nango enforces that cap at SAVE time, long after
+`testConnection` has gone green, and its frontend SDK reports the refusal with
+an empty message. So a provider whose secrets can approach 4096 characters
+must say in its SETUP.md what fits and what does not — `ftp-sftp`'s table runs
+from an ed25519 key at ~450 packed characters to RSA-8192 at ~6.6 KB, which is
+the one thing it refuses.
+
+`connection_config` is not the escape hatch — Nango's `encryptConnection`
+encrypts `credentials` and nothing else, so a private key parked there sits
+in plaintext in its database.
+
+```ts
+credentialsForm: {
+  secretEnvelope: { nangoKey: "apiKey" },   // private-api-bearer
+  fields: [ /* username, password, private_key, passphrase… */ ],
+}
+```
+
+Every `target: "credentials"` field is then packed into one JSON string
+under that key by the frontend, and unpacked by
+`normalizeNangoCredentials` on read — handlers keep reading flat
+`credentials.private_key`. A per-field `nangoKey` on a credentials field is
+refused alongside it (the envelope IS the rename). Connections stored before
+a provider adopted an envelope keep working: an absent or unparseable
+envelope passes the credentials through unchanged.
+
+### `visibleWhen` — a field that belongs to one kind of connection
+
+```ts
+{ key: "password", required: true,
+  visibleWhen: { field: "auth_method", equals: ["password"] } }
+```
+
+A hidden field is not rendered, not validated, and not submitted — which is
+how `required: true` becomes "required, but only for this kind of
+connection". Use it instead of splitting a provider in two (Pipedream ships
+one SFTP app per auth method, which asks the user to choose an app by their
+credential type) or showing every field at once.
+
+One field against a value list, deliberately — not an expression language.
+The controlling field must exist in the same descriptor; the manifest schema
+refuses a dangling reference at boot, because a condition that never matches
+hides a credential forever.
+
+### `kind: "textarea"` — a secret with newlines in it
+
+Same storage as `password`. The only reason it exists: a PEM block pasted
+into a one-line `<input>` arrives newline-free and never parses, and the
+error then blames the key rather than the field.
 
 ## 5. Author actions
 

@@ -253,50 +253,106 @@ const applyManageDocument: ToolCallApplyFn = async (ctx, args) => {
 
 // ---- uploadToDrive --------------------------------------------------------
 
+/**
+ * Read a list-shaped arg that may still arrive in its pre-batch singular
+ * form.
+ *
+ * An approval row outlives the deploy that created it: a grant clicked after
+ * `uploadToDrive` became batch may carry `path` / `fileId` from before it,
+ * and applying that grant as "no files" would silently save nothing while
+ * reporting success.
+ *
+ * Exported for its test — this compatibility is invisible until a deploy
+ * lands on a queue of pending approvals, which is exactly when nobody is
+ * looking.
+ */
+export const strListOrSingle = (
+  args: Record<string, unknown>,
+  listKey: string,
+  singleKey: string,
+): string[] => {
+  const list = args[listKey];
+  if (Array.isArray(list)) {
+    return list.filter((value): value is string => typeof value === "string");
+  }
+  const single = strOrNull(args, singleKey);
+  return single === null ? [] : [single];
+};
+
 const applyUploadToDrive: ToolCallApplyFn = async (ctx, args) => {
-  // Two proposal shapes, one per source: `path` is a file the agent produced in
-  // its workspace, `fileId` an attachment the user brought. Same split as the
-  // tool's own `execute`.
-  const path = strOrNull(args, "path");
-  if (path !== null) {
-    const replaceDocumentId = strOrNull(args, "replaceDocumentId");
-    const result = await promoteSandboxFileToDrive({
-      conversationId: ctx.conversationId,
-      path,
-      organizationId: ctx.organizationId,
-      teamId: ctx.teamId,
-      userId: ctx.userId,
-      folderId: strOrNull(args, "folderId"),
-      ...(replaceDocumentId !== null ? { replaceDocumentId } : {}),
-      actorContext: {
-        actor: "agent",
-        userId: ctx.userId,
+  // Two sources, both able to appear in one grant: `paths` are files the agent
+  // produced in its workspace, `fileIds` attachments the user brought. Same
+  // split as the tool's own `execute`, and the same per-file outcome — a grant
+  // covering eight files must not lose seven of them to the first bad one.
+  const paths = strListOrSingle(args, "paths", "path");
+  const fileIds = strListOrSingle(args, "fileIds", "fileId");
+  const folderId = strOrNull(args, "folderId");
+  const replaceDocumentId = strOrNull(args, "replaceDocumentId");
+
+  const saved: Record<string, unknown>[] = [];
+  const failed: { file: string; reason: string }[] = [];
+
+  for (const path of paths) {
+    try {
+      const result = await promoteSandboxFileToDrive({
         conversationId: ctx.conversationId,
-      },
-    });
-    return {
-      ok: true,
-      documentId: result.documentId,
-      versionNumber: result.versionNumber,
-      created: result.created,
-      status: "processing",
-    };
+        path,
+        organizationId: ctx.organizationId,
+        teamId: ctx.teamId,
+        userId: ctx.userId,
+        folderId,
+        ...(replaceDocumentId !== null ? { replaceDocumentId } : {}),
+        actorContext: {
+          actor: "agent",
+          userId: ctx.userId,
+          conversationId: ctx.conversationId,
+        },
+      });
+      saved.push({
+        file: path,
+        documentId: result.documentId,
+        filename: result.filename,
+        versionNumber: result.versionNumber,
+        created: result.created,
+      });
+    } catch (error) {
+      failed.push({
+        file: path,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
-  const fileId = str(args, "fileId");
-  const { promoted, failed } = await promoteChatFilesToDrive({
-    fileIds: [fileId],
-    conversationId: ctx.conversationId,
-    organizationId: ctx.organizationId,
-    teamId: ctx.teamId,
-    userId: ctx.userId,
-    folderId: strOrNull(args, "folderId"),
-  });
-  const ok = promoted[0];
-  if (ok === undefined) {
-    throw new Error(failed[0]?.reason ?? "Upload failed.");
+  if (fileIds.length > 0) {
+    const { promoted, failed: promotionFailures } =
+      await promoteChatFilesToDrive({
+        fileIds,
+        conversationId: ctx.conversationId,
+        organizationId: ctx.organizationId,
+        teamId: ctx.teamId,
+        userId: ctx.userId,
+        folderId,
+      });
+    for (const ok of promoted) {
+      saved.push({
+        file: ok.fileId,
+        documentId: ok.documentId,
+        versionNumber: 1,
+        created: true,
+      });
+    }
+    for (const failure of promotionFailures) {
+      failed.push({ file: failure.fileId, reason: failure.reason });
+    }
   }
-  return { ok: true, documentId: ok.documentId, status: "processing" };
+
+  // Nothing landed at all — the grant did not do what the card promised, so
+  // it fails rather than reporting an empty success.
+  if (saved.length === 0) {
+    throw new Error(failed[0]?.reason ?? "Upload failed: no files to save.");
+  }
+
+  return { ok: failed.length === 0, saved, failed, status: "processing" };
 };
 
 // ---- manageRecord (single-record create / update / delete / setStatus) -----

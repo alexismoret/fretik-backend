@@ -72,7 +72,30 @@ export const FILE_TYPES: readonly FileTypeDef[] = [
     color: "blue",
     extraction: "mistral-ocr",
     thumbnail: "libreoffice",
-    viewer: "none",
+    // No browser reads the binary Compound File format — `@vue-office/docx`
+    // parses `word/document.xml` out of an OOXML zip and nothing else. The
+    // same LibreOffice that already makes the thumbnail makes the preview.
+    viewer: "pdf-converted",
+    agentAccess: "ocr-sidecar",
+    surfaces: DOC_SURFACES,
+    sidecar: "always",
+  },
+  {
+    id: "docm",
+    mime: "application/vnd.ms-word.document.macroenabled.12",
+    aliasMimes: [],
+    extensions: [".docm"],
+    family: "document",
+    textual: false,
+    icon: "i-ph-file-doc",
+    color: "blue",
+    // A macro-enabled document is an OOXML zip with a `vbaProject.bin`
+    // beside the parts `.docx` carries. Mistral publishes no word on the
+    // format, so it takes the LibreOffice route rather than betting a
+    // silent extraction failure on the resemblance.
+    extraction: "convert-ocr",
+    thumbnail: "libreoffice",
+    viewer: "pdf-converted",
     agentAccess: "ocr-sidecar",
     surfaces: DOC_SURFACES,
     sidecar: "always",
@@ -89,7 +112,7 @@ export const FILE_TYPES: readonly FileTypeDef[] = [
     // Mistral OCR has no native OpenDocument reader — convert to PDF first.
     extraction: "convert-ocr",
     thumbnail: "libreoffice",
-    viewer: "none",
+    viewer: "pdf-converted",
     agentAccess: "ocr-sidecar",
     surfaces: DOC_SURFACES,
     sidecar: "always",
@@ -105,7 +128,7 @@ export const FILE_TYPES: readonly FileTypeDef[] = [
     color: "blue",
     extraction: "convert-ocr",
     thumbnail: "libreoffice",
-    viewer: "none",
+    viewer: "pdf-converted",
     agentAccess: "ocr-sidecar",
     surfaces: DOC_SURFACES,
     sidecar: "always",
@@ -141,7 +164,28 @@ export const FILE_TYPES: readonly FileTypeDef[] = [
     color: "green",
     extraction: "spreadsheet",
     thumbnail: "libreoffice",
-    viewer: "none",
+    // `@vue-office/excel` bundles SheetJS, whose BIFF2-BIFF8 reader opens
+    // the legacy binary workbook — the same branch that serves `.xlsx`.
+    viewer: "xlsx",
+    agentAccess: "tabular",
+    surfaces: DOC_SURFACES,
+    sidecar: "always",
+  },
+  {
+    id: "xlsm",
+    mime: "application/vnd.ms-excel.sheet.macroenabled.12",
+    aliasMimes: [],
+    extensions: [".xlsm"],
+    family: "spreadsheet",
+    textual: false,
+    icon: "i-ph-file-xls",
+    color: "green",
+    // Unlike its Word and PowerPoint siblings this one needs no detour:
+    // exceljs opens a macro-enabled workbook as the OOXML zip it is, and
+    // so does SheetJS in the browser.
+    extraction: "spreadsheet",
+    thumbnail: "libreoffice",
+    viewer: "xlsx",
     agentAccess: "tabular",
     surfaces: DOC_SURFACES,
     sidecar: "always",
@@ -158,7 +202,10 @@ export const FILE_TYPES: readonly FileTypeDef[] = [
     // exceljs cannot open ODS; PDF conversion keeps the values readable.
     extraction: "convert-ocr",
     thumbnail: "libreoffice",
-    viewer: "none",
+    // Extraction and preview disagree on purpose: SheetJS reads ODS in the
+    // browser (`parse_ods`) even though exceljs, which does the extracting,
+    // does not. The reader that can do the job does it.
+    viewer: "xlsx",
     agentAccess: "ocr-sidecar",
     surfaces: DOC_SURFACES,
     sidecar: "always",
@@ -211,7 +258,24 @@ export const FILE_TYPES: readonly FileTypeDef[] = [
     color: "orange",
     extraction: "mistral-ocr",
     thumbnail: "libreoffice",
-    viewer: "none",
+    viewer: "pdf-converted",
+    agentAccess: "ocr-sidecar",
+    surfaces: DOC_SURFACES,
+    sidecar: "always",
+  },
+  {
+    id: "pptm",
+    mime: "application/vnd.ms-powerpoint.presentation.macroenabled.12",
+    aliasMimes: [],
+    extensions: [".pptm"],
+    family: "presentation",
+    textual: false,
+    icon: "i-ph-file-ppt",
+    color: "orange",
+    // Same reasoning as `docm`: OOXML underneath, undocumented upstream.
+    extraction: "convert-ocr",
+    thumbnail: "libreoffice",
+    viewer: "pdf-converted",
     agentAccess: "ocr-sidecar",
     surfaces: DOC_SURFACES,
     sidecar: "always",
@@ -227,7 +291,7 @@ export const FILE_TYPES: readonly FileTypeDef[] = [
     color: "orange",
     extraction: "convert-ocr",
     thumbnail: "libreoffice",
-    viewer: "none",
+    viewer: "pdf-converted",
     agentAccess: "ocr-sidecar",
     surfaces: DOC_SURFACES,
     sidecar: "always",
@@ -258,7 +322,9 @@ export const FILE_TYPES: readonly FileTypeDef[] = [
     id: "markdown",
     mime: "text/markdown",
     aliasMimes: ["text/x-markdown"],
-    extensions: [".md", ".markdown"],
+    // `.mdx` is markdown with JSX in it — no registered MIME of its own,
+    // and nothing downstream needs to tell the two apart.
+    extensions: [".md", ".markdown", ".mdx"],
     family: "markdown",
     textual: true,
     icon: "i-ph-file-md",
@@ -268,6 +334,48 @@ export const FILE_TYPES: readonly FileTypeDef[] = [
     // the format Fretik authors a real thumbnail (LibreOffice can't import it).
     thumbnail: "chromium-screenshot",
     viewer: "markdown",
+    agentAccess: "raw-text",
+    surfaces: DOC_SURFACES,
+    sidecar: "never",
+  },
+
+  {
+    id: "markup",
+    // Lightweight markup languages, none of which registered a MIME. They
+    // share `text/plain` with `txt` and are reached by extension, exactly
+    // as `code` and `config` are.
+    mime: "text/plain",
+    aliasMimes: [],
+    extensions: [".rst", ".adoc", ".asciidoc", ".tex"],
+    // `markdown`, not `code`: what a reader uploads here is prose with
+    // markup in it, and the family is what names the format in the copy
+    // under a dropzone.
+    family: "markdown",
+    textual: true,
+    icon: "i-ph-file-text",
+    color: "neutral",
+    extraction: "text",
+    // Gotenberg's markdown route speaks CommonMark and would render
+    // reStructuredText directives as literal text.
+    thumbnail: "none",
+    viewer: "code",
+    agentAccess: "raw-text",
+    surfaces: DOC_SURFACES,
+    sidecar: "never",
+    extensionOnly: true,
+  },
+  {
+    id: "subtitles",
+    mime: "text/vtt",
+    aliasMimes: ["application/x-subrip"],
+    extensions: [".vtt", ".srt"],
+    family: "text",
+    textual: true,
+    icon: "i-ph-closed-captioning",
+    color: "neutral",
+    extraction: "text",
+    thumbnail: "none",
+    viewer: "text",
     agentAccess: "raw-text",
     surfaces: DOC_SURFACES,
     sidecar: "never",
@@ -356,6 +464,8 @@ export const FILE_TYPES: readonly FileTypeDef[] = [
       ".tfvars",
       ".dockerfile",
       ".ipynb",
+      ".diff",
+      ".patch",
     ],
     family: "code",
     textual: true,
@@ -464,6 +574,42 @@ export const FILE_TYPES: readonly FileTypeDef[] = [
     extensionOnly: true,
   },
 
+  {
+    id: "ics",
+    mime: "text/calendar",
+    aliasMimes: ["application/ics"],
+    extensions: [".ics", ".ical"],
+    family: "data",
+    textual: true,
+    icon: "i-ph-calendar",
+    color: "teal",
+    extraction: "text",
+    thumbnail: "none",
+    // iCalendar is a line-folded key:value stream, not a table — the
+    // syntax-highlighted block keeps the folding visible rather than
+    // reflowing it into nonsense.
+    viewer: "code",
+    agentAccess: "raw-text",
+    surfaces: DOC_SURFACES,
+    sidecar: "never",
+  },
+  {
+    id: "vcf",
+    mime: "text/vcard",
+    aliasMimes: ["text/x-vcard"],
+    extensions: [".vcf", ".vcard"],
+    family: "data",
+    textual: true,
+    icon: "i-ph-address-book",
+    color: "teal",
+    extraction: "text",
+    thumbnail: "none",
+    viewer: "code",
+    agentAccess: "raw-text",
+    surfaces: DOC_SURFACES,
+    sidecar: "never",
+  },
+
   // ------------------------------------------------------------------ //
   // Email — headers + body + attachment list extracted to markdown.     //
   // Attachments are LISTED here; the agent unpacks them in the sandbox. //
@@ -479,7 +625,7 @@ export const FILE_TYPES: readonly FileTypeDef[] = [
     color: "teal",
     extraction: "email",
     thumbnail: "none",
-    viewer: "none",
+    viewer: "email",
     agentAccess: "email-sidecar",
     surfaces: DOC_SURFACES,
     sidecar: "always",
@@ -498,7 +644,7 @@ export const FILE_TYPES: readonly FileTypeDef[] = [
     color: "teal",
     extraction: "email",
     thumbnail: "none",
-    viewer: "none",
+    viewer: "email",
     agentAccess: "email-sidecar",
     surfaces: DOC_SURFACES,
     sidecar: "always",
@@ -556,6 +702,29 @@ export const FILE_TYPES: readonly FileTypeDef[] = [
     sidecar: "when-ocr-text",
   },
   {
+    id: "avif",
+    mime: "image/avif",
+    aliasMimes: [],
+    extensions: [".avif"],
+    family: "image",
+    textual: false,
+    icon: "i-ph-file-image",
+    color: "purple",
+    extraction: "image-ocr",
+    // Bun's statically linked codecs stop at JPEG / PNG / WebP / GIF / BMP;
+    // AVIF and HEIC decode through the OS, which a Linux container has not
+    // got. Every browser we target renders it, so the preview is native and
+    // only the thumbnail goes without.
+    thumbnail: "none",
+    viewer: "image",
+    // Not `image`: the vision tool's model pool takes JPEG / PNG / GIF /
+    // WebP and nothing else, so promising vision here would promise a
+    // refusal. Text reaches the agent through the OCR sidecar instead.
+    agentAccess: "ocr-sidecar",
+    surfaces: DOC_SURFACES,
+    sidecar: "when-ocr-text",
+  },
+  {
     id: "gif",
     mime: "image/gif",
     aliasMimes: [],
@@ -571,6 +740,48 @@ export const FILE_TYPES: readonly FileTypeDef[] = [
     // Not an avatar source: animation would be flattened on re-encode.
     surfaces: DOC_SURFACES,
     sidecar: "when-ocr-text",
+  },
+  {
+    id: "bmp",
+    mime: "image/bmp",
+    aliasMimes: ["image/x-ms-bmp"],
+    extensions: [".bmp"],
+    family: "image",
+    textual: false,
+    icon: "i-ph-file-image",
+    color: "purple",
+    // Mistral OCR does not list BMP among its image inputs, but
+    // LibreOffice imports it — so it reaches OCR as a PDF, the same
+    // detour ODT and RTF take.
+    extraction: "convert-ocr",
+    thumbnail: "libreoffice",
+    // Browsers have decoded BMP natively for twenty years: no conversion
+    // is needed for the preview, only for the reading.
+    viewer: "image",
+    agentAccess: "ocr-sidecar",
+    surfaces: DOC_SURFACES,
+    sidecar: "when-ocr-text",
+  },
+  {
+    id: "tiff",
+    mime: "image/tiff",
+    aliasMimes: ["image/tif", "image/x-tiff"],
+    extensions: [".tiff", ".tif"],
+    family: "image",
+    textual: false,
+    icon: "i-ph-file-image",
+    color: "purple",
+    // The format scanners, fax gateways and document-management systems
+    // still emit, and routinely multi-page — which is why it takes the
+    // document route end to end rather than the single-frame image one.
+    extraction: "convert-ocr",
+    thumbnail: "libreoffice",
+    // No browser renders TIFF. LibreOffice does, and the resulting PDF
+    // keeps every page instead of just the first frame.
+    viewer: "pdf-converted",
+    agentAccess: "ocr-sidecar",
+    surfaces: DOC_SURFACES,
+    sidecar: "always",
   },
   {
     id: "svg",
@@ -704,6 +915,12 @@ export const CODE_LANGUAGES: Readonly<Record<string, string>> = {
   ".tfvars": "terraform",
   ".dockerfile": "dockerfile",
   ".ipynb": "json",
+  ".diff": "diff",
+  ".patch": "diff",
+  ".rst": "rst",
+  ".adoc": "asciidoc",
+  ".asciidoc": "asciidoc",
+  ".tex": "latex",
   ".json": "json",
   ".jsonc": "jsonc",
   ".json5": "json5",
@@ -728,6 +945,7 @@ export const CODE_LANGUAGES: Readonly<Record<string, string>> = {
   ".svg": "xml",
   ".md": "markdown",
   ".markdown": "markdown",
+  ".mdx": "mdx",
 };
 
 /**

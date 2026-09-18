@@ -83,6 +83,7 @@ export const createPageReviewTool = () =>
         userId: project.userId,
         conversationId: project.conversationId,
         scope: project.reviewScope,
+        builderProfileKey: project.modelProfileKey,
       });
 
       // Said only when this call built something: the warnings a build emits

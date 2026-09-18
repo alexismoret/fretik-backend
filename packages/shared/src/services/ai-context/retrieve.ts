@@ -8,6 +8,7 @@ import {
   type AiContextScope,
 } from "../../db/schema/ai-context";
 import { notFound, throwHttpError } from "../../lib/errors";
+import { CHARS_PER_TOKEN } from "../../lib/token-estimate";
 
 /**
  * Shape returned by the API to the settings UI. Files are enriched
@@ -54,7 +55,8 @@ export interface ScopeKey {
   organizationId: string;
 }
 
-const CHARS_PER_TOKEN = 4;
+// The shared heuristic — see `lib/token-estimate` for why it is 4 and what
+// its bias buys.
 
 /**
  * Lookup the context profile for a given scope. Returns null when no

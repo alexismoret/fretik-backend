@@ -1,4 +1,7 @@
+import { PAGE_ENTRY_FILE } from "@fretik/shared/schemas/pages";
+import { isOrgAdmin } from "@fretik/shared/services/organization/member-role";
 import { describeRowTypes } from "@fretik/shared/services/pages/describe-row-types";
+import { getPage } from "@fretik/shared/services/pages/retrieve";
 import type { Agent, ToolSet } from "ai";
 import { z } from "zod";
 import type { ChatbotCallOptions } from "../agents/chatbot";
@@ -6,8 +9,14 @@ import { buildChatbotTool } from "../agents/shared/chatbot-tool";
 import type { AgentRuntimeContext } from "../agents/shared/runtime-context";
 import { createSubAgentExecute } from "../agents/shared/sub-agent";
 import type { StepUsage } from "../lib/turn-usage";
+import { PAGE_JSON_FILE } from "../services/page-project/page-json";
 import type { PageSalvageOutcome } from "../services/page-project/salvage";
-import { readPageProject } from "../services/page-project/store";
+import {
+  projectFromDefinition,
+  readPageProject,
+  writePageProject,
+  type PageProjectState,
+} from "../services/page-project/store";
 import {
   bumpTurnBuilds,
   MAX_TURN_BUILDS,
@@ -44,7 +53,7 @@ export const buildPageInputSchema = z.object({
     .string()
     .min(10)
     .describe(
-      "Everything the user said about this page, plus what you know that it needs — the page's purpose, the data it must show, the collections by name, any layout or feature the user asked for by name, and the page id when editing an existing one. The builder never sees this conversation: what you leave out, it invents.",
+      "Everything the user said about this page, plus what you know that it needs — the page's purpose, the data it must show, the collections by name, and any layout or feature the user asked for by name. The builder never sees this conversation: what you leave out, it invents.",
     ),
   description: z
     .string()
@@ -74,12 +83,144 @@ export const buildPageInputSchema = z.object({
     .describe(
       "Paths of files the user gave as a reference — a mockup, an export, a screenshot's description. The builder opens them with `read`. Pass the path, never the contents.",
     ),
+  pageId: z
+    .uuid()
+    .optional()
+    .describe(
+      "The page being changed, when one exists. Its source is handed to the builder up front, so it edits what is there instead of reading it back file by file.",
+    ),
 });
 
 const pageRefSchema = z.object({
   pageId: z.string(),
   url: z.string().optional(),
 });
+
+/**
+ * How much of an existing page is worth printing. Past this the briefing costs
+ * more than the reads it saves, and the builder still has `pageRead` for what
+ * is missing — so the cut is announced rather than silent. A budget spent file
+ * by file rather than an assumption about size: a page may hold forty files
+ * besides its entry (`PAGE_LIMITS.maxFiles`), and nothing caps their length.
+ */
+const MAX_EXISTING_PAGE_CHARS = 90_000;
+
+/** The builder's working copy — the TURN's trace, plus `.page`. */
+const builderScope = (ctx: {
+  traceId?: string | undefined;
+  conversationId?: string | undefined;
+}): string =>
+  ctx.traceId ? `${ctx.traceId}.page` : (ctx.conversationId ?? "no-run");
+
+/** `page.json` first — it is the contract — then the entry, then the rest. */
+const fileRank = (path: string): number =>
+  path === PAGE_JSON_FILE ? 0 : path === PAGE_ENTRY_FILE ? 1 : 2;
+
+const fenceOf = (path: string): string =>
+  path.endsWith(".json") ? "json" : path.endsWith(".ts") ? "ts" : "vue";
+
+/** An empty copy is a cold start, whatever page it claims. */
+const hasFiles = (state: PageProjectState): boolean =>
+  Object.keys(state.files).length > 0;
+
+/**
+ * Open the page being changed: seed it as this run's working copy, and print
+ * it in the briefing.
+ *
+ * The SEEDING is the load-bearing half. `pageBuild` updates the page its
+ * working copy names and CREATES one when the copy names none, so a repair
+ * whose copy never learned the id publishes a second page and leaves the
+ * user's untouched. That used to ride on the builder passing `pageId` to its
+ * first `pageRead` — prose, aimed at a model that has just been handed the
+ * whole source and told not to read it back. Here it is a fact of the run.
+ *
+ * Printing is the accelerator. A repair opened with one `pageRead` per file —
+ * 16 of them on a 14-file project, measured 2026-09-14 — and every one of
+ * those results was replayed into each later step's prompt. The same bytes go
+ * out once, inside the cached prefix, in the shape `pageRead` would have
+ * returned them: the working copy's own files, `page.json` included.
+ *
+ * A copy already open on this page is left exactly as it is, so a second
+ * dispatch in one turn resumes the work in progress instead of reverting it
+ * to what is published.
+ *
+ * Exported for its test: the seeding is invisible in the briefing it returns,
+ * and an invariant nothing exercises is an invariant nobody will notice
+ * breaking.
+ */
+export const describePage = async (
+  pageId: string,
+  ctx: AgentRuntimeContext,
+): Promise<string> => {
+  let state: PageProjectState;
+  try {
+    const scope = builderScope(ctx);
+    const open = await readPageProject(scope);
+    if (open !== null && open.pageId === pageId && hasFiles(open)) {
+      state = open;
+    } else {
+      const page = await getPage({
+        pageId,
+        teamId: ctx.teamId,
+        ...(ctx.userId !== undefined
+          ? {
+              requester: {
+                userId: ctx.userId,
+                isAdmin: await isOrgAdmin(ctx.organizationId, ctx.userId),
+              },
+            }
+          : {}),
+      });
+      state = projectFromDefinition(page.definition, {
+        id: page.id,
+        name: page.name,
+        description: page.description,
+      });
+      await writePageProject(scope, state);
+    }
+  } catch {
+    // Say it rather than swallow it. The silent version of this branch is a
+    // builder that never hears the page exists and starts a second one beside
+    // it — the exact failure the seeding above is here to prevent.
+    return [
+      `<existing_page id="${pageId}">`,
+      `This page EXISTS and could not be opened from here. Call pageRead { pageId: "${pageId}" } before you write anything: a run whose working copy does not name the page builds a new one instead of changing this one.`,
+      "</existing_page>",
+    ].join("\n");
+  }
+
+  const header = [
+    `<existing_page id="${pageId}">`,
+    "This page EXISTS and is already open as your working copy — edit it, and",
+    "do not read back what is printed here.",
+  ].join("\n");
+  // Reserve for the closing tag and the line naming what was cut.
+  let budget = MAX_EXISTING_PAGE_CHARS - header.length - 200;
+  const parts: string[] = [header];
+  const skipped: string[] = [];
+  const files = Object.entries(state.files).sort(
+    ([a], [b]) => fileRank(a) - fileRank(b) || a.localeCompare(b),
+  );
+  for (const [path, source] of files) {
+    const block = ["", `\`\`\`${fenceOf(path)} ${path}`, source, "```"].join(
+      "\n",
+    );
+    if (block.length > budget) {
+      skipped.push(path);
+      continue;
+    }
+    budget -= block.length + 1;
+    parts.push(block);
+  }
+  if (skipped.length > 0) {
+    parts.push(
+      "",
+      `Not printed, too large — open with pageRead: ${skipped.join(", ")}`,
+    );
+  }
+  parts.push("</existing_page>");
+  return parts.join("\n");
+};
 
 /**
  * The builder's tools that leave nothing behind — what makes a dead run safe to
@@ -275,10 +416,15 @@ export const admitBuildForTurn = async (ctx: {
   conversationId?: string | undefined;
 }): Promise<{ summary: string; pageId?: string; url?: string } | null> => {
   const scope = ctx.traceId?.split(".")[0] ?? ctx.conversationId;
-  const copy = await readPageProject(
-    ctx.traceId ? `${ctx.traceId}.page` : (ctx.conversationId ?? "no-run"),
-  );
-  const built = copy?.pageId;
+  const copy = await readPageProject(builderScope(ctx));
+  // `builtHash`, not `pageId`: a copy carries a pageId from the moment it is
+  // OPENED on an existing page — `describePage` seeds one on every repair, and
+  // `pageRead { pageId }` has always done the same. Only a build that saved
+  // sets the hash, and only a build that saved makes the branch below true.
+  // Keyed on the id, a repair whose first dispatch died before writing
+  // anything could never be retried, and the refusal would say "already
+  // built" about a page nobody had built.
+  const built = copy?.builtHash === undefined ? undefined : copy.pageId;
   const count = await bumpTurnBuilds(scope);
   if (count === 1) return null;
   // No page came out of the first attempt: this IS the retry that
@@ -452,6 +598,11 @@ export const createBuildPageTool = <TTools extends ToolSet>(deps: {
     profileKey?: string,
   ) => Agent<ChatbotCallOptions, TTools>;
   /**
+   * The ceiling the resolved builder stops at — see
+   * `SubAgentConfig.contextCeiling`. Per profile, like the builder itself.
+   */
+  resolvePageBuilderCeiling?: (profileKey?: string) => number;
+  /**
    * Finish the build of a run that died before it could — `salvagePageProject`
    * in `services/page-project/salvage.ts`. Injected rather than imported so
    * this module keeps no runtime edge to the page services (and through them
@@ -484,9 +635,7 @@ export const createBuildPageTool = <TTools extends ToolSet>(deps: {
     ctx: AgentRuntimeContext,
   ): Promise<PageSalvageOutcome | null> =>
     await deps.salvagePage({
-      scope: ctx.traceId
-        ? `${ctx.traceId}.page`
-        : (ctx.conversationId ?? "no-run"),
+      scope: builderScope(ctx),
       teamId: ctx.teamId,
       organizationId: ctx.organizationId,
       userId: ctx.userId ?? null,
@@ -524,6 +673,10 @@ export const createBuildPageTool = <TTools extends ToolSet>(deps: {
     };
   };
 
+  // Captured so the arrow below keeps the narrowed type; reading the optional
+  // off `deps` inside the closure would widen it back to `undefined`.
+  const ceilingResolver = deps.resolvePageBuilderCeiling;
+
   const execute = createSubAgentExecute<
     ChatbotCallOptions,
     TTools,
@@ -536,6 +689,12 @@ export const createBuildPageTool = <TTools extends ToolSet>(deps: {
     subAgent: (ctx) => deps.resolvePageBuilder(ctx.pageBuildProfileKey),
     fallbackSubAgent: (ctx) =>
       deps.resolvePageBuilderFallback(ctx.pageBuildProfileKey),
+    ...(ceilingResolver
+      ? {
+          contextCeiling: (ctx: AgentRuntimeContext) =>
+            ceilingResolver(ctx.pageBuildProfileKey),
+        }
+      : {}),
     // What a retry must not duplicate. Everything the builder does before it
     // saves — the environment guide, a component API lookup, a dry run against
     // the data — leaves nothing behind, and a build that died in that opening
@@ -544,9 +703,16 @@ export const createBuildPageTool = <TTools extends ToolSet>(deps: {
     hasSideEffect: ({ toolName }) => !PAGE_BUILDER_READ_TOOLS.has(toolName),
     progress,
     buildMessages: async (
-      { task, collectionKeys, externalApps, referenceFiles },
+      { task, collectionKeys, externalApps, referenceFiles, pageId },
       ctx,
     ) => {
+      // The page being changed, in full, up front. A repair used to open with
+      // one `pageRead` per file — 16 of them on a 14-file project measured
+      // 2026-09-14, each replayed into every later step's prompt, which is
+      // most of the million input tokens that repair cost. The source is
+      // ~15 k tokens sent ONCE, inside the cached prefix.
+      const existing =
+        pageId === undefined ? "" : await describePage(pageId, ctx);
       // Read the schema here, once, rather than letting the builder spend a
       // tool step per type on it. A failure is not worth the build: the types
       // are an accelerator, and the builder can still probe for itself.
@@ -588,6 +754,7 @@ export const createBuildPageTool = <TTools extends ToolSet>(deps: {
       const blocks = [
         rowTypes.length > 0 ? `<collections>\n${rowTypes}\n</collections>` : "",
         apps.block ?? "",
+        existing,
         apps.unknown.length > 0
           ? `<external_apps_unknown>\nNo connected app answers to: ${apps.unknown.join(", ")}. Do not declare a dataset over one of these.\n</external_apps_unknown>`
           : "",
@@ -645,7 +812,8 @@ export const createBuildPageTool = <TTools extends ToolSet>(deps: {
       "",
       "- Send it any page request beyond a one-line change: a new page, a new view or feature on an existing one, a redesign. `managePage` is for reading a page, a small targeted edit, and publishing — it has no `create`, so this is not a preference, it is the only route.",
       "- It carries the design doctrine, the runtime contract and the data-shape rules in its own prompt: there is NOTHING for you to read before calling it. Reading `skills/building-pages/references/` yourself buys the page nothing and costs a turn.",
-      "- Put EVERYTHING in `task`: what the user asked for in their own words, the collections by name, the pageId when editing, and any constraint they stated. It never sees this conversation — what you omit, it decides for itself.",
+      "- Put EVERYTHING in `task`: what the user asked for in their own words, the collections by name, and any constraint they stated. It never sees this conversation — what you omit, it decides for itself.",
+      "- Changing an existing page: pass its `pageId`. Its whole source is handed over with the briefing, so it edits what is there instead of reading the project back file by file.",
       "- Name the `externalApps` the page reads and the `referenceFiles` the user gave you (paths — a mockup, an export). The builder cannot discover either: it has no tool search, so a provider key it guesses reads as 'no data', and a reference it never hears about is a reference it cannot follow.",
       "- Send the SHAPE of the data, never its values. Type and field names, yes; totals and counts you queried, no. A page reads its own figures live, and a task that already answers the question invites a page that prints the answer instead of fetching it — one shipped showing a total the code never loaded.",
       "- Do not narrow the request on the user's behalf. A vague ask is not a small ask; the builder is built to expand it, and a task string that pre-trims it to a title and a table produces exactly that.",

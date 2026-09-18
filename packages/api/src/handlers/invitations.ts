@@ -10,6 +10,11 @@ import { z } from "zod";
  * invited them — org, team, person — before signing up or signing in.
  * Accepting / rejecting an invitation still goes through Better Auth's
  * authenticated organization endpoints.
+ *
+ * `hasAccount` / `alreadyMember` answer for the ONE address the invitation was
+ * mailed to, to whoever holds that mailed link — see the service for why that
+ * is not an enumeration oracle. They let the landing page open on the right
+ * form instead of walking an existing account into a sign-up that cannot work.
  */
 const invitationRoutes = new OpenAPIHono<HonoLoggedAppType>();
 
@@ -24,6 +29,8 @@ const previewResponseSchema = z.object({
   inviterImage: z.string().nullable().optional(),
   teamName: z.string().nullable().optional(),
   expiresAt: z.date().optional(),
+  hasAccount: z.boolean().optional(),
+  alreadyMember: z.boolean().optional(),
 });
 
 const previewRoute = createRoute({

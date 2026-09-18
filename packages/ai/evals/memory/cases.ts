@@ -153,6 +153,54 @@ export const MEMORY_CASES: MemoryEvalCase[] = [
     },
   },
   {
+    id: "mem-distill-long-report",
+    task: "distill-conversation",
+    description:
+      "A long final report whose conclusion sits in its LAST lines → the episode must carry what only the end says, and never read the cut as unfinished work.",
+    run: async (fx, profileKey) => {
+      // The case the suite could not fail, and the defect it therefore let
+      // through. Until 2026-09-18 the transcript clipped every message to its
+      // first 500 characters; measured in production, an episode then recorded
+      // a run that had SUCCEEDED — five files produced, five acknowledged — as
+      // still owing the tasks it had completed, because the report was cut
+      // mid-sentence long before its conclusion. The other distill case never
+      // saw it: its longest message is 160 characters.
+      //
+      // `REF-4417` and the regeneration anomaly exist ONLY in the report's
+      // closing lines, so this asserts the end of a long message reaches the
+      // summary — nothing else here can put them there.
+      const failures: string[] = [];
+      const result = await distillConversation({
+        conversationId: fx.longReportConversationId,
+        ...scope(fx),
+        modelProfileKey: profileKey,
+      });
+      if (!result.distilled || !result.episodeId) {
+        return { text: "(not distilled)", failures: ["not distilled"] };
+      }
+      const ep = await db.query.aiEpisodes.findFirst({
+        where: { id: result.episodeId },
+      });
+      if (!ep)
+        return { text: "(episode vanished)", failures: ["no episode row"] };
+      requireAll(ep.summary, ["REF-4417"], failures);
+      // The anomaly, allowing the paraphrase a summary is supposed to make.
+      if (
+        !has(ep.summary, "régénér") &&
+        !has(ep.summary, "regenerat") &&
+        !has(ep.summary, "anomalie")
+      ) {
+        failures.push("missing the anomaly (regeneration before sending)");
+      }
+      // And the verdict itself: five deliverables, produced and sent.
+      if (!has(ep.summary, "cinq") && !has(ep.summary, "5")) {
+        failures.push("missing the deliverable count");
+      }
+      if (ep.title.length === 0) failures.push("empty title");
+      return { text: `TITLE: ${ep.title}\nSUMMARY:\n${ep.summary}`, failures };
+    },
+  },
+  {
     id: "mem-distill-record-activity",
     task: "distill-record-activity",
     description:

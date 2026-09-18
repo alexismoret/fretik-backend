@@ -71,6 +71,48 @@ describe("what the transports report", () => {
     expect(report.servingProvider).toBe("akashml");
   });
 
+  test("OpenRouter adds a carried BYOK charge to what it billed itself", () => {
+    // The carrier has already run, so the upstream's charge sits on the
+    // metadata. The two are separate invoices for one call — the aggregator's
+    // (a BYOK fee, zero on this account) and the upstream's, paid off our own
+    // key — so the report is their SUM.
+    const report = extractOpenRouterReport({
+      openrouter: {
+        provider: "BaseTen",
+        usage: {
+          cost: 0,
+          totalTokens: 33_706,
+          fretikByokUpstreamCostUsd: 0.0025935,
+        },
+      },
+    });
+    expect(report.costUsd).toBe(0.0025935);
+    expect(report.byokUpstreamCostUsd).toBe(0.0025935);
+    expect(report.servingProvider).toBe("baseten");
+  });
+
+  test("a carried BYOK charge is added to a non-zero fee, not substituted", () => {
+    // Measured at zero on this account, but the BYOK fee is a published 5%,
+    // and a reader that took the larger of the two would under-report the day
+    // it turns on.
+    const report = extractOpenRouterReport({
+      openrouter: {
+        provider: "BaseTen",
+        usage: { cost: 0.0001, fretikByokUpstreamCostUsd: 0.002 },
+      },
+    });
+    expect(report.costUsd).toBeCloseTo(0.0021, 12);
+    expect(report.byokUpstreamCostUsd).toBe(0.002);
+  });
+
+  test("nothing carried reads exactly as it did before BYOK", () => {
+    const report = extractOpenRouterReport({
+      openrouter: { provider: "Crusoe", usage: { cost: 4.65e-6 } },
+    });
+    expect(report.costUsd).toBe(4.65e-6);
+    expect(report.byokUpstreamCostUsd).toBeUndefined();
+  });
+
   test("Scaleway quotes NO cost, and still names the host that served", () => {
     // The whole payload, measured over both the SDK and a raw HTTP call: no
     // cost field, no cost header, `prompt_tokens_details: null`. So `costUsd`

@@ -306,10 +306,14 @@ export type PageVariable = z.infer<typeof PageVariableSchema>;
  *
  * `external` is a live read from a connected app (MCP or manifest), resolved
  * server-side by `sources/external.ts` through a registered executor. It is
- * for SMALL, FRESH reads whose value is their recency — an inbox, today's
- * orders. Volume, history and anything published stay on the workflow → object
- * type path: a third party cannot be filtered, grouped or indexed the way an
- * collection can.
+ * the default for a page over an outside system: fresh on every open and
+ * nothing to maintain. One answer is truncated at
+ * `PAGE_LIMITS.maxDatasetResponseBytes` — bytes, not rows, since nothing
+ * bounds how wide a third party's row is. A read that cannot fit one answer,
+ * needs server-side grouping the app lacks, or joins workspace data goes the
+ * workflow → collection path instead — and so does anything PUBLISHED, since
+ * an anonymous visitor may not spend the team's credentials
+ * (`publishRefusal`).
  *
  * `transform` was a fourth kind, REMOVED 2026-08-21. It ran JavaScript in a
  * server-side QuickJS-WASM sandbox over the results of other datasets, and the
@@ -415,7 +419,15 @@ export const PageDatasetSchema = z
     filters: z.array(PageFilterSchema).max(PAGE_LIMITS.maxFilters).optional(),
     sortBy: z.string().max(80).optional(),
     sortDir: z.enum(["asc", "desc"]).optional(),
-    limit: z.number().int().positive().max(PAGE_LIMITS.maxRows).optional(),
+    limit: z
+      .number()
+      .int()
+      .positive()
+      .max(PAGE_LIMITS.maxRows)
+      .optional()
+      .describe(
+        "collections only — the window of a records read. An external dataset's row cap is one of its `args`, in the app's own vocabulary.",
+      ),
     /** aggregate: field to group by (omit for a single scalar row). */
     groupBy: pageKeySchema.optional(),
     /** aggregate: bucket a date field instead of grouping on exact values. */

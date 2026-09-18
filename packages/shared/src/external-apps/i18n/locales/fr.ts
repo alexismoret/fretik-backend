@@ -66,6 +66,12 @@ export default {
         auto_delete: "Suppression automatique",
         count: "Nombre",
         message_ids_preview: "Exemples d'ID",
+        // FTP/SFTP — un chemin est la seule chose vérifiable sur ces cartes.
+        paths: "Chemins",
+        moves: "Déplacements",
+        path: "Chemin",
+        mode: "Permissions",
+        on_conflict: "Si le fichier existe déjà",
         flag_status: "Statut du drapeau",
         due_date: "Date d'échéance",
         // Front-specific field labels.
@@ -438,6 +444,37 @@ export default {
         },
         mark_messages_unread: {
           title: { default: "Marquer {{count}} e-mails comme non lus" },
+        },
+      },
+
+      "ftp-sftp": {
+        upload_files: {
+          title: {
+            single: 'Envoyer un fichier vers "{{path}}"',
+            default: "Envoyer {{count}} fichiers",
+          },
+        },
+        move_entries: {
+          title: {
+            single: "Déplacer {{move}}",
+            default: "Déplacer {{count}} fichiers et dossiers",
+          },
+        },
+        delete_files: {
+          title: {
+            single: 'Supprimer le fichier "{{path}}"',
+            default: "Supprimer {{count}} fichiers",
+          },
+        },
+        create_directory: {
+          title: { default: 'Créer le dossier "{{path}}"' },
+        },
+        delete_directory: {
+          title: {
+            default: 'Supprimer le dossier "{{path}}"',
+            recursive:
+              'Supprimer le dossier "{{path}}" ET tout son contenu — définitivement',
+          },
         },
       },
 

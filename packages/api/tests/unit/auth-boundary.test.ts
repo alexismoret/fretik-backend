@@ -20,7 +20,7 @@ import type { Probeable } from "../lib/mounted-routers";
  * where it does not. That survives someone applying auth by another mechanism,
  * and it catches someone who applies it to only some routes of a file.
  *
- * The five public routers are public on purpose, each with a comment in its own
+ * The public routers are public on purpose, each with a comment in its own
  * file saying so. Listing them here makes "this endpoint is now anonymous" an
  * edit to this file rather than an accident nobody sees.
  *
@@ -51,6 +51,8 @@ const PUBLIC_BY_DESIGN: Record<string, string> = {
   "/desktop-releases": "the download page is reachable before signing in",
   "/sandbox":
     "authenticated by a per-turn bearer JWT minted for the E2B sandbox, not by a session cookie",
+  "/webhooks":
+    "inbound from Nango, which holds no session — authenticated by an HMAC over the raw body",
 };
 
 /**

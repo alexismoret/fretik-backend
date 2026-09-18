@@ -430,7 +430,12 @@ export const ConversationBackgroundTasksResponseSchema = z.object({
 // Stream request       //
 // ==================== //
 
-export const ChatStreamRequestSchema = z.object({
+/**
+ * The fields, declared separately from the rule below purely so the object
+ * literal keeps its own indentation — chaining `.refine()` onto it directly
+ * re-indents every line in it and buries a two-line change in a hundred.
+ */
+const chatStreamRequestFields = z.object({
   conversationId: z.uuid().openapi({
     description: "UUID of an existing conversation the user participates in",
   }),
@@ -469,5 +474,48 @@ export const ChatStreamRequestSchema = z.object({
     description:
       "Thinking depth for this turn. Absent uses the team default, then the model's own default.",
   }),
+  /**
+   * This turn re-sends an EXISTING user message with new wording, so the
+   * conversation rewinds to it: the active turn is cancelled and everything
+   * after that message is deleted before the new one starts. Must be the id of
+   * the last user message in `messages` — the client truncates its own thread
+   * at the same point (`chat.sendMessage({ messageId })`), and the two halves
+   * describe one operation.
+   *
+   * Refused past `MAX_USER_MESSAGE_EDITS`, and only for the message's own
+   * author. Absent on every ordinary send.
+   */
+  editedMessageId: z.uuid().optional().openapi({
+    description:
+      "Id of the user message being re-sent with new wording. Rewinds the conversation to it.",
+  }),
+  /**
+   * This turn re-sends an existing user message UNCHANGED — the user asked for
+   * another answer to the same question. Same rewind as an edit, and the same
+   * rule that it must name the last user message of the request; what differs
+   * is the bookkeeping: a retry spends none of `MAX_USER_MESSAGE_EDITS` and is
+   * never refused for having run out, because it never changed the question.
+   *
+   * Mutually exclusive with `editedMessageId` — one turn rewinds for one
+   * reason. Absent on every ordinary send.
+   */
+  retriedMessageId: z.uuid().optional().openapi({
+    description:
+      "Id of the user message being re-sent unchanged. Rewinds the conversation to it without spending an edit.",
+  }),
 });
+
+/**
+ * One turn rewinds for one reason, so naming both ids is refused rather than
+ * resolved: the two differ precisely in whether an edit is spent, and picking
+ * one silently would decide that on the client's behalf.
+ */
+export const ChatStreamRequestSchema = chatStreamRequestFields.refine(
+  (value) =>
+    value.editedMessageId === undefined || value.retriedMessageId === undefined,
+  {
+    message: "editedMessageId and retriedMessageId are mutually exclusive.",
+    path: ["retriedMessageId"],
+  },
+);
 export type ChatStreamRequest = z.infer<typeof ChatStreamRequestSchema>;

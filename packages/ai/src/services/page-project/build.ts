@@ -4,6 +4,7 @@ import { createPage } from "@fretik/shared/services/pages/create";
 import {
   formatPageLintFinding,
   lintErrorsRefusingBuild,
+  lintExternalDatasetArgs,
   lintPageDataContract,
   lintPageDesignPlan,
   lintPageProject,
@@ -182,6 +183,10 @@ export const buildPageProject = async (
   // is legal only for a page that also asks for nothing.
   const lint = [
     ...lintPageProject(code),
+    // The third refusal: a dataset whose arguments the connected app will
+    // reject. It costs one build; not checking cost a page, its review budget
+    // and a user's afternoon (2026-09-14).
+    ...lintExternalDatasetArgs(definition),
     ...lintPageDataContract(code, {
       datasetIds: definition.datasets.map((dataset) => dataset.id),
       operationIds: definition.operations.map((operation) => operation.id),

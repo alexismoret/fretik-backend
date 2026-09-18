@@ -9,13 +9,14 @@ Calling a write action directly raises — it never executes.
 """
 
 from typing import Any, Literal, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from ._runtime import FretikActionError, Operation, _call_read
 
 
 # ── Types ─────────────────────────────────────────────────────────
 
 class Chat(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     chat_type: Literal["oneOnOne", "group", "meeting", "unknownFutureValue"]
     last_updated_at: str
@@ -24,6 +25,7 @@ class Chat(BaseModel):
 
 
 class ChatMember(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     display_name: str
     roles: list[str]
@@ -32,6 +34,7 @@ class ChatMember(BaseModel):
 
 
 class ChatMessage(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     body_html: str
     from_user: str
@@ -42,6 +45,7 @@ class ChatMessage(BaseModel):
 
 
 class Team(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     display_name: str
     visibility: Literal["private", "public", "hiddenMembership", "unknownFutureValue"]
@@ -50,6 +54,7 @@ class Team(BaseModel):
 
 
 class Channel(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     display_name: str
     membership_type: Literal["standard", "private", "shared", "unknownFutureValue"]
@@ -58,6 +63,7 @@ class Channel(BaseModel):
 
 
 class ChannelFilesFolder(BaseModel):
+    model_config = ConfigDict(extra="allow")
     drive_id: str
     folder_id: str
     name: str
@@ -65,6 +71,7 @@ class ChannelFilesFolder(BaseModel):
 
 
 class ChannelMessage(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     body_html: str
     from_user: str
@@ -76,6 +83,7 @@ class ChannelMessage(BaseModel):
 
 
 class TeamMember(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     display_name: str
     roles: list[str]
@@ -84,12 +92,14 @@ class TeamMember(BaseModel):
 
 
 class Presence(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     availability: str
     activity: str
 
 
 class User(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     display_name: str
     email: str | None = None
@@ -97,6 +107,7 @@ class User(BaseModel):
 
 
 class Attachment(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     name: str
     content_type: str
@@ -108,6 +119,7 @@ class Attachment(BaseModel):
 
 
 class SearchHit(BaseModel):
+    model_config = ConfigDict(extra="allow")
     kind: Literal["chat", "channel"]
     message_id: str
     body_preview: str
@@ -120,6 +132,7 @@ class SearchHit(BaseModel):
 
 
 class WriteResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str | None = None
 
 
@@ -558,6 +571,10 @@ def send_chat_message(
 
     body_html: Message body — HTML or plain text
 
+    inline_images: Inline images (image/png, image/jpeg, image/gif, max ~4MB each) embedded as base64. Appended after body_html as <img> tags. Non-image files cannot be sent.
+
+    attachments: Files ALREADY stored in SharePoint/OneDrive, linked into the message. `content_url` is a DriveItem's `web_url` (from `sharepoint.get_item`, `list_folder`, `search`, or `get_channel_files_folder` + an upload). No bytes are sent here — to attach something new, put it in SharePoint first.
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -593,6 +610,8 @@ def create_chat(
     it with `run_plan([...])`. Calling this directly raises.)
 
     member_user_ids: Azure AD user IDs to add (NOT emails — use `find_user` first). The signed-in user is included implicitly.
+
+    topic: Title — only used when more than two members (group chat)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -638,6 +657,10 @@ def send_channel_message(
 
     subject: Optional thread title — shown in bold above the message body
 
+    inline_images: Inline images (image/png, image/jpeg, image/gif, max ~4MB each) embedded as base64. Appended after body_html as <img> tags. Non-image files cannot be sent.
+
+    attachments: Files ALREADY stored in SharePoint/OneDrive, linked into the message. `content_url` is a DriveItem's `web_url` (from `sharepoint.get_item`, `list_folder`, `search`, or `get_channel_files_folder` + an upload). No bytes are sent here — to attach something new, put it in SharePoint first.
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -681,6 +704,8 @@ def reply_to_channel_message(
     it with `run_plan([...])`. Calling this directly raises.)
 
     inline_images: Inline images (image/png, image/jpeg, image/gif, max ~4MB each) embedded as base64. Appended after body_html as <img> tags. Non-image files cannot be sent.
+
+    attachments: Files ALREADY stored in SharePoint/OneDrive, linked into the message. `content_url` is a DriveItem's `web_url` (from `sharepoint.get_item`, `list_folder`, `search`, or `get_channel_files_folder` + an upload). No bytes are sent here — to attach something new, put it in SharePoint first.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.

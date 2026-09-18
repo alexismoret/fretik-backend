@@ -30,12 +30,14 @@ describe("admitBuildForTurn", () => {
     expect(await admit(freshTurn())).toBeNull();
   });
 
-  test("a second build onto a page this turn made is refused, with the page", async () => {
+  test("a second build onto a page this turn SAVED is refused, with the page", async () => {
     const traceId = freshTurn();
     await admit(traceId);
     await writePageProject(`${traceId}.page`, {
       ...emptyProjectState(),
       pageId: "page-1",
+      // What a build that reached `updatePage`/`createPage` leaves behind.
+      builtHash: "sha-of-the-files-as-promoted",
       files: { "Page.vue": "<template><p>x</p></template>" },
     });
 
@@ -70,6 +72,23 @@ describe("admitBuildForTurn", () => {
     expect(refusal?.summary).toContain("tell the user the build failed");
   });
 
+  test("a copy merely OPENED on an existing page still gets its retry", async () => {
+    // `describePage` seeds the working copy from the stored page on every
+    // repair, and `pageRead { pageId }` has always done the same — so a
+    // pageId alone says "this run knows which page", not "this run built
+    // one". Keyed on it, a repair whose first dispatch died before writing
+    // anything could never be retried, and the refusal would have said
+    // "already built" about a page nobody built.
+    const traceId = freshTurn();
+    await admit(traceId);
+    await writePageProject(`${traceId}.page`, {
+      ...emptyProjectState(),
+      pageId: "page-1",
+      files: { "Page.vue": "<template><p>x</p></template>" },
+    });
+    expect(await admit(traceId)).toBeNull();
+  });
+
   test("two turns do not share a count", async () => {
     const first = freshTurn();
     const second = freshTurn();
@@ -77,6 +96,7 @@ describe("admitBuildForTurn", () => {
     await writePageProject(`${first}.page`, {
       ...emptyProjectState(),
       pageId: "page-1",
+      builtHash: "sha-of-the-files-as-promoted",
     });
     expect(await admit(first)).not.toBeNull();
     expect(await admit(second)).toBeNull();

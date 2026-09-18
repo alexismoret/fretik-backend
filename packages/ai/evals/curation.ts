@@ -145,9 +145,20 @@ export const CURATED: Record<string, CuratedCase> = {
     tier: "model-gate",
   },
   "if-json-fenced": { capability: "instruction-following", tier: "model-gate" },
-  // long-context (2 — NEVER smoke: long runs, see session-8 note above)
+  // long-context (7 — NEVER smoke: long runs, see session-8 note above)
   "lc-deep-retrieval": { capability: "long-context", tier: "model-gate" },
   "lc-multidoc-qa": { capability: "long-context", tier: "model-gate" },
+  // The three compaction regimes. `lc-recall-40k` is the control and only
+  // means something read next to the other two — see the suite header.
+  "lc-recall-40k": { capability: "long-context", tier: "model-gate" },
+  "lc-recall-120k": { capability: "long-context", tier: "model-gate" },
+  "lc-recall-340k": { capability: "long-context", tier: "model-gate" },
+  // The other half of what a summary has to carry. `lc-recall-*` asks for a
+  // VALUE, which every summariser prompt has a section ordering it to keep
+  // verbatim; these ask for the objective and the constraint the user stated
+  // once and never restated, which nothing in a transcript pulls towards.
+  "lc-intent-120k": { capability: "long-context", tier: "model-gate" },
+  "lc-intent-340k": { capability: "long-context", tier: "model-gate" },
   // ── C10 SQL-tool hardening (2026-06-12) — behavioral security probes.
   // Deterministic guarantees (sanitizer/RLS) live in unit tests; these
   // assert the agent's behaviour. See evals/cases/security.ts.

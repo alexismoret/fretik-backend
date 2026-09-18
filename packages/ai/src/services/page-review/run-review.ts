@@ -75,6 +75,12 @@ export interface PageReviewRequest {
    * and the caches fall back to the page itself.
    */
   scope: string | undefined;
+  /**
+   * The profile building the page, when the builder itself asks — picks a
+   * critic from another family (`criticRoleForBuilder`). Absent from the
+   * parent agent's review, whose model is not the one that wrote the page.
+   */
+  builderProfileKey?: string;
 }
 
 /** The phase a result belongs to, so the caller's next step is unambiguous. */
@@ -302,6 +308,9 @@ export const runPageReview = async (
     shots: render.shots,
     interactions: render.interactions,
     known: gate.blocking,
+    ...(request.builderProfileKey !== undefined
+      ? { builderProfileKey: request.builderProfileKey }
+      : {}),
     // The file list, never the code: a finding that names the file to open is
     // one edit instead of a search.
     files: renderProjectManifest(

@@ -71,10 +71,17 @@ describe("buildPage input", () => {
     // conversation has no way through. Pinned as an exact list, because a new
     // key IS a new channel and this is where that gets decided rather than
     // noticed.
+    //
+    // `pageId` was added on 2026-09-14 and is decided here: it is a uuid the
+    // server resolves against the team's own pages, so nothing the parent
+    // holds rides on it — the page's source is read from the database, not
+    // handed over. What it buys is the 16 `pageRead` calls a repair used to
+    // open with, each replayed into every later step's prompt.
     expect(Object.keys(buildPageInputSchema.shape).sort()).toEqual([
       "collectionKeys",
       "description",
       "externalApps",
+      "pageId",
       "referenceFiles",
       "task",
     ]);

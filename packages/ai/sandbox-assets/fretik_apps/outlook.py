@@ -9,18 +9,20 @@ Calling a write action directly raises — it never executes.
 """
 
 from typing import Any, Literal, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from ._runtime import FretikActionError, Operation, _call_read
 
 
 # ── Types ─────────────────────────────────────────────────────────
 
 class EmailAddress(BaseModel):
+    model_config = ConfigDict(extra="allow")
     address: str
     name: str | None = None
 
 
 class Message(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     subject: str
     from_address: str
@@ -33,6 +35,7 @@ class Message(BaseModel):
 
 
 class MessageFull(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     subject: str
     from_address: str
@@ -46,6 +49,7 @@ class MessageFull(BaseModel):
 
 
 class MailFolder(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     display_name: str
     total_item_count: int
@@ -54,6 +58,7 @@ class MailFolder(BaseModel):
 
 
 class CalendarEvent(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     subject: str
     start: str
@@ -67,6 +72,7 @@ class CalendarEvent(BaseModel):
 
 
 class Contact(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     display_name: str
     email_addresses: list[str]
@@ -76,10 +82,12 @@ class Contact(BaseModel):
 
 
 class WriteResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str | None = None
 
 
 class Calendar(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     name: str
     is_default_calendar: bool
@@ -89,12 +97,14 @@ class Calendar(BaseModel):
 
 
 class BatchWriteResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     ok: bool
     error: str | None = None
 
 
 class Attachment(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     name: str
     content_type: str
@@ -104,6 +114,7 @@ class Attachment(BaseModel):
 
 
 class InboxRule(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     display_name: str
     sequence: int
@@ -374,6 +385,10 @@ def list_messages(
 
     folder: Well-known folder name
 
+    unread_only: Only return unread messages
+
+    offset: Skip the first N results (Graph `$skip` pagination)
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -409,6 +424,8 @@ def search_messages(
     """Full-text search across the mailbox, ordered by relevance not date
 
     query: Free-text search query
+
+    offset: Skip the first N results (Graph `$skip` pagination)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -516,6 +533,12 @@ def list_calendar_events(
 
     start: Window start (ISO 8601)
 
+    end: Window end (ISO 8601)
+
+    offset: Skip the first N events (Graph `$skip` pagination)
+
+    calendar_id: Calendar ID from list_calendars(). Defaults to the primary calendar.
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -557,6 +580,14 @@ def list_event_instances(
     """List the individual occurrences of a recurring event in a date window
 
     event_id: Master recurring series event ID
+
+    start: Window start (ISO 8601)
+
+    end: Window end (ISO 8601)
+
+    offset: Skip the first N instances (Graph `$skip` pagination)
+
+    calendar_id: Calendar ID from list_calendars(). Defaults to the primary calendar.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -635,6 +666,8 @@ def send_email(
     it with `run_plan([...])`. Calling this directly raises.)
 
     body_html: HTML body
+
+    attachments: Inline file attachments — each item must be < 3MB
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -1158,6 +1191,10 @@ def flag_message(
 
     status: Flag state: `flagged`=mark for follow-up, `complete`=mark done (checked), `notFlagged`=clear the flag
 
+    due_date: ISO 8601 due date for the follow-up reminder (only meaningful when status=flagged)
+
+    time_zone: Time zone for `due_date`
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -1461,6 +1498,8 @@ def create_inbox_rule(
     it with `run_plan([...])`. Calling this directly raises.)
 
     sequence: Priority order — lower runs first
+
+    auto_delete: When true, the matching message is moved to Deleted Items
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.

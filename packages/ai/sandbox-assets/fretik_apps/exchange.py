@@ -9,13 +9,14 @@ Calling a write action directly raises — it never executes.
 """
 
 from typing import Any, Literal, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from ._runtime import FretikActionError, Operation, _call_read
 
 
 # ── Types ─────────────────────────────────────────────────────────
 
 class Message(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     subject: str
     from_address: str
@@ -27,6 +28,7 @@ class Message(BaseModel):
 
 
 class MessageFull(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     subject: str
     from_address: str
@@ -39,6 +41,7 @@ class MessageFull(BaseModel):
 
 
 class MailFolder(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     display_name: str
     total_item_count: int
@@ -47,6 +50,7 @@ class MailFolder(BaseModel):
 
 
 class CalendarEvent(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     subject: str
     start: str
@@ -59,6 +63,7 @@ class CalendarEvent(BaseModel):
 
 
 class Contact(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     display_name: str
     email_addresses: list[str]
@@ -68,6 +73,7 @@ class Contact(BaseModel):
 
 
 class InboxRule(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     display_name: str
     sequence: int
@@ -76,10 +82,12 @@ class InboxRule(BaseModel):
 
 
 class WriteResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str | None = None
 
 
 class Attachment(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     name: str
     content_type: str
@@ -287,6 +295,10 @@ def list_messages(
 
     folder: Well-known folder name
 
+    unread_only: Only return unread messages
+
+    offset: Skip the first N messages (newest-first)
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -419,6 +431,8 @@ def list_calendar_events(
 
     start: Window start (ISO 8601)
 
+    end: Window end (ISO 8601)
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -510,6 +524,8 @@ def send_email(
     it with `run_plan([...])`. Calling this directly raises.)
 
     body_html: HTML body
+
+    attachments: File attachments (base64-encoded)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -1031,6 +1047,8 @@ def flag_message(
 
     status: Flag state: `flagged`=mark for follow-up, `complete`=mark done, `notFlagged`=clear. Requires Exchange 2013+.
 
+    due_date: ISO 8601 due date for the follow-up (only meaningful when status=flagged)
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -1066,6 +1084,8 @@ def create_folder(
     it with `run_plan([...])`. Calling this directly raises.)
 
     display_name: Folder name to create
+
+    parent_folder_id: Parent folder ID (omit to create at the root)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -1113,6 +1133,8 @@ def create_calendar_event(
 
     start: Start (ISO 8601, include a timezone offset e.g. Z)
 
+    end: End (ISO 8601, include a timezone offset e.g. Z)
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -1156,6 +1178,8 @@ def update_calendar_event(
     it with `run_plan([...])`. Calling this directly raises.)
 
     start: New start (ISO 8601 with timezone offset)
+
+    end: New end (ISO 8601 with timezone offset)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.

@@ -92,8 +92,25 @@ export interface TransportCapabilities {
 
 /** What we learn about an answer after the fact, normalised across dialects. */
 export interface GenerationReport {
-  /** Exact USD charged for this call, when the transport reports it. */
+  /**
+   * Exact USD this call COST US, when the transport reports it.
+   *
+   * What the aggregator invoices is not always the whole bill: under BYOK the
+   * upstream charges our own key directly, so the aggregator's figure is 0 and
+   * `byokUpstreamCostUsd` carries the rest. This field is the SUM — the
+   * question every reader of it asks is "what did this call cost", and an
+   * answer that silently omits the half billed elsewhere is a wrong one, not a
+   * partial one.
+   */
   costUsd?: number;
+  /**
+   * The share of `costUsd` the UPSTREAM billed directly, on a BYOK call.
+   *
+   * Separate because it is the one part of the total the aggregator's own
+   * invoice will never show: a dashboard reconciled against that invoice finds
+   * a gap, and this names it instead of leaving it to be rediscovered.
+   */
+  byokUpstreamCostUsd?: number;
   /** The upstream that actually served it — the quarantine subject. */
   servingProvider?: string;
   /** The transport's own id for the generation, for its dashboards. */

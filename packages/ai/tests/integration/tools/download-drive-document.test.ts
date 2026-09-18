@@ -110,9 +110,10 @@ const buildOptions = (conversationId: string, teamId: string) => {
   };
 };
 
-const execDownload = async (
+/** Raw batch call — `{ ok, files, failed }`. */
+const execDownloadMany = async (
   conversationId: string,
-  documentId: string,
+  documentIds: string[],
   teamId: string,
 ): Promise<Record<string, unknown>> => {
   const tool = createDownloadDriveDocumentTool();
@@ -120,7 +121,7 @@ const execDownload = async (
     throw new Error("download_drive_document tool missing execute");
   }
   const result = await tool.execute(
-    { documentId },
+    { documentIds },
     buildOptions(conversationId, teamId),
   );
   if (!isRecord(result)) {
@@ -129,6 +130,29 @@ const execDownload = async (
     );
   }
   return result;
+};
+
+/**
+ * One document, flattened to that document's own row — the per-document
+ * guards below (ACL, readiness, quota, storage) are the same claims whether
+ * one id or twelve are asked for, and reading them through the batch
+ * envelope would only obscure which one broke.
+ */
+const execDownload = async (
+  conversationId: string,
+  documentId: string,
+  teamId: string,
+): Promise<Record<string, unknown>> => {
+  const result = await execDownloadMany(conversationId, [documentId], teamId);
+  const files = Array.isArray(result["files"]) ? result["files"] : [];
+  const failed = Array.isArray(result["failed"]) ? result["failed"] : [];
+  const row = files[0] ?? failed[0];
+  if (!isRecord(row)) {
+    throw new Error(
+      `download_drive_document returned no row: ${JSON.stringify(result)}`,
+    );
+  }
+  return row;
 };
 
 beforeAll(async () => {
@@ -286,6 +310,92 @@ describe("download_drive_document — happy path + idempotence", () => {
     expect(sandboxFs.existsS3("conv-4", `drive/${docId}-no-backup.pdf`)).toBe(
       false,
     );
+  });
+});
+
+describe("download_drive_document — batch", () => {
+  test("fetches every id in one call and reports each outcome", async () => {
+    const a = await fx.insertDoc({
+      originalFilename: "a.pdf",
+      bytes: new TextEncoder().encode("aaa"),
+    });
+    const b = await fx.insertDoc({
+      originalFilename: "b.pdf",
+      bytes: new TextEncoder().encode("bbb"),
+    });
+    const missing = randomUUID();
+
+    const out = await execDownloadMany(
+      "conv-batch",
+      [a, b, missing],
+      fx.teamId,
+    );
+
+    // A bad id costs its own row, never the batch: an agent that asked for
+    // twelve invoices and got one NOT_FOUND still has eleven.
+    expect(out["ok"]).toBe(false);
+    const files = out["files"] as Record<string, unknown>[];
+    const failed = out["failed"] as Record<string, unknown>[];
+    const byId = (x: string, y: string) => x.localeCompare(y);
+    expect(files.map((f) => String(f["documentId"])).sort(byId)).toEqual(
+      [a, b].sort(byId),
+    );
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.["documentId"]).toBe(missing);
+    expect(failed[0]?.["code"]).toBe("NOT_FOUND");
+    expect(sandboxFs.read("conv-batch", `drive/${a}-a.pdf`)).not.toBeNull();
+    expect(sandboxFs.read("conv-batch", `drive/${b}-b.pdf`)).not.toBeNull();
+  });
+
+  test("the same id twice is fetched once", async () => {
+    const docId = await fx.insertDoc({
+      originalFilename: "dup.pdf",
+      bytes: new TextEncoder().encode("x"),
+    });
+    const out = await execDownloadMany(
+      "conv-batch-dup",
+      [docId, docId],
+      fx.teamId,
+    );
+    expect(out["ok"]).toBe(true);
+    expect(out["files"]).toHaveLength(1);
+  });
+
+  test("the quota is spent across the batch, in the order asked", async () => {
+    // 99 MB already on disk, then two 5 MB documents: the first still fits
+    // under the 100 MB cap, the second must not — proving the running total
+    // carries between iterations instead of each one re-reading a stale
+    // `usedBytes`.
+    sandboxFs.write(
+      "conv-batch-quota",
+      "drive/00000000-already-here.bin",
+      new Uint8Array(94 * 1024 * 1024),
+    );
+    const first = await fx.insertDoc({
+      originalFilename: "first.bin",
+      fileSize: 5 * 1024 * 1024,
+      bytes: new Uint8Array(5 * 1024 * 1024),
+    });
+    const second = await fx.insertDoc({
+      originalFilename: "second.bin",
+      fileSize: 5 * 1024 * 1024,
+      bytes: new Uint8Array(5 * 1024 * 1024),
+    });
+
+    const out = await execDownloadMany(
+      "conv-batch-quota",
+      [first, second],
+      fx.teamId,
+    );
+    const files = out["files"] as Record<string, unknown>[];
+    const failed = out["failed"] as Record<string, unknown>[];
+    expect(files.map((f) => f["documentId"])).toEqual([first]);
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.["documentId"]).toBe(second);
+    expect(failed[0]?.["code"]).toBe("QUOTA_EXCEEDED");
+    expect(
+      sandboxFs.exists("conv-batch-quota", `drive/${second}-second.bin`),
+    ).toBe(false);
   });
 });
 

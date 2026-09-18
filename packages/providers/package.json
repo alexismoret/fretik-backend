@@ -1,6 +1,6 @@
 {
   "name": "@fretik/providers",
-  "version": "0.7.36",
+  "version": "0.7.49",
   "private": true,
   "type": "module",
   "scripts": {
@@ -24,6 +24,7 @@
     "./imap-smtp": "./src/imap-smtp/index.ts",
     "./exchange": "./src/exchange/index.ts",
     "./front": "./src/front/index.ts",
+    "./ftp-sftp": "./src/ftp-sftp/index.ts",
     "./pbyp": "./src/pbyp/index.ts",
     "./sharepoint": "./src/sharepoint/index.ts",
     "./shiptify": "./src/shiptify/index.ts",
@@ -32,16 +33,19 @@
   "dependencies": {
     "@ewsjs/xhr": "^3.1.3",
     "@fretik/shared": "workspace:*",
+    "basic-ftp": "^6.2.1",
     "ews-javascript-api": "^0.15.3",
     "imapflow": "^1.7.6",
     "mailparser": "^3.9.17",
     "nodemailer": "^9.0.6",
+    "ssh2-sftp-client": "^12.1.1",
     "zod": "^4.5.4"
   },
   "devDependencies": {
     "@types/bun": "latest",
     "@types/mailparser": "^3.4.6",
     "@types/nodemailer": "^8.0.1",
+    "@types/ssh2-sftp-client": "^9.0.5",
     "@typescript/native": "npm:typescript@^7.0.2",
     "oxlint": "^1.80.0",
     "oxlint-tsgolint": "^0.24.0",

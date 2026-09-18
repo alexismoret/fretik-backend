@@ -340,6 +340,35 @@ export const WORKFLOW_NOTIFICATIONS_DEFAULT: WorkflowNotifications = {
 };
 
 /**
+ * The same rule, plus the one state that means nothing: email on, and nobody
+ * to send it to.
+ *
+ * Refined only on the WAY IN. The base schema still parses stored rows and
+ * still serialises responses, because two production workflows are in exactly
+ * this state right now — refusing to read them would turn a silent
+ * misconfiguration into an unreadable workflow.
+ *
+ * It is reachable because the panel asked three questions for one: a master
+ * switch, a separate "also email whoever ran it" switch, and a user picker,
+ * none of them required. Nothing said the combination sends to no one, and the
+ * autosave persisted it. Two of the four workflows with email enabled ended up
+ * here, and the only trace of a run that notified nobody was the absence of a
+ * log line. The panel is fixed; this makes the state unreachable.
+ */
+export const WorkflowNotificationsInputSchema =
+  WorkflowNotificationsSchema.refine(
+    (n) =>
+      !n.emailOnCompletion ||
+      n.notifyTriggeredBy ||
+      n.recipientUserIds.length > 0,
+    {
+      message:
+        "Completion emails are enabled but no recipient is selected — add at least one recipient, or notify whoever runs the workflow.",
+      path: ["recipientUserIds"],
+    },
+  );
+
+/**
  * Platform-wide fallback token budget when a workflow sets no explicit
  * `maxTotalTokens` — a coarse runaway backstop, not a product constraint (see
  * `WORKFLOW_DEFAULT_MAX_TOTAL_TOKENS` usage in the turn handler for the
@@ -609,7 +638,7 @@ export const UpdateWorkflowSchema = z
     modelProfileKey: z.string().max(64).nullable().optional(),
     reasoningLevel: reasoningLevelSchema.nullable().optional(),
     limits: WorkflowLimitsSchema.optional(),
-    notifications: WorkflowNotificationsSchema.optional(),
+    notifications: WorkflowNotificationsInputSchema.optional(),
     /** Replaces the declared list wholesale (not a merge) — the editor sends
      *  what the user sees. */
     externalAppConnectionIds: WorkflowExternalAppIdsSchema.optional(),

@@ -1,6 +1,6 @@
 import db from "@fretik/shared/db";
 import { aiChatFiles } from "@fretik/shared/db/schema";
-import { agentAccessFor } from "@fretik/shared/file-types";
+import { agentAccessFor, mimeFromFilename } from "@fretik/shared/file-types";
 import {
   readContextOriginal,
   readContextSidecar,
@@ -9,6 +9,7 @@ import {
   getSessionFilePresignedUrl,
   readSessionFile,
   sanitizeSessionPath,
+  uploadSessionFile,
 } from "@fretik/shared/lib/chatbot-session-storage";
 import { getOrCreateExtraction } from "@fretik/shared/services/file-extraction/extract";
 import {
@@ -23,6 +24,7 @@ import { z } from "zod";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
 import {
   fileExists,
+  readFile,
   readFileText,
   resolveWorkspacePath,
   WORKSPACE_DIRS,
@@ -43,6 +45,7 @@ import { readSkillWorkspaceFile } from "../skills/read-skill-file";
  * Reads anything in the conversation's `/workspace/` sandbox:
  *
  *  - Chat attachments under `attachments/`
+ *  - Files the agent downloaded, under `downloads/`
  *  - Persisted-output files saved by other tools at
  *    `outputs/persisted/{toolCallId}.(json|txt)`
  *  - Drive documents pulled in on demand at `drive/`
@@ -167,7 +170,7 @@ const RUN_OUTPUT_RE = /^runs\/([0-9a-fA-F-]{36})\//;
 const buildFileNotFoundHint = (relative: string): string | undefined => {
   const driveMatch = DRIVE_UUID_RE.exec(relative);
   if (driveMatch) {
-    return `Call \`downloadDriveDocument({ documentId: "${driveMatch[1]}" })\` first. Files under \`drive/\` exist only after a successful download in this conversation.`;
+    return `Call \`downloadDriveDocument({ documentIds: ["${driveMatch[1]}"] })\` first. Files under \`drive/\` exist only after a successful download in this conversation.`;
   }
   const runMatch = RUN_OUTPUT_RE.exec(relative);
   if (runMatch) {
@@ -175,6 +178,9 @@ const buildFileNotFoundHint = (relative: string): string | undefined => {
   }
   if (relative.startsWith(`${WORKSPACE_DIRS.attachments}/`)) {
     return `Check the exact filename in the system prompt's <attached_files> block — case, extension, and spaces must match. Bare \`read("<filename>")\` is rewritten as \`${WORKSPACE_DIRS.attachments}/<filename>\`.`;
+  }
+  if (relative.startsWith(`${WORKSPACE_DIRS.downloads}/`)) {
+    return `Downloads are named by the action that fetched them, not by you — pass the \`sandbox_path\` it returned, verbatim. \`bash("ls ${WORKSPACE_DIRS.downloads}")\` lists what actually landed.`;
   }
   if (relative.startsWith(`${WORKSPACE_DIRS.outputs}/`)) {
     return `The file may not have been generated yet. Check the stdout of the previous \`python\` / \`bash\` call for the actual output path.`;
@@ -369,6 +375,112 @@ const resolveAttachmentContent = async (args: {
 };
 
 /**
+ * Resolve a document that lives ONLY in the sandbox — `downloads/`,
+ * `outputs/`, `drive/`, `runs/` — to readable text.
+ *
+ * The SAME content-addressed extraction a chat attachment gets, because
+ * `getOrCreateExtraction` is keyed by `(organizationId, fileHash)` and
+ * never needed a DB row: what can be read out of a file is decided by
+ * its bytes, not by who put it there. A PDF fetched from SharePoint and
+ * the same PDF uploaded by the user hit ONE cache entry.
+ *
+ * Until this existed, a file with no `ai_chat_files` row was readable
+ * only if some hydrator happened to have dropped a `{basename}.md` next
+ * to it — so every file a provider downloaded came back as `File not
+ * found`, pointing at a `<file_attachments>` block it was never in.
+ */
+const resolveSandboxDocumentContent = async (args: {
+  conversationId: string;
+  organizationId: string;
+  relative: string;
+  absolute: string;
+}): Promise<ResolveResult> => {
+  const { conversationId, organizationId, relative, absolute } = args;
+  const name = basename(relative);
+  // No DB row, so the filename is the only MIME signal — but the routing
+  // it feeds is the registry's, the same one attachments use.
+  const mimeType = mimeFromFilename(name);
+
+  let bytes: Uint8Array;
+  try {
+    bytes = await readFile(conversationId, relative);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (/not exist|not found|missing/i.test(message)) {
+      return {
+        error: {
+          error: `File not found: ${absolute}`,
+          code: TOOL_ERROR_CODES.FILE_NOT_FOUND,
+          hint: buildFileNotFoundHint(relative),
+        },
+      };
+    }
+    return {
+      error: {
+        error: `Failed to read file: ${message}`,
+        code: TOOL_ERROR_CODES.READ_ERROR,
+      },
+    };
+  }
+
+  const extraction = await withTraceSession(
+    conversationId,
+    { metadata: { filename: name }, tags: ["process:read-file"] },
+    () =>
+      getOrCreateExtraction({
+        organizationId,
+        fileHash: SHA256.hash(bytes, "hex"),
+        mimeType,
+        filename: name,
+        fileSizeBytes: bytes.byteLength,
+        getBytes: async () => bytes,
+        getPresignedUrl: async () => {
+          // OCR routes have Mistral fetch the file itself, so the bytes
+          // must be on S3 under this conversation's prefix. The mirror
+          // that normally puts them there is fire-and-forget and runs at
+          // the END of the `python` call that wrote the file, so a `read`
+          // in the next tool call can outrun it — and `drive/` / `runs/`
+          // are never mirrored at all. This upload is idempotent and
+          // closes both cases; the bytes are already in hand.
+          await uploadSessionFile(conversationId, relative, bytes, mimeType);
+          return getSessionFilePresignedUrl(conversationId, relative);
+        },
+        onOcr: runMistralOcr,
+      }),
+  );
+
+  if (extraction.error) {
+    return {
+      error: {
+        error: `Failed to read file: ${extraction.error}`,
+        code: TOOL_ERROR_CODES.READ_ERROR,
+        hint: "python",
+      },
+    };
+  }
+  if (extraction.markdown === null) {
+    // Image with no usable text (a photo / logo).
+    return {
+      error: {
+        error: `This image has no extractable text. Use vision("${absolute}", "<question>") with a specific visual question to inspect it.`,
+        code: TOOL_ERROR_CODES.NO_TEXT_CONTENT,
+        hint: "vision",
+      },
+    };
+  }
+  return {
+    text:
+      extraction.imageIds.length > 0
+        ? rewriteExtractedImageRefs({
+            markdown: extraction.markdown,
+            virtualDir: relative,
+            imageIds: extraction.imageIds,
+          })
+        : extraction.markdown,
+  };
+};
+
+/**
  * Resolve a persistent context file to readable text — fully Bun-side,
  * no E2B. `read` is just an accelerator: any real processing
  * (spreadsheets, page-by-page work) still routes to `python` / `bash`,
@@ -537,8 +649,20 @@ export const createReadTool = () =>
       const resolved = resolveReadPath(file_path);
       if (!resolved) {
         return {
-          error: `Path is outside the conversation's sandbox (/workspace/). Only files under attachments/, outputs/, runs/, drive/, skills/, context/, or memories/ are readable.`,
+          error: `Path is outside the conversation's sandbox (/workspace/). Only files under attachments/, downloads/, outputs/, runs/, drive/, skills/, context/, or memories/ are readable.`,
           code: TOOL_ERROR_CODES.PATH_OUT_OF_SANDBOX,
+        };
+      }
+
+      // Extracted figure (`<dir>/<file>/img-N.ext`): pixels, not text —
+      // steer to `vision`, which resolves this exact path. Checked before
+      // the per-directory split because any document that goes through
+      // extraction can mint one, wherever it lives.
+      if (parseExtractedImagePath(resolved.relative)) {
+        return {
+          error: `${resolved.relative} is an extracted figure, not text. View it with vision("${resolved.relative}", "<question>").`,
+          code: TOOL_ERROR_CODES.NO_TEXT_CONTENT,
+          hint: "vision",
         };
       }
 
@@ -557,16 +681,6 @@ export const createReadTool = () =>
       let finalAbsolute = resolved.absolute;
 
       if (isAttachment) {
-        // Extracted figure (`attachments/<file>/img-N.ext`): pixels, not
-        // text — steer to `vision`, which resolves this exact path.
-        const figure = parseExtractedImagePath(resolved.relative);
-        if (figure) {
-          return {
-            error: `${resolved.relative} is an extracted figure, not text. View it with vision("${resolved.relative}", "<question>").`,
-            code: TOOL_ERROR_CODES.NO_TEXT_CONTENT,
-            hint: "vision",
-          };
-        }
         // Chat attachments: transparent, Bun-side extraction (no E2B).
         const result = await resolveAttachmentContent({
           conversationId,
@@ -617,10 +731,11 @@ export const createReadTool = () =>
         if ("error" in result) return result.error;
         text = result.text;
       } else {
-        // Non-attachment workspace paths (drive/, outputs/, memories/): read
-        // via the sandbox. Binary documents under these prefixes are
-        // resolved against the `{basename}.md` text file dropped next to
-        // them by their own hydrator.
+        // Non-attachment workspace paths (downloads/, outputs/, drive/,
+        // runs/, memories/): the bytes live in the sandbox. A binary is
+        // resolved against the `{basename}.md` a hydrator may already have
+        // dropped next to it — and, failing that, extracted from its own
+        // bytes exactly as an attachment would be.
         const sidecarBase = resolveSidecarBasename(basename(resolved.relative));
         const sidecarRel = join(dirname(resolved.relative), sidecarBase);
         const sidecarResolved = resolveWorkspacePath(sidecarRel);
@@ -633,35 +748,40 @@ export const createReadTool = () =>
           sidecarResolved !== null &&
           (await fileExists(conversationId, sidecarResolved.relative));
 
+        // Set when the text came from extraction rather than from a file
+        // on disk — there is then nothing left to read.
+        let extractedText: string | null = null;
+
         if (
           pathAccess === "ocr-sidecar" ||
           pathAccess === "email-sidecar" ||
           pathAccess === "image"
         ) {
-          if (!sidecarResolved || !sidecarExists) {
-            if (pathAccess === "image") {
-              return {
-                error: `This image has no extractable text. Use vision(file_path, question) with a specific visual question to inspect it.`,
-                code: TOOL_ERROR_CODES.NO_TEXT_CONTENT,
-                hint: "vision",
-              };
-            }
-            if (pathAccess === "email-sidecar") {
-              return {
-                error: `Mail files (${ext}) can't be read directly here. Use python with extract_msg (.msg) or the email module (.eml) to read the headers, body and attachments.`,
-                code: TOOL_ERROR_CODES.BINARY_NOT_READABLE,
-                hint: "python",
-              };
-            }
+          if (sidecarResolved && sidecarExists) {
+            // A hydrator already paid for this text — never re-extract.
+            finalRelative = sidecarResolved.relative;
+            finalAbsolute = sidecarResolved.absolute;
+            source = "ocr-sidecar";
+          } else if (pathAccess === "email-sidecar") {
+            // Mail has no OCR route: `.msg` / `.eml` are containers, and
+            // what the agent wants out of them (headers, body, the
+            // attachments inside) is a parse, not a page render.
             return {
-              error: `Binary ${ext} files can't be read directly here. For structured data use extract(file_path, schema, shape); to modify the file use python (python-docx / python-pptx); for visual layout use vision(file_path, question).`,
+              error: `Mail files (${ext}) can't be read directly here. Use python with extract_msg (.msg) or the email module (.eml) to read the headers, body and attachments.`,
               code: TOOL_ERROR_CODES.BINARY_NOT_READABLE,
-              hint: ext === ".pdf" ? "python-or-vision" : "python",
+              hint: "python",
             };
+          } else {
+            const extracted = await resolveSandboxDocumentContent({
+              conversationId,
+              organizationId: ctx.organizationId,
+              relative: resolved.relative,
+              absolute: resolved.absolute,
+            });
+            if ("error" in extracted) return extracted.error;
+            extractedText = extracted.text;
+            source = "ocr-sidecar";
           }
-          finalRelative = sidecarResolved.relative;
-          finalAbsolute = sidecarResolved.absolute;
-          source = "ocr-sidecar";
         } else if (pathAccess === "tabular") {
           return {
             error: `Spreadsheet files (${ext}) can't be read as text. Use python with pandas.read_excel('${resolved.absolute}') or openpyxl to inspect the data.`,
@@ -679,21 +799,25 @@ export const createReadTool = () =>
           }
         }
 
-        try {
-          text = await readFileText(conversationId, finalRelative);
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          if (/not exist|not found|missing/i.test(message)) {
+        if (extractedText !== null) {
+          text = extractedText;
+        } else {
+          try {
+            text = await readFileText(conversationId, finalRelative);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            if (/not exist|not found|missing/i.test(message)) {
+              return {
+                error: `File not found: ${finalAbsolute}`,
+                code: TOOL_ERROR_CODES.FILE_NOT_FOUND,
+                hint: buildFileNotFoundHint(finalRelative),
+              };
+            }
             return {
-              error: `File not found: ${finalAbsolute}`,
-              code: TOOL_ERROR_CODES.FILE_NOT_FOUND,
-              hint: buildFileNotFoundHint(finalRelative),
+              error: `Failed to read file: ${message}`,
+              code: TOOL_ERROR_CODES.READ_ERROR,
             };
           }
-          return {
-            error: `Failed to read file: ${message}`,
-            code: TOOL_ERROR_CODES.READ_ERROR,
-          };
         }
       }
 

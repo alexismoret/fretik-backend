@@ -38,6 +38,10 @@ export default {
       "{{inviterName}} has invited you to join {{organizationName}} on Fretik.",
     messageWithTeam:
       "{{inviterName}} has invited you to join the team {{teamName}} in {{organizationName}} on Fretik.",
+    subjectExistingMember: "You've been given access to the team {{teamName}}",
+    messageExistingMember:
+      "{{inviterName}} has invited you to the team {{teamName}} in {{organizationName}}. Accept and it joins the workspaces you already have access to — your existing teams and your role are unchanged.",
+    ctaExistingMember: "Join the team",
     organizationLabel: "Organization: {{organizationName}}",
     teamLabel: "Team: {{teamName}}",
     roleLabel: "Your role: {{roleName}}",

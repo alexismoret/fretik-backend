@@ -9,13 +9,14 @@ Calling a write action directly raises — it never executes.
 """
 
 from typing import Any, Literal, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from ._runtime import FretikActionError, Operation, _call_read
 
 
 # ── Types ─────────────────────────────────────────────────────────
 
 class Site(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     name: str
     display_name: str
@@ -26,6 +27,7 @@ class Site(BaseModel):
 
 
 class Library(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     name: str
     web_url: str
@@ -34,6 +36,7 @@ class Library(BaseModel):
 
 
 class DriveItem(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     name: str
     is_folder: bool
@@ -52,6 +55,7 @@ class DriveItem(BaseModel):
 
 
 class FileDownload(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     name: str
     content_type: str
@@ -61,6 +65,7 @@ class FileDownload(BaseModel):
 
 
 class ItemVersion(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     last_modified_at: str
     size_bytes: int | None = None
@@ -68,6 +73,7 @@ class ItemVersion(BaseModel):
 
 
 class Permission(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     roles: list[str]
     granted_to: list[str]
@@ -79,6 +85,7 @@ class Permission(BaseModel):
 
 
 class ShareLink(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     link_url: str
     link_type: str
@@ -87,6 +94,7 @@ class ShareLink(BaseModel):
 
 
 class SharePointList(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     name: str
     display_name: str
@@ -97,6 +105,7 @@ class SharePointList(BaseModel):
 
 
 class ListColumn(BaseModel):
+    model_config = ConfigDict(extra="allow")
     name: str
     display_name: str
     type: str
@@ -107,6 +116,7 @@ class ListColumn(BaseModel):
 
 
 class ListItem(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     fields: dict[str, Any]
     web_url: str | None = None
@@ -117,6 +127,7 @@ class ListItem(BaseModel):
 
 
 class SitePage(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     name: str
     title: str
@@ -128,6 +139,7 @@ class SitePage(BaseModel):
 
 
 class SearchHit(BaseModel):
+    model_config = ConfigDict(extra="allow")
     kind: Literal["driveItem", "listItem", "list", "drive", "site"]
     id: str
     name: str
@@ -141,6 +153,7 @@ class SearchHit(BaseModel):
 
 
 class UploadSession(BaseModel):
+    model_config = ConfigDict(extra="allow")
     upload_url: str
     expires_at: str | None = None
 
@@ -450,6 +463,10 @@ def list_folder(
 
     folder_id: Defaults to the library root
 
+    folder_path: Library-relative path instead of an id, e.g. `Contracts/2026`. Ignored when `folder_id` is set.
+
+    page_token: `page_token` from the previous page's result
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -508,6 +525,10 @@ def search(
     """Search files, list rows and sites across the WHOLE tenant (Microsoft Search)
 
     query: Keywords, or KQL — `filetype:pdf`, `path:"https://…/Contracts"`, `LastModifiedTime>=2026-01-01`, `author:"Marie"`.
+
+    entity_types: What to look for. These five combine freely with each other and with nothing else.
+
+    offset: Skip the first N hits
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -655,6 +676,12 @@ def list_list_items(
 
     filter: OData filter on INTERNAL column names, prefixed with `fields/`: `fields/Status eq 'Open'`, `fields/Amount gt 1000`, `startswith(fields/Title,'ACME')`.
 
+    order_by: `fields/<InternalName>` plus `asc` / `desc`, e.g. `fields/Created desc`. Only INDEXED columns can be sorted.
+
+    columns: Internal column names to return. Omit for every column — set it on wide lists to keep the result small.
+
+    page_token: `page_token` from the previous page's result
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -747,6 +774,8 @@ def create_folder(
 
     parent_folder_id: `root` for the top level of the library
 
+    conflict_behavior: What to do when a folder of that name already exists
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -786,6 +815,10 @@ def create_upload_session(
     it with `run_plan([...])`. Calling this directly raises.)
 
     file_name: File name WITH its extension, e.g. `Q1-report.pdf`
+
+    parent_folder_id: Folder to upload into — `root` for the library's top level
+
+    conflict_behavior: `replace` uploads a new VERSION of an existing file of that name — SharePoint keeps the old one in the history.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -903,6 +936,10 @@ def copy_item(
 
     target_folder_id: Destination folder id
 
+    target_drive_id: Destination library — defaults to the source library
+
+    new_name: Name of the copy — defaults to the source name
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -983,6 +1020,8 @@ def create_share_link(
 
     scope: `organization` = anyone signed into the tenant. `anonymous` = anyone with the link, and many tenants block it outright — only use it when the user asked for a public link.
 
+    expiration_date: Calendar day the link stops working (YYYY-MM-DD)
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -1030,6 +1069,10 @@ def grant_item_access(
     it with `run_plan([...])`. Calling this directly raises.)
 
     message: Sent to the recipients when `send_invitation` is on. Keep it short and factual — it is an email from the connected account.
+
+    send_invitation: Email the recipients. Off = grant silently.
+
+    expiration_date: Calendar day the access ends (YYYY-MM-DD)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.

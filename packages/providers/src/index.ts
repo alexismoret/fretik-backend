@@ -2,6 +2,7 @@ import { setProviders } from "@fretik/shared/external-apps/registry";
 import { akaneaWmsEntry } from "./akanea-wms";
 import { exchangeEntry } from "./exchange";
 import { frontEntry } from "./front";
+import { ftpSftpEntry } from "./ftp-sftp";
 import { imapSmtpEntry } from "./imap-smtp";
 import { outlookEntry } from "./outlook";
 import { pbypEntry } from "./pbyp";
@@ -25,6 +26,7 @@ import { teamsEntry } from "./teams";
 setProviders({
   outlook: outlookEntry,
   "imap-smtp": imapSmtpEntry,
+  "ftp-sftp": ftpSftpEntry,
   exchange: exchangeEntry,
   teams: teamsEntry,
   front: frontEntry,
@@ -39,6 +41,7 @@ export {
   akaneaWmsEntry,
   exchangeEntry,
   frontEntry,
+  ftpSftpEntry,
   imapSmtpEntry,
   outlookEntry,
   pbypEntry,

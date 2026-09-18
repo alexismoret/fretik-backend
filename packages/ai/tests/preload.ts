@@ -89,8 +89,16 @@ installBoundFleet();
  * and it cannot be undone by a suite's own `afterEach` running later. A test
  * that wants a different snapshot still sets one in its own body and wins.
  */
+const { resetResolveModelDouble } = await import("./lib/resolve-model-double");
+
 beforeEach(() => {
   installBoundFleet();
+  // Same argument, same measurement: the `resolveModel` spy lives in a
+  // process-wide module, so a suite that arms its tripwire and does not put
+  // it back would make every later file fail on a message from a suite it
+  // never ran with — which is exactly what used to happen. Resetting here
+  // means a suite only has to say when it WANTS one.
+  resetResolveModelDouble();
 });
 
 // The Redis half of the env wall — integration only, and last, because it is

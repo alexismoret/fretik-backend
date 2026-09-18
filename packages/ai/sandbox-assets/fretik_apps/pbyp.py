@@ -9,13 +9,14 @@ Calling a write action directly raises — it never executes.
 """
 
 from typing import Any, Literal, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from ._runtime import FretikActionError, Operation, _call_read
 
 
 # ── Types ─────────────────────────────────────────────────────────
 
 class Me(BaseModel):
+    model_config = ConfigDict(extra="allow")
     user_id: str
     email: str
     name: str
@@ -28,6 +29,7 @@ class Me(BaseModel):
 
 
 class Profile(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: int
     entity_id: int
     entity_name: str
@@ -36,6 +38,7 @@ class Profile(BaseModel):
 
 
 class FieldDoc(BaseModel):
+    model_config = ConfigDict(extra="allow")
     collection: str
     field: str
     type: str
@@ -48,6 +51,7 @@ class FieldDoc(BaseModel):
 
 
 class StoredFile(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     filename_download: str
     type: str
@@ -55,6 +59,7 @@ class StoredFile(BaseModel):
 
 
 class Event(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: int
     code: str
     type_id: int
@@ -68,6 +73,7 @@ class Event(BaseModel):
 
 
 class EventType(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: int
     code: str
     modules: list[str]
@@ -76,6 +82,7 @@ class EventType(BaseModel):
 
 
 class Gateway(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: int
     external_code: str
     gateway_type: int
@@ -85,11 +92,13 @@ class Gateway(BaseModel):
 
 
 class StatusCount(BaseModel):
+    model_config = ConfigDict(extra="allow")
     shipping_status: str
     count: int
 
 
 class Counter(BaseModel):
+    model_config = ConfigDict(extra="allow")
     counter: str
     month_key: str
     pattern: str
@@ -422,6 +431,24 @@ def query_items(
 
     filter: Directus filter, e.g. {"shipping_status": {"_eq": "IN_TRANSIT"}}. Operators: _eq _neq _in _nin _lt _lte _gt _gte _null _nnull _contains _icontains _starts_with _between _and _or.
 
+    fields: Fields to return. A nested path resolves a link in the SAME call ("consignee.country_id.name") — take the prefix from describe_collection, never guess it. Omit this and the main shipment collections return a curated set with names already resolved.
+
+    include_archived: Pbyp cancels by archiving. Reads exclude archived rows unless you set this, or filter on `status` yourself.
+
+    sort: e.g. ["-date_created"].
+
+    limit: Rows to return: 1-200, or -1 for every row. Ask for -1 only when you will use all of them — to answer 'how many' or 'which is the most', count with `aggregate` instead and read one row per group.
+
+    page: 1-based page number, used with `limit`.
+
+    search: Full-text search across the collection's string fields.
+
+    deep: Per-relation query, e.g. {"events": {"_sort": ["-date"], "_limit": 5}}.
+
+    aggregate: e.g. {"count": "id"} or {"sum": "total_weight"}.
+
+    group_by: Grouping keys, used with `aggregate`.
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -440,6 +467,10 @@ def upload_file(
     """Store a file's bytes in Pbyp and return the id to link it with. It is attached to NOTHING on its own — see 'Filing a document' in the guidance for the create_items call that puts it in an order's or a folder's GED.
 
     filename: Name the document is shown and downloaded under, with its extension. No directories.
+
+    content_base64: The file's bytes, base64-encoded. Read them in the sandbox — `base64.b64encode(Path(p).read_bytes()).decode()` — and pass the variable; never paste the blob into your own text.
+
+    content_type: MIME type. Derived from the extension when omitted, which is right for the formats a forwarder files.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -490,6 +521,8 @@ def list_events(
     """The event history of one object, most recent first — the milestones that drive its status.
 
     target_type: The object family the row hangs off.
+
+    limit: Rows to return: 1-200, or -1 for every row. Ask for -1 only when you will use all of them — to answer 'how many' or 'which is the most', count with `aggregate` instead and read one row per group.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -653,6 +686,8 @@ def update_items(
 
     ids: Primary keys to update.
 
+    data: Fields to change. Same shapes as create; entity_id is refused (an object never changes owner).
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -759,6 +794,20 @@ def create_order(
 
     module: Transport module. Pbyp keeps sea and air in separate tables — pick the one the user means, never guess from context alone.
 
+    number: From next_order_number() — see its pattern.
+
+    date: Order date (calendar day).
+
+    entity_id: Owning agency — whoami().entity_id unless told otherwise.
+
+    shipper: A party. Either { id } for an existing address, or the full shape to create one: { name, code, address, city, zipcode, country_id | code_country, email?, phone?, complement? }.
+
+    consignee: A party. Either { id } for an existing address, or the full shape to create one: { name, code, address, city, zipcode, country_id | code_country, email?, phone?, complement? }.
+
+    folder_id: Attach to this folder straight away (same module).
+
+    shared_with: Entities that should also see this order.
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -827,6 +876,20 @@ def create_folder(
 
     module: Transport module. Pbyp keeps sea and air in separate tables — pick the one the user means, never guess from context alone.
 
+    folder_type: single = one shipment. master groups houses. house must name its master_id.
+
+    shipper: A party. Either { id } for an existing address, or the full shape to create one: { name, code, address, city, zipcode, country_id | code_country, email?, phone?, complement? }.
+
+    consignee: A party. Either { id } for an existing address, or the full shape to create one: { name, code, address, city, zipcode, country_id | code_country, email?, phone?, complement? }.
+
+    payer_id: Billed entity. Required unless folder_type is master.
+
+    master_id: Required when folder_type is house.
+
+    voyage_id: The booking this folder travels on.
+
+    order_ids: Orders to attach on creation.
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -887,6 +950,12 @@ def create_sea_booking(
 
     booking_type: Direction of the voyage for this agency.
 
+    departure_terminal: Port of loading, from `terminals`.
+
+    arrival_terminal: Port of discharge, from `terminals`.
+
+    company_id: Shipping line from `oversea_companies`. Use custom_company instead when it is not listed — never both.
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -936,6 +1005,10 @@ def create_air_booking(
     it with `run_plan([...])`. Calling this directly raises.)
 
     booking_type: Direction of the flight for this agency.
+
+    LTA: Air waybill: 3-digit airline prefix + 8 digits, last is a modulo-7 check.
+
+    flights: One entry per leg, in order.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -1005,6 +1078,18 @@ def create_quotation(
 
     number: From next_quotation_number() — see its pattern.
 
+    transport_type: Transport module. Pbyp keeps sea and air in separate tables — pick the one the user means, never guess from context alone.
+
+    booking_type: Direction of the shipment being priced.
+
+    margin: Margin applied to the purchase lines, in percent.
+
+    counterparty: The OTHER side of the quotation: the client entity when you are the freight forwarder, the forwarder entity when you are the client. Your own side is filled in by Pbyp from entity_id.
+
+    shipper: A party. Either { id } for an existing address, or the full shape to create one: { name, code, address, city, zipcode, country_id | code_country, email?, phone?, complement? }.
+
+    consignee: A party. Either { id } for an existing address, or the full shape to create one: { name, code, address, city, zipcode, country_id | code_country, email?, phone?, complement? }.
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -1052,6 +1137,12 @@ def add_event(
     it with `run_plan([...])`. Calling this directly raises.)
 
     target_type: The object family the row hangs off.
+
+    event_type_id: From list_event_types() — must allow this module.
+
+    date: When the milestone happened.
+
+    actual: true = it happened, false = still forecast. Defaults to false for a future date.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -1355,6 +1446,8 @@ def transfer_to_gateway(
 
     gateway_id: From list_gateways().
 
+    external_reference: Events only — the partner's own reference for the object.
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -1497,6 +1590,8 @@ def create_gateway(
 
     gateway_type: Partner type id from `external_reference_types`.
 
+    external_code: The partner's code for this entity.
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -1609,6 +1704,8 @@ def create_lta_stock(
 
     first_awb: First number of the range, 8 digits.
 
+    last_awb: Last number, 8 digits.
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -1694,6 +1791,8 @@ def create_client(
     it with `run_plan([...])`. Calling this directly raises.)
 
     agency_id: The agency this client belongs to.
+
+    commercial: The account manager on your side.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.

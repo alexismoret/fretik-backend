@@ -104,6 +104,11 @@ export const sharepointManifest: ProviderManifest = {
   // "database" says its lists substitute for a "where do we track X" one.
   // NOT a communication provider — no persona option, no voice boilerplate.
   categories: ["storage", "file-storage", "database"],
+  // Graph hands out the bytes on the TENANT's host, never on
+  // `graph.microsoft.com`: `@microsoft.graph.downloadUrl` and an upload
+  // session's `uploadUrl` both point at `<tenant>.sharepoint.com`. Without
+  // this, `download_file` and every upload die on a killed TLS handshake.
+  sandboxEgressHosts: ["*.sharepoint.com"],
   // `Sites.Read.All` / `Sites.ReadWrite.All` are admin-consent scopes in
   // most Microsoft 365 tenants. Turning this on unlocks the "Install for
   // the whole organization" toggle and the friendly AADSTS error UI.

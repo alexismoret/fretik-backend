@@ -9,13 +9,14 @@ Calling a write action directly raises — it never executes.
 """
 
 from typing import Any, Literal, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from ._runtime import FretikActionError, Operation, _call_read
 
 
 # ── Types ─────────────────────────────────────────────────────────
 
 class Inbox(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     name: str
     is_private: bool
@@ -24,6 +25,7 @@ class Inbox(BaseModel):
 
 
 class Teammate(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     email: str
     username: str
@@ -34,6 +36,7 @@ class Teammate(BaseModel):
 
 
 class Tag(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     name: str
     is_private: bool
@@ -43,11 +46,13 @@ class Tag(BaseModel):
 
 
 class Handle(BaseModel):
+    model_config = ConfigDict(extra="allow")
     handle: str
     source: str
 
 
 class Contact(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     handles: list[dict[str, Any]]
     name: str | None = None
@@ -57,6 +62,7 @@ class Contact(BaseModel):
 
 
 class Conversation(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     status: str
     tag_ids: list[str]
@@ -71,6 +77,7 @@ class Conversation(BaseModel):
 
 
 class Message(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     type: str
     is_inbound: bool
@@ -85,6 +92,7 @@ class Message(BaseModel):
 
 
 class Comment(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     body: str
     author_id: str | None = None
@@ -92,6 +100,7 @@ class Comment(BaseModel):
 
 
 class ConversationEvent(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     type: str
     emitted_at: str | None = None
@@ -100,6 +109,7 @@ class ConversationEvent(BaseModel):
 
 
 class Rule(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     name: str
     is_private: bool
@@ -107,6 +117,7 @@ class Rule(BaseModel):
 
 
 class WriteResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str | None = None
 
 
@@ -405,6 +416,8 @@ def list_conversations(
 
     inbox_id: Scope the listing to one inbox
 
+    status: Filter by status. `assigned` / `unassigned` are convenience filters layered on top of `open`
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -515,6 +528,8 @@ def list_contacts(
     """List contacts in the Front company
 
     updated_after: Filter contacts updated after this Unix epoch (seconds)
+
+    updated_before: Filter contacts updated before this Unix epoch (seconds)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -637,6 +652,14 @@ def reply_to_conversation(
 
     text: Plain-text alternative (Front falls back to a stripped body when omitted)
 
+    channel_id: Channel to send from. Defaults to the conversation's last reply-capable channel — pass explicitly when several channels are available to avoid surprises
+
+    to: Override the default recipients
+
+    archive_after: Archive the conversation after sending
+
+    tag_ids_after: Add these tag IDs to the conversation after sending
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -689,6 +712,10 @@ def send_new_message(
 
     channel_id: ID of the channel to send from
 
+    sender_name: Display name shown to the recipient
+
+    tag_ids: Tags to attach to the new conversation
+
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
@@ -728,6 +755,8 @@ def update_conversation(
     it with `run_plan([...])`. Calling this directly raises.)
 
     assignee_id: Teammate ID to assign. Pass an empty string to unassign
+
+    inbox_id: Move the conversation to this inbox
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -904,6 +933,8 @@ def snooze_conversation(
     it with `run_plan([...])`. Calling this directly raises.)
 
     scheduled_at: Unix epoch (seconds) when the snooze should end
+
+    teammate_id: Teammate the snooze is set for (defaults to the bot teammate)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.

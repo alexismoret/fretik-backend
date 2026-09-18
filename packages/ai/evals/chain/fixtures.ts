@@ -544,6 +544,141 @@ export const makeWorkflowRun = async (
   return { runId: run.id, workflowId: wf.id, conversationId: conv.id };
 };
 
+const HEAVY_WORKFLOW_NAME = "[chain-eval] audit lourd du grand livre";
+const HEAVY_CONVERSATION_TITLE = "[chain-eval] run audit lourd";
+
+/**
+ * The token the run must still be able to state at the end.
+ *
+ * Handed over in the FIRST task and never repeated. Every turn after the
+ * first reloads its history through `loadConversationForAgent`, so a run that
+ * crossed the context ceiling can only still know this if the turn boundary
+ * carried it — which is the single thing this fixture exists to measure.
+ */
+export const HEAVY_WORKFLOW_TOKEN = "AUD-7731-VX";
+
+/**
+ * Three tasks, each of which floods the context with bounded-but-large tool
+ * output, so the run crosses `AGENT_CONTEXT_CEILING_TOKENS` at least twice.
+ *
+ * Why the outputs are sized the way they are — and the arithmetic that was
+ * wrong here until it was RUN. `maybePersistLargeOutput` does not TRUNCATE a
+ * python/bash result at `DEFAULT_THRESHOLD_CHARS`; above that threshold it
+ * moves the payload to session storage and returns a `<persisted-output>`
+ * envelope of about `PREVIEW_SIZE_CHARS` (2 000). So an output asked to be
+ * enormous costs ~2 000 characters, not 32 000 — the first version of this
+ * fixture printed three 327 000-byte CSVs twice each and loaded 12 000
+ * characters of context in total. Measured 2026-09-17: the run finished in ONE
+ * turn, 784 465 tokens, never within reach of the ceiling. The barrier of
+ * Lot D had removed the fixture's own lever.
+ *
+ * A run therefore crosses the ceiling by accumulating outputs that stay just
+ * UNDER the threshold and so travel verbatim — which is also the honest shape,
+ * since it is the one the barrier cannot help with. 500 CSV lines land around
+ * 27 000 characters (≈ 13 000 tokens once counted properly rather than at
+ * chars/4); with the workflow prefix around 35 000, four of them cross a
+ * 100 000-token ceiling and the twelve here cross it three times.
+ *
+ * Sized DOWN from five slices per task to four, because the first calibrated
+ * version crossed three times and then ran past the harness's own 10-minute
+ * budget — the case reported a timeout while the mechanism under test was
+ * working correctly. A case whose failure mode is its own wall clock measures
+ * the wall clock.
+ *
+ * Deliberately expensive, and `e2e`-gated for that reason. Lowering
+ * `AGENT_CONTEXT_CEILING_TOKENS` is NOT a cheaper way to reach the same path:
+ * the ceiling is clamped at `MIN_RESOLVED_CEILING_TOKENS` because below the
+ * prompt-plus-schemas baseline every turn ends at step zero — measured, that
+ * is 7 turns of one step each and a failed run, not a cheap measurement.
+ *
+ * The tasks avoid `askUserQuestion` and approvals by construction: a run
+ * started by an eval has nobody to answer, and `needs_approval` is terminal
+ * in `runWorkflowToCompletion`.
+ */
+export const makeHeavyWorkflowRun = async (
+  fx: ChainFixtures,
+): Promise<WorkflowRunFixture> => {
+  /**
+   * One CSV, then five windows of 500 lines each printed one call at a time.
+   * The window is what matters: 500 lines stay under the persistence threshold
+   * and reach the model verbatim, where "print the whole file" would come back
+   * as a 2 000-character envelope and load nothing.
+   */
+  const dump = (label: string): string =>
+    `Avec python, génère /workspace/${label}.csv : 2 000 lignes, colonnes batch_id,cost_centre,posted_on,amount_eur,status. Puis affiche-le par TRANCHES de 500 lignes, une tranche par appel d'outil, avec print() — lignes 1-500, puis 501-1000, puis 1001-1500, puis 1501-2000. Affiche les lignes elles-mêmes, jamais un head(), un sample() ni un résumé, et ne regroupe pas deux tranches dans le même appel.`;
+
+  const tasks = [
+    {
+      key: "audit-lot-1",
+      title: "Auditer le premier lot",
+      description: "",
+      instructions: `Le code d'audit de ce run est ${HEAVY_WORKFLOW_TOKEN} ; tu devras le rappeler dans le livrable final. ${dump("lot1")}`,
+    },
+    {
+      key: "audit-lot-2",
+      title: "Auditer le deuxième lot",
+      description: "",
+      instructions: dump("lot2"),
+    },
+    {
+      key: "audit-synthese",
+      title: "Rédiger la synthèse",
+      description: "",
+      instructions: `${dump("lot3")} Puis écris /workspace/synthese.md : le total par centre de coût pour les trois lots, et le code d'audit de ce run tel qu'il t'a été donné à la première tâche.`,
+    },
+  ];
+
+  const [conv] = await db
+    .insert(aiConversations)
+    .values({
+      organizationId: fx.organizationId,
+      teamId: fx.teamId,
+      userId: fx.userId,
+      agentType: "workflow",
+      title: HEAVY_CONVERSATION_TITLE,
+    })
+    .returning({ id: aiConversations.id });
+  if (!conv) throw new Error("fixture: failed to insert heavy conversation");
+
+  const [wf] = await db
+    .insert(workflows)
+    .values({
+      organizationId: fx.organizationId,
+      teamId: fx.teamId,
+      userId: fx.userId,
+      name: HEAVY_WORKFLOW_NAME,
+      description: "Fixture du chain-eval — ne pas utiliser.",
+      status: "active",
+      triggerType: "manual",
+      playbook: {
+        goal: "Auditer trois lots du grand livre et produire une synthèse chiffrée.",
+        tasks,
+      },
+    })
+    .returning({ id: workflows.id });
+  if (!wf) throw new Error("fixture: failed to insert heavy workflow");
+
+  const [run] = await db
+    .insert(workflowRuns)
+    .values({
+      workflowId: wf.id,
+      organizationId: fx.organizationId,
+      teamId: fx.teamId,
+      actingUserId: fx.userId,
+      triggeredByUserId: fx.userId,
+      status: "queued",
+      triggerType: "manual",
+      triggerPayload: { source: "chain-eval" },
+      conversationId: conv.id,
+      taskStates: tasks.map((t) => ({ ...t, status: "pending" as const })),
+      isTest: true,
+    })
+    .returning({ id: workflowRuns.id });
+  if (!run) throw new Error("fixture: failed to insert heavy workflow run");
+
+  return { runId: run.id, workflowId: wf.id, conversationId: conv.id };
+};
+
 /** Two unrelated one-offs about the same entity — no rule hides in them. */
 export const makeOneOffCluster = async (
   fx: ChainFixtures,
@@ -575,7 +710,13 @@ export const cleanupChainFixtures = async (
     await db.query.aiConversations.findMany({
       where: {
         teamId: scope.teamId,
-        title: { in: [CONVERSATION_TITLE, WORKFLOW_CONVERSATION_TITLE] },
+        title: {
+          in: [
+            CONVERSATION_TITLE,
+            WORKFLOW_CONVERSATION_TITLE,
+            HEAVY_CONVERSATION_TITLE,
+          ],
+        },
       },
       columns: { id: true },
     })
@@ -585,7 +726,10 @@ export const cleanupChainFixtures = async (
   // workflow is what the stall sweeper would pick up.
   const wfIds = (
     await db.query.workflows.findMany({
-      where: { teamId: scope.teamId, name: WORKFLOW_NAME },
+      where: {
+        teamId: scope.teamId,
+        name: { in: [WORKFLOW_NAME, HEAVY_WORKFLOW_NAME] },
+      },
       columns: { id: true },
     })
   ).map((w) => w.id);

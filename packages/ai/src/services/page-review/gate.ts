@@ -239,6 +239,39 @@ export const gatePageRender = (
     }
   }
 
+  // A dataset that never answered, named — and the reason the rule below is
+  // then skipped. With every source erroring, the populated render and the
+  // zeroed one are the same bytes, which that rule reads as a page inventing
+  // its rows. Measured 2026-09-14: a malformed `sort` in `page.json` spent a
+  // whole review budget being reported as fabricated data.
+  const brokenDatasets = Object.entries(render.datasets ?? {}).filter(
+    ([, dataset]) => dataset.status !== "ok",
+  );
+  if (brokenDatasets.length > 0) {
+    const named = brokenDatasets
+      .map(([id, dataset]) =>
+        dataset.status === "needs_connection"
+          ? `"${id}" — no usable connection for ${dataset.providerKey ?? "the app"}`
+          : dataset.status === "forbidden"
+            ? `"${id}" — this team may not read that collection`
+            : `"${id}" — ${dataset.message ?? "the source refused the request"}`,
+      )
+      .join("; ");
+    // A refused CALL is fixed in page.json; a missing connection is not
+    // something the builder can grant itself, and telling it to probe harder
+    // buys a round of nothing.
+    const reachable = brokenDatasets.every(
+      ([, dataset]) => dataset.status === "error",
+    );
+    blocking.push(
+      `${brokenDatasets.length.toString()} of this page's datasets never loaded, so nothing on screen is real data: ${named}. ${
+        reachable
+          ? "Fix the dataset in page.json first — pageProbe shows the call the app accepts."
+          : "Read a source this team already has, or say plainly in your summary that the page stays empty until that access exists."
+      }`,
+    );
+  }
+
   const emptyState = render.layout["empty-state"];
   if (emptyState && emptyState.textLength < MIN_EMPTY_STATE_CHARS) {
     blocking.push(
@@ -254,6 +287,8 @@ export const gatePageRender = (
   const populated = widest.get("desktop");
   if (
     declaredDatasets > 0 &&
+    // Only meaningful when the data half WORKED: see `brokenDatasets`.
+    brokenDatasets.length === 0 &&
     emptyState !== undefined &&
     populated !== undefined &&
     populated.textLength > MIN_EMPTY_STATE_CHARS &&

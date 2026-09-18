@@ -78,6 +78,17 @@ export const SANDBOX_USER = "root";
 export const SANDBOX_TIMEOUT_MS = 5 * 60 * 1000;
 
 /**
+ * The guest's system CA store, which E2B's per-sandbox proxy CA is installed
+ * into. Pointing `REQUESTS_CA_BUNDLE` / `NODE_EXTRA_CA_CERTS` at it is what
+ * lets `requests` and Node reach a host whose TLS the egress proxy terminates
+ * — they read their own bundled roots and would otherwise fail with
+ * CERTIFICATE_VERIFY_FAILED where `urllib` and `curl` succeed. Measured on the
+ * live template (`scripts/smoke-sandbox-egress.ts`), which reports
+ * `cafile='/usr/lib/ssl/cert.pem'`.
+ */
+export const SYSTEM_CA_BUNDLE = "/usr/lib/ssl/cert.pem";
+
+/**
  * Redis TTL for the `conversationId → sandboxId` mapping. Refreshed on
  * every `acquireSandbox`. Doubles as the staleness horizon for the
  * orphan reclaim: any sandbox whose conversation has not touched Redis

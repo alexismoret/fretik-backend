@@ -17,16 +17,15 @@ import {
 import { TOOL_ERROR_CODES } from "../lib/tool-error-codes";
 
 /**
- * `download_drive_document` tool — pull a Drive document's binary
+ * `download_drive_document` tool — pull Drive documents' binary
  * bytes into the conversation sandbox so `python` / `bash` /
- * `vision` / `read` can operate on the original file.
+ * `vision` / `read` can operate on the original files.
  *
  * Lazy on-demand by design. The Fretik Drive can hold thousands of
  * documents per team; we never mount the whole tree. Instead, the
- * agent first locates the document (via `searchKnowledge` for
+ * agent first locates the documents (via `searchKnowledge` for
  * content questions, `listDocuments` / `querySql` for metadata) and
- * then calls this tool with the chosen `documentId`. The bytes land
- * at
+ * then calls this tool with the chosen ids. The bytes land at
  *
  *   /workspace/drive/{documentId}-{originalFilename}
  *
@@ -36,15 +35,20 @@ import { TOOL_ERROR_CODES } from "../lib/tool-error-codes";
  *   - `python` can `pandas.read_excel('drive/...')`,
  *     `PyPDF2.PdfReader('drive/...')`, etc.
  *
+ * **Takes a LIST.** Comparing twelve invoices used to be twelve tool
+ * calls whose only difference was a UUID — twelve round-trips through
+ * the model for work it had already decided on. The quota is what
+ * bounds the cost, not the call count, and it is enforced across the
+ * batch exactly as it was across successive calls.
+ *
  * Guard rails:
- *   - **ACL**: the document's `team_id` must match the caller's
- *     conversation team. Cross-team access returns a typed error.
+ *   - **ACL**: each document's `team_id` must match the caller's
+ *     conversation team. Cross-team ids are refused per document.
  *   - **Quota**: total bytes under `/workspace/drive/` capped at 100
  *     MB per conversation. Adjust if needed; intentionally tight to
  *     avoid sandbox tmpfs pressure (`/workspace` lives in 256 MiB).
- *   - **One document per call**: no bulk mode — keeps cost
- *     attributable and forces the agent to triage what it actually
- *     needs.
+ *   - **Per-document results**: a batch reports each id's outcome; one
+ *     unprocessed document does not cost the other eleven.
  *   - **No S3 backup**: `drive/` is NOT mirrored to the chatbot
  *     session S3 prefix (the original is already durable in the
  *     documents bucket; re-downloading is cheap). On sandbox expiry
@@ -57,6 +61,13 @@ import { TOOL_ERROR_CODES } from "../lib/tool-error-codes";
  */
 
 const DRIVE_QUOTA_BYTES = 100 * 1024 * 1024; // 100 MB
+
+/**
+ * Documents one call may fetch. The quota is the real ceiling; this one
+ * keeps a single call from spending a minute in S3 before the agent sees
+ * anything.
+ */
+const MAX_DOCUMENTS = 20;
 
 /**
  * Restrict filename to a safe character set so a rogue document
@@ -88,7 +99,7 @@ export const createDownloadDriveDocumentTool = () =>
     description: [
       'NOT for content questions — "what does this document say about X" is `searchKnowledge`\'s job (cheaper, cited, and it searches inside a KNOWN document via `filters.sourceIds`). Download exists for byte-level work on the original file.',
       "",
-      "Downloads a Drive document's binary into the conversation sandbox so `read` / `vision` / `python` / `bash` can operate on the original. For OCR-eligible documents (PDF / DOCX / PPTX / images) the pre-computed markdown sidecar is pulled alongside; `read('drive/{uuid}-{name}.pdf')` then auto-resolves to that `.md` sidecar via extension routing.",
+      "Downloads Drive documents' binaries into the conversation sandbox so `read` / `vision` / `python` / `bash` can operate on the originals. Takes a LIST — fetch everything you need in one call. For OCR-eligible documents (PDF / DOCX / PPTX / images) the pre-computed markdown sidecar is pulled alongside; `read('drive/{uuid}-{name}.pdf')` then auto-resolves to that `.md` sidecar via extension routing.",
       "",
       "When to use:",
       "- Generate a derived file (Excel / Word / PDF / chart) FROM an existing Drive document, or reuse one as a template.",
@@ -97,24 +108,25 @@ export const createDownloadDriveDocumentTool = () =>
       "- Feed a document's FULL text through a processing script (the sidecar is pre-resolved — cheaper than re-running OCR); for answering a question about that text, `searchKnowledge` remains the move.",
       "",
       "Inputs:",
-      "- documentId (required): UUID of the document. Get it from `listDocuments`, `querySql`, or `searchKnowledge` results.",
+      `- documentIds (required): UUIDs of the documents. Get them from \`listDocuments\`, \`querySql\`, or \`searchKnowledge\` results. Pass every document you need in ONE call — max ${MAX_DOCUMENTS.toString()}.`,
       "",
-      "Output: { path, absolutePath, filename, mimeType, size, sidecarPath?, sidecarAbsolutePath? }. The `path` is workspace-relative (e.g. `drive/{uuid}-invoice.pdf`) — pass it directly to `read` / `vision` / `python`. When `sidecarPath` is present, you can also `read(sidecarPath)` to get the OCR markdown directly.",
+      "Output: { ok, files: [{ documentId, path, absolutePath, filename, mimeType, size, alreadyPresent?, sidecarPath?, sidecarAbsolutePath? }], failed: [{ documentId, error, code }] }. Each `path` is workspace-relative (e.g. `drive/{uuid}-invoice.pdf`) — pass it directly to `read` / `vision` / `python`. When `sidecarPath` is present, you can also `read(sidecarPath)` to get the OCR markdown directly.",
       "",
       "Constraints:",
-      "- ACL: only documents in the caller's team are accessible. Cross-team requests return `FORBIDDEN`.",
-      "- Quota: 100 MB cumulative under `drive/` per conversation (binary + sidecar both counted). `QUOTA_EXCEEDED` once full.",
-      "- One document per call; no bulk download.",
+      "- ACL: only documents in the caller's team are accessible. A cross-team id lands in `failed` with `FORBIDDEN`.",
+      "- Quota: 100 MB cumulative under `drive/` per conversation (binary + sidecar both counted), spent in the order you listed the ids. Documents past the cap land in `failed` with `QUOTA_EXCEEDED` — put the ones you need most first.",
+      "- A batch can half-succeed: read `failed` before assuming every file is there.",
     ].join("\n"),
     inputSchema: z.object({
-      documentId: z
-        .string()
-        .uuid()
+      documentIds: z
+        .array(z.string().uuid())
+        .min(1)
+        .max(MAX_DOCUMENTS)
         .describe(
-          "UUID of the Drive document to download. Source it from `listDocuments`, `querySql` (documents table), or `searchKnowledge` results.",
+          "UUIDs of the Drive documents to download. Source them from `listDocuments`, `querySql` (documents table), or `searchKnowledge` results.",
         ),
     }),
-    execute: async ({ documentId }, options) => {
+    execute: async ({ documentIds }, options) => {
       const ctx = getRuntimeContext(options);
       if (!ctx.conversationId) {
         return {
@@ -125,73 +137,14 @@ export const createDownloadDriveDocumentTool = () =>
       }
       const conversationId = ctx.conversationId;
 
-      // 1. Lookup + ACL check.
-      const document = await db.query.documents.findFirst({
-        where: { id: documentId },
-        columns: {
-          id: true,
-          teamId: true,
-          status: true,
-          originalFilename: true,
-          fileSize: true,
-          mimeType: true,
-        },
-      });
-      if (!document) {
-        return {
-          error: `Document not found: ${documentId}`,
-          code: TOOL_ERROR_CODES.NOT_FOUND,
-        };
-      }
-      if (document.teamId !== ctx.teamId) {
-        return {
-          error:
-            "This document belongs to a different team. You don't have access to it.",
-          code: TOOL_ERROR_CODES.FORBIDDEN,
-        };
-      }
-      if (document.status !== "ready") {
-        return {
-          error: `Document is not ready yet (status=${document.status}). Try again once processing finishes.`,
-          code: TOOL_ERROR_CODES.NOT_READY,
-        };
-      }
+      // The same id twice would pay for the same bytes twice against a
+      // quota that is the whole point of the ceiling.
+      const requested = [...new Set(documentIds)];
 
-      const sandboxPath = buildDrivePath(
-        document.id,
-        document.originalFilename,
-      );
-      const sidecarSandboxPath = buildDriveSidecarPath(sandboxPath);
-
-      // 2. Idempotent: skip the download if the file is already in
-      //    the sandbox. Common case: the agent calls this twice in
-      //    the same turn (e.g. once via vision, then python).
-      if (await fileExists(conversationId, sandboxPath)) {
-        const sidecarPresent = await fileExists(
-          conversationId,
-          sidecarSandboxPath,
-        );
-        return {
-          path: sandboxPath,
-          absolutePath: `/workspace/${sandboxPath}`,
-          filename: document.originalFilename,
-          mimeType: document.mimeType,
-          size: document.fileSize,
-          alreadyPresent: true,
-          ...(sidecarPresent
-            ? {
-                sidecarPath: sidecarSandboxPath,
-                sidecarAbsolutePath: `/workspace/${sidecarSandboxPath}`,
-              }
-            : {}),
-        };
-      }
-
-      // 3. Quota check before we spend bandwidth fetching from S3.
-      //    Sum the sizes of every file already in `drive/` plus the
-      //    incoming document's size; reject if the total would
-      //    exceed `DRIVE_QUOTA_BYTES`. The sidecar (when present) is
-      //    tiny — its size is checked again after we've fetched it.
+      // Measure what `drive/` already holds ONCE for the whole batch, then
+      // account each download against the running total. Re-listing per
+      // document would be N listings to learn something this loop already
+      // knows.
       let usedBytes = 0;
       try {
         const driveFiles = await listFiles(
@@ -205,90 +158,194 @@ export const createDownloadDriveDocumentTool = () =>
           err instanceof Error ? err.message : err,
         );
       }
-      if (usedBytes + document.fileSize > DRIVE_QUOTA_BYTES) {
-        const usedMb = (usedBytes / (1024 * 1024)).toFixed(1);
-        const docMb = (document.fileSize / (1024 * 1024)).toFixed(1);
-        const quotaMb = (DRIVE_QUOTA_BYTES / (1024 * 1024)).toFixed(0);
-        return {
-          error: `Drive quota exceeded for this conversation: ${usedMb} MB already downloaded, this document adds ${docMb} MB, cap is ${quotaMb} MB. Delete files under drive/ via bash (\`rm drive/...\`) or work with what you already have.`,
-          code: TOOL_ERROR_CODES.QUOTA_EXCEEDED,
+
+      const files: Record<string, unknown>[] = [];
+      const failed: Record<string, unknown>[] = [];
+
+      for (const documentId of requested) {
+        const outcome = await downloadOne({
+          documentId,
+          conversationId,
+          teamId: ctx.teamId,
           usedBytes,
           quotaBytes: DRIVE_QUOTA_BYTES,
-        };
-      }
-
-      // 4. Stream binary + sidecar in parallel from S3. The façade
-      //    does NOT backup `drive/` to the chatbot session S3
-      //    (re-download on demand is cheaper than mirroring). The
-      //    sidecar is optional — spreadsheets and any document that
-      //    failed to OCR won't have one.
-      const binaryKey = buildDocumentOriginalKey(
-        document.id,
-        document.originalFilename,
-      );
-      let bytes: Uint8Array | null;
-      let sidecarBytes: Uint8Array | null;
-      try {
-        [bytes, sidecarBytes] = await Promise.all([
-          getObjectBytes(binaryKey),
-          getDocumentSidecarBytes(document.id),
-        ]);
-      } catch (err) {
-        return {
-          error: `Failed to fetch document bytes from storage: ${err instanceof Error ? err.message : String(err)}`,
-          code: TOOL_ERROR_CODES.S3_FETCH_FAILED,
-        };
-      }
-      if (!bytes) {
-        return {
-          error: `Document bytes not found in storage (key=${binaryKey}).`,
-          code: TOOL_ERROR_CODES.S3_OBJECT_MISSING,
-        };
-      }
-
-      // Re-check the quota now that we know the sidecar's actual size.
-      // Sidecars are typically <200 KB so this rarely matters, but we'd
-      // rather refuse than blow past the cap in an edge case.
-      const sidecarSize = sidecarBytes?.byteLength ?? 0;
-      if (usedBytes + document.fileSize + sidecarSize > DRIVE_QUOTA_BYTES) {
-        const usedMb = (usedBytes / (1024 * 1024)).toFixed(1);
-        const totalMb = (
-          (document.fileSize + sidecarSize) /
-          (1024 * 1024)
-        ).toFixed(1);
-        const quotaMb = (DRIVE_QUOTA_BYTES / (1024 * 1024)).toFixed(0);
-        return {
-          error: `Drive quota exceeded for this conversation: ${usedMb} MB already downloaded, this document (+ sidecar) adds ${totalMb} MB, cap is ${quotaMb} MB. Delete files under drive/ via bash or work with what you already have.`,
-          code: TOOL_ERROR_CODES.QUOTA_EXCEEDED,
-          usedBytes,
-          quotaBytes: DRIVE_QUOTA_BYTES,
-        };
-      }
-
-      try {
-        await writeFile(conversationId, sandboxPath, bytes);
-        if (sidecarBytes) {
-          await writeFile(conversationId, sidecarSandboxPath, sidecarBytes);
+        });
+        if ("error" in outcome) {
+          failed.push({ documentId, ...outcome });
+          continue;
         }
-      } catch (err) {
-        return {
-          error: `Failed to write document into the conversation sandbox: ${err instanceof Error ? err.message : String(err)}`,
-          code: TOOL_ERROR_CODES.SANDBOX_WRITE_FAILED,
-        };
+        usedBytes += outcome.bytesAdded;
+        files.push(outcome.file);
       }
 
-      return {
+      return { ok: failed.length === 0, files, failed };
+    },
+  });
+
+/**
+ * Fetch ONE document into the sandbox, charged against a running byte
+ * budget.
+ *
+ * Split out of `execute` so the batch loop reads as a loop: every guard
+ * below (ACL, readiness, quota, storage) is per document, and a failing one
+ * costs that id a row in `failed` rather than the whole call.
+ */
+const downloadOne = async (params: {
+  documentId: string;
+  conversationId: string;
+  teamId: string;
+  usedBytes: number;
+  quotaBytes: number;
+}): Promise<
+  | { file: Record<string, unknown>; bytesAdded: number }
+  | { error: string; code: string; usedBytes?: number; quotaBytes?: number }
+> => {
+  const { documentId, conversationId, usedBytes, quotaBytes } = params;
+
+  // 1. Lookup + ACL check.
+  const document = await db.query.documents.findFirst({
+    where: { id: documentId },
+    columns: {
+      id: true,
+      teamId: true,
+      status: true,
+      originalFilename: true,
+      fileSize: true,
+      mimeType: true,
+    },
+  });
+  if (!document) {
+    return {
+      error: `Document not found: ${documentId}`,
+      code: TOOL_ERROR_CODES.NOT_FOUND,
+    };
+  }
+  if (document.teamId !== params.teamId) {
+    return {
+      error:
+        "This document belongs to a different team. You don't have access to it.",
+      code: TOOL_ERROR_CODES.FORBIDDEN,
+    };
+  }
+  if (document.status !== "ready") {
+    return {
+      error: `Document is not ready yet (status=${document.status}). Try again once processing finishes.`,
+      code: TOOL_ERROR_CODES.NOT_READY,
+    };
+  }
+
+  const sandboxPath = buildDrivePath(document.id, document.originalFilename);
+  const sidecarSandboxPath = buildDriveSidecarPath(sandboxPath);
+
+  // 2. Idempotent: skip the download if the file is already in
+  //    the sandbox. Common case: the agent calls this twice in
+  //    the same turn (e.g. once via vision, then python).
+  if (await fileExists(conversationId, sandboxPath)) {
+    const sidecarPresent = await fileExists(conversationId, sidecarSandboxPath);
+    return {
+      // Already counted in `usedBytes` by the listing above — charging it
+      // again would spend the quota twice for one file.
+      bytesAdded: 0,
+      file: {
+        documentId: document.id,
         path: sandboxPath,
         absolutePath: `/workspace/${sandboxPath}`,
         filename: document.originalFilename,
         mimeType: document.mimeType,
         size: document.fileSize,
-        ...(sidecarBytes
+        alreadyPresent: true,
+        ...(sidecarPresent
           ? {
               sidecarPath: sidecarSandboxPath,
               sidecarAbsolutePath: `/workspace/${sidecarSandboxPath}`,
             }
           : {}),
-      };
+      },
+    };
+  }
+
+  const quotaError = (added: number, label: string) => {
+    const usedMb = (usedBytes / (1024 * 1024)).toFixed(1);
+    const addMb = (added / (1024 * 1024)).toFixed(1);
+    const quotaMb = (quotaBytes / (1024 * 1024)).toFixed(0);
+    return {
+      error: `Drive quota exceeded for this conversation: ${usedMb} MB already downloaded, ${label} adds ${addMb} MB, cap is ${quotaMb} MB. Delete files under drive/ via bash (\`rm drive/...\`) or work with what you already have.`,
+      code: TOOL_ERROR_CODES.QUOTA_EXCEEDED,
+      usedBytes,
+      quotaBytes,
+    };
+  };
+
+  // 3. Quota check before we spend bandwidth fetching from S3.
+  if (usedBytes + document.fileSize > quotaBytes) {
+    return quotaError(document.fileSize, "this document");
+  }
+
+  // 4. Stream binary + sidecar in parallel from S3. The façade
+  //    does NOT backup `drive/` to the chatbot session S3
+  //    (re-download on demand is cheaper than mirroring). The
+  //    sidecar is optional — spreadsheets and any document that
+  //    failed to OCR won't have one.
+  const binaryKey = buildDocumentOriginalKey(
+    document.id,
+    document.originalFilename,
+  );
+  let bytes: Uint8Array | null;
+  let sidecarBytes: Uint8Array | null;
+  try {
+    [bytes, sidecarBytes] = await Promise.all([
+      getObjectBytes(binaryKey),
+      getDocumentSidecarBytes(document.id),
+    ]);
+  } catch (err) {
+    return {
+      error: `Failed to fetch document bytes from storage: ${err instanceof Error ? err.message : String(err)}`,
+      code: TOOL_ERROR_CODES.S3_FETCH_FAILED,
+    };
+  }
+  if (!bytes) {
+    return {
+      error: `Document bytes not found in storage (key=${binaryKey}).`,
+      code: TOOL_ERROR_CODES.S3_OBJECT_MISSING,
+    };
+  }
+
+  // Re-check the quota now that we know the sidecar's actual size.
+  // Sidecars are typically <200 KB so this rarely matters, but we'd
+  // rather refuse than blow past the cap in an edge case.
+  const sidecarSize = sidecarBytes?.byteLength ?? 0;
+  const totalSize = bytes.byteLength + sidecarSize;
+  if (usedBytes + totalSize > quotaBytes) {
+    return quotaError(totalSize, "this document (+ sidecar)");
+  }
+
+  try {
+    await writeFile(conversationId, sandboxPath, bytes);
+    if (sidecarBytes) {
+      await writeFile(conversationId, sidecarSandboxPath, sidecarBytes);
+    }
+  } catch (err) {
+    return {
+      error: `Failed to write document into the conversation sandbox: ${err instanceof Error ? err.message : String(err)}`,
+      code: TOOL_ERROR_CODES.SANDBOX_WRITE_FAILED,
+    };
+  }
+
+  return {
+    bytesAdded: totalSize,
+    file: {
+      documentId: document.id,
+      path: sandboxPath,
+      absolutePath: `/workspace/${sandboxPath}`,
+      filename: document.originalFilename,
+      mimeType: document.mimeType,
+      size: document.fileSize,
+      ...(sidecarBytes
+        ? {
+            sidecarPath: sidecarSandboxPath,
+            sidecarAbsolutePath: `/workspace/${sidecarSandboxPath}`,
+          }
+        : {}),
     },
-  });
+  };
+};

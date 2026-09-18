@@ -183,6 +183,119 @@ export const aiMessages = pgTable(
 );
 
 /**
+ * How a checkpoint's summary was produced. The ladder is ordered by fidelity,
+ * and a checkpoint records which rung it came from because that decides how
+ * much a reader can trust it — a `truncated` one is head-and-tail bytes, not a
+ * summary, and a repair job re-derives those first.
+ */
+export const aiCheckpointKindEnum = pgEnum("ai_checkpoint_kind", [
+  "llm",
+  "mechanical",
+  "truncated",
+]);
+
+/**
+ * A persisted resume point for a conversation: the summary of everything up to
+ * `up_to_message_id`, so the next turn loads that one row instead of the
+ * history behind it.
+ *
+ * **Why a table and not a message row.** Three readers need the COMPLETE
+ * history and must not see a summary — `presented-files.ts`, `collect-
+ * outputs.ts` and the transcript API; `ai_messages.metadata` is not indexed,
+ * so finding the latest checkpoint would mean a jsonb scan of the very rows
+ * the checkpoint exists to avoid reading; and `rewind.ts` already establishes
+ * that a row present-but-hidden makes the user and the model see two different
+ * conversations. A derived artefact in its own table touches none of the three.
+ *
+ * **`up_to_message_id` is the truth, `up_to_seq` is a convenience.** `seq` is
+ * `BY DEFAULT` precisely so a migration could renumber existing rows — a
+ * pointer into a numbering that has already been rewritten once is not a
+ * pointer. The FK also buys three things: a checkpoint written by a turn the
+ * user rewound away fails to insert instead of succeeding, `ON DELETE CASCADE`
+ * makes rewind invalidation redundant-but-free, and a repair job can always
+ * re-summarise from the raw rows below the frontier.
+ *
+ * **`participant_ids` freezes the cast.** The summary is built from text that
+ * already carries `[Name]:` speaker prefixes, so a member leaving would leave
+ * a summary quoting somebody the conversation no longer contains. Storing the
+ * roster lets the reader discard the checkpoint when it changes.
+ *
+ * **`generation` bounds summary-of-summaries.** Each checkpoint is normally
+ * built from a window that STARTS with the previous one, and the package's own
+ * verdict on that shape is blunt: "a second model pass over model output is a
+ * summary of summaries". Past a cap the writer re-summarises from the raw rows
+ * under the frontier instead, which the FK guarantees are still there.
+ */
+export const aiConversationCheckpoints = pgTable(
+  "ai_conversation_checkpoints",
+  {
+    id: uuid("id")
+      .default(sql`uuid_generate_v7()`)
+      .primaryKey(),
+
+    conversationId: uuid("conversation_id")
+      .notNull()
+      .references(() => aiConversations.id, { onDelete: "cascade" }),
+
+    /**
+     * Last message this checkpoint summarises, INCLUSIVE. Cascade-deleted with
+     * the row it points at, which is what makes a rewind self-invalidating.
+     */
+    upToMessageId: uuid("up_to_message_id")
+      .notNull()
+      .references(() => aiMessages.id, { onDelete: "cascade" }),
+
+    /**
+     * `seq` of `up_to_message_id`, denormalised so the window query is one
+     * indexed read instead of a join. `mode: "number"` to match
+     * `ai_messages.seq`: the `bigint` mode returns a `BigInt`, and every
+     * comparison against a plain number would throw.
+     */
+    upToSeq: bigint("up_to_seq", { mode: "number" }).notNull(),
+
+    summary: text("summary").notNull(),
+
+    /**
+     * Cumulative `searchTools` activations at the cut. Replayed as a synthetic
+     * tool result beside the summary — without it every resumed turn falls
+     * back to the base tool set and re-runs `searchTools`.
+     */
+    activatedTools: jsonb("activated_tools")
+      .$type<string[]>()
+      .notNull()
+      .default([]),
+
+    /** Conversation members at the cut. A change invalidates the checkpoint. */
+    participantIds: jsonb("participant_ids")
+      .$type<string[]>()
+      .notNull()
+      .default([]),
+
+    /** 1 = summarised from raw rows; N = built on a generation-(N-1) summary. */
+    generation: bigint("generation", { mode: "number" }).notNull().default(1),
+
+    kind: aiCheckpointKindEnum("kind").notNull(),
+
+    tokensBefore: bigint("tokens_before", { mode: "number" }).notNull(),
+    tokensAfter: bigint("tokens_after", { mode: "number" }).notNull(),
+
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    /**
+     * Answers the only read there is — "the latest checkpoint for this
+     * conversation" — as a backwards index scan with no sort, AND makes
+     * concurrent writers idempotent: two turns racing the same cut collide
+     * here instead of both inserting.
+     */
+    uniqueIndex("ai_conversation_checkpoints_conv_seq_idx").on(
+      t.conversationId,
+      t.upToSeq,
+    ),
+  ],
+);
+
+/**
  * Membership of a collaborative conversation (M2M conversation ↔ user).
  * One row per participant. Beyond access control, each row also carries the
  * participant's **per-user** state for that conversation:

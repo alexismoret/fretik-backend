@@ -49,7 +49,9 @@ describe("ROLE_FUNCTION", () => {
     expect(ROLE_FUNCTION["vision-fallback"]).toBe("auto");
     expect(ROLE_FUNCTION["pre-extract-fallback"]).toBe("auto");
     expect(ROLE_FUNCTION["transform-fallback"]).toBe("auto");
+    expect(ROLE_FUNCTION["page-build-fallback"]).toBe("auto");
     expect(ROLE_FUNCTION["page-review"]).toBe("auto");
+    expect(ROLE_FUNCTION["page-review-fallback"]).toBe("auto");
   });
 
   test("the six roles that used to be pinned `fixed` are now team choices", () => {

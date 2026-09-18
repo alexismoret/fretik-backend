@@ -614,6 +614,7 @@ export const relations = defineRelations(schema, (r) => ({
     }),
     toolApprovalRequests: r.many.toolApprovalRequests(),
     backgroundTasks: r.many.conversationBackgroundTasks(),
+    checkpoints: r.many.aiConversationCheckpoints(),
   },
 
   aiMessages: {
@@ -627,6 +628,17 @@ export const relations = defineRelations(schema, (r) => ({
       optional: true,
     }),
     chatFiles: r.many.aiChatFiles(),
+  },
+
+  aiConversationCheckpoints: {
+    conversation: r.one.aiConversations({
+      from: r.aiConversationCheckpoints.conversationId,
+      to: r.aiConversations.id,
+    }),
+    upToMessage: r.one.aiMessages({
+      from: r.aiConversationCheckpoints.upToMessageId,
+      to: r.aiMessages.id,
+    }),
   },
 
   aiConversationMembers: {

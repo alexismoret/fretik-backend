@@ -1,7 +1,15 @@
 import type { UIMessage } from "ai";
 import { and, asc, desc, eq, gt, lte, notInArray, sql } from "drizzle-orm";
 import db, { type Transaction } from "../../db";
-import { aiConversations, aiMessages } from "../../db/schema";
+import {
+  aiConversationMembers,
+  aiConversations,
+  aiMessages,
+} from "../../db/schema";
+import {
+  type ConversationCheckpoint,
+  loadLatestCheckpoint,
+} from "./checkpoints";
 
 type Role = "user" | "assistant" | "system";
 
@@ -18,6 +26,13 @@ const rowToUiMessage = (row: typeof aiMessages.$inferSelect): UIMessage => {
     // Surfaced so a resuming client can trim the active turn's partial
     // messages before replaying the turn log (and flag interrupted turns).
     ...(row.turnId ? { turnId: row.turnId } : {}),
+    // When the message was sent, for the timestamp under a user bubble. LAST
+    // in the spread on purpose: the client stamps its own clock so a
+    // just-sent message has a time before it has a row, and that guess must
+    // lose to the column the instant history is read back. The column also
+    // survives an edit (the rewind re-saves the row in place), so the
+    // timestamp keeps saying when the message was first sent.
+    createdAt: row.createdAt.toISOString(),
   };
   return {
     id: row.id,
@@ -103,27 +118,245 @@ export const getConversationMessages = async (
 };
 
 /**
- * Load the last N messages for feeding into the agent's memory window.
- * Returned in chronological order (oldest first) so they can be passed
- * directly to `streamText({ messages })`.
+ * Can this row still change after the turn that read it?
  *
- * Default raised to 30 in Phase 8: the `services/compaction` pipeline
- * needs a large enough tail to trigger its 12K-token threshold on real
- * long conversations. The model never sees all 30 verbatim — anything
- * older than the last 8 gets collapsed into a single system summary by
- * `compactConversation`.
+ * Three classes, and a checkpoint that summarises any of them loses the
+ * change for good:
+ *  - `partial` rows, rewritten in place by `upsertPartialMessage`;
+ *  - rows carrying an unresolved approval, mutated in place when the user
+ *    answers — matched by output SHAPE, never by tool name, the same way
+ *    `detectPendingApproval` reads them back;
+ *  - the current turn's own output, which is not in the window at all (that
+ *    is what makes the window's max seq the right cut and `MAX(seq)` the
+ *    wrong one).
+ */
+export const isMutableRow = (row: {
+  metadata: Record<string, unknown> | null;
+  parts: UIMessage["parts"];
+}): boolean => {
+  if (row.metadata?.partial === true) return true;
+  for (const part of row.parts) {
+    if (!("output" in part)) continue;
+    const output: unknown = part.output;
+    if (typeof output !== "object" || output === null) continue;
+    if (!("status" in output)) continue;
+    if (output.status === "approval_pending") return true;
+  }
+  return false;
+};
+
+/** Where a checkpoint anchors: the last row it summarised. */
+export interface CutAnchor {
+  seq: number;
+  messageId: string;
+}
+
+type CutCandidateRow = {
+  id: string;
+  seq: number;
+  metadata: Record<string, unknown> | null;
+  parts: UIMessage["parts"];
+};
+
+/**
+ * Where a checkpoint may cut for EVERY prefix of a window, aligned 1:1 with the
+ * rows: `anchors[i]` is the cut a checkpoint takes when `rows[0..i]` is what it
+ * summarised, and `null` when nothing at or before `i` is safe to summarise.
+ *
+ * One array rather than one answer because a checkpoint no longer always cuts
+ * at the end of the window: keeping a verbatim tail means summarising a prefix
+ * and cutting where that prefix stops, and the caller that decides the tail
+ * counts MESSAGES, not seqs. Precomputing the mapping here is what lets it
+ * translate one into the other without the rows.
+ *
+ * Stopping rather than skipping is the point. A checkpoint is a PREFIX of the
+ * conversation, so one mutable row freezes every later answer at that row —
+ * summarising past it and leaving a hole would put the settled rows after it
+ * into neither the summary nor the next window.
+ */
+export const settledAnchors = (
+  rows: CutCandidateRow[],
+): (CutAnchor | null)[] => {
+  const anchors: (CutAnchor | null)[] = [];
+  let anchor: CutAnchor | null = null;
+  let frozen = false;
+  for (const row of rows) {
+    if (!frozen && isMutableRow(row)) frozen = true;
+    if (!frozen) anchor = { seq: row.seq, messageId: row.id };
+    anchors.push(anchor);
+  }
+  return anchors;
+};
+
+/**
+ * The last row of a window that is safe to summarise — the cut of a checkpoint
+ * that keeps no verbatim tail. The last entry of `settledAnchors`, by
+ * definition, and derived from it so the two can never disagree.
+ */
+export const settledCut = (rows: CutCandidateRow[]): CutAnchor | null =>
+  settledAnchors(rows).at(-1) ?? null;
+
+/**
+ * The agent's window: the rows a turn reads, plus where a checkpoint written
+ * after that turn is allowed to cut.
+ */
+export interface AgentWindow {
+  /**
+   * Rows only — the checkpoint's own summary and activation-replay messages
+   * are prepended by the caller, which is the layer that knows what a model
+   * should see. See `@fretik/ai` `services/compaction/checkpoint-window.ts`.
+   */
+  messages: UIMessage[];
+  /**
+   * The ONLY cut a checkpoint may be written at: the last row of THIS window
+   * that is safe to summarise. Null when the window is empty or entirely
+   * mutable.
+   *
+   * Deriving it here rather than at write time is the whole correctness
+   * argument. A writer that asked the database for `MAX(seq)` after the turn
+   * would summarise up to a row the turn never saw, and the answer the model
+   * had just given — persisted by `onFinish` at a higher seq — would fall
+   * neither inside the summary nor inside the next window. Perfect amnesia
+   * about its own last reply, on every checkpoint.
+   */
+  cut: CutAnchor | null;
+  /**
+   * The same answer for every prefix of `messages`, aligned 1:1 with it — what
+   * a checkpoint that keeps a verbatim tail cuts at. `cut` is its last entry.
+   *
+   * See `settledAnchors`.
+   */
+  anchors: (CutAnchor | null)[];
+  /** The checkpoint this window is anchored on, if any. */
+  checkpoint: ConversationCheckpoint | null;
+}
+
+/**
+ * The latest checkpoint, unless the conversation's cast has changed since it
+ * was written.
+ *
+ * A summary is built from transcript text that ALREADY carries `[Name]:`
+ * speaker prefixes, so once a member leaves, the summary keeps quoting
+ * somebody the conversation no longer contains — and keeps showing their
+ * words to whoever remains. Retroactive re-labelling, which the speaker
+ * context supports on raw rows, is impossible below a frozen summary.
+ *
+ * The membership read only happens when the checkpoint froze a cast of two or
+ * more, because that is exactly when `buildSpeakerContext` prefixes anything
+ * (`participants.length < 2` returns the history untouched). A solo
+ * conversation therefore pays nothing for this.
+ *
+ * Rejecting a checkpoint costs a bigger history read, never correctness — the
+ * rows under it were never deleted.
+ */
+/**
+ * Who is in a conversation, as the cast a checkpoint freezes.
+ *
+ * Exported because the WRITER needs the same list the reader compares against:
+ * a checkpoint written with an empty cast is one `usableCheckpoint` will never
+ * invalidate, since the guard below only runs at two participants or more. The
+ * `/invoke` route has no `conversation.members` of its own to pass, and
+ * inventing `[]` there would silently opt those conversations out of the very
+ * check this file exists to perform.
+ */
+export const loadParticipantIds = async (
+  conversationId: string,
+): Promise<string[]> => {
+  const members = await db
+    .select({ userId: aiConversationMembers.userId })
+    .from(aiConversationMembers)
+    .where(eq(aiConversationMembers.conversationId, conversationId));
+  return members.map((m) => m.userId);
+};
+
+const usableCheckpoint = async (
+  conversationId: string,
+): Promise<ConversationCheckpoint | null> => {
+  const checkpoint = await loadLatestCheckpoint(conversationId);
+  if (!checkpoint || checkpoint.participantIds.length < 2) return checkpoint;
+
+  const current = (await loadParticipantIds(conversationId)).sort();
+  const frozen = [...checkpoint.participantIds].sort();
+  const unchanged =
+    current.length === frozen.length &&
+    current.every((id, i) => id === frozen[i]);
+  if (unchanged) return checkpoint;
+
+  console.info(
+    `[checkpoint] discarded reason=participants_changed conversation=${conversationId} frozen=${frozen.length.toString()} current=${current.length.toString()}`,
+  );
+  return null;
+};
+
+/**
+ * Load the agent's window: everything after the latest checkpoint, capped at
+ * the last N rows.
+ *
+ * Default 30 since Phase 8: the `services/compaction` pipeline needs a large
+ * enough tail to trigger its threshold on real long conversations. The model
+ * never sees all 30 verbatim — `compactConversation` collapses what is left.
+ *
+ * With a checkpoint the window is bounded twice, by `seq > cut` AND by the
+ * limit, and the two answer different questions: the checkpoint bounds what is
+ * SUMMARISED, the limit bounds what a single turn is willing to carry when a
+ * conversation has run away between two checkpoints.
  */
 export const loadConversationForAgent = async (
   conversationId: string,
   limit = 30,
+): Promise<AgentWindow> => {
+  const checkpoint = await usableCheckpoint(conversationId);
+
+  const rows = await db
+    .select()
+    .from(aiMessages)
+    .where(
+      checkpoint
+        ? and(
+            eq(aiMessages.conversationId, conversationId),
+            gt(aiMessages.seq, checkpoint.upToSeq),
+          )
+        : eq(aiMessages.conversationId, conversationId),
+    )
+    .orderBy(desc(aiMessages.seq))
+    .limit(limit);
+
+  const kept = dropStalePartialRows(rows.reverse());
+  const anchors = settledAnchors(kept);
+
+  return {
+    messages: kept.map(rowToUiMessage),
+    cut: anchors.at(-1) ?? null,
+    anchors,
+    checkpoint,
+  };
+};
+
+/**
+ * The last `limit` RAW rows at or before `upToSeq` — no checkpoint anchoring,
+ * chronological.
+ *
+ * The repair path's input. A checkpoint's foreign key guarantees these rows
+ * are still there, whatever generation of summary sits above them, which is
+ * what makes every checkpoint reconstructible rather than a one-way
+ * compression.
+ */
+export const loadRawMessagesBelow = async (
+  conversationId: string,
+  upToSeq: number,
+  limit: number,
 ): Promise<UIMessage[]> => {
   const rows = await db
     .select()
     .from(aiMessages)
-    .where(eq(aiMessages.conversationId, conversationId))
+    .where(
+      and(
+        eq(aiMessages.conversationId, conversationId),
+        lte(aiMessages.seq, upToSeq),
+      ),
+    )
     .orderBy(desc(aiMessages.seq))
     .limit(limit);
-
   return dropStalePartialRows(rows.reverse()).map(rowToUiMessage);
 };
 

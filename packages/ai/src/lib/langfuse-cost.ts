@@ -55,6 +55,20 @@ export const extractUpstreamCost = (
   extractOpenRouterReport(providerMetadata).costUsd;
 
 /**
+ * The share of the above that the UPSTREAM billed directly, under BYOK —
+ * placed on the metadata by `byokCostCarrierMiddleware`.
+ *
+ * Reported separately so a dashboard can be reconciled: this is precisely the
+ * money the aggregator's invoice does NOT contain, and a total that silently
+ * exceeds that invoice is otherwise indistinguishable from a bug in the
+ * instrument.
+ */
+export const extractByokUpstreamCost = (
+  providerMetadata: SharedV4ProviderMetadata | undefined,
+): number | undefined =>
+  extractOpenRouterReport(providerMetadata).byokUpstreamCostUsd;
+
+/**
  * A cost for a call whose transport does not put one on the wire, supplied by
  * that transport at model-construction time (`TransportAdapter.estimateCostUsd`).
  *
@@ -171,6 +185,7 @@ const writeCost = (
   const input = finite(inputTokens?.total);
   const cacheRead = finite(inputTokens?.cacheRead);
   const reported = extractUpstreamCost(providerMetadata);
+  const byok = extractByokUpstreamCost(providerMetadata);
   // A reported figure always wins; the estimate exists for transports that
   // report none, and is marked so nobody reads it as a measurement.
   const derived =
@@ -227,12 +242,20 @@ const writeCost = (
         reasoning !== undefined ||
         text !== undefined ||
         cut !== undefined ||
-        derived !== undefined
+        derived !== undefined ||
+        byok !== undefined
           ? {
               metadata: {
                 // The one thing that separates a measured cost from a computed
                 // one on a dashboard where both are just `costDetails.total`.
                 ...(derived !== undefined ? { estimatedCost: true } : {}),
+                // A BYOK call's money is split across two invoices and only
+                // one of them is the aggregator's. Naming the share it does
+                // not contain is what lets a Langfuse total be reconciled
+                // against that invoice instead of read as a discrepancy.
+                ...(byok !== undefined
+                  ? { byok: true, byokUpstreamCostUsd: byok }
+                  : {}),
                 // Both keys carry the same value for one release. `servingProvider`
                 // is the name that survives — the field stopped being about one
                 // transport — but existing Langfuse views and saved filters key

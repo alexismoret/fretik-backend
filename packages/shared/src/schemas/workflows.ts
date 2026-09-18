@@ -437,6 +437,46 @@ export const currentWorkflowTask = (
   tasks.find((t) => t.status === "pending") ??
   null;
 
+/**
+ * What a run DID, as opposed to what it spent — the counters the whole
+ * measurement tier of the agent-learning plan reads.
+ *
+ * Tokens alone cannot answer "where did this run go?". A run that rereads its
+ * skills every time and rediscovers a schema it already knew shows up as a
+ * perfectly ordinary token bill; it is the step count, the tool histogram and
+ * the repeat count that say so. None of this was persisted before: `toolCallCount`
+ * existed only to feed the anti-stall check and died with the turn.
+ *
+ * Counts only. Every field here is derived from the run's own trajectory
+ * (`services/trajectory/extract.ts`) and carries no argument and no output —
+ * this object is read by dashboards and operators, and the values are customer
+ * business data.
+ *
+ * It rides inside `usage` rather than in a column of its own because the two
+ * parsers of the turn protocol (`WorkflowTurnResultSchema.parse` on the
+ * orchestrator, the replay `safeParse`) STRIP unknown keys: a field that is not
+ * declared here never reaches the row, whatever the handler puts in the jsonb.
+ */
+export const WorkflowRunWorkSchema = z.object({
+  /** Model round trips. Only the step callback can count these. */
+  steps: z.number().int().nonnegative().default(0),
+  toolCalls: z.number().int().nonnegative().default(0),
+  /** Calls per tool name — where the steps actually went. */
+  perTool: z.record(z.string(), z.number().int().nonnegative()).default({}),
+  /** `read` calls under `skills/` — the rereading tier 1 removes. */
+  skillReads: z.number().int().nonnegative().default(0),
+  /** Calls that came back as the canonical `{ error, code }` envelope. */
+  errorCalls: z.number().int().nonnegative().default(0),
+  /** Surplus repeats of an identical call: the same work done twice. */
+  redundantCalls: z.number().int().nonnegative().default(0),
+  pythonCells: z.number().int().nonnegative().default(0),
+  /** Serialized tool output fed back into the context, in characters. */
+  outputChars: z.number().int().nonnegative().default(0),
+  /** Whether the run read or executed the recipe it was given, if any. */
+  recipeUsed: z.boolean().default(false),
+});
+export type WorkflowRunWork = z.infer<typeof WorkflowRunWorkSchema>;
+
 export const WorkflowRunUsageSchema = z.object({
   inputTokens: z.number().int().nonnegative().default(0),
   outputTokens: z.number().int().nonnegative().default(0),
@@ -447,6 +487,9 @@ export const WorkflowRunUsageSchema = z.object({
    * any cost/credit presentation happens in a display layer, never here. */
   cachedInputTokens: z.number().int().nonnegative().default(0),
   turns: z.number().int().nonnegative().default(0),
+  /** Optional: rows written before the measurement tier have no `work`, and a
+   * turn whose trajectory could not be read must still record its tokens. */
+  work: WorkflowRunWorkSchema.optional(),
 });
 export type WorkflowRunUsage = z.infer<typeof WorkflowRunUsageSchema>;
 

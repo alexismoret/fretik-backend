@@ -15,6 +15,7 @@ import {
   WorkflowTurnResultSchema,
   WorkflowWaitTokenRequestSchema,
   type WorkflowRunUsage,
+  type WorkflowRunWork,
   type WorkflowTaskState,
   type WorkflowTurnResult,
 } from "@fretik/shared/schemas/workflows";
@@ -31,6 +32,12 @@ import {
 } from "@fretik/shared/services/ai/turn-log";
 import { releaseSandbox } from "@fretik/shared/services/e2b/release-sandbox";
 import { getTeamToolPolicies } from "@fretik/shared/services/tool-policies/get-for-team";
+import {
+  extractTrajectory,
+  summarizeTrajectory,
+  type TrajectorySummary,
+} from "@fretik/shared/services/trajectory/extract";
+import { foldTurnWork } from "@fretik/shared/services/trajectory/run-work";
 import { createWorkflowRun } from "@fretik/shared/services/workflows/create-run";
 import { evaluateCircuitBreaker } from "@fretik/shared/services/workflows/evaluate-circuit-breaker";
 import { finalizeRun } from "@fretik/shared/services/workflows/finalize-run";
@@ -89,6 +96,7 @@ import type { WorkflowTools } from "../agents/workflow/tools";
 import { recallForWorkflowTurnOne } from "../agents/workflow/turn-one-memory";
 import { subscribeAbort } from "../lib/abort-subscriber";
 import { flushLangfuse, langfuseEnabled } from "../lib/langfuse";
+import { recordScores } from "../lib/langfuse-scores";
 import {
   effectiveReasoningLevel,
   reasoningParamForProfile,
@@ -238,15 +246,90 @@ export const addUsage = (
   turn: LanguageModelUsage | undefined,
   turnIndex: number,
   floorTotalTokens = 0,
-): WorkflowRunUsage => ({
-  inputTokens: prev.inputTokens + (turn?.inputTokens ?? 0),
-  outputTokens: prev.outputTokens + (turn?.outputTokens ?? 0),
-  totalTokens:
-    prev.totalTokens + Math.max(turn?.totalTokens ?? 0, floorTotalTokens),
-  cachedInputTokens:
-    prev.cachedInputTokens + (turn?.inputTokenDetails.cacheReadTokens ?? 0),
-  turns: turnIndex,
-});
+  work?: WorkflowRunWork,
+): WorkflowRunUsage => {
+  // Keep whatever the run already had when this turn could not be read: the
+  // work counters are a measurement, and a measurement that erases its own
+  // history on one unreadable turn is worse than one that admits a gap.
+  const nextWork = work ?? prev.work;
+  return {
+    inputTokens: prev.inputTokens + (turn?.inputTokens ?? 0),
+    outputTokens: prev.outputTokens + (turn?.outputTokens ?? 0),
+    totalTokens:
+      prev.totalTokens + Math.max(turn?.totalTokens ?? 0, floorTotalTokens),
+    cachedInputTokens:
+      prev.cachedInputTokens + (turn?.inputTokenDetails.cacheReadTokens ?? 0),
+    turns: turnIndex,
+    ...(nextWork !== undefined ? { work: nextWork } : {}),
+  };
+};
+
+/**
+ * What this turn did, folded onto the run's running totals.
+ *
+ * Read from the messages the turn ADDED, identified the same way persistence
+ * identifies them (`filterNewAssistantMessages`, by id) so the two can never
+ * disagree about what this turn was. Not the whole history, which is windowed
+ * to `WORKFLOW_HISTORY_LIMIT` and would drop the early steps of a long run;
+ * not the whole conversation, which would cost a query every turn.
+ *
+ * Soft-fail by construction. A run is the work; counting it is not, and a
+ * malformed part from an older shape of the code must not cost a turn.
+ */
+const summarizeTurn = (params: {
+  history: UIMessage[];
+  finalMessages: UIMessage[];
+  openTaskKey: string | undefined;
+}): TrajectorySummary | undefined => {
+  try {
+    const turnMessages = filterNewAssistantMessages(
+      params.history,
+      params.finalMessages,
+    );
+    return summarizeTrajectory(
+      extractTrajectory(turnMessages, {
+        ...(params.openTaskKey !== undefined
+          ? { initialTaskKey: params.openTaskKey }
+          : {}),
+      }),
+    );
+  } catch (err) {
+    console.warn(
+      `${logPrefix} trajectory summary failed:`,
+      err instanceof Error ? err.message : err,
+    );
+    return undefined;
+  }
+};
+
+/**
+ * Publish the turn's own counters as scores on the turn's trace.
+ *
+ * Deltas, not run totals: the trace IS the turn, and Langfuse sums across a
+ * session on its own. Putting the cumulative run figure on every turn would
+ * make a five-turn run look like it read its skills five times as often as it
+ * did.
+ *
+ * Fire-and-forget and soft-fail — the same discipline as the usage ledger:
+ * accounting never costs a turn.
+ */
+const scoreTurnWork = (
+  traceId: string,
+  summary: TrajectorySummary,
+  steps: number,
+): void => {
+  void recordScores({
+    traceId,
+    scores: [
+      { name: "steps", value: steps },
+      { name: "tool-calls", value: summary.totalCalls },
+      { name: "skill-reads", value: summary.skillReads.calls },
+      { name: "error-calls", value: summary.errorCalls },
+      { name: "redundant-calls", value: summary.redundantCalls },
+      { name: "recipe-used", value: summary.recipeUsed ? 1 : 0 },
+    ],
+  }).catch(() => undefined);
+};
 
 /** Read an anti-stall counter persisted alongside the previous turn's
  * result (extra jsonb keys the protocol schema deliberately strips). */
@@ -593,10 +676,15 @@ const executeTurn = async (params: {
   };
   let budgetAborted = false;
   let budgetWarned = false;
+  // Model round trips. The one number of the measurement tier that cannot be
+  // read back from the persisted messages: a turn's steps are merged into a
+  // single assistant message, so only the callback ever sees them.
+  let stepCount = 0;
   const onWorkflowStepEnd = (step: {
     toolCalls: readonly unknown[];
     usage?: LanguageModelUsage;
   }): void => {
+    stepCount++;
     toolCallCount += step.toolCalls.length;
     turnAccum.inputTokens += step.usage?.inputTokens ?? 0;
     turnAccum.outputTokens += step.usage?.outputTokens ?? 0;
@@ -789,11 +877,29 @@ const executeTurn = async (params: {
   // ---- Turn outcome ----
   const fresh = await getWorkflowRunRow({ id: run.id });
   const freshTasks = fresh?.taskStates ?? taskStates;
+  // What this turn did, read back from the messages it added. Folded onto the
+  // run's running totals, and published as scores on the turn's own trace so
+  // the existing Langfuse dashboard shows them per workflow and per team
+  // without a new surface.
+  const turnSummary = summarizeTurn({
+    history,
+    finalMessages,
+    openTaskKey: currentWorkflowTask(run.taskStates)?.key,
+  });
+  if (turnSummary !== undefined && langfuseEnabled) {
+    scoreTurnWork(traceId, turnSummary, stepCount);
+  }
   const usage = addUsage(
     run.usage,
     turnUsage,
     turnIndex,
     turnAccum.totalTokens,
+    turnSummary === undefined
+      ? run.usage.work
+      : foldTurnWork(run.usage.work, {
+          steps: stepCount,
+          summary: turnSummary,
+        }),
   );
   const approval = abortController.signal.aborted
     ? null

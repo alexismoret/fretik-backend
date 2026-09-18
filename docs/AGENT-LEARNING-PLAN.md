@@ -97,6 +97,15 @@ allers-retours modèle**, chacun valant ~28 s en moyenne, et un tour en dépense
 14,6. Cela confirme la direction du plan et rétrograde le préchauffage sandbox
 de « gain le plus sûr » à « ~2 %, à faire parce que c'est trivial ».
 
+**Et le profilage de la base a CIBLÉ le palier 1 (§7).** Sur 99 runs de
+production, la thèse « la relecture de skills et la redécouverte de schéma sont
+là où partent les steps » est vraie sur **un seul workflow** : Longchamp, celui
+qui porte l'external app PbyP — 18 % de ses appels, sur un run qui en fait 4,3
+fois plus que la médiane. Partout ailleurs elle vaut 3 à 6 % et la
+redécouverte de schéma est nulle. Le palier 1 n'est donc pas abandonné, il est
+**conditionné à la forme du workflow** — et il ne s'allumera qu'une fois que
+ce workflow-là aura les 3 runs exploitables que la dérivation exige. Il en a 1.
+
 ---
 
 ## 1. Constat : ce que le code fait aujourd'hui
@@ -1457,27 +1466,35 @@ complétions suivent une relecture de skill ou une redécouverte de schéma rest
 par le tunnel, sur les quatre workflows les plus actifs — **97 runs**. C'est le
 livrable du palier 0, et il ne dit pas ce que le plan attendait.
 
-| workflow                 | runs | exploitables | lectures de skills | redécouverte de schéma | répétitions | fusionnable (strict) | appels supprimables |
-| ------------------------ | ---: | -----------: | -----------------: | ---------------------: | ----------: | -------------------: | ------------------: |
-| Ventilation factures 3M  |   30 |           10 |                3 % |                  **0** |         5 % |                 14 % |                10 % |
-| bilan-activite-remises   |   24 |        **2** |                5 % |                  **0** |         6 % |                 10 % |                 7 % |
-| Veille LLM _(contrôle)_  |   22 |           21 |                6 % |                  **0** |         5 % |                  5 % |                 4 % |
-| Intégration Akanea (OCR) |   21 |            8 |                4 % |                  **0** |         3 % |                  9 % |                 6 % |
+| workflow                          | runs | exploitables | appels/run | lectures de skills | redécouverte de schéma | répétitions | fusionnable (strict) |
+| --------------------------------- | ---: | -----------: | ---------: | -----------------: | ---------------------: | ----------: | -------------------: |
+| **Longchamp (PbyP)**              |    2 |        **1** |   **42,5** |           **12 %** |                **6 %** |         2 % |                  5 % |
+| Export EDI Fatton _(FTP)_         |    5 |            2 |       28,6 |                2 % |                  **0** |         1 % |                  5 % |
+| Intégration Akanea (OCR)          |   21 |            8 |       16,5 |                4 % |                  **0** |         3 % |                  9 % |
+| Veille LLM _(contrôle, sans app)_ |   22 |           21 |       14,3 |                6 % |                  **0** |         5 % |                  5 % |
+| Ventilation factures 3M           |   30 |           10 |        9,8 |                3 % |                  **0** |         5 % |                 14 % |
+| bilan-activite-remises            |   24 |        **2** |       10,3 |                5 % |                  **0** |         6 % |                 10 % |
 
-**Le palier 1, tel qu'il est spécifié, vaut ~5 % et non 40-60 %.** Sa thèse
-était que la relecture de skills et la redécouverte de schéma sont là où
-partent les steps. Mesuré : les lectures de skills font **3 à 6 %** des appels,
-et la redécouverte de schéma est **nulle partout**. Le plafond combiné —
-lectures + répétitions + fusion, et ces trois-là se recouvrent — est de l'ordre
-de **20 %**, pas de 40-60 %. L'hypothèse de §0 est réfutée par notre propre
-corpus.
+**La thèse du palier 1 est vraie sur un workflow et sur un seul : celui pour
+lequel elle a été écrite.** Longchamp est le workflow PbyP. Il dépense
+**12 % de ses appels en relecture de skills et 6 % en redécouverte de schéma —
+18 % à lui seul**, sur un run qui fait **4,3 fois plus d'appels que la
+médiane**. En absolu : **7,5 appels par run** de relecture et de redécouverte,
+contre 0,3 à 0,6 partout ailleurs. Il renvoie aussi **163 k caractères de
+sortie d'outil par run**, dix fois les autres.
 
-**Mais la moitié qui manque doit être dite aussi : PbyP n'est pas en
-production.** Trois workflows seulement ont une connexion d'external app
-(Akanea OCR 21 runs, Export EDI Fatton 5, Longchamp 2), et aucun n'est PbyP.
-C'est pourquoi la redécouverte de schéma est à zéro : le cas qui a motivé ce
-plan n'est pas dans le corpus qui le réfute. Le plan n'est donc pas réfuté
-_pour PbyP_ ; il est réfuté **pour ce qui tourne réellement aujourd'hui**.
+Partout ailleurs, la même thèse vaut 3 à 6 %, et la redécouverte de schéma est
+**nulle**. Y compris sur Export EDI Fatton, qui a pourtant une external app :
+ce n'est donc pas « avoir une external app » qui produit la forme, c'est
+**avoir un SDK riche à schéma découvrable et un SKILL en plusieurs fichiers**.
+PbyP est cette forme ; un FTP ne l'est pas.
+
+**Donc le palier 1 n'est pas à abandonner, il est à CIBLER.** Construit pour
+tous les workflows, il vaut ~5 % et ne mérite pas trois semaines. Construit
+pour la forme PbyP — un workflow qui lit ≥ 3 fichiers de skill ou fait des
+appels de découverte de schéma — il vaut ~18 % des appels sur le workflow qui
+coûte le plus cher. C'est le même code ; ce qui change est la porte d'entrée,
+et le ledger sait déjà la calculer.
 
 **La vérité terrain a gagné sa place au premier essai, et ce qu'elle a trouvé
 n'est pas une question d'optimisation.** Sur « Ventilation factures 3M », **13
@@ -1494,11 +1511,64 @@ sur 24 seulement** sont exploitables pour la même raison. Deux conséquences :
    **Ça n'est pas un problème de vitesse, et aucun palier de ce plan ne le
    corrige.** C'est le premier sujet, et il passe devant.
 
+### Ce que ce corpus ne peut pas dire, et comment s'y projeter quand même
+
+Fretik a **un client**. Ces 99 runs sont ce qu'un seul client produit en
+quelques semaines, et deux des workflows mesurés ont 2 et 5 runs. Traiter ces
+chiffres comme une loi serait aussi faux que les ignorer. Trois choses se
+projettent, et une ne se projette pas.
+
+**Ce qui ne bouge pas avec le volume : les ratios.** 12 % de lectures de skills
+sur Longchamp, c'est une propriété de la FORME du workflow — un SKILL en cinq
+fichiers, un SDK à schéma découvrable — pas du nombre de fois qu'il tourne. Dix
+fois plus de runs de Longchamp donneront dix fois plus d'appels dans les mêmes
+proportions. Le gain par run ne grandit pas ; c'est le gain **total** qui suit
+le volume.
+
+**Ce qui bouge, et c'est là qu'est l'anticipation :**
+
+1. **Le nombre de workflows de forme PbyP.** Chaque nouveau client apporte ses
+   applications métier, et chaque application riche branchée en external app
+   crée un workflow de cette forme. Aujourd'hui : un sur dix. C'est la seule
+   extrapolation que ce corpus autorise, et elle suffit — le palier 1 ciblé
+   devient rentable dès qu'il y a plusieurs Longchamp.
+2. **L'éligibilité elle-même.** Aujourd'hui Longchamp a 2 runs dont 1
+   exploitable : **il ne peut pas avoir de recette**, la dérivation en demande
+   trois. Le workflow qui bénéficierait le plus du plan est précisément celui
+   qui n'y a pas droit. Ce n'est pas un défaut de la règle, c'est un problème
+   de volume, et le volume le résout tout seul. La conséquence pratique :
+   **construire le palier 1 aujourd'hui, c'est construire quelque chose qui ne
+   s'allumera sur aucun workflow.**
+3. **La pression sur le contexte.** Longchamp renvoie 163 k caractères de
+   sortie par run. C'est le workflow le plus près du plafond de 180 000, donc
+   celui où la compaction mord en premier — et celui où rendre des corps de
+   skills dans le prompt coûte du budget d'historique (4.2). Les deux effets
+   atterrissent sur le même workflow, ce qui n'est pas une coïncidence : c'est
+   la même cause, un SDK riche qui produit beaucoup.
+
+**Ce qui ne se projette pas : que la forme PbyP restera la forme coûteuse.**
+Rien ici ne dit qu'un futur client n'aura pas un profil que ce corpus ne
+contient pas. C'est exactement pourquoi `workflows:profile` existe et pourquoi
+il est la porte d'entrée du palier 1 plutôt qu'une note de bas de page : la
+question « ce workflow a-t-il la forme qui paie » se repose à chaque nouveau
+workflow, en dix minutes, sans modèle.
+
 **Ce que ça change dans le phasage.** Le palier 0 a fait son travail : il a
-empêché de construire trois semaines de palier 1 pour ~5 %. Avant d'écrire une
-seule recette, deux questions se posent, dans cet ordre : pourquoi la moitié
-des runs perd son livrable, et où partent réellement les 14,6 allers-retours
-modèle par tour, puisque ce n'est ni la relecture ni le schéma.
+empêché de construire trois semaines de palier 1 **pour tous les workflows** à
+~5 %, et il a montré où le même code vaut 18 %. Mais il a aussi montré que ce
+workflow-là n'a pas encore assez de runs pour en profiter. L'ordre devient donc :
+
+1. **Pourquoi la moitié des runs perd son livrable.** 13 runs `succeeded` sur
+   27 sans fichier, sur un workflow de facturation. Ce n'est pas de
+   l'optimisation et aucun palier de ce plan ne le corrige ; c'est le premier
+   sujet.
+2. **Attendre le volume sur Longchamp**, ou le fabriquer avec le harnais
+   headless du palier 1 sur l'équipe d'eval. Trois runs réussis au même
+   `playbookHash` est le seuil d'allumage, et il est mécanique.
+3. **Alors seulement le palier 1, ciblé** par une porte que le ledger sait
+   déjà calculer : ≥ 3 fichiers de skill lus, ou des appels de découverte de
+   schéma présents. Un workflow qui n'en est pas reste `agentic`, et ne coûte
+   rien à personne.
 
 **Deux chiffres d'une première version de cette mesure étaient faux, et la
 manière dont ils l'étaient vaut d'être consignée.** Un script maison balayait

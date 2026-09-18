@@ -1451,6 +1451,55 @@ cette mesure donne le **temps**, pas le **quoi** : combien de ces 700
 complétions suivent une relecture de skill ou une redécouverte de schéma reste
 à lire dans la base par `workflows:profile`.
 
+### La baseline de production, et ce qu'elle réfute
+
+`workflows:profile` a tourné sur la production le 2026-09-18, en lecture seule
+par le tunnel, sur les quatre workflows les plus actifs — **97 runs**. C'est le
+livrable du palier 0, et il ne dit pas ce que le plan attendait.
+
+| workflow                 | runs | exploitables | lectures de skills | redécouverte de schéma | répétitions | fusionnable (strict) | appels supprimables |
+| ------------------------ | ---: | -----------: | -----------------: | ---------------------: | ----------: | -------------------: | ------------------: |
+| Ventilation factures 3M  |   30 |           10 |                3 % |                  **0** |         5 % |                 14 % |                10 % |
+| bilan-activite-remises   |   24 |        **2** |                5 % |                  **0** |         6 % |                 10 % |                 7 % |
+| Veille LLM _(contrôle)_  |   22 |           21 |                6 % |                  **0** |         5 % |                  5 % |                 4 % |
+| Intégration Akanea (OCR) |   21 |            8 |                4 % |                  **0** |         3 % |                  9 % |                 6 % |
+
+**Le palier 1, tel qu'il est spécifié, vaut ~5 % et non 40-60 %.** Sa thèse
+était que la relecture de skills et la redécouverte de schéma sont là où
+partent les steps. Mesuré : les lectures de skills font **3 à 6 %** des appels,
+et la redécouverte de schéma est **nulle partout**. Le plafond combiné —
+lectures + répétitions + fusion, et ces trois-là se recouvrent — est de l'ordre
+de **20 %**, pas de 40-60 %. L'hypothèse de §0 est réfutée par notre propre
+corpus.
+
+**Mais la moitié qui manque doit être dite aussi : PbyP n'est pas en
+production.** Trois workflows seulement ont une connexion d'external app
+(Akanea OCR 21 runs, Export EDI Fatton 5, Longchamp 2), et aucun n'est PbyP.
+C'est pourquoi la redécouverte de schéma est à zéro : le cas qui a motivé ce
+plan n'est pas dans le corpus qui le réfute. Le plan n'est donc pas réfuté
+_pour PbyP_ ; il est réfuté **pour ce qui tourne réellement aujourd'hui**.
+
+**La vérité terrain a gagné sa place au premier essai, et ce qu'elle a trouvé
+n'est pas une question d'optimisation.** Sur « Ventilation factures 3M », **13
+des 27 runs `succeeded` n'ont aucun livrable** alors que le playbook en déclare
+un (xlsx) — vérifié colonne par colonne, ils portent un `outputSummary` de plus
+de 1 000 caractères et zéro `outputs`. Sur « bilan-activite-remises », **2 runs
+sur 24 seulement** sont exploitables pour la même raison. Deux conséquences :
+
+1. Un workflow dont 2 runs sur 24 sont exploitables **ne peut pas avoir de
+   recette** — la dérivation en demande K = 3. Le garde-fou « ne pas
+   sur-apprendre » mord avant d'avoir appris quoi que ce soit, et c'est le bon
+   comportement.
+2. La moitié des runs réussis d'un workflow de facturation ne produit rien.
+   **Ça n'est pas un problème de vitesse, et aucun palier de ce plan ne le
+   corrige.** C'est le premier sujet, et il passe devant.
+
+**Ce que ça change dans le phasage.** Le palier 0 a fait son travail : il a
+empêché de construire trois semaines de palier 1 pour ~5 %. Avant d'écrire une
+seule recette, deux questions se posent, dans cet ordre : pourquoi la moitié
+des runs perd son livrable, et où partent réellement les 14,6 allers-retours
+modèle par tour, puisque ce n'est ni la relecture ni le schéma.
+
 **Deux chiffres d'une première version de cette mesure étaient faux, et la
 manière dont ils l'étaient vaut d'être consignée.** Un script maison balayait
 l'environnement entier par pagination curseur : il rendait 13 tours là où une

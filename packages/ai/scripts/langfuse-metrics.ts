@@ -36,6 +36,11 @@
  *       Cost, call count and p50/p95 latency per observation name. The first
  *       call to make when asking "what is this costing" or "what is slow".
  *
+ *   bun --env-file=.env run scripts/langfuse-metrics.ts runs [rootName] [days] [environment]
+ *       Where one KIND of run spends its clock and its money, attributed to
+ *       leaves so the shares add up. Defaults to `workflow-turn`, 7 days,
+ *       `production`.
+ *
  *   bun --env-file=.env run scripts/langfuse-metrics.ts trace <traceId>
  *       Every generation of one trace: model, tokens in/out (reasoning split
  *       out), cost, latency, serving provider, finish reason.
@@ -179,13 +184,156 @@ const runTrace = async (traceId: string): Promise<void> => {
   }
 };
 
+/**
+ * Where a RUN's wall clock and money go — the question `names` cannot answer.
+ *
+ * Two things make this its own command rather than another Metrics query.
+ *
+ * **Scope.** `names` aggregates the whole environment, and chat traffic
+ * outnumbers workflow runs by more than ten to one, so an unsplit table
+ * describes the chatbot wearing a workflow's name. This one starts from the
+ * turns of ONE root name and reads only their traces.
+ *
+ * **Leaves.** A parent's seconds are its children's. `workflow-turn`,
+ * `invoke_agent` and `step N` each contain the calls nested inside them, so
+ * their latencies overlap and cannot be summed — sorting a "where does the time
+ * go" table by total puts every parent on top and answers nothing. Attributing
+ * a second only to observations that are nobody's parent makes the column add
+ * up, and the Metrics API has no notion of a leaf, so it is computed here.
+ *
+ * Measured this way on 2026-09-16, over 13 turns of 10 production runs: the
+ * model generating was 91% of the attributed clock and the sandbox 3%.
+ */
+const runRuns = async (
+  turnName: string,
+  days: number,
+  environment: string,
+): Promise<void> => {
+  const to = new Date();
+  const from = new Date(to.getTime() - days * 86_400_000);
+  const FIELDS = "core,basic,usage,cost";
+  // The environment filter is not optional tidiness. Measured 2026-09-18 over
+  // three days: 97 `workflow-turn` unfiltered, 36 production and 61 the
+  // developer's own machine. Unfiltered, this table blends somebody's laptop
+  // into a production figure and nothing says so.
+  const turns = await api.observations.getMany({
+    name: turnName,
+    environment,
+    fromStartTime: from.toISOString(),
+    toStartTime: to.toISOString(),
+    limit: 1000,
+    fields: FIELDS,
+  });
+  if (turns.data.length === 0) {
+    console.log(`No "${turnName}" in the last ${days.toString()} day(s).`);
+    return;
+  }
+
+  const sessions = new Map<string, number>();
+  const turnLatencies: number[] = [];
+  for (const turn of turns.data) {
+    if (typeof turn.latency === "number") turnLatencies.push(turn.latency);
+    // A run is its conversation, which is the session. Falling back to the
+    // trace id counts a session-less turn as its own run rather than folding
+    // every one of them into a single phantom run keyed `null`.
+    const key = turn.sessionId ?? turn.traceId ?? turn.id;
+    sessions.set(key, (sessions.get(key) ?? 0) + (turn.latency ?? 0));
+  }
+  const q = (values: readonly number[], p: number): number => {
+    if (values.length === 0) return 0;
+    const sorted = [...values].sort((a, b) => a - b);
+    return (
+      sorted[Math.min(sorted.length - 1, Math.ceil(p * sorted.length) - 1)] ?? 0
+    );
+  };
+  const runClocks = [...sessions.values()];
+  console.log(
+    `\n"${turnName}" — ${sessions.size.toString()} runs, ${turns.data.length.toString()} turns, last ${days.toString()} day(s)`,
+  );
+  console.log(
+    `  turn latency: p50 ${seconds(q(turnLatencies, 0.5) * 1000)}  p90 ${seconds(q(turnLatencies, 0.9) * 1000)}  max ${seconds(q(turnLatencies, 1) * 1000)}`,
+  );
+  console.log(
+    `  run clock:    p50 ${seconds(q(runClocks, 0.5) * 1000)}  p90 ${seconds(q(runClocks, 0.9) * 1000)}  max ${seconds(q(runClocks, 1) * 1000)}`,
+  );
+
+  // One call per trace. With runs counted in tens this is cheaper than sweeping
+  // the environment, and unlike a sweep it cannot silently truncate its window.
+  const traceIds = [
+    ...new Set(
+      turns.data
+        .map((t) => t.traceId)
+        .filter((v): v is string => typeof v === "string"),
+    ),
+  ].slice(0, 60);
+  interface Leaf {
+    calls: number;
+    latency: number;
+    cost: number;
+  }
+  const leaves = new Map<string, Leaf>();
+  let totalLatency = 0;
+  let totalCost = 0;
+  for (const traceId of traceIds) {
+    const page = await api.observations.getMany({
+      traceId,
+      environment,
+      limit: 1000,
+      fields: FIELDS,
+    });
+    const parents = new Set(
+      page.data
+        .map((o) => o.parentObservationId)
+        .filter((v): v is string => typeof v === "string"),
+    );
+    for (const o of page.data) {
+      if (parents.has(o.id)) continue;
+      const name = o.name ?? `(${o.type ?? "unnamed"})`;
+      const leaf = leaves.get(name) ?? { calls: 0, latency: 0, cost: 0 };
+      leaf.calls++;
+      leaf.latency += o.latency ?? 0;
+      leaf.cost += o.totalCost ?? 0;
+      leaves.set(name, leaf);
+      totalLatency += o.latency ?? 0;
+      totalCost += o.totalCost ?? 0;
+    }
+  }
+
+  console.log(
+    `\n  ${"spent by (leaves only)".padEnd(40)} ${"calls".padStart(7)} ${"seconds".padStart(9)} ${"share".padStart(6)} ${"cost".padStart(10)}`,
+  );
+  for (const [name, leaf] of [...leaves.entries()]
+    .sort(([, a], [, b]) => b.latency - a.latency)
+    .slice(0, 15)) {
+    const share =
+      totalLatency === 0
+        ? "-"
+        : `${((leaf.latency / totalLatency) * 100).toFixed(0)}%`;
+    console.log(
+      `  ${name.slice(0, 40).padEnd(40)} ${count(leaf.calls).padStart(7)} ${leaf.latency.toFixed(0).padStart(8)}s ${share.padStart(6)} ${money(leaf.cost).padStart(10)}`,
+    );
+  }
+  console.log(
+    `\n  ${traceIds.length.toString()} traces read, ${totalLatency.toFixed(0)}s attributed, ${money(totalCost)} total.`,
+  );
+  console.log(
+    `  Every second is attributed once, to the observation that actually spent it.\n`,
+  );
+};
+
 const USAGE =
-  "usage: langfuse-metrics.ts names [days] [limit] | trace <traceId> | query '<json>'";
+  "usage: langfuse-metrics.ts names [days] [limit] | runs [rootName] [days] [environment] | trace <traceId> | query '<json>'";
 
 const [command, ...rest] = Bun.argv.slice(2);
 
 if (command === "names") {
   await runNames(Number(rest[0] ?? "7"), Number(rest[1] ?? "40"));
+} else if (command === "runs") {
+  await runRuns(
+    rest[0] ?? "workflow-turn",
+    Number(rest[1] ?? "7"),
+    rest[2] ?? "production",
+  );
 } else if (command === "trace") {
   const traceId = rest[0];
   if (!traceId) throw new Error(USAGE);

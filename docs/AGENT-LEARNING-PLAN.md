@@ -1496,20 +1496,36 @@ appels de découverte de schéma — il vaut ~18 % des appels sur le workflow qu
 coûte le plus cher. C'est le même code ; ce qui change est la porte d'entrée,
 et le ledger sait déjà la calculer.
 
-**La vérité terrain a gagné sa place au premier essai, et ce qu'elle a trouvé
-n'est pas une question d'optimisation.** Sur « Ventilation factures 3M », **13
-des 27 runs `succeeded` n'ont aucun livrable** alors que le playbook en déclare
-un (xlsx) — vérifié colonne par colonne, ils portent un `outputSummary` de plus
-de 1 000 caractères et zéro `outputs`. Sur « bilan-activite-remises », **2 runs
-sur 24 seulement** sont exploitables pour la même raison. Deux conséquences :
+**La vérité terrain a gagné sa place au premier essai — et le premier passage
+avait mal nommé ce qu'elle trouvait.** Sur « Ventilation factures 3M », 13 des
+27 runs `succeeded` n'ont aucun livrable alors que le playbook en déclare un.
+Ce n'est **pas** un défaut : ce sont des **déclenchements à vide**. Le workflow
+écoute un événement d'upload, il part sur tous les fichiers, y compris ceux qui
+ne le concernent pas ; l'agent lit, comprend que ce n'est pas le sien, saute le
+reste et ferme au vert sans rien produire. C'est le comportement correct.
+
+La séparation est **exacte** et déterministe, vérifiée colonne par colonne :
+des 27 runs réussis, **les 13 sans livrable ont tous une tâche `skipped`, et
+les 13 avec livrable n'en ont aucune.** `judgeRunEvidence` distingue donc
+maintenant `declined` de `deliverable-missing` — les deux sont inexploitables
+comme évidence, mais l'un est une question de règles de déclenchement et
+l'autre serait un bug. Après correction, **`deliverable-missing` est à zéro
+dans tout le corpus.** Appeler un refus correct « livrable manquant » envoyait
+chercher un bug qui n'existe pas ; c'est le genre d'erreur qu'une règle non
+mesurée produit en silence.
+
+Deux conséquences quand même :
 
 1. Un workflow dont 2 runs sur 24 sont exploitables **ne peut pas avoir de
    recette** — la dérivation en demande K = 3. Le garde-fou « ne pas
    sur-apprendre » mord avant d'avoir appris quoi que ce soit, et c'est le bon
    comportement.
-2. La moitié des runs réussis d'un workflow de facturation ne produit rien.
-   **Ça n'est pas un problème de vitesse, et aucun palier de ce plan ne le
-   corrige.** C'est le premier sujet, et il passe devant.
+2. **La moitié des runs de ce workflow sont des déclenchements à vide**, et
+   chacun coûte un run agentique complet pour conclure « pas pour moi ». Le
+   vrai correctif est dans les règles de déclenchement, pas ici — c'est un
+   autre chantier. Mais c'est le poste qui **croît avec le nombre de clients et
+   d'uploads**, là où le gain du palier 1 ne croît qu'avec le nombre de
+   workflows de forme PbyP. À l'échelle, c'est le plus gros des deux.
 
 ### Ce que ce corpus ne peut pas dire, et comment s'y projeter quand même
 
@@ -1558,10 +1574,11 @@ empêché de construire trois semaines de palier 1 **pour tous les workflows** �
 ~5 %, et il a montré où le même code vaut 18 %. Mais il a aussi montré que ce
 workflow-là n'a pas encore assez de runs pour en profiter. L'ordre devient donc :
 
-1. **Pourquoi la moitié des runs perd son livrable.** 13 runs `succeeded` sur
-   27 sans fichier, sur un workflow de facturation. Ce n'est pas de
-   l'optimisation et aucun palier de ce plan ne le corrige ; c'est le premier
-   sujet.
+1. **Les règles de déclenchement.** 13 runs sur 27 partent sur un fichier qui
+   ne les concerne pas et dépensent un run agentique entier pour le conclure.
+   Aucun palier de ce plan ne corrige ça, et c'est le seul poste mesuré qui
+   grandit avec le nombre de clients plutôt qu'avec le nombre de workflows
+   d'une forme particulière. Chantier distinct, mais il passe devant.
 2. **Attendre le volume sur Longchamp**, ou le fabriquer avec le harnais
    headless du palier 1 sur l'équipe d'eval. Trois runs réussis au même
    `playbookHash` est le seuil d'allumage, et il est mécanique.

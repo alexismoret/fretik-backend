@@ -176,6 +176,7 @@ for (const run of runs) {
       isTest: run.isTest,
       declaresDeliverable: workflow.playbook.deliverable !== undefined,
       outputCount: run.outputs?.length ?? 0,
+      skippedTasks: run.taskStates.filter((t) => t.status === "skipped").length,
       rejectedApprovals:
         run.conversationId === null
           ? 0

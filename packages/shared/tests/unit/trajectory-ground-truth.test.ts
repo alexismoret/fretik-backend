@@ -21,6 +21,7 @@ const GREEN: RunEvidenceFacts = {
   isTest: false,
   declaresDeliverable: true,
   outputCount: 1,
+  skippedTasks: 0,
   rejectedApprovals: 0,
   manualRerunWithinWindow: false,
 };
@@ -61,6 +62,31 @@ describe("judgeRunEvidence", () => {
       usable: false,
       reason: "deliverable-missing",
     });
+  });
+
+  test("a run that SKIPPED its way to empty declined the work, it did not fail", () => {
+    // An event-triggered workflow fires on every upload, including files that
+    // are none of its business. The agent reads one, works out it is not the
+    // one, skips the rest and closes green with nothing produced. Measured on
+    // production: of 27 succeeded runs, the 13 with no deliverable ALL had a
+    // skipped task and the 13 with one had none — the separation is exact.
+    // Both are unusable as evidence; only one of them is a defect, and calling
+    // a correct decline "deliverable-missing" sends somebody hunting a bug
+    // that is really a trigger-rule question.
+    expect(
+      judgeRunEvidence({ ...GREEN, outputCount: 0, skippedTasks: 1 }),
+    ).toEqual({ usable: false, reason: "declined" });
+  });
+
+  test("a decline is a decline whether or not a deliverable was declared", () => {
+    expect(
+      judgeRunEvidence({
+        ...GREEN,
+        declaresDeliverable: false,
+        outputCount: 0,
+        skippedTasks: 2,
+      }),
+    ).toEqual({ usable: false, reason: "declined" });
   });
 
   test("a playbook that pins nothing is not judged on outputs", () => {

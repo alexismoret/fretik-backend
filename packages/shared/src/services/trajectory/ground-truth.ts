@@ -46,6 +46,16 @@ export interface RunEvidenceFacts {
   declaresDeliverable: boolean;
   /** How many outputs the run collected. */
   outputCount: number;
+  /**
+   * Tasks the agent closed as `skipped` rather than `completed`.
+   *
+   * The difference between a run that FAILED to deliver and one that DECLINED
+   * to. An event-triggered workflow fires on every upload, including the ones
+   * that are none of its business; the agent then reads the file, works out it
+   * is not the one, skips the remaining tasks and closes green with nothing
+   * produced. That is the correct outcome, not a defect.
+   */
+  skippedTasks: number;
   /** Approvals a human refused in this run's conversation. */
   rejectedApprovals: number;
   /** Someone relaunched the same workflow by hand inside the window. */
@@ -55,6 +65,7 @@ export interface RunEvidenceFacts {
 export type RunEvidenceReason =
   | "not-succeeded"
   | "test-run"
+  | "declined"
   | "deliverable-missing"
   | "approval-rejected"
   | "manual-rerun";
@@ -74,6 +85,16 @@ export const judgeRunEvidence = (facts: RunEvidenceFacts): RunEvidence => {
     return { usable: false, reason: "not-succeeded" };
   }
   if (facts.isTest) return { usable: false, reason: "test-run" };
+  if (facts.outputCount === 0 && facts.skippedTasks > 0) {
+    // Nothing to teach, and nothing wrong either. Reported apart from the
+    // defect below because the two look identical in the status column and
+    // lead to opposite actions: this one is a trigger-rule question, the other
+    // is a run that tried and produced nothing. Measured on production
+    // 2026-09-18, the separation is exact — of 27 succeeded runs of one
+    // workflow, the 13 with no deliverable ALL had a skipped task and the 13
+    // with one had none.
+    return { usable: false, reason: "declined" };
+  }
   if (facts.declaresDeliverable && facts.outputCount === 0) {
     return { usable: false, reason: "deliverable-missing" };
   }

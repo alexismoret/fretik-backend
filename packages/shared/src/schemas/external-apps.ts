@@ -153,6 +153,21 @@ export const providersListResponseSchema = z.object({
 });
 export type ProvidersListResponse = z.infer<typeof providersListResponseSchema>;
 
+/**
+ * Shared by every route that can return an action's full signature — the
+ * provider catalogue and the two connection reads. Opt-in because the
+ * signatures multiply the payload of routes most callers fetch only to draw a
+ * picker, and a second spelling of the same opt-in is a route that silently
+ * answers a different question.
+ */
+export const includeSignaturesQuerySchema = z.object({
+  // Query params arrive as strings; only the literal "true" opts in.
+  includeSignatures: z
+    .string()
+    .optional()
+    .transform((value) => value === "true"),
+});
+
 // ============================================================================
 // Connect session + connections (POST/GET/PATCH/DELETE /external-apps/...)
 // ============================================================================

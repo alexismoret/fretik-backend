@@ -9,12 +9,12 @@ import {
   responseInternalErrorSchema,
 } from "@fretik/shared/schemas/common/responses";
 import {
+  includeSignaturesQuerySchema,
   providersListResponseSchema,
   type ProviderActionEntry,
   type ProviderCatalogEntry,
 } from "@fretik/shared/schemas/external-apps";
 import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
-import { z } from "zod";
 
 /**
  * `GET /external-apps/providers` — catalogue of the external apps Fretik
@@ -28,14 +28,6 @@ import { z } from "zod";
 const providersRoutes = new OpenAPIHono<HonoLoggedAppType>();
 providersRoutes.use("*", authMiddleware);
 
-const listQuerySchema = z.object({
-  // Query params arrive as strings; only the literal "true" opts in.
-  includeSignatures: z
-    .string()
-    .optional()
-    .transform((value) => value === "true"),
-});
-
 const listRoute = createRoute({
   method: "get",
   path: "",
@@ -43,7 +35,7 @@ const listRoute = createRoute({
   description:
     "Returns the provider catalogue (key, displayName, icon, scopes, actions). The actions list includes `kind` (read vs write) and a one-line `summary` so the frontend can preview capabilities without pulling the full manifest. Pass `includeSignatures=true` to also get, for READ actions only, their `params`, `returns`, and the sync capabilities (`pagination`, `batch`, `incremental`) plus the provider's `types` table — everything a form needs to be generated from the manifest rather than hand-written. It is opt-in because it multiplies the payload of a route that most callers fetch only to draw the provider picker. Auth-required so the route is consistent with the rest of `/external-apps/*`; the catalogue itself is not team-specific.",
   tags: ["ExternalApps"],
-  request: { query: listQuerySchema },
+  request: { query: includeSignaturesQuerySchema },
   responses: {
     200: {
       content: { "application/json": { schema: providersListResponseSchema } },

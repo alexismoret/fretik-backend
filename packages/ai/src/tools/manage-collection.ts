@@ -6,8 +6,8 @@ import {
   fieldDefinitionTypeSchema,
 } from "@fretik/shared/schemas/field-definitions";
 import { assertCanWriteType } from "@fretik/shared/services/collection-sharing/write-access";
+import { listSyncSources } from "@fretik/shared/services/collection-sync/list-sources";
 import { requestSyncRefresh } from "@fretik/shared/services/collection-sync/request-refresh";
-import { listSyncSources } from "@fretik/shared/services/collection-sync/serialize";
 import { COLLECTION_LIMITS } from "@fretik/shared/services/collections/constants";
 import { createCollection } from "@fretik/shared/services/collections/create";
 import { createCollectionWithFields } from "@fretik/shared/services/collections/create-with-fields";

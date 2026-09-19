@@ -18,7 +18,7 @@ export interface TeamSchemaRelation {
  *
  * Two things the SQL-writing agent cannot get anywhere else: these columns are
  * not ours to UPDATE, and the numbers are as old as `lastSuccessAt` — which is
- * the difference between "12 late shipments" and "12 as of 09:12".
+ * the difference between "12 late orders" and "12 as of 09:12".
  */
 export interface TeamSchemaSyncOrigin {
   app: string;

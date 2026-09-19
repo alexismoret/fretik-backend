@@ -1,18 +1,17 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { inArray } from "drizzle-orm";
 import db from "../../db";
 import type {
   CollectionSyncRun,
   CollectionSyncSource,
   ExternalAppConnection,
 } from "../../db/schema";
-import { collectionSyncRuns, externalAppConnections } from "../../db/schema";
+import { externalAppConnections } from "../../db/schema";
 import { getAction } from "../../external-apps/registry";
 import { chunkForBulk } from "../../lib/db-bulk";
-import {
-  SYNC_LIMITS,
-  type SyncRunResponse,
-  type SyncSourceHealth,
-  type SyncSourceResponse,
+import type {
+  SyncRunResponse,
+  SyncSourceHealth,
+  SyncSourceResponse,
 } from "../../schemas/collection-sync";
 import { isMcpConnection } from "../external-apps/mcp/connection-kind";
 import { getSnapshotForConnection } from "../external-apps/mcp/snapshot-store";
@@ -228,109 +227,4 @@ export const serializeSyncSource = (
     createdAt: source.createdAt.toISOString(),
     updatedAt: source.updatedAt.toISOString(),
   };
-};
-
-/**
- * Each source's most recent run, in ONE query for the whole set.
- *
- * Read whole and reduced in memory rather than with a `DISTINCT ON`: retention
- * caps a source at `SYNC_LIMITS.runHistoryLimit` runs (`run-source.ts` trims
- * post-insert), so the worst case is twenty rows per source — bounded by a
- * contract, which is the only thing that makes "read them all" a fair trade for
- * a simpler statement.
- */
-const loadLastRuns = async (
-  sourceIds: readonly string[],
-): Promise<Map<string, CollectionSyncRun>> => {
-  const lastRuns = new Map<string, CollectionSyncRun>();
-  if (sourceIds.length === 0) return lastRuns;
-  for (const chunk of chunkForBulk([...sourceIds])) {
-    const rows = await db.query.collectionSyncRuns.findMany({
-      where: { syncSourceId: { in: chunk } },
-      orderBy: { startedAt: "desc" },
-    });
-    for (const row of rows) {
-      if (!lastRuns.has(row.syncSourceId)) lastRuns.set(row.syncSourceId, row);
-    }
-  }
-  return lastRuns;
-};
-
-/**
- * Every source of a team, or of one collection — the list endpoint and the
- * collection header both read this.
- *
- * Fixed number of queries whatever the count: one for the sources, one for
- * their runs, one for the connections, and one MCP snapshot per distinct MCP
- * connection. Serializing one at a time would be four reads PER SOURCE, and a
- * settings page listing a dozen is exactly where that shows.
- */
-export const listSyncSources = async (params: {
-  teamId: string;
-  collectionId?: string;
-}): Promise<SyncSourceResponse[]> => {
-  const sources = await db.query.collectionSyncSources.findMany({
-    where: {
-      teamId: params.teamId,
-      ...(params.collectionId !== undefined
-        ? { collectionId: params.collectionId }
-        : {}),
-    },
-    orderBy: { createdAt: "asc" },
-  });
-  if (sources.length === 0) return [];
-  const context = await loadSyncSourceContext(sources, {
-    lastRuns: await loadLastRuns(sources.map((source) => source.id)),
-  });
-  return sources.map((source) => serializeSyncSource(source, context));
-};
-
-/**
- * One source, or `undefined` when it is not this team's — never a throw and
- * never a distinction between "gone" and "someone else's", which is the same
- * rule every other by-id read here follows.
- */
-export const getSyncSource = async (params: {
-  id: string;
-  teamId: string;
-}): Promise<SyncSourceResponse | undefined> => {
-  const source = await db.query.collectionSyncSources.findFirst({
-    where: { id: params.id, teamId: params.teamId },
-  });
-  if (source === undefined) return undefined;
-  const context = await loadSyncSourceContext([source], {
-    lastRuns: await loadLastRuns([source.id]),
-  });
-  return serializeSyncSource(source, context);
-};
-
-/**
- * A source's recent runs, newest first — the short history behind "why is this
- * figure from yesterday".
- *
- * `teamId` is a predicate and not a comment: without it any run id would read
- * any team's sync history. A source that is not this team's simply has no runs.
- */
-export const listSyncRuns = async (params: {
-  syncSourceId: string;
-  teamId: string;
-  limit?: number;
-}): Promise<SyncRunResponse[]> => {
-  const rows = await db
-    .select()
-    .from(collectionSyncRuns)
-    .where(
-      and(
-        eq(collectionSyncRuns.syncSourceId, params.syncSourceId),
-        eq(collectionSyncRuns.teamId, params.teamId),
-      ),
-    )
-    .orderBy(desc(collectionSyncRuns.startedAt))
-    .limit(
-      Math.min(
-        params.limit ?? SYNC_LIMITS.runHistoryLimit,
-        SYNC_LIMITS.runHistoryLimit,
-      ),
-    );
-  return rows.map(serializeSyncRun);
 };

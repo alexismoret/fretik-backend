@@ -34,11 +34,11 @@ export const isImportedRecord = (event: DomainEvent): boolean =>
 /**
  * A collection sync's writes must not fire triggers either — third instance of
  * the same mechanism, third instance of the same reason, and the one the import
- * guard predicted: a first sync of 20 000 shipments would launch 20 000 runs of
- * "when a shipment is created, notify the customer".
+ * guard predicted: a first sync of 20 000 orders would launch 20 000 runs of
+ * "when an order is created, notify the customer".
  *
  * It differs from the other two in what it costs to be wrong in the OTHER
- * direction. "A shipment reached Delivered in the app, so do something" is a
+ * direction. "An order reached Delivered in the app, so do something" is a
  * genuine use for these events, and this guard refuses it — which is why the
  * plan (§4.2) pairs the guard with an explicit `record_synced` trigger type
  * rather than treating the filter as the end of the story. Filtering by default

@@ -46,7 +46,7 @@ import { externalAppConnections } from "./external-apps";
 /**
  * What a source owns.
  *
- *  - `table`  : the source owns the COLLECTION. One upstream row (a shipment,
+ *  - `table`  : the source owns the COLLECTION. One upstream row (an order,
  *               a contact) becomes one record, keyed by `externalIdPath`. The
  *               user adds local fields — a formula, a relation, a note —
  *               alongside the synced ones, and those survive every run.
@@ -154,7 +154,7 @@ export const collectionSyncSources = pgTable(
      */
     providerKey: varchar("provider_key", { length: 64 }).notNull(),
 
-    /** Read action name, e.g. `list_shipments`. Never a write. */
+    /** Read action name, e.g. `list_orders`. Never a write. */
     operation: varchar("operation", { length: 120 }).notNull(),
     /** Literal arguments, plus `{"$field":…}` / `{"$since":true}` bindings. */
     args: jsonb("args").$type<SyncArgs>().notNull().default({}),

@@ -170,9 +170,9 @@ export const createSyncSource = async (
     });
   }
 
-  // A synced collection is usually a working table — shipments, invoices,
-  // stock movements — and embedding every row of one is recall noise that
-  // crowds out what a person actually wrote. Only when nothing has been chosen
+  // A synced collection is usually a working table — orders, invoices, stock
+  // movements — and embedding every row of one is recall noise that crowds
+  // out what a person actually wrote. Only when nothing has been chosen
   // yet (`NULL` = "decide from the row count"), so an explicit `true` from a
   // user stands.
   if (params.kind === "table" && collection.semanticIndex === null) {

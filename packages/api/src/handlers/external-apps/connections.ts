@@ -24,6 +24,7 @@ import {
   dynamicOptionsResponseSchema,
   externalAppConnectionResponseSchema,
   externalAppConnectionsListResponseSchema,
+  includeSignaturesQuerySchema,
   mcpCatalogQuerySchema,
   mcpCatalogResponseSchema,
   mcpInspectRequestSchema,
@@ -53,7 +54,6 @@ import {
 } from "@fretik/shared/services/external-apps/mcp/snapshot-store";
 import { isOrgAdmin } from "@fretik/shared/services/organization/member-role";
 import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
-import { z } from "zod";
 
 /**
  * `/external-apps/connect-session` + `/external-apps/connections/*` — the
@@ -157,18 +157,6 @@ const toConnectionDto = async (
   );
   return { ...base, actions };
 };
-
-/**
- * Shared by the two routes that RETURN a connection to a caller who may be
- * about to configure one. The write routes keep the lean DTO.
- */
-const signatureQuerySchema = z.object({
-  // Query params arrive as strings; only the literal "true" opts in.
-  includeSignatures: z
-    .string()
-    .optional()
-    .transform((value) => value === "true"),
-});
 
 // ---- Routes ---------------------------------------------------------
 
@@ -277,7 +265,7 @@ const listRoute = createRoute({
   description:
     "Returns every team-scoped connection (shared with everyone in the team) plus the caller's user-scoped connections. Newest first. `includeSignatures=true` adds `params` / `returns` (and any declared pagination, batch or incremental capability) to the READ actions of an MCP connection's snapshot, so a form can be generated from them.",
   tags: ["ExternalApps"],
-  request: { query: signatureQuerySchema },
+  request: { query: includeSignaturesQuerySchema },
   responses: {
     200: {
       content: {
@@ -299,7 +287,7 @@ const getOneRoute = createRoute({
   description:
     "`includeSignatures=true` adds the READ actions' `params` / `returns` and sync capabilities, as on the list route.",
   tags: ["ExternalApps"],
-  request: { params: paramsIdSchema, query: signatureQuerySchema },
+  request: { params: paramsIdSchema, query: includeSignaturesQuerySchema },
   responses: {
     200: {
       content: {

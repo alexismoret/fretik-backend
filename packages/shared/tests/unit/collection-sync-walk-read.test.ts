@@ -79,7 +79,7 @@ describe("resolveActionPagination — what is inferred when nothing is declared"
     expect(
       resolveActionPagination({
         pagination: { kind: "offset" },
-        returns: { page: "Shipment" },
+        returns: { page: "Order" },
         walksItself: true,
       }),
     ).toEqual({ kind: "offset" });

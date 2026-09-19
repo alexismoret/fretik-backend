@@ -91,14 +91,14 @@ describe("formatTeamCollectionsBlock", () => {
   it("tags a synced column and names the app, the action and the age", () => {
     const block = formatTeamCollectionsBlock([
       makeType({
-        key: "shipments",
+        key: "orders",
         fields: [
           { key: "reference", type: "text", isTitle: true },
           { key: "revenue", type: "number", synced: true },
         ],
         syncedFrom: {
-          app: "Shiptify",
-          operation: "list_shipments",
+          app: "Acme",
+          operation: "list_orders",
           lastSuccessAt: new Date("2026-09-16T09:12:34.000Z"),
         },
       }),
@@ -106,9 +106,7 @@ describe("formatTeamCollectionsBlock", () => {
     expect(block).toContain("revenue (number, synced)");
     // Not the title field, which is local.
     expect(block).toContain("reference (text, title)");
-    expect(block).toContain(
-      "synced: Shiptify list_shipments, 2026-09-16 09:12",
-    );
+    expect(block).toContain("synced: Acme list_orders, 2026-09-16 09:12");
     expect(block).toContain("never UPDATE them");
   });
 

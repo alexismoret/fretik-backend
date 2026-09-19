@@ -9,7 +9,7 @@ import type { EventActor } from "../domain-events/emit";
  * reason, restated once more because it has now been learnt twice:
  *
  *   A FIRST SYNC IS NOT AN EVENT STREAM. Seeding a collection with 20 000
- *   shipments would otherwise fire 20 000 runs of "when a shipment is created,
+ *   orders would otherwise fire 20 000 runs of "when an order is created,
  *   notify the customer". The workflow is correct, the events are correct, and
  *   the outcome is a disaster — the same shape the `import:` guard already
  *   fixed once (`bulk-operations/agent-key.ts`).

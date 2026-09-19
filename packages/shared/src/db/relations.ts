@@ -870,6 +870,55 @@ export const relations = defineRelations(schema, (r) => ({
   // External Apps Relations (Nango connections + write-action approval gate)
   // ============================================================================
 
+  externalAppConnections: {
+    organization: r.one.organization({
+      from: r.externalAppConnections.organizationId,
+      to: r.organization.id,
+    }),
+    team: r.one.team({
+      from: r.externalAppConnections.teamId,
+      to: r.team.id,
+    }),
+    user: r.one.user({
+      from: r.externalAppConnections.userId,
+      to: r.user.id,
+      alias: "externalAppConnectionUser",
+      optional: true,
+    }),
+    createdBy: r.one.user({
+      from: r.externalAppConnections.createdByUserId,
+      to: r.user.id,
+      alias: "externalAppConnectionCreator",
+    }),
+    syncSources: r.many.collectionSyncSources(),
+  },
+
+  toolApprovalRequests: {
+    organization: r.one.organization({
+      from: r.toolApprovalRequests.organizationId,
+      to: r.organization.id,
+    }),
+    team: r.one.team({
+      from: r.toolApprovalRequests.teamId,
+      to: r.team.id,
+    }),
+    user: r.one.user({
+      from: r.toolApprovalRequests.userId,
+      to: r.user.id,
+      alias: "toolApprovalUser",
+    }),
+    decidedBy: r.one.user({
+      from: r.toolApprovalRequests.decidedByUserId,
+      to: r.user.id,
+      alias: "toolApprovalDecider",
+      optional: true,
+    }),
+    conversation: r.one.aiConversations({
+      from: r.toolApprovalRequests.conversationId,
+      to: r.aiConversations.id,
+    }),
+  },
+
   // ============================================================================
   // Collection sync — external-app-fed collections and columns
   // ============================================================================
@@ -926,55 +975,6 @@ export const relations = defineRelations(schema, (r) => ({
     source: r.one.collectionSyncSources({
       from: r.recordSyncState.syncSourceId,
       to: r.collectionSyncSources.id,
-    }),
-  },
-
-  externalAppConnections: {
-    organization: r.one.organization({
-      from: r.externalAppConnections.organizationId,
-      to: r.organization.id,
-    }),
-    team: r.one.team({
-      from: r.externalAppConnections.teamId,
-      to: r.team.id,
-    }),
-    user: r.one.user({
-      from: r.externalAppConnections.userId,
-      to: r.user.id,
-      alias: "externalAppConnectionUser",
-      optional: true,
-    }),
-    createdBy: r.one.user({
-      from: r.externalAppConnections.createdByUserId,
-      to: r.user.id,
-      alias: "externalAppConnectionCreator",
-    }),
-    syncSources: r.many.collectionSyncSources(),
-  },
-
-  toolApprovalRequests: {
-    organization: r.one.organization({
-      from: r.toolApprovalRequests.organizationId,
-      to: r.organization.id,
-    }),
-    team: r.one.team({
-      from: r.toolApprovalRequests.teamId,
-      to: r.team.id,
-    }),
-    user: r.one.user({
-      from: r.toolApprovalRequests.userId,
-      to: r.user.id,
-      alias: "toolApprovalUser",
-    }),
-    decidedBy: r.one.user({
-      from: r.toolApprovalRequests.decidedByUserId,
-      to: r.user.id,
-      alias: "toolApprovalDecider",
-      optional: true,
-    }),
-    conversation: r.one.aiConversations({
-      from: r.toolApprovalRequests.conversationId,
-      to: r.aiConversations.id,
     }),
   },
 

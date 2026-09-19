@@ -69,11 +69,11 @@ const columnsForField = (f: {
 };
 
 /**
- * `; synced: Shiptify list_shipments, 2026-09-16 09:12` — the app, the action,
- * and the AGE of every figure in the table. Three tokens because the age is
- * what stops the agent answering "12 late shipments" about a snapshot taken
- * this morning, and the action is what tells it a filter it wants may have to
- * move upstream instead.
+ * `; synced: Acme list_orders, 2026-09-16 09:12` — the app, the action, and the
+ * AGE of every figure in the table. Three tokens because the age is what stops
+ * the agent answering "12 late orders" about a snapshot taken this morning, and
+ * the action is what tells it a filter it wants may have to move upstream
+ * instead.
  */
 const syncedSuffix = (t: TeamSchemaCollection): string => {
   const origin = t.syncedFrom;

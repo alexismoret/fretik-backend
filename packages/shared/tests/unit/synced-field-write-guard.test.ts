@@ -57,13 +57,21 @@ const field = (
     ...overrides,
   }) satisfies FieldDefinition;
 
-/** A shipments collection: one local column, one filled by the app. */
+/** An orders collection: one local column, one filled by the app. */
 const FIELDS: FieldDefinition[] = [
   field("reference", "text", { isTitle: true }),
   field("revenue", "number", { syncSourceId: SOURCE_ID }),
 ];
 
-const APPS = new Map([[SOURCE_ID, "Shiptify"]]);
+const APPS = new Map([[SOURCE_ID, "Acme"]]);
+
+interface ErrorBody {
+  message?: unknown;
+  details?: unknown;
+}
+
+const isErrorBody = (value: unknown): value is ErrorBody =>
+  value !== null && typeof value === "object";
 
 /** The `{ message, details }` envelope `throwHttpError` packs into the throw. */
 const caughtError = (
@@ -73,11 +81,10 @@ const caughtError = (
     run();
   } catch (error) {
     if (!(error instanceof HTTPException)) throw error;
-    const parsed: unknown = JSON.parse(error.message);
-    if (parsed === null || typeof parsed !== "object") {
+    const body: unknown = JSON.parse(error.message);
+    if (!isErrorBody(body)) {
       throw new Error("error body is not an object", { cause: error });
     }
-    const body = parsed as { message?: unknown; details?: unknown };
     return {
       message: String(body.message),
       details: Array.isArray(body.details) ? body.details.map(String) : [],
@@ -91,15 +98,15 @@ describe("a synced column refuses every writer but its own", () => {
     const error = caughtError(() =>
       validateRecordData({
         fieldDefs: FIELDS,
-        data: { reference: "SHP-1", revenue: 999 },
-        previous: { reference: "SHP-1", revenue: 1200 },
+        data: { reference: "ORD-1", revenue: 999 },
+        previous: { reference: "ORD-1", revenue: 1200 },
         syncSourceApps: APPS,
       }),
     );
     // Verbatim: the wording IS the contract here — it is the only place a user
     // learns where the value comes from and what the two ways out are.
     expect(error.message).toBe(
-      '"revenue" is filled by Shiptify and cannot be edited here — change it in Shiptify, or detach the column from its sync source.',
+      '"revenue" is filled by Acme and cannot be edited here — change it in Acme, or detach the column from its sync source.',
     );
     expect(error.details).toHaveLength(1);
   });
@@ -108,11 +115,11 @@ describe("a synced column refuses every writer but its own", () => {
     const error = caughtError(() =>
       validateRecordData({
         fieldDefs: FIELDS,
-        data: { reference: "SHP-2", revenue: 10 },
+        data: { reference: "ORD-2", revenue: 10 },
         syncSourceApps: APPS,
       }),
     );
-    expect(error.message).toContain('"revenue" is filled by Shiptify');
+    expect(error.message).toContain('"revenue" is filled by Acme');
   });
 
   test("the refusal survives an unreadable source row, minus the app's name", () => {
@@ -131,35 +138,35 @@ describe("a synced column refuses every writer but its own", () => {
     // What the record editor does on every cell edit: PATCH the whole row.
     const parsed = validateRecordData({
       fieldDefs: FIELDS,
-      data: { reference: "SHP-1 bis", revenue: 1200 },
-      previous: { reference: "SHP-1", revenue: 1200 },
+      data: { reference: "ORD-1 bis", revenue: 1200 },
+      previous: { reference: "ORD-1", revenue: 1200 },
       syncSourceApps: APPS,
     });
-    expect(parsed).toEqual({ reference: "SHP-1 bis", revenue: 1200 });
+    expect(parsed).toEqual({ reference: "ORD-1 bis", revenue: 1200 });
   });
 
   test("omitting it cannot clear it — the stored value is pinned back", () => {
     // A full-replace write (`mode: "replace"`) NULLs every scalar column absent
-    // from the parsed data. Without the pin, renaming a shipment would wipe the
+    // from the parsed data. Without the pin, renaming an order would wipe the
     // app's figure.
     const parsed = validateRecordData({
       fieldDefs: FIELDS,
-      data: { reference: "SHP-1 bis" },
-      previous: { reference: "SHP-1", revenue: 1200 },
+      data: { reference: "ORD-1 bis" },
+      previous: { reference: "ORD-1", revenue: 1200 },
       syncSourceApps: APPS,
     });
-    expect(parsed).toEqual({ reference: "SHP-1 bis", revenue: 1200 });
+    expect(parsed).toEqual({ reference: "ORD-1 bis", revenue: 1200 });
   });
 
   test("the sync runner writes it, with the capability and not with its actor", () => {
     const parsed = validateRecordData({
       fieldDefs: FIELDS,
-      data: { reference: "SHP-1", revenue: 1450 },
-      previous: { reference: "SHP-1", revenue: 1200 },
+      data: { reference: "ORD-1", revenue: 1450 },
+      previous: { reference: "ORD-1", revenue: 1200 },
       allowSyncedFields: true,
       syncSourceApps: APPS,
     });
-    expect(parsed).toEqual({ reference: "SHP-1", revenue: 1450 });
+    expect(parsed).toEqual({ reference: "ORD-1", revenue: 1450 });
   });
 
   test("a value the app sends is still validated against its column", () => {

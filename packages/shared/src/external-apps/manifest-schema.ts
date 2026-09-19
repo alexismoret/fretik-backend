@@ -258,6 +258,56 @@ export const providerConcurrencySchema = z.object({
 });
 export type ProviderConcurrency = z.infer<typeof providerConcurrencySchema>;
 
+/** A budget of `requests` calls per `perSeconds`, with an optional burst. */
+export const rateBudgetSchema = z.object({
+  requests: z.number().int().min(1).max(100_000),
+  perSeconds: z.number().int().min(1).max(86_400),
+  /**
+   * How many may land back-to-back before the pacing bites. Defaults to the
+   * whole allowance, which is what an API that publishes "600/min" means: 600
+   * at once is within the budget, 601 is not.
+   */
+  burst: z.number().int().min(1).max(100_000).optional(),
+});
+export type RateBudget = z.infer<typeof rateBudgetSchema>;
+
+/**
+ * What this app can take, as the app itself publishes it.
+ *
+ * Declared here rather than discovered, because discovery means learning it
+ * from a 429 — and a 429 is already a request someone lost. It is optional in
+ * every part: most APIs are generous enough that the process-wide default
+ * (`EXTERNAL_APP_DEFAULT_RATE_PER_MINUTE`) is the right answer, and a limit
+ * invented to look thorough would throttle a provider nobody measured.
+ *
+ * Two scopes because the ceilings are genuinely two different ceilings, and a
+ * single one would be wrong in both directions:
+ *
+ *  - `perConnection` is per ACCOUNT. Almost every published limit is this one
+ *    ("600 requests per minute per API key"), and it must not be shared: one
+ *    team's fan-out has no business slowing another team's.
+ *  - `perProvider` is shared by EVERY connection of this provider in this
+ *    deployment. It is what an API limiting by IP means, and it is what the
+ *    Nango account limit means — that one applies to every proxied call we
+ *    make, all teams together, so no per-account budget can express it.
+ *
+ * `maxConcurrent` is the other axis: how many calls may be IN FLIGHT at once on
+ * one connection, which is what a licence-seat pool bounds (Akanea WMS leases a
+ * seat per action) and what no request-per-second budget can say.
+ */
+export const providerRateLimitSchema = z.object({
+  perConnection: rateBudgetSchema.optional(),
+  perProvider: rateBudgetSchema.optional(),
+  maxConcurrent: z.number().int().min(1).max(64).optional(),
+  /**
+   * The header this API answers a 429 with, when it is not `Retry-After`.
+   * Nango's own provider config carries the same idea (`retry.after` /
+   * `retry.at`) for the same reason: the NAME varies, the meaning does not.
+   */
+  retryAfterHeader: z.string().min(1).max(64).optional(),
+});
+export type ProviderRateLimit = z.infer<typeof providerRateLimitSchema>;
+
 /**
  * How a READ action is walked past its first answer.
  *
@@ -869,8 +919,21 @@ export const providerManifestSchema = z
     scopes: z.array(z.string()),
     /** How the dispatcher executes this provider's actions. */
     transport: providerTransportSchema,
-    /** Omit for `parallel` — the default, and the one that costs nothing. */
+    /**
+     * Omit for `parallel` — the default, and the one that costs nothing.
+     *
+     * @deprecated Superseded by `rateLimit.maxConcurrent`, which says the same
+     * thing as a number instead of as a mode and can also say "three at a
+     * time". Kept because three manifests and a connection-level override
+     * (`external_app_connections.concurrency_mode`) still speak it, and the
+     * governor reads `mode: "serial"` as `maxConcurrent: 1`.
+     */
     concurrency: providerConcurrencySchema.optional(),
+    /**
+     * What this app can take. Omit unless the API publishes a number — see
+     * `providerRateLimitSchema` for why an invented one is worse than none.
+     */
+    rateLimit: providerRateLimitSchema.optional(),
     /**
      * Frontend credentials form descriptor — required when the provider
      * uses a `custom-handler` transport (since the frontend cannot rely

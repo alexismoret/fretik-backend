@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   index,
+  integer,
   jsonb,
   pgEnum,
   pgTable,
@@ -242,6 +243,35 @@ export const externalAppConnections = pgTable(
      * licence seats where another has one, and only the operator knows which.
      */
     concurrencyMode: externalAppConcurrencyModeEnum("concurrency_mode"),
+
+    /**
+     * This account's own call budget, overriding whatever the manifest
+     * declares. `rate_limit_requests` per `rate_limit_per_seconds`; both NULL =
+     * follow the manifest, then the process default.
+     *
+     * Typed columns rather than another key in `options`, for two reasons that
+     * are not style. `options` is validated against the PROVIDER's
+     * `connectionOptions` descriptor, so a provider without one has nowhere to
+     * put this; and options opted into `exposeToAgent` are rendered into the
+     * system prompt, where a rate budget is context the model can neither use
+     * nor act on.
+     *
+     * Set by whoever controls the connection — team admins for a team-scoped
+     * one, the owner for a personal one — because the number comes from the
+     * customer's contract with the app, and nobody else can know it.
+     */
+    rateLimitRequests: integer("rate_limit_requests"),
+    rateLimitPerSeconds: integer("rate_limit_per_seconds"),
+
+    /**
+     * How many calls may be in flight at once on this account. NULL = the
+     * manifest decides (`rateLimit.maxConcurrent`, or `concurrency.mode`).
+     *
+     * It outranks `concurrency_mode`: a number says everything the mode says
+     * and more, so an operator who sets 3 on an account with five licence seats
+     * should not have the mode quietly hold them to one.
+     */
+    maxConcurrent: integer("max_concurrent"),
 
     /** Last Nango/provider error surfaced to the user (set with `error`). */
     lastErrorMessage: text("last_error_message"),

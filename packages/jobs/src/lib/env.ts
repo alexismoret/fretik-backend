@@ -1,25 +1,9 @@
 /**
- * Numeric tunables read from the environment.
+ * The workers' env knobs, re-exported from where they now live.
  *
- * Every worker in this package has knobs an operator may need to move without a
- * deploy — sweep batch sizes, debounce windows, concurrency. They all want the
- * same reading: a positive integer, or the code's default when the variable is
- * absent, empty, malformed, zero or negative. Silently falling back beats
- * throwing at import: a typo in one env var must not stop the whole worker
- * process from booting.
+ * They moved to `@fretik/shared/lib/env` when the outgoing-call governor
+ * started reading the same kind of knob from the API and the AI service. Kept
+ * as a re-export because every worker in this package imports `./env`, and a
+ * rename across them would be churn with no reader.
  */
-export const intFromEnv = (name: string, fallback: number): number => {
-  const raw = Number.parseInt(process.env[name] ?? "", 10);
-  return Number.isFinite(raw) && raw > 0 ? raw : fallback;
-};
-
-/**
- * Same reading for a switch: only an explicit `true` (any casing) turns one on.
- * Anything else — absent, empty, `1`, a typo — is the default, because a knob
- * that guards destructive work must never be enabled by accident.
- */
-export const boolFromEnv = (name: string, fallback: boolean): boolean => {
-  const raw = process.env[name]?.trim().toLowerCase();
-  if (raw === undefined || raw === "") return fallback;
-  return raw === "true";
-};
+export { boolFromEnv, intFromEnv } from "@fretik/shared/lib/env";

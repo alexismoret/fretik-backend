@@ -1,4 +1,5 @@
 import { type Job, Queue, Worker } from "bullmq";
+import { intFromEnv } from "../../lib/env";
 import {
   createWorkerConnection,
   getProducerConnection,
@@ -48,10 +49,8 @@ const getQueue = (): Queue<BulkOperationJobData> => {
   return queue;
 };
 
-const resolveConcurrency = (): number => {
-  const raw = Number.parseInt(process.env.BULK_OPERATION_CONCURRENCY ?? "", 10);
-  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_CONCURRENCY;
-};
+const resolveConcurrency = (): number =>
+  intFromEnv("BULK_OPERATION_CONCURRENCY", DEFAULT_CONCURRENCY);
 
 /**
  * Hand a granted operation to the worker. `jobId = bulkop-<id>` makes a

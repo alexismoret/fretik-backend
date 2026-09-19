@@ -2,6 +2,7 @@ import {
   authMiddleware,
   type HonoLoggedAppType,
 } from "@fretik/shared/lib/auth-middleware";
+import { MAX_BULK_ITEMS } from "@fretik/shared/lib/db-bulk";
 import {
   badRequest,
   notFound,
@@ -26,6 +27,7 @@ import {
   responseListSchema,
   responseNotFoundSchema,
 } from "@fretik/shared/schemas/common/responses";
+import { confirmFullResync } from "@fretik/shared/services/collection-sync/confirm-full-resync";
 import { createSyncSource } from "@fretik/shared/services/collection-sync/create-source";
 import { deleteSyncSource } from "@fretik/shared/services/collection-sync/delete-source";
 import { getSyncSource } from "@fretik/shared/services/collection-sync/get-source";
@@ -85,7 +87,12 @@ const runsQuerySchema = z.object({
  * Send `{}` for the whole source.
  */
 const runRequestSchema = z.object({
-  recordIds: z.array(z.uuid()).max(SYNC_LIMITS.lookupBatchSize).optional(),
+  // `MAX_BULK_ITEMS`, not the per-run batch size: these ids are MARKED
+  // `pending` and drained over as many runs as it takes, so the bound that
+  // belongs here is the one on a request body, exactly as `request-refresh.ts`
+  // already clamps it. Refusing 300 ids because a run only refreshes 200 was
+  // refusing a request the engine could serve.
+  recordIds: z.array(z.uuid()).max(MAX_BULK_ITEMS).optional(),
 });
 
 const listSourcesRoute = createRoute({
@@ -238,6 +245,30 @@ const runSourceRoute = createRoute({
     ...responseBadRequestSchema,
     ...responseForbiddenSchema,
     ...responseNotFoundSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const confirmFullResyncRoute = createRoute({
+  method: "post",
+  path: "/sources/{id}/confirm-full-resync",
+  summary: "Apply the orphan policy that a run refused to apply",
+  description:
+    "A run whose answer would have orphaned most of the collection applies NOTHING — it ends `partial` with `stopReason: orphan_floor` and asks, because an upstream filter narrowing and a mass deletion produce the same short answer and only a person can tell them apart. This confirms it: the next run walks every row and applies the orphan policy whatever the difference comes to. Refused when no run has asked, so a confirmation is always an answer to numbers somebody has seen.",
+  tags: ["CollectionSync"],
+  request: { params: paramsIdSchema },
+  responses: {
+    202: {
+      content: {
+        "application/json": {
+          schema: z.object({ sourceId: z.uuid(), enqueued: z.boolean() }),
+        },
+      },
+      description: "Confirmed; a full resync is queued",
+    },
+    ...responseForbiddenSchema,
+    ...responseNotFoundSchema,
+    ...responseConflictSchema,
     ...responseInternalErrorSchema,
   },
 });
@@ -397,6 +428,19 @@ collectionSyncRoutes.openapi(runSourceRoute, async (c) => {
     { sourceId: id, enqueued: true as const, jobId: outcome.jobId },
     202,
   );
+});
+
+collectionSyncRoutes.openapi(confirmFullResyncRoute, async (c) => {
+  const team = c.get("team");
+  if (!team) return c.json(teamRequired(), 403);
+  const user = c.get("user");
+  const { id } = c.req.valid("param");
+  const outcome = await confirmFullResync({
+    sourceId: id,
+    teamId: team.id,
+    userId: user.id,
+  });
+  return c.json({ sourceId: id, enqueued: outcome.enqueued }, 202);
 });
 
 collectionSyncRoutes.openapi(listRunsRoute, async (c) => {

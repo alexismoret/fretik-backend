@@ -17,6 +17,8 @@ import type {
   SyncArgs,
   SyncFieldMapping,
   SyncSchedule,
+  SyncStopReason,
+  TableWalkCheckpoint,
 } from "../../schemas/collection-sync";
 import { organization, team, user } from "./auth-schema";
 import { collectionRecords } from "./collection-records";
@@ -218,6 +220,64 @@ export const collectionSyncSources = pgTable(
      */
     claimedAt: timestamp("claimed_at", { withTimezone: true }),
 
+    /**
+     * A walk frozen mid-flight, so the next leg resumes instead of re-asking
+     * for page one. Typed by `TableWalkCheckpoint`; cleared the moment the walk
+     * completes, so a non-null value means "a run is part way through".
+     *
+     * In the database rather than in the BullMQ job on purpose: the job lives
+     * in Redis and the walk it belongs to may span hours and a deploy, while
+     * the position it holds is worth exactly as much as the source row it
+     * describes.
+     */
+    walkCheckpoint: jsonb("walk_checkpoint").$type<TableWalkCheckpoint>(),
+
+    /**
+     * When a run refused to orphan too much of the collection at once.
+     *
+     * The floor's whole point (see `SYNC_LIMITS.orphanFloorRatio`): an upstream
+     * filter narrowing and a collection being emptied are the same answer, so
+     * past a threshold the run applies NEITHER `reject` nor `delete`, ends
+     * `partial`, and leaves this stamp for the UI and the agent to offer a
+     * confirmation against. `keep` is stopped too — a `missing` flood is still
+     * a lie about the data.
+     */
+    fullResyncRequestedAt: timestamp("full_resync_requested_at", {
+      withTimezone: true,
+    }),
+    /** The sentence a person reads before confirming: how many, out of how many. */
+    fullResyncReason: text("full_resync_reason"),
+    /**
+     * Someone said yes. Read by the NEXT run only, which walks everything and
+     * applies the policy whatever the floor says, then clears all three.
+     */
+    fullResyncConfirmedAt: timestamp("full_resync_confirmed_at", {
+      withTimezone: true,
+    }),
+
+    /**
+     * `lookup` — how far the "never tracked" scan has walked the collection.
+     *
+     * Without it the anti-join that finds untracked records is O(collection)
+     * on every run once they are all tracked, which is exactly when it finds
+     * nothing. The cursor makes the scan a bounded forward walk that finishes
+     * and stays finished (`untracked_scan_done_at`) until the daily rescan.
+     */
+    untrackedScanCursor: uuid("untracked_scan_cursor"),
+    untrackedScanDoneAt: timestamp("untracked_scan_done_at", {
+      withTimezone: true,
+    }),
+
+    /**
+     * `table` — when every row was last walked, not just the changed ones.
+     *
+     * An incremental read cannot be diffed for orphans: "not in the answer"
+     * means "did not change", not "gone". So a source that reads incrementally
+     * still walks the whole list every `SYNC_LIMITS.fullWalkIntervalMinutes`,
+     * and only THAT run brackets the orphans.
+     */
+    lastFullWalkAt: timestamp("last_full_walk_at", { withTimezone: true }),
+
     createdByUserId: uuid("created_by_user_id").references(() => user.id, {
       onDelete: "set null",
     }),
@@ -282,12 +342,27 @@ export const collectionSyncRuns = pgTable(
     orphanCount: integer("orphan_count").notNull().default(0),
     failedCount: integer("failed_count").notNull().default(0),
     /**
+     * `lookup` — rows the app had no answer for. NOT a failure: a company that
+     * does not exist upstream is the normal case, and counting it here rather
+     * than in `failed_count` is what keeps a healthy run green while still
+     * saying how many rows came back empty.
+     */
+    missingCount: integer("missing_count").notNull().default(0),
+    /**
      * Calls actually made to the third party. The number that tells a team
      * whether its cadence is affordable, and the only one they can act on.
      */
     upstreamCalls: integer("upstream_calls").notNull().default(0),
     /** A bound was reached (`rowCap`, the call budget, the run deadline). */
     truncated: boolean("truncated").notNull().default(false),
+    /**
+     * Continuations this run took. One walk is ONE run however many legs it
+     * needs, so a first load of 300 000 rows reads as one entry in the history
+     * with `legs: 7` rather than seven runs nobody can tell apart.
+     */
+    legs: integer("legs").notNull().default(1),
+    /** Which bound bit, when one did. Free text in SQL, a union in TypeScript. */
+    stopReason: text("stop_reason").$type<SyncStopReason>(),
 
     error: text("error"),
     /** Who pressed Refresh, when a person did. */

@@ -1,56 +1,91 @@
-import { sql } from "drizzle-orm";
-import db from "../../db";
 import type {
   CollectionSyncSource,
   ExternalAppConnection,
 } from "../../db/schema";
-import { chunkForBulk, MAX_BULK_ITEMS } from "../../lib/db-bulk";
-import { isSyncFieldBinding, SYNC_LIMITS } from "../../schemas/collection-sync";
+import { chunkForBulk } from "../../lib/db-bulk";
+import {
+  isSyncFieldBinding,
+  SYNC_LIMITS,
+  type SyncRunCounts,
+} from "../../schemas/collection-sync";
 import { bulkUpdateCollectionRecords } from "../collection-records/bulk-update";
 import { readRecordDataBatch } from "../collection-schema/record-io";
 import { isSingleFlightConnection } from "../external-apps/exec/governor/policy";
+import { UpstreamRateLimitedError } from "../external-apps/exec/governor/upstream-error";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
 import { syncActor } from "./agent-key";
+import {
+  type LookupCandidate,
+  selectLookupCandidates,
+} from "./lookup-candidates";
 import { projectRow, readPath } from "./project-row";
 import {
-  loadRecordSyncState,
   type RecordSyncStateWrite,
   upsertRecordSyncState,
 } from "./record-state";
 import type { SyncReadAction } from "./resolve-action";
 import { resolveSyncArgs } from "./resolve-args";
-import { emptyCounts, ownedFields, type SyncRunCounts } from "./run-table-sync";
+import { emptyCounts, ownedFields } from "./run-table-sync";
 import { extractRows } from "./walk-read";
 
 /**
  * One run of a `lookup` source: some COLUMNS of records the source does not
  * own, filled per record from its own key.
  *
- * This is the N+1 the plan calls the real difficulty (§0.5), and the three
+ * This is the N+1 the plan calls the real difficulty (§0.5), and the four
  * answers to it are all here:
  *
- *  1. A BOUNDED WORK LIST. A run refreshes at most
- *     `SYNC_LIMITS.lookupBatchSize` records, picked in the order a person would
- *     pick them: the ones someone just asked for, then the ones an edit marked
- *     `pending`, then the stalest, then the ones never done. A collection of
- *     50 000 records is therefore refreshed progressively and never in one
- *     catastrophic pass.
+ *  1. A BOUNDED WORK LIST, picked by five indexed queries rather than a sort of
+ *     the collection — see `lookup-candidates.ts`.
  *  2. `batch` WHEN THE API HAS IT. One call for twenty records instead of
  *     twenty calls, which is the only structural fix — everything else is
- *     rationing.
+ *     rationing. And when the API HAS it, the run takes a work list sized to
+ *     what batching can actually get through, not the one-by-one 200: an action
+ *     that batches 200 at a time can finish 20 000 records in a hundred calls,
+ *     and rationing it to 200 would take two and a half days to make one pass
+ *     over a 50 000-row collection.
  *  3. NO CALL AT ALL when the answer is already known. A record with no value
  *     for the bound key cannot be looked up, so it is marked `missing` and
  *     skipped without spending anything; and a record whose answer hashes to
  *     what is already stored costs no UPDATE, no journal entry and no
  *     re-embedding.
+ *  4. AN EMPTY ANSWER IS AN ANSWER. A call that came back with no row writes
+ *     `missing` — and that is a fix, not a nicety. Without it, a record the app
+ *     has never heard of was asked about on EVERY run, for ever: a source at
+ *     fifteen minutes with 200 such records spent 19 200 calls a day learning
+ *     the same nothing, and reported `success` with zero counts while doing it.
  */
+
+/**
+ * Records whose data is read, called for and written in one pass.
+ *
+ * The work list may be 20 000 long; their `data` maps must never all be in
+ * memory at once, so the run walks them in groups and each group's rows are
+ * released before the next is read.
+ */
+const LOOKUP_GROUP = 1_000;
 
 /** Concurrent calls on a connection the provider does not declare `serial`. */
 const PARALLEL_CALLS = 4;
 
-interface Candidate {
-  recordId: string;
-  contentHash: string | null;
+/** What the batch declaration, if any, means for this source. */
+interface BatchBinding {
+  param: string;
+  maxItems: number;
+  answerPath: string;
+}
+
+export interface LookupRunResult {
+  counts: SyncRunCounts;
+  /**
+   * The third party asked us to wait. A `lookup` run has no position to
+   * resume from — its work list is rebuilt from `record_sync_state` every time
+   * — so instead of suspending it pushes its NEXT run out by this much. Without
+   * that the source would come back on its ordinary cadence, be refused by the
+   * governor before a single call went out, and record a failed run for
+   * nothing.
+   */
+  retryAfterMs?: number;
 }
 
 export const runLookupSync = async (input: {
@@ -60,7 +95,7 @@ export const runLookupSync = async (input: {
   deadlineAt: number;
   /** Records the caller named — refreshed before anything else. */
   recordIds?: string[];
-}): Promise<SyncRunCounts> => {
+}): Promise<LookupRunResult> => {
   const { source, action } = input;
   const counts = emptyCounts();
 
@@ -69,28 +104,89 @@ export const runLookupSync = async (input: {
     collectionId: source.collectionId,
   });
   const fields = ownedFields(source, fieldDefs);
-  if (fields.length === 0) return counts;
+  if (fields.length === 0) return { counts };
 
-  const candidates = await selectCandidates({
+  const batchPath = batchBinding(source, action);
+  const candidates = await selectLookupCandidates({
     source,
+    limit: candidateLimit(batchPath),
     ...(input.recordIds !== undefined ? { requested: input.recordIds } : {}),
   });
-  if (candidates.length === 0) return counts;
+  if (candidates.length === 0) return { counts };
 
+  for (const group of chunkForBulk(candidates, LOOKUP_GROUP)) {
+    if (overBudget(counts, input.deadlineAt)) {
+      counts.truncated = true;
+      break;
+    }
+    const stopped = await refreshGroup({
+      source,
+      action,
+      connection: input.connection,
+      deadlineAt: input.deadlineAt,
+      fieldDefs,
+      fields,
+      group,
+      counts,
+      ...(batchPath !== undefined ? { batchPath } : {}),
+    });
+    if (stopped !== undefined) {
+      counts.truncated = true;
+      return { counts, retryAfterMs: stopped };
+    }
+  }
+
+  return { counts };
+};
+
+/**
+ * How many records one run may take.
+ *
+ * Without batching it is the old 200: each is a call, and the call budget is
+ * what really bounds the run. With batching the ceiling is what the budget
+ * could get through — calls × items per call — capped so a run stays a run.
+ */
+const candidateLimit = (batch: BatchBinding | undefined): number =>
+  batch === undefined
+    ? SYNC_LIMITS.lookupBatchSize
+    : Math.min(
+        SYNC_LIMITS.maxUpstreamCallsPerRun * batch.maxItems,
+        SYNC_LIMITS.lookupMaxRecordsPerRun,
+      );
+
+/**
+ * One group: read its data, ask, write. A number back is the wait the third
+ * party asked for, and means "stop the run".
+ */
+const refreshGroup = async (ctx: {
+  source: CollectionSyncSource;
+  action: SyncReadAction;
+  connection: ExternalAppConnection;
+  deadlineAt: number;
+  fieldDefs: Awaited<ReturnType<typeof getFieldDefinitionsForTeam>>;
+  fields: ReturnType<typeof ownedFields>;
+  group: LookupCandidate[];
+  counts: SyncRunCounts;
+  batchPath?: BatchBinding;
+}): Promise<number | undefined> => {
+  const { source, counts } = ctx;
   const data = await readRecordDataBatch({
     collectionId: source.collectionId,
-    recordIds: candidates.map((candidate) => candidate.recordId),
-    fields: fieldDefs,
+    recordIds: ctx.group.map((candidate) => candidate.recordId),
+    fields: ctx.fieldDefs,
   });
 
   const state: RecordSyncStateWrite[] = [];
-  const askable: { candidate: Candidate; args: Record<string, unknown> }[] = [];
-  for (const candidate of candidates) {
+  const askable: {
+    candidate: LookupCandidate;
+    args: Record<string, unknown>;
+  }[] = [];
+  for (const candidate of ctx.group) {
     const { args, missingFieldKeys } = resolveSyncArgs({
       args: source.args,
       since: null,
-      ...(action.incremental !== undefined
-        ? { incremental: action.incremental }
+      ...(ctx.action.incremental !== undefined
+        ? { incremental: ctx.action.incremental }
         : {}),
       fieldValues: data.get(candidate.recordId) ?? {},
     });
@@ -103,31 +199,34 @@ export const runLookupSync = async (input: {
         status: "missing",
         error: `no value for ${missingFieldKeys.join(", ")}`,
       });
+      counts.missingCount += 1;
       continue;
     }
     askable.push({ candidate, args });
   }
 
   const answers = new Map<string, unknown>();
-  const batchPath = batchBinding(source, action);
-  if (batchPath !== undefined) {
-    await callBatched({
+  let rateLimited: number | undefined;
+  if (ctx.batchPath !== undefined) {
+    rateLimited = await callBatched({
       source,
-      action,
+      action: ctx.action,
       askable,
       answers,
       counts,
-      input,
-      batchPath,
+      deadlineAt: ctx.deadlineAt,
+      batchPath: ctx.batchPath,
+      state,
     });
   } else {
-    await callOneByOne({
-      action,
+    rateLimited = await callOneByOne({
+      action: ctx.action,
       resultPath: source.resultPath,
+      connection: ctx.connection,
       askable,
       answers,
       counts,
-      input,
+      deadlineAt: ctx.deadlineAt,
       state,
     });
   }
@@ -137,13 +236,15 @@ export const runLookupSync = async (input: {
     data: Record<string, unknown>;
     hash: string;
   }[] = [];
+  const answered = new Set<string>();
   for (const { candidate } of askable) {
     if (!answers.has(candidate.recordId)) continue;
+    answered.add(candidate.recordId);
     const row = answers.get(candidate.recordId);
     const projection = projectRow({
       row,
       mapping: source.fieldMapping,
-      fields,
+      fields: ctx.fields,
     });
     if (projection.hash === candidate.contentHash) {
       counts.unchangedCount += 1;
@@ -152,7 +253,7 @@ export const runLookupSync = async (input: {
     updates.push({ recordId: candidate.recordId, ...projection });
   }
 
-  for (const batch of chunkForBulk(updates, MAX_BULK_ITEMS)) {
+  for (const batch of chunkForBulk(updates)) {
     const result = await bulkUpdateCollectionRecords({
       teamId: source.teamId,
       // Only this source's keys, merged: the rest of the record belongs to its
@@ -189,7 +290,7 @@ export const runLookupSync = async (input: {
   // run forever while the rest of the collection never got its turn.
   const written = new Set(updates.map((row) => row.recordId));
   for (const { candidate } of askable) {
-    if (!answers.has(candidate.recordId)) continue;
+    if (!answered.has(candidate.recordId)) continue;
     if (written.has(candidate.recordId)) continue;
     state.push({
       recordId: candidate.recordId,
@@ -199,72 +300,7 @@ export const runLookupSync = async (input: {
   }
 
   await upsertRecordSyncState(source.id, state);
-  return counts;
-};
-
-/**
- * The work list, in ONE query.
- *
- * `missing` rows are excluded from the automatic rotation on purpose: they have
- * no key, so re-asking every run would burn the budget on records whose answer
- * cannot change until somebody edits them — and when somebody does, the journal
- * sweep marks them `pending`, which is the first bucket below.
- */
-const selectCandidates = async (input: {
-  source: CollectionSyncSource;
-  requested?: string[];
-}): Promise<Candidate[]> => {
-  const limit = SYNC_LIMITS.lookupBatchSize;
-  const requested = (input.requested ?? []).slice(0, limit);
-  const picked = new Map<string, Candidate>();
-
-  if (requested.length > 0) {
-    const stateByRecord = await loadRecordSyncState(input.source.id);
-    const owned = await db.execute(sql`
-      SELECT id::text AS id FROM collection_records
-       WHERE id = ANY(${sql.param(requested)}::uuid[])
-         AND team_id = ${input.source.teamId}::uuid
-         AND collection_id = ${input.source.collectionId}::uuid`);
-    for (const row of owned.rows) {
-      const recordId = Reflect.get(row, "id");
-      if (typeof recordId !== "string") continue;
-      picked.set(recordId, {
-        recordId,
-        contentHash: stateByRecord.get(recordId)?.contentHash ?? null,
-      });
-    }
-  }
-  if (picked.size >= limit) return [...picked.values()];
-
-  const result = await db.execute(sql`
-    SELECT r.id::text     AS id,
-           s.content_hash AS content_hash
-      FROM collection_records r
-      LEFT JOIN record_sync_state s
-             ON s.record_id = r.id
-            AND s.sync_source_id = ${input.source.id}::uuid
-     WHERE r.collection_id = ${input.source.collectionId}::uuid
-       AND r.team_id = ${input.source.teamId}::uuid
-       AND r.status <> 'rejected'::ontology_status
-       AND (s.status IS NULL OR s.status <> 'missing'::record_sync_status)
-     ORDER BY CASE
-                WHEN s.status = 'pending'::record_sync_status THEN 0
-                WHEN s.record_id IS NOT NULL THEN 1
-                ELSE 2
-              END,
-              s.synced_at ASC
-     LIMIT ${limit}`);
-  for (const row of result.rows) {
-    if (picked.size >= limit) break;
-    const recordId = Reflect.get(row, "id");
-    if (typeof recordId !== "string" || picked.has(recordId)) continue;
-    const contentHash = Reflect.get(row, "content_hash");
-    picked.set(recordId, {
-      recordId,
-      contentHash: typeof contentHash === "string" ? contentHash : null,
-    });
-  }
-  return [...picked.values()];
+  return rateLimited;
 };
 
 /**
@@ -281,7 +317,7 @@ const selectCandidates = async (input: {
 const batchBinding = (
   source: CollectionSyncSource,
   action: SyncReadAction,
-): { param: string; maxItems: number; answerPath: string } | undefined => {
+): BatchBinding | undefined => {
   const batch = action.batch;
   if (batch === undefined) return undefined;
   const bound = source.args[batch.param];
@@ -293,15 +329,17 @@ const batchBinding = (
   return { param: batch.param, maxItems: batch.maxItems, answerPath };
 };
 
+/** `true` when the third party told us to stop. */
 const callBatched = async (ctx: {
   source: CollectionSyncSource;
   action: SyncReadAction;
-  askable: { candidate: Candidate; args: Record<string, unknown> }[];
+  askable: { candidate: LookupCandidate; args: Record<string, unknown> }[];
   answers: Map<string, unknown>;
   counts: SyncRunCounts;
-  input: { deadlineAt: number };
-  batchPath: { param: string; maxItems: number; answerPath: string };
-}): Promise<void> => {
+  deadlineAt: number;
+  batchPath: BatchBinding;
+  state: RecordSyncStateWrite[];
+}): Promise<number | undefined> => {
   const { batchPath } = ctx;
   // Bound value → record. Several records may share one key (two rows for the
   // same company), and all of them get the answer.
@@ -316,16 +354,24 @@ const callBatched = async (ctx: {
   // of nineteen other records — the exact mix-up batching has to avoid.
   const literals = resolveSyncArgs({ args: ctx.source.args, since: null }).args;
 
+  const asked = new Set<string>();
   for (const group of chunkForBulk([...byValue.keys()], batchPath.maxItems)) {
-    if (overBudget(ctx.counts, ctx.input.deadlineAt)) {
+    if (overBudget(ctx.counts, ctx.deadlineAt)) {
       ctx.counts.truncated = true;
-      return;
+      return undefined;
     }
-    const payload = await ctx.action.call({
-      ...literals,
-      [batchPath.param]: group,
-    });
+    let payload: unknown;
+    try {
+      payload = await ctx.action.call({
+        ...literals,
+        [batchPath.param]: group,
+      });
+    } catch (cause) {
+      if (cause instanceof UpstreamRateLimitedError) return cause.retryAfterMs;
+      throw cause;
+    }
     ctx.counts.upstreamCalls += 1;
+    for (const key of group) asked.add(key);
     for (const row of extractRows(payload, ctx.source.resultPath) ?? []) {
       const answered = scalarKey(readPath(row, batchPath.answerPath));
       if (answered === undefined) continue;
@@ -334,32 +380,53 @@ const callBatched = async (ctx: {
       }
     }
   }
+
+  // Asked for and not in the answer: the app does not have this row. Recorded
+  // as such so it rests for `lookupMissingRetryMs` instead of being asked
+  // again on the next run, and on every run after that. Only keys that were
+  // ACTUALLY sent — a group the budget cut off was never asked, and marking
+  // those `missing` would be recording an answer nobody gave.
+  for (const [key, recordIds] of byValue) {
+    if (!asked.has(key)) continue;
+    for (const recordId of recordIds) {
+      if (ctx.answers.has(recordId)) continue;
+      ctx.counts.missingCount += 1;
+      ctx.state.push({
+        recordId,
+        status: "missing",
+        error: `the app did not return a row for "${key}"`,
+      });
+    }
+  }
+  return undefined;
 };
 
+/** The wait the third party asked for, when it told us to stop. */
 const callOneByOne = async (ctx: {
   action: SyncReadAction;
   resultPath: string | null;
-  askable: { candidate: Candidate; args: Record<string, unknown> }[];
+  connection: ExternalAppConnection;
+  askable: { candidate: LookupCandidate; args: Record<string, unknown> }[];
   answers: Map<string, unknown>;
   counts: SyncRunCounts;
-  input: { connection: ExternalAppConnection; deadlineAt: number };
+  deadlineAt: number;
   state: RecordSyncStateWrite[];
-}): Promise<void> => {
+}): Promise<number | undefined> => {
   // A single-flight connection holds ONE seat (the permit, taken inside the
   // executor), so firing four at it would only queue three on the governor and
   // time them out at the policy's wait budget. Asking the policy first turns
   // that contention into a queue nobody has to wait out — the same reasoning
   // `run-page-data` uses for a page's datasets.
-  const width = isSingleFlightConnection(ctx.input.connection)
-    ? 1
-    : PARALLEL_CALLS;
+  const width = isSingleFlightConnection(ctx.connection) ? 1 : PARALLEL_CALLS;
   const queue = [...ctx.askable];
+  let rateLimited: number | undefined;
 
   const worker = async (): Promise<void> => {
     for (;;) {
+      if (rateLimited !== undefined) return;
       const next = queue.shift();
       if (next === undefined) return;
-      if (overBudget(ctx.counts, ctx.input.deadlineAt)) {
+      if (overBudget(ctx.counts, ctx.deadlineAt)) {
         ctx.counts.truncated = true;
         return;
       }
@@ -368,8 +435,27 @@ const callOneByOne = async (ctx: {
         const payload = await ctx.action.call(next.args);
         const rows = extractRows(payload, ctx.resultPath) ?? [];
         const row = rows[0];
-        if (row !== undefined) ctx.answers.set(next.candidate.recordId, row);
+        if (row !== undefined) {
+          ctx.answers.set(next.candidate.recordId, row);
+          continue;
+        }
+        // The call succeeded and there was nothing there. See the class
+        // comment: writing this down is what stops the same empty question
+        // being asked four times an hour for ever.
+        ctx.counts.missingCount += 1;
+        ctx.state.push({
+          recordId: next.candidate.recordId,
+          status: "missing",
+          error: "the app has no row for this record's key",
+        });
       } catch (error) {
+        // A refusal is not this record's fault and not this record's problem:
+        // it ends the RUN, because every other record in the queue is about to
+        // be refused too and spending the budget discovering that helps nobody.
+        if (error instanceof UpstreamRateLimitedError) {
+          rateLimited = error.retryAfterMs;
+          return;
+        }
         // One record's failure is one record's failure. A 404 for a company
         // that does not exist upstream is the normal case, not a broken run.
         ctx.counts.failedCount += 1;
@@ -384,6 +470,7 @@ const callOneByOne = async (ctx: {
   };
 
   await Promise.all(Array.from({ length: width }, () => worker()));
+  return rateLimited;
 };
 
 /**

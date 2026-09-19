@@ -108,6 +108,11 @@ export const requestSyncRefresh = async (input: {
     },
     {
       jobId,
+      // Ahead of every scheduled tick. The sweep hands its jobs the source's
+      // per-team rank (1, 2, 3 …); a refresh is somebody watching a screen, so
+      // it takes the top of that same scale rather than queueing behind
+      // another team's second and third sources.
+      priority: 1,
       // One attempt. A failed run is not a lost one: it is recorded in
       // `collection_sync_runs`, it moved `consecutive_failures`, and the source
       // already carries its own backoff — a BullMQ retry on top would ask a

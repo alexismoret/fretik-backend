@@ -40,6 +40,15 @@ export interface ExternalSyncJobData {
    * itself been handed and drop every scheduled run as a duplicate.
    */
   preClaimed?: boolean;
+  /**
+   * This job continues a walk that ran out of budget, rejoining its run row
+   * rather than opening a new one.
+   *
+   * The run id is carried so a SCHEDULED tick landing on a suspended source
+   * cannot adopt a checkpoint it was not handed: the runner compares the two
+   * and starts over when they disagree.
+   */
+  continueFrom?: { runId: string };
 }
 
 let queue: Queue<ExternalSyncJobData> | null = null;
@@ -64,3 +73,47 @@ export const getExternalSyncQueue = (): Queue<ExternalSyncJobData> => {
  * what the UI reads.
  */
 export const syncJobId = (sourceId: string): string => `sync-${sourceId}`;
+
+/**
+ * Hand a suspended walk back to the queue so its next leg runs.
+ *
+ * The SAME job id, deliberately: the source already holds its claim (the leg
+ * renewed it rather than releasing it), so a manual refresh arriving now would
+ * be dropped as a duplicate anyway — and collapsing onto one id keeps the
+ * invariant that a source has at most one job in flight, whatever asked for it.
+ *
+ * `priority` is inherited rather than re-derived. A walk that was urgent when
+ * it started is still urgent on its fourth leg, and a continuation that fell to
+ * the back of the queue behind every other team's first leg would make a long
+ * load take longer the longer it got.
+ */
+export const enqueueContinuation = async (input: {
+  sourceId: string;
+  teamId: string;
+  trigger: CollectionSyncRunTrigger;
+  runId: string;
+  /** `rate_limited` only — how long the third party asked us to wait. */
+  delayMs?: number;
+  priority?: number;
+}): Promise<void> => {
+  await getExternalSyncQueue().add(
+    EXTERNAL_SYNC_RUN_JOB,
+    {
+      sourceId: input.sourceId,
+      teamId: input.teamId,
+      trigger: input.trigger,
+      preClaimed: true,
+      continueFrom: { runId: input.runId },
+    },
+    {
+      jobId: syncJobId(input.sourceId),
+      attempts: 1,
+      removeOnComplete: true,
+      removeOnFail: true,
+      ...(input.delayMs !== undefined && input.delayMs > 0
+        ? { delay: input.delayMs }
+        : {}),
+      ...(input.priority !== undefined ? { priority: input.priority } : {}),
+    },
+  );
+};

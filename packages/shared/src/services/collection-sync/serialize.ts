@@ -13,8 +13,10 @@ import type {
   SyncSourceHealth,
   SyncSourceResponse,
 } from "../../schemas/collection-sync";
+import { syncArgsBindSince } from "../../schemas/collection-sync";
 import { isMcpConnection } from "../external-apps/mcp/connection-kind";
 import { getSnapshotForConnection } from "../external-apps/mcp/snapshot-store";
+import { SYNC_CLAIM_TIMEOUT_MS } from "./sweep";
 
 /**
  * Source row → the DTO every surface reads.
@@ -99,11 +101,24 @@ export const loadSyncSourceContext = async (
     }
   }
 
+  // A claim that has EXPIRED is not a run in flight. Without the second half of
+  // this predicate a runner killed mid-walk left its source spinning in the UI
+  // for ever, because nothing clears `claimed_at` on a crash — while the claim
+  // query has always read it this way, which is how the two disagreed. A
+  // suspended leg renews the stamp, so a two-hour walk stays "running"
+  // throughout.
+  const liveClaim = Date.now() - SYNC_CLAIM_TIMEOUT_MS;
+
   return {
     connections,
     summaries,
     running: new Set(
-      sources.filter((source) => source.claimedAt !== null).map((s) => s.id),
+      sources
+        .filter(
+          (source) =>
+            source.claimedAt !== null && source.claimedAt.getTime() > liveClaim,
+        )
+        .map((s) => s.id),
     ),
     lastRuns: options?.lastRuns ?? new Map<string, CollectionSyncRun>(),
   };
@@ -166,8 +181,11 @@ export const serializeSyncRun = (run: CollectionSyncRun): SyncRunResponse => ({
   unchangedCount: run.unchangedCount,
   orphanCount: run.orphanCount,
   failedCount: run.failedCount,
+  missingCount: run.missingCount,
   upstreamCalls: run.upstreamCalls,
   truncated: run.truncated,
+  legs: run.legs,
+  stopReason: run.stopReason,
   error: run.error,
   triggeredByUserId: run.triggeredByUserId,
 });
@@ -222,6 +240,19 @@ export const serializeSyncSource = (
     // cleared when it ends, so there is no second piece of state to keep in
     // step with it.
     running: context.running.has(source.id),
+    // Both halves or neither: the stamp says WHEN and the reason says WHY, and
+    // a confirmation offered without the second is a person clicking blind.
+    pendingFullResync:
+      source.fullResyncRequestedAt === null
+        ? null
+        : {
+            requestedAt: source.fullResyncRequestedAt.toISOString(),
+            reason: source.fullResyncReason ?? "",
+          },
+    // The source's own args are the declaration: binding `{"$since": true}` IS
+    // what makes a read incremental, whatever the action would have allowed.
+    incremental: syncArgsBindSince(source.args),
+    lastFullWalkAt: source.lastFullWalkAt?.toISOString() ?? null,
     health: syncSourceHealth(source, connection),
     lastRun: lastRun === undefined ? null : serializeSyncRun(lastRun),
     createdAt: source.createdAt.toISOString(),

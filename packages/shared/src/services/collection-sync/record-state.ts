@@ -23,35 +23,41 @@ export interface RecordSyncStateRow {
 }
 
 /**
- * Every record this source tracks, in ONE query.
+ * The freshness of NAMED records, by primary key.
  *
- * Deliberately the whole set rather than a lookup per row: a `table` run has to
- * partition new / changed / unchanged / missing, which is a full outer join
- * between the upstream answer and this table, and doing it in memory over one
- * read is the difference between a 10 000-row sync costing one query and
- * costing 10 000.
+ * Deliberately not "every record this source tracks": the caller always knows
+ * which rows it is about to touch — a page of upstream ids, or the records a
+ * refresh named — and reading the whole state table to answer a question about
+ * two hundred of them is O(collection) on a path that runs every fifteen
+ * minutes. The old whole-table loader was exactly that, on the INTERACTIVE
+ * lookup path.
  */
-export const loadRecordSyncState = async (
+export const loadRecordSyncStateFor = async (
   syncSourceId: string,
+  recordIds: readonly string[],
 ): Promise<Map<string, RecordSyncStateRow>> => {
-  const result = await db.execute(sql`
-    SELECT s.record_id::text AS record_id,
-           s.status::text     AS status,
-           s.content_hash     AS content_hash
-      FROM record_sync_state s
-     WHERE s.sync_source_id = ${syncSourceId}::uuid`);
-
   const byRecordId = new Map<string, RecordSyncStateRow>();
-  for (const row of result.rows) {
-    const recordId = Reflect.get(row, "record_id");
-    const status = Reflect.get(row, "status");
-    const contentHash = Reflect.get(row, "content_hash");
-    if (typeof recordId !== "string" || !isRecordSyncStatus(status)) continue;
-    byRecordId.set(recordId, {
-      recordId,
-      status,
-      contentHash: typeof contentHash === "string" ? contentHash : null,
-    });
+  if (recordIds.length === 0) return byRecordId;
+
+  for (const chunk of chunkForBulk([...new Set(recordIds)])) {
+    const result = await db.execute(sql`
+      SELECT s.record_id::text AS record_id,
+             s.status::text     AS status,
+             s.content_hash     AS content_hash
+        FROM record_sync_state s
+       WHERE s.sync_source_id = ${syncSourceId}::uuid
+         AND s.record_id = ANY(${sql.param(chunk)}::uuid[])`);
+    for (const row of result.rows) {
+      const recordId = Reflect.get(row, "record_id");
+      const status = Reflect.get(row, "status");
+      const contentHash = Reflect.get(row, "content_hash");
+      if (typeof recordId !== "string" || !isRecordSyncStatus(status)) continue;
+      byRecordId.set(recordId, {
+        recordId,
+        status,
+        contentHash: typeof contentHash === "string" ? contentHash : null,
+      });
+    }
   }
   return byRecordId;
 };
@@ -150,8 +156,15 @@ export interface TableSyncIndexEntry {
 }
 
 /**
- * Every record a `table` source owns, keyed by the upstream id that identifies
- * it — the whole left side of a run's diff, in ONE query.
+ * The left side of ONE PAGE's diff: the records this source owns whose upstream
+ * id is in the page just read.
+ *
+ * Scoped to the page, and that is the whole memory argument of the streaming
+ * runner. The first version loaded every record the source owned into a Map
+ * keyed by external id — 150-200 MB at a million rows, rebuilt from scratch by
+ * any leg that resumed in another process. This asks the same question of the
+ * same unique index (`collection_records_sync_external_uniq`) five hundred ids
+ * at a time, and nothing survives the page.
  *
  * A `LEFT JOIN` rather than an inner one: the record and its freshness row are
  * written by two statements, so a run that died between them left a record with
@@ -159,34 +172,66 @@ export interface TableSyncIndexEntry {
  * which would then CREATE it a second time and hit the upsert index. Seen as
  * `contentHash: null`, it simply looks like a row that has changed.
  */
-export const loadTableSyncIndex = async (
+export const loadTableSyncIndexFor = async (
   syncSourceId: string,
+  externalIds: readonly string[],
 ): Promise<Map<string, TableSyncIndexEntry>> => {
-  const result = await db.execute(sql`
-    SELECT r.id::text     AS record_id,
-           r.external_id  AS external_id,
-           s.content_hash AS content_hash,
-           s.status::text AS status
-      FROM collection_records r
-      LEFT JOIN record_sync_state s
-             ON s.record_id = r.id
-            AND s.sync_source_id = ${syncSourceId}::uuid
-     WHERE r.sync_source_id = ${syncSourceId}::uuid
-       AND r.external_id IS NOT NULL`);
-
   const byExternalId = new Map<string, TableSyncIndexEntry>();
-  for (const row of result.rows) {
-    const recordId = Reflect.get(row, "record_id");
-    const externalId = Reflect.get(row, "external_id");
-    const contentHash = Reflect.get(row, "content_hash");
-    const status = Reflect.get(row, "status");
-    if (typeof recordId !== "string" || typeof externalId !== "string")
-      continue;
-    byExternalId.set(externalId, {
-      recordId,
-      contentHash: typeof contentHash === "string" ? contentHash : null,
-      status: isRecordSyncStatus(status) ? status : null,
-    });
+  if (externalIds.length === 0) return byExternalId;
+
+  for (const chunk of chunkForBulk([...new Set(externalIds)])) {
+    const result = await db.execute(sql`
+      SELECT r.id::text     AS record_id,
+             r.external_id  AS external_id,
+             s.content_hash AS content_hash,
+             s.status::text AS status
+        FROM collection_records r
+        LEFT JOIN record_sync_state s
+               ON s.record_id = r.id
+              AND s.sync_source_id = ${syncSourceId}::uuid
+       WHERE r.sync_source_id = ${syncSourceId}::uuid
+         AND r.external_id = ANY(${sql.param(chunk)}::text[])`);
+    for (const row of result.rows) {
+      const recordId = Reflect.get(row, "record_id");
+      const externalId = Reflect.get(row, "external_id");
+      const contentHash = Reflect.get(row, "content_hash");
+      const status = Reflect.get(row, "status");
+      if (typeof recordId !== "string" || typeof externalId !== "string")
+        continue;
+      byExternalId.set(externalId, {
+        recordId,
+        contentHash: typeof contentHash === "string" ? contentHash : null,
+        status: isRecordSyncStatus(status) ? status : null,
+      });
+    }
   }
   return byExternalId;
+};
+
+/**
+ * "I saw this row, and it had not changed" — the stamp the orphan bracket
+ * reads.
+ *
+ * An unchanged row costs no UPDATE and no journal entry, which is the whole
+ * point of the content hash; but it must still leave a mark, because the
+ * bracket asks "which of the records I track did this walk NOT see" and
+ * answers it with `synced_at < walkStartedAt`. Without this every unchanged
+ * row would look like an orphan and a healthy sync would reject its own
+ * collection.
+ *
+ * Only the timestamp moves: the status and the hash are already right, and
+ * rewriting them would be a wider row version for nothing.
+ */
+export const touchRecordSyncState = async (
+  syncSourceId: string,
+  recordIds: readonly string[],
+): Promise<void> => {
+  if (recordIds.length === 0) return;
+  for (const chunk of chunkForBulk([...recordIds])) {
+    await db.execute(sql`
+      UPDATE record_sync_state
+         SET synced_at = now()
+       WHERE sync_source_id = ${syncSourceId}::uuid
+         AND record_id = ANY(${sql.param(chunk)}::uuid[])`);
+  }
 };

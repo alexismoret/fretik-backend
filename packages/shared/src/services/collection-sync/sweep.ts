@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import db from "../../db";
+import { intFromEnv } from "../../lib/env";
 import type { SyncSchedule } from "../../schemas/collection-sync";
 import { SYNC_LIMITS } from "../../schemas/collection-sync";
 
@@ -47,8 +48,18 @@ export const SYNC_CLAIM_TIMEOUT_MS = 15 * 60_000;
 export const SYNC_FAILURE_DISABLE_THRESHOLD = 10;
 const MAX_BACKOFF_MULTIPLIER = 16;
 
-/** Sources one sweep pass claims. Bounded so a tick stays a tick. */
-const CLAIM_BATCH = 50;
+/**
+ * Sources one sweep pass claims, and how many of them any ONE team may take.
+ *
+ * `perTeam` is the fairness knob, and it exists because of a shape that is easy
+ * to reach: three of a team's sources are slow (an app that answers in 15 s),
+ * they are the three most overdue, and they take every seat the worker has. A
+ * second team's fifteen-minute source then waits behind three walks of
+ * somebody else's. Ordering by `next_run_at` alone cannot fix that — the slow
+ * team IS the most overdue, over and over.
+ */
+const CLAIM_BATCH = intFromEnv("EXTERNAL_SYNC_CLAIM_BATCH", 50);
+const CLAIM_PER_TEAM = intFromEnv("EXTERNAL_SYNC_CLAIM_PER_TEAM", 3);
 
 /** Exponential, capped. `0` failures is the nominal cadence. */
 export const syncBackoffMultiplier = (consecutiveFailures: number): number =>
@@ -93,46 +104,88 @@ export const computeNextRunAt = (input: NextRunInput): Date | null => {
 export interface ClaimedSyncSource {
   id: string;
   teamId: string;
+  /**
+   * This source's rank WITHIN its team, 1 being the most overdue. Handed to
+   * BullMQ as the job priority, so every team's first source is served before
+   * any team's second — round-robin without a scheduler.
+   */
+  rank: number;
 }
 
 /**
  * Take ownership of every source whose time has come, in ONE statement.
  *
- * The claim IS the statement: `claimed_at` is both read and written by the same
- * `UPDATE`, so two replicas sweeping at the same second cannot both take a row.
- * The second one blocks on the row lock, re-evaluates its `WHERE` when the lock
- * is released (read-committed re-check), finds `claimed_at` set and skips —
- * which is why there is no advisory lock, no `SELECT … FOR UPDATE` and no
- * leader election anywhere in this path.
+ * THE MUTUAL EXCLUSION IS THREE THINGS, and it used to be one.
  *
- * The `LIMIT` lives in a subselect because Postgres has no `UPDATE … LIMIT`,
- * and it is ordered by `next_run_at` so the most overdue source is never
- * starved by a backlog of fresher ones.
+ *  1. `FOR UPDATE SKIP LOCKED` on the inner id list, so two replicas sweeping
+ *     in the same second pick DIFFERENT rows instead of queueing on the same
+ *     ones.
+ *  2. The `claimed_at` predicate REPEATED on the outer `UPDATE`. This is the
+ *     one that was missing, and the reason it mattered is not obvious: under
+ *     READ COMMITTED, when the outer `UPDATE` blocks on a row another
+ *     transaction is writing, Postgres re-evaluates only ITS OWN `WHERE`
+ *     against the new row version (EPQ) — not the subselect's. With the
+ *     predicate living only in the subselect there was nothing left to
+ *     re-check, and both sweeps claimed the same source. It was masked in
+ *     production by BullMQ collapsing the two jobs onto one `jobId`, which is
+ *     luck, not exclusion.
+ *  3. The `LIMIT` in a subselect, because Postgres has no `UPDATE … LIMIT`.
+ *
+ * FAIRNESS is the window function: `row_number()` per team over `next_run_at`,
+ * then `rn <= perTeam`. The wrapper around it is not cosmetic either —
+ * `FOR UPDATE` cannot be applied to a query with a window function, so the
+ * ranking and the locking have to be two levels.
  */
 export const claimDueSyncSources = async (
-  limit: number = CLAIM_BATCH,
+  options: { limit?: number; perTeam?: number } = {},
 ): Promise<ClaimedSyncSource[]> => {
+  const limit = options.limit ?? CLAIM_BATCH;
+  const perTeam = options.perTeam ?? CLAIM_PER_TEAM;
   const staleClaim = sql.raw(`${String(SYNC_CLAIM_TIMEOUT_MS)} milliseconds`);
   const result = await db.execute(sql`
-    UPDATE collection_sync_sources
+    WITH due AS (
+      SELECT id,
+             team_id,
+             next_run_at,
+             row_number() OVER (
+               PARTITION BY team_id ORDER BY next_run_at ASC, id ASC
+             ) AS rn
+        FROM collection_sync_sources
+       WHERE enabled
+         AND next_run_at IS NOT NULL
+         AND next_run_at <= now()
+         AND (claimed_at IS NULL
+              OR claimed_at < now() - interval '${staleClaim}')
+    ),
+    fair AS (
+      SELECT id, rn
+        FROM due
+       WHERE rn <= ${perTeam}
+       ORDER BY rn ASC, next_run_at ASC
+       LIMIT ${limit}
+    ),
+    locked AS (
+      SELECT s.id
+        FROM collection_sync_sources s
+        JOIN fair ON fair.id = s.id
+         FOR UPDATE OF s SKIP LOCKED
+    )
+    UPDATE collection_sync_sources t
        SET claimed_at = now()
-     WHERE id IN (
-       SELECT id
-         FROM collection_sync_sources
-        WHERE enabled
-          AND next_run_at IS NOT NULL
-          AND next_run_at <= now()
-          AND (claimed_at IS NULL
-               OR claimed_at < now() - interval '${staleClaim}')
-        ORDER BY next_run_at ASC
-        LIMIT ${limit}
-     )
-    RETURNING id::text AS id, team_id::text AS team_id`);
+      FROM fair
+     WHERE t.id = fair.id
+       AND t.id IN (SELECT id FROM locked)
+       AND (t.claimed_at IS NULL
+            OR t.claimed_at < now() - interval '${staleClaim}')
+    RETURNING t.id::text AS id, t.team_id::text AS team_id, fair.rn::int AS rn`);
   return result.rows.flatMap((row) => {
     const id = Reflect.get(row, "id");
     const teamId = Reflect.get(row, "team_id");
-    return typeof id === "string" && typeof teamId === "string"
-      ? [{ id, teamId }]
+    const rank = Reflect.get(row, "rn");
+    return typeof id === "string" &&
+      typeof teamId === "string" &&
+      typeof rank === "number"
+      ? [{ id, teamId, rank }]
       : [];
   });
 };
@@ -161,6 +214,13 @@ export interface SyncRunOutcome {
   error?: string;
   /** A successful run stamps `last_success_at`; a partial one does not. */
   succeededAt?: Date;
+  /**
+   * The third party asked us to wait this long. The next slot becomes the
+   * LATER of the cadence and that wait — coming back on the ordinary interval
+   * would only be refused by the governor before a call went out, and would
+   * write a failed run for it.
+   */
+  retryAfterMs?: number;
 }
 
 /**
@@ -182,12 +242,21 @@ export const scheduleNextRun = async (
 ): Promise<{ nextRunAt: Date | null; disabled: boolean }> => {
   const failures = outcome.ok ? 0 : source.consecutiveFailures + 1;
   const disabled = !outcome.ok && failures >= SYNC_FAILURE_DISABLE_THRESHOLD;
-  const nextRunAt = disabled
+  const scheduled = disabled
     ? null
     : computeNextRunAt({
         schedule: source.schedule,
         consecutiveFailures: failures,
       });
+  // A manual source has no `nextRunAt` at all, so a wait cannot give it one:
+  // nothing would come back to honour it, and the source would appear to have
+  // a schedule it does not have.
+  const nextRunAt =
+    scheduled === null || outcome.retryAfterMs === undefined
+      ? scheduled
+      : new Date(
+          Math.max(scheduled.getTime(), Date.now() + outcome.retryAfterMs),
+        );
   const error = outcome.error ?? null;
   // A run that did not succeed leaves `last_success_at` ALONE — it is the
   // freshness the UI shows and the lower bound an incremental read binds, so

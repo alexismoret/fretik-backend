@@ -3,6 +3,7 @@ import { syncJobId } from "@fretik/shared/services/collection-sync/queue";
 import { runSyncSource } from "@fretik/shared/services/collection-sync/run-source";
 import { claimDueSyncSources } from "@fretik/shared/services/collection-sync/sweep";
 import { type Job, Worker } from "bullmq";
+import { intFromEnv } from "../lib/env";
 import {
   EXTERNAL_SYNC_QUEUE,
   EXTERNAL_SYNC_RUN_JOB,
@@ -24,20 +25,32 @@ import { getExternalSyncQueue } from "../queues/queues";
  * `collection-index-sweep` are isolated for, and it applies harder here because
  * the duration is a THIRD PARTY's, not ours.
  *
- * Concurrency 3. Not 1, because the wall clock of a run is mostly somebody
- * else's latency and three teams' syncs have no reason to queue behind each
- * other. Not more, because each one ends in bulk writes against a collection
- * table, and past a handful the passes contend for the same WAL bandwidth the
- * rest of the product is writing through — the same ceiling the bulk-operation
- * drain settled on for the same reason. Per-CONNECTION serialisation is not
- * this number's job: `withConnectionSlot` already holds it for apps that
- * declare themselves serial.
+ * CONCURRENCY IS A KNOB, defaulting to 8, and the replicas multiply it. A run
+ * spends better than nine tenths of its wall clock waiting on a third party —
+ * an Akanea read alone is 12-15 s per call — so seats are cheap and the ceiling
+ * that matters is somebody else's rate limit, which is the GOVERNOR's job and
+ * not this number's (`exec/governor/`). Nor is per-connection serialisation:
+ * the governor holds one seat for apps that declare themselves serial.
+ *
+ * What the old literal 3 was really protecting was the database, and the
+ * streaming runner changed that argument: the writes are short transactions
+ * bounded per page, and a stable source rewrites nothing at all. The number to
+ * add the day N replicas × 8 start fifty first loads together is "max
+ * simultaneous first loads", not a return to 3.
+ *
+ * JOB PRIORITY carries the fairness the claim computed: 1 for the first source
+ * of any team, 2 for its second, and so on, so a team with three overdue syncs
+ * cannot make another team wait behind all three. BullMQ serves the lowest
+ * number first.
  *
  * One attempt per job, set by the producer. A failed run is recorded in
  * `collection_sync_runs`, moves `consecutive_failures` and feeds the source's
  * own exponential backoff; a BullMQ retry on top would ask a failing app twice
  * as often as the backoff just decided it should be asked.
  */
+
+/** Runs one replica walks at once. Replicas multiply it; nothing caps the total. */
+const CONCURRENCY = intFromEnv("EXTERNAL_SYNC_CONCURRENCY", 8);
 
 /**
  * Claim every due source and hand each to the queue.
@@ -65,6 +78,9 @@ export const runExternalSyncSweep = async (): Promise<{ claimed: number }> => {
         // Same id a manual refresh uses: a source has ONE job at a time, and a
         // refresh pressed while the tick was landing collapses into it.
         jobId: syncJobId(source.id),
+        // The claim's own per-team rank. Every team's first source runs before
+        // any team's second.
+        priority: source.rank,
         attempts: 1,
         // Both retentions delete immediately — BullMQ refuses an `add` whose
         // jobId exists in ANY state, so a kept job would lock the source out of
@@ -98,6 +114,9 @@ export const startExternalSyncWorker = (): Worker<ExternalSyncJobData> => {
         ...(job.data.preClaimed !== undefined
           ? { preClaimed: job.data.preClaimed }
           : {}),
+        ...(job.data.continueFrom !== undefined
+          ? { continueFrom: job.data.continueFrom }
+          : {}),
       });
       if (result.status === "skipped") {
         // Not a failure and usually not even noteworthy: `already_running` is
@@ -107,13 +126,16 @@ export const startExternalSyncWorker = (): Worker<ExternalSyncJobData> => {
       const counts = result.counts;
       console.info(
         `[external-sync] ${job.data.sourceId} ${result.status}` +
+          (result.suspended === true
+            ? ` (leg ${String(result.legs ?? 1)}${result.stopReason === undefined ? "" : `, ${result.stopReason}`})`
+            : "") +
           (counts === undefined
             ? ""
             : ` · +${counts.createdCount.toString()} ~${counts.updatedCount.toString()} =${counts.unchangedCount.toString()} ✗${counts.failedCount.toString()} · ${counts.upstreamCalls.toString()} calls${counts.truncated ? " (truncated)" : ""}`) +
           (result.error === undefined ? "" : ` · ${result.error}`),
       );
     },
-    { connection: createWorkerConnection(), concurrency: 3 },
+    { connection: createWorkerConnection(), concurrency: CONCURRENCY },
   );
   worker.on("failed", (job, err) => {
     // `runSyncSource` turns every failure it can attribute into a run row and

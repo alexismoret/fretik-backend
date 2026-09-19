@@ -28,6 +28,24 @@ const REGISTRY_UPDATE_PARAMS_PER_ROW = 5;
 const EXTENSION_UPDATE_SYS_PARAMS = 2;
 
 /**
+ * Rows this service puts in ONE transaction for a collection of this shape —
+ * the update sibling of `recordWriteChunkSize`, and exported for the same
+ * reason: a streamed load must size its chunks to match, or "the chunk failed"
+ * stops implying "nothing landed" and the ledger's exactly-once guard becomes
+ * a guess. The update binds fewer parameters per row than the insert, so the
+ * two numbers differ and neither may stand in for the other.
+ */
+export const recordUpdateChunkSize = (
+  fieldDefs: Parameters<typeof extensionColumnCount>[0],
+): number =>
+  chunkSizeForParams(
+    Math.max(
+      REGISTRY_UPDATE_PARAMS_PER_ROW,
+      EXTENSION_UPDATE_SYS_PARAMS + extensionColumnCount(fieldDefs),
+    ),
+  );
+
+/**
  * The registry half of a bulk update, as one `UPDATE … FROM (VALUES …)`.
  *
  * Pure and exported so it can be asserted, because the thing that has to stay
@@ -292,12 +310,7 @@ export const bulkUpdateCollectionRecords = async (input: {
     const fds = fieldDefsByType.get(typeId) ?? [];
     // Sized from THIS type's width: the extension update binds `id` + `label`
     // plus one parameter per scalar column, the registry update binds 5.
-    const chunkSize = chunkSizeForParams(
-      Math.max(
-        REGISTRY_UPDATE_PARAMS_PER_ROW,
-        EXTENSION_UPDATE_SYS_PARAMS + extensionColumnCount(fds),
-      ),
-    );
+    const chunkSize = recordUpdateChunkSize(fds);
     for (const batch of chunkForBulk(prep, chunkSize)) {
       await db.transaction(async (tx) => {
         // `record.updated` has no natural once-only token — no dedupKey. One

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { BulkOperation } from "../../db/schema";
+import type { BulkOperation, BulkOperationParams } from "../../db/schema";
 import { MAX_BULK_ITEMS } from "../../lib/db-bulk";
 import { audienceSchema } from "../../schemas/collection-sharing";
 import {
@@ -22,6 +22,7 @@ import {
   claimChunk,
 } from "../bulk-operations/chunk";
 import { commitBulkOperation } from "../bulk-operations/commit";
+import { firstMalformedRow } from "../bulk-operations/executors/rows";
 import { findBulkOperation } from "../bulk-operations/find";
 import { emptyProgress, foldChunkProgress } from "../bulk-operations/progress";
 import { resumeBulkOperation } from "../bulk-operations/resume";
@@ -32,7 +33,10 @@ import {
   recordWriteChunkSize,
 } from "../collection-records/bulk-create";
 import { bulkDeleteCollectionRecords } from "../collection-records/bulk-delete";
-import { bulkUpdateCollectionRecords } from "../collection-records/bulk-update";
+import {
+  bulkUpdateCollectionRecords,
+  recordUpdateChunkSize,
+} from "../collection-records/bulk-update";
 import { queryCollectionRecords } from "../collection-records/query";
 import { getRecordSnapshots } from "../collection-records/snapshot-batch";
 import { COLLECTION_LIMITS } from "../collections/constants";
@@ -390,26 +394,41 @@ const bulkDelete = async (
   });
 };
 
-// ── Streamed import (loads too large for one request) ─────────────────
+// ── Streamed loads (writes too large for one request) ─────────────────
 //
-// Three ops that only the SDK's `_import` helper calls, and only past
+// Three ops that only the SDK's `_stream_load` helper calls, and only past
 // `SDK_INLINE_ROW_LIMIT` rows. Everything below that keeps using
-// `records.bulk_create` unchanged — the agent never chooses between the two.
+// `records.bulk_create` / `bulk_update` / `bulk_delete` unchanged — the agent
+// never chooses between the two.
 //
-// The split exists because a 200 000-row load breaks three ceilings at once: a
+// The split exists because a 200 000-row write breaks three ceilings at once: a
 // single HTTP body, the approval payload a browser can render, and the "one
 // pending approval per conversation" rule (40 sequential grants at the old
 // 5 000-row cap). Chunking the upload against a `bulk_operations` row fixes all
 // three, and turns a crash mid-load into a resume instead of a restart.
+//
+// All three ops share this path because none of those three ceilings care what
+// the rows DO. What changes per op is only the executor, the chunk size and the
+// shape of a row — which is why the op is settled here, at begin, and frozen on
+// the operation rather than re-stated per chunk.
+
+/** Which streamed op maps to which ledger kind. */
+const LOAD_KINDS = {
+  create: "record_import",
+  update: "record_update",
+  delete: "record_delete",
+} as const;
 
 const importBeginArgs = z.object({
-  op: z.literal("create"),
+  op: z.enum(["create", "update", "delete"]),
   collectionKey: z.string().min(1).max(60),
   totalRows: z.number().int().min(1).max(MAX_BULK_OPERATION_ITEMS),
   /** Caller-side digest of the canonicalized rows — the replay key's payload. */
   rowsDigest: z.string().min(16).max(128),
   sample: z.array(z.record(z.string(), z.unknown())).max(10),
   columns: z.array(z.string()).max(200).optional(),
+  /** `update` only — patch the provided keys instead of replacing the row. */
+  merge: z.boolean().optional(),
 });
 
 /**
@@ -444,18 +463,39 @@ const importBegin = async (
 
   // Chunk size comes from the TARGET TYPE's real column width, so one uploaded
   // chunk is exactly one database transaction — the property the chunk ledger's
-  // exactly-once guard rests on.
+  // exactly-once guard rests on. The insert and the update bind a different
+  // number of parameters per row, so each op asks its own write service what a
+  // transaction of this collection holds; a delete binds only ids, and sits
+  // under the create's bound whatever the collection's width.
   const fieldDefs = await getFieldDefinitionsForTeam({
     teamId: ctx.teamId,
     collectionId,
   });
+  const chunkSize =
+    args.op === "update"
+      ? recordUpdateChunkSize(fieldDefs)
+      : recordWriteChunkSize(fieldDefs);
 
+  const merge = args.op === "update" ? (args.merge ?? false) : undefined;
   const lookupHash = recordImportLookupHash({
     op: args.op,
     collectionId,
     totalRows: args.totalRows,
     rowsDigest: args.rowsDigest,
+    ...(merge === undefined ? {} : { merge }),
   });
+
+  const params: BulkOperationParams =
+    args.op === "update"
+      ? {
+          op: "update",
+          collectionId,
+          collectionKey: args.collectionKey,
+          merge: merge ?? false,
+        }
+      : args.op === "delete"
+        ? { op: "delete", collectionId, collectionKey: args.collectionKey }
+        : { op: "create", collectionId, collectionKey: args.collectionKey };
 
   const handle = await beginBulkOperation({
     organizationId: ctx.organizationId,
@@ -463,12 +503,12 @@ const importBegin = async (
     userId: ctx.userId,
     conversationId: ctx.conversationId,
     turnId: ctx.turnId,
-    kind: "record_import",
+    kind: LOAD_KINDS[args.op],
     mode: level === "auto" ? "direct" : "staged",
     lookupHash,
     totalItems: args.totalRows,
-    chunkSize: recordWriteChunkSize(fieldDefs),
-    params: { op: args.op, collectionId, collectionKey: args.collectionKey },
+    chunkSize,
+    params,
     sample: args.sample,
     ...(args.columns ? { columns: args.columns } : {}),
   });
@@ -565,6 +605,14 @@ const importChunk = async (
     };
   }
 
+  const malformed = firstMalformedRow(operation.kind, args.rows);
+  if (malformed !== null) {
+    return {
+      status: "error",
+      message: `Row ${(args.chunkIndex * operation.chunkSize + malformed.index).toString()} is not ${malformed.shape}, which is what a ${operation.params.op} load carries. No chunk was stored.`,
+    };
+  }
+
   const chunk = await claimChunk({
     operationId: operation.id,
     chunkIndex: args.chunkIndex,
@@ -629,7 +677,7 @@ const importCommit = async (
   const { operationId } = importCommitArgs.parse(rawArgs);
   const operation = await findTeamOperation(ctx, operationId);
   if (operation === null) return unknownOperation(operationId);
-  return commitBulkOperation({ operation, gateContext: ctx });
+  return commitBulkOperation({ operation });
 };
 
 /**

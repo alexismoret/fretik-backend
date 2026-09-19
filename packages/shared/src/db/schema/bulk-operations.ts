@@ -21,7 +21,11 @@ import { organization, team, user } from "./auth-schema";
  * HAVE an executor are listed — an unimplemented kind in this union would be a
  * registry hole that only fails at runtime.
  */
-export const BULK_OPERATION_KINDS = ["record_import"] as const;
+export const BULK_OPERATION_KINDS = [
+  "record_import",
+  "record_update",
+  "record_delete",
+] as const;
 export type BulkOperationKind = (typeof BULK_OPERATION_KINDS)[number];
 
 /**
@@ -63,14 +67,40 @@ export type BulkOperationStatus = (typeof BULK_OPERATION_STATUSES)[number];
 export const BULK_OPERATION_MODES = ["direct", "staged"] as const;
 export type BulkOperationMode = (typeof BULK_OPERATION_MODES)[number];
 
-/** Kind-specific static input, frozen at creation. `record_import` today. */
+/**
+ * Kind-specific static input, frozen at creation.
+ *
+ * All three name ONE collection, and that is a narrowing the small writes do
+ * not have: an inline `bulk_update` may span types, because its rows travel
+ * with the request and each one carries its own. A streamed load's rows arrive
+ * chunk by chunk against a row created before any of them, so the target has to
+ * be settled up front — it is what sizes a chunk (the collection's column
+ * width), what the approval card names, and what the executor scopes its
+ * ownership filter to.
+ */
 export interface RecordImportParams {
   op: "create";
   collectionId: string;
   collectionKey: string;
 }
 
-export type BulkOperationParams = RecordImportParams;
+/** `merge` is frozen here, not re-sent per chunk: the semantics of a load
+ * cannot change halfway through it. */
+export interface RecordUpdateParams {
+  op: "update";
+  collectionId: string;
+  collectionKey: string;
+  merge: boolean;
+}
+
+export interface RecordDeleteParams {
+  op: "delete";
+  collectionId: string;
+  collectionKey: string;
+}
+
+export type BulkOperationParams =
+  RecordImportParams | RecordUpdateParams | RecordDeleteParams;
 
 /**
  * Running tally of a drain, merged chunk by chunk.
@@ -124,12 +154,25 @@ export const bulkOperations = pgTable(
     userId: uuid("user_id")
       .notNull()
       .references(() => user.id, { onDelete: "cascade" }),
-    conversationId: uuid("conversation_id")
-      .notNull()
-      .references(() => aiConversations.id, { onDelete: "cascade" }),
+    /**
+     * The conversation that opened the load — NULL when nobody is talking.
+     *
+     * A load submitted over HTTP by an application has no conversation, no
+     * turn, no approval card and no one to wake: it is `direct` by
+     * construction, and every conversation-shaped step around the drain
+     * (consuming the approval, substituting the tool part, completing the wait
+     * row) is skipped rather than faked. Faking one would be worse than
+     * nullable columns — a synthetic conversation collects tasks no one ever
+     * reads, and blocks a real fan-in the moment the ids collide.
+     */
+    conversationId: uuid("conversation_id").references(
+      () => aiConversations.id,
+      { onDelete: "cascade" },
+    ),
 
-    /** Sandbox turn that opened the operation — UI correlation only. */
-    turnId: varchar("turn_id", { length: 128 }).notNull(),
+    /** Sandbox turn that opened the operation — UI correlation only. NULL for
+     * an API load, for the same reason as `conversation_id`. */
+    turnId: varchar("turn_id", { length: 128 }),
 
     kind: text("kind").$type<BulkOperationKind>().notNull(),
     status: text("status")
@@ -200,6 +243,14 @@ export const bulkOperations = pgTable(
       t.conversationId,
       t.lookupHash,
     ),
+    // The same guard for a load with no conversation. It needs its own index
+    // because Postgres treats NULLs as distinct in a unique index: with
+    // `conversation_id` NULL the index above stops deduping anything, and a
+    // client retrying a submission would open a second load of the same rows.
+    // Scoped to the team, which is the only tenancy an API load has.
+    uniqueIndex("bulk_operations_team_hash_uniq")
+      .on(t.teamId, t.lookupHash)
+      .where(sql`${t.conversationId} IS NULL`),
     index("bulk_operations_approval_idx").on(t.approvalId),
     // The sweep's read: what is stuck, oldest first.
     index("bulk_operations_status_idx").on(t.status, t.createdAt),

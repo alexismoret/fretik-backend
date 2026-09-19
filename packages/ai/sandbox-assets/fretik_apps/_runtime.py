@@ -283,11 +283,26 @@ def _clean_nan(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def _import(collection_key: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """Stream a large create load: announce it, upload it in chunks, commit it.
+# What a streamed load calls the ids it wrote, per op. `delete` has none to
+# report beyond the count.
+_STREAM_ID_KEY = {"create": "ids", "update": "updatedIds", "delete": "deletedIds"}
 
-    Called by `collections.records.bulk_create` past `SDK_INLINE_ROW_LIMIT`. The
-    agent never calls this directly and never chooses between the two paths.
+
+def _stream_load(
+    op: str,
+    collection_key: str,
+    rows: list[dict[str, Any]],
+    *,
+    merge: bool | None = None,
+) -> dict[str, Any]:
+    """Stream a large load: announce it, upload it in chunks, commit it.
+
+    Called by `collections.records.bulk_create` / `bulk_update` / `bulk_delete`
+    past `SDK_INLINE_ROW_LIMIT`. The agent never calls this directly and never
+    chooses between the two paths.
+
+    `rows` carries whatever the op writes: the field map for a create,
+    {"id", "data"} for an update, {"id"} for a delete.
 
     Resumable by construction. Every step is keyed by content, so re-running the
     exact same code after a crash, a sandbox recycle, or an approval skips
@@ -300,21 +315,31 @@ def _import(collection_key: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
     the message then says so — at which point retrying is not the answer.
     """
     rows = _clean_nan(rows)
-    columns = sorted({k for row in rows[:100] for k in row.keys()})
+    # The columns a reviewer will see on the card. For an update they live one
+    # level down, inside each row's "data"; a delete writes no columns at all.
+    if op == "create":
+        columns = sorted({k for row in rows[:100] for k in row.keys()})
+    elif op == "update":
+        columns = sorted(
+            {k for row in rows[:100] for k in (row.get("data") or {}).keys()}
+        )
+    else:
+        columns = []
+
+    args: dict[str, Any] = {
+        "op": op,
+        "collectionKey": collection_key,
+        "totalRows": len(rows),
+        "rowsDigest": _rows_digest(rows),
+        "sample": rows[:3],
+    }
+    if columns:
+        args["columns"] = columns
+    if merge is not None:
+        args["merge"] = merge
 
     begin = _post(
-        {
-            "kind": "collections",
-            "op": "records.import_begin",
-            "args": {
-                "op": "create",
-                "collectionKey": collection_key,
-                "totalRows": len(rows),
-                "rowsDigest": _rows_digest(rows),
-                "sample": rows[:3],
-                "columns": columns,
-            },
-        }
+        {"kind": "collections", "op": "records.import_begin", "args": args}
     )
     # Already finished, or already running in the background — nothing to send.
     if begin.get("state") in ("replay", "running"):
@@ -359,7 +384,14 @@ def _import(collection_key: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
             "args": {"operationId": operation_id},
         }
     )
-    return {**commit, "ids": ids, "okCount": commit.get("okCount", ok_count)}
+    # A staged load is applied by a worker, which has nobody to hand ids to, so
+    # the key is present and None rather than an empty list that would read as
+    # "nothing was written".
+    return {
+        **commit,
+        _STREAM_ID_KEY[op]: ids or None,
+        "okCount": commit.get("okCount", ok_count),
+    }
 
 
 def _call_read(action: str, args: dict[str, Any]) -> Any:

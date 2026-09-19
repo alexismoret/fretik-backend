@@ -36,7 +36,7 @@ manageCollection / manageField tools instead; this SDK is the batch path.
 
 from typing import Any
 
-from ._runtime import SDK_INLINE_ROW_LIMIT, _call_collections, _import
+from ._runtime import SDK_INLINE_ROW_LIMIT, _call_collections, _stream_load
 
 # Field dicts use Python snake_case; the backend wants camelCase. Map only the
 # multi-word keys — single-word ones (label, type, description, config) pass
@@ -128,7 +128,9 @@ class _Records:
                     f"{SDK_INLINE_ROW_LIMIT} rows. Create the records first, "
                     "then link them in a second pass."
                 )
-            return _import(collection_key, [_row(r)["data"] for r in rows])
+            return _stream_load(
+                "create", collection_key, [_row(r)["data"] for r in rows]
+            )
         return _call_collections(
             "records.bulk_create",
             {"collectionKey": collection_key, "rows": [_row(r) for r in rows]},
@@ -143,31 +145,67 @@ class _Records:
         collection_key: str | None = None,
     ) -> dict[str, Any]:
         """Update the data of many records. Each item is
-        {"id": "<record id>", "data": {<field map>}}. No collection_key needed —
-        each id routes itself. Records outside your team are skipped.
+        {"id": "<record id>", "data": {<field map>}}. Records outside your team
+        are skipped.
 
         merge=True (default): PATCH — only the keys you pass change, the rest
         are kept; pass a key with value None to clear it. merge=False: full
         replace — omitted keys are cleared.
 
+        Pass the WHOLE list, however long — batches beyond a few thousand rows
+        are streamed automatically, and a streamed load needs `collection_key`
+        (it is one collection at a time). Below that, ids route themselves.
+
         Returns {"updatedIds": [...], "okCount": int, "errors": [{id, error}]}.
+        On a streamed load `updatedIds` is None — read the counts.
         """
-        # Tolerant of the bulk_create call shape: `records=` aliases `updates`,
-        # and a stray `collection_key` is accepted (each id routes itself).
+        # Tolerant of the bulk_create call shape: `records=` aliases `updates`.
         items = updates if updates is not None else records
         if items is None:
             raise TypeError(
                 "bulk_update expects a list of {'id', 'data'} updates"
             )
+        if len(items) > SDK_INLINE_ROW_LIMIT:
+            if not collection_key:
+                raise ValueError(
+                    "bulk_update: pass collection_key= past "
+                    f"{SDK_INLINE_ROW_LIMIT} rows. A streamed load is sized "
+                    "and reviewed against ONE collection; split the updates "
+                    "by collection and call once per collection."
+                )
+            return _stream_load(
+                "update", collection_key, items, merge=merge
+            )
         return _call_collections(
             "records.bulk_update", {"updates": items, "merge": merge}
         )
 
-    def bulk_delete(self, record_ids: list[str]) -> dict[str, Any]:
+    def bulk_delete(
+        self,
+        record_ids: list[str],
+        *,
+        collection_key: str | None = None,
+    ) -> dict[str, Any]:
         """Delete many records by id. Ids outside your team are skipped.
 
+        Pass the WHOLE list, however long — batches beyond a few thousand rows
+        are streamed automatically, and a streamed load needs `collection_key`
+        (it is one collection at a time).
+
         Returns {"deletedIds": [...], "okCount": int, "errors": [{id, error}]}.
+        On a streamed load `deletedIds` is None — read the counts.
         """
+        if len(record_ids) > SDK_INLINE_ROW_LIMIT:
+            if not collection_key:
+                raise ValueError(
+                    "bulk_delete: pass collection_key= past "
+                    f"{SDK_INLINE_ROW_LIMIT} ids. A streamed load is sized "
+                    "and reviewed against ONE collection; split the ids by "
+                    "collection and call once per collection."
+                )
+            return _stream_load(
+                "delete", collection_key, [{"id": i} for i in record_ids]
+            )
         return _call_collections(
             "records.bulk_delete", {"recordIds": record_ids}
         )

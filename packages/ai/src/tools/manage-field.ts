@@ -34,7 +34,7 @@ export const createManageFieldTool = () =>
       "Manage a field on a collection (the typed column). Get current fields from describeCollection. The field TYPE decides what the team can filter, sum, and view on — when unsure which type fits (stored vs computed, select vs text, relation vs field), read `skills/designing-collections/SKILL.md` first.",
       "",
       "- add: collectionKey + label + type + description (one line — what it holds). Optional config (select options, number bounds, …) and key.",
-      "- update: collectionKey + fieldKey + any of label, description, config, enabled. Keeps stored values. The only action allowed on a `synced` column (describeCollection marks them) — retyping or deleting one is refused, because its app fills it.",
+      "- update: collectionKey + fieldKey + any of label, description, config, enabled. Keeps stored values. It is also the only action a `synced` column takes — see `<collections>`.",
       "- changeType: collectionKey + fieldKey + type (+ config). RESETS the field's values.",
       "- delete: collectionKey + fieldKey. Pass cascade=true to drop a field that holds values.",
       "",

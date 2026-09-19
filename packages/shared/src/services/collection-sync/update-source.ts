@@ -12,6 +12,7 @@ import { invalidateFieldDefinitionsCache } from "../field-definitions/cache";
 import { createFieldDefinition } from "../field-definitions/create";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
 import { slugifyFieldKey } from "../field-definitions/slugify-key";
+import { assertConnectionUsable } from "./assert-connection-scope";
 import { assertAdoptable, assertDraftLimit } from "./create-source";
 import { computeNextRunAt } from "./sweep";
 
@@ -36,6 +37,8 @@ export const updateSyncSource = async (params: {
   id: string;
   teamId: string;
   organizationId: string;
+  /** The person acting — a move to a personal connection is theirs to make. */
+  userId?: string | null;
   patch: UpdateSyncSourceInput;
 }): Promise<CollectionSyncSource> => {
   const source = await db.query.collectionSyncSources.findFirst({
@@ -45,6 +48,16 @@ export const updateSyncSource = async (params: {
     return throwHttpError(404, notFound("Sync source not found"));
   }
   const { patch } = params;
+
+  // Re-pointing a source at another connection is the same decision as
+  // building it on one, so it meets the same bar.
+  if (patch.connectionId != null) {
+    await assertConnectionUsable({
+      connectionId: patch.connectionId,
+      teamId: params.teamId,
+      userId: params.userId ?? null,
+    });
+  }
 
   let mapping: SyncFieldMapping[] | undefined;
   let fieldsChanged = false;

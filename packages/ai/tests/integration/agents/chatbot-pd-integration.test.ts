@@ -60,6 +60,7 @@ const EXPECTED_DOMAIN_TOOL_NAMES: readonly string[] = [
   "manageLink",
   "manageCollection",
   "manageField",
+  "manageSync",
   "manageDocument",
   "searchIcons",
   "webFetch",
@@ -153,7 +154,7 @@ describe("Chatbot Progressive Disclosure — end-to-end", () => {
   // typecheck and CI: `webMap`, `manageDocument` and `buildPage` were added to
   // the registry and nothing here noticed. That is what the list is FOR — a
   // registry change should show up as a diff on this file.
-  test("tool registry: 13 core tools + 24 domain tools, categories correct", () => {
+  test("tool registry: 13 core tools + 25 domain tools, categories correct", () => {
     const tools = defaultChatbotAgentSet().primary.tools;
     const coreNames = Object.entries(tools)
       .filter(([, t]) => t.category === "core")

@@ -10,6 +10,8 @@ A collection is a malleable table the team shapes on demand — part database, p
 - **A workflow's landing table.** Workflows file what they collect (extracted document data, form submissions, connector events) into records — the composition that turns automation into a living dataset.
 - **A living index.** Documents each have a mirror record (`document_record`) linkable to any other record, so a type can organize the Drive by entity.
 
+- **A table another system already holds.** A connected app's read action fills the collection on a cadence (`manageSync`), so the team can filter, join and chart that data beside their own. They say "our orders are in <app>, can we see them here".
+
 Users almost never ask for "a collection" — they say "we keep track of X in a spreadsheet" or "can you tell me which X are late". That's your cue.
 
 ## Building

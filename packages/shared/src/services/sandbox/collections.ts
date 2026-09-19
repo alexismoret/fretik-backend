@@ -3,6 +3,13 @@ import type { BulkOperation, BulkOperationParams } from "../../db/schema";
 import { MAX_BULK_ITEMS } from "../../lib/db-bulk";
 import { audienceSchema } from "../../schemas/collection-sharing";
 import {
+  SYNC_LIMITS,
+  syncArgsSchema,
+  syncKindSchema,
+  syncOrphanPolicySchema,
+  syncScheduleSchema,
+} from "../../schemas/collection-sync";
+import {
   fieldConfigSchema,
   fieldDefinitionTypeSchema,
 } from "../../schemas/field-definitions";
@@ -39,6 +46,12 @@ import {
 } from "../collection-records/bulk-update";
 import { queryCollectionRecords } from "../collection-records/query";
 import { getRecordSnapshots } from "../collection-records/snapshot-batch";
+import { createSyncSource } from "../collection-sync/create-source";
+import { deleteSyncSource } from "../collection-sync/delete-source";
+import { listSyncSources } from "../collection-sync/list-sources";
+import { previewSyncSource } from "../collection-sync/preview";
+import { requestSyncRefresh } from "../collection-sync/request-refresh";
+import { updateSyncSource } from "../collection-sync/update-source";
 import { COLLECTION_LIMITS } from "../collections/constants";
 import { createCollection } from "../collections/create";
 import { createCollectionWithFields } from "../collections/create-with-fields";
@@ -108,6 +121,22 @@ export const dispatchCollections = async (
         "SCHEMA_LOCKED_IN_WORKFLOW: a run never changes the team's collection schema. Do schema migrations from chat.",
     };
   }
+  // Declaring a source IS a schema change — it creates columns and commits the
+  // team to calling a third party on a cadence — so a run may not, for the
+  // same reason. Refreshing is a read and stays allowed.
+  if (
+    op.startsWith("sync.") &&
+    op !== "sync.refresh" &&
+    op !== "sync.list" &&
+    op !== "sync.preview" &&
+    autonomy !== null
+  ) {
+    return {
+      status: "error",
+      message:
+        "SYNC_LOCKED_IN_WORKFLOW: a run never creates or changes a sync source — it would add columns and schedule calls to a third party. Note the gap in the task summary. Refreshing an existing one is allowed.",
+    };
+  }
   // In chat, the config-tool policy governs schema edits — blocked outright, or
   // approval-gated for the destructive actions. Resolve with the action this op
   // carries, so this SDK cannot do what the domain tool would have to ask for.
@@ -168,6 +197,18 @@ export const dispatchCollections = async (
         return await changeField(ctx, rawArgs);
       case "schema.delete_collection":
         return await deleteType(ctx, rawArgs);
+      case "sync.preview":
+        return await syncPreview(ctx, rawArgs);
+      case "sync.create":
+        return await syncCreate(ctx, rawArgs);
+      case "sync.update":
+        return await syncUpdate(ctx, rawArgs);
+      case "sync.delete":
+        return await syncDelete(ctx, rawArgs);
+      case "sync.refresh":
+        return await syncRefresh(ctx, rawArgs);
+      case "sync.list":
+        return await syncList(ctx, rawArgs);
       default:
         return { status: "error", message: `Unknown objects op: ${op}` };
     }
@@ -1025,6 +1066,217 @@ const deleteType = async (
     actor: execActor(ctx),
   });
   return { status: "ok", data: result };
+};
+
+// ── Sync sources (a collection an app fills) ──────────────────────────
+//
+// The Python mirror of the `manageSync` tool, for the same reason the record
+// ops have one: a migration that also wires a source is one script, and a tool
+// round-trip per step would put the whole mapping back in the agent's context.
+//
+// Preview and refresh are reads; create/update/delete are refused in a run by
+// the guard at the top of this file.
+
+const syncPreviewArgs = z.object({
+  connectionId: z.uuid(),
+  operation: z.string().min(1).max(120),
+  args: syncArgsSchema.default({}),
+  resultPath: z.string().max(200).optional(),
+  sampleRecordId: z.uuid().optional(),
+});
+
+const syncPreview = async (
+  ctx: ExecContext,
+  rawArgs: Record<string, unknown>,
+): Promise<SandboxExecResponse> => {
+  const args = syncPreviewArgs.parse(rawArgs);
+  const preview = await previewSyncSource({
+    teamId: ctx.teamId,
+    userId: ctx.userId,
+    connectionId: args.connectionId,
+    operation: args.operation,
+    args: args.args,
+    ...(args.resultPath === undefined ? {} : { resultPath: args.resultPath }),
+    ...(args.sampleRecordId === undefined
+      ? {}
+      : { sampleRecordId: args.sampleRecordId }),
+  });
+  return { status: "ok", data: preview };
+};
+
+const syncFieldArgs = z.object({
+  path: z.string().min(1).max(200),
+  label: z.string().min(1).max(120),
+  fieldKey: z
+    .string()
+    .regex(/^[a-z][a-z0-9_]*$/)
+    .max(60)
+    .optional(),
+  type: fieldDefinitionTypeSchema.default("text"),
+  isTitle: z.boolean().optional(),
+});
+
+const syncCreateArgs = z.object({
+  collectionKey: z.string().min(1).max(60),
+  connectionId: z.uuid(),
+  operation: z.string().min(1).max(120),
+  kind: syncKindSchema.default("table"),
+  fields: z.array(syncFieldArgs).min(1).max(SYNC_LIMITS.maxMappedFields),
+  args: syncArgsSchema.default({}),
+  resultPath: z.string().max(200).optional(),
+  externalIdPath: z.string().max(200).optional(),
+  schedule: syncScheduleSchema.default({ mode: "manual" }),
+  orphanPolicy: syncOrphanPolicySchema.default("keep"),
+  rowCap: z.number().int().min(1).max(SYNC_LIMITS.maxRowCap).optional(),
+});
+
+const syncCreate = async (
+  ctx: ExecContext,
+  rawArgs: Record<string, unknown>,
+): Promise<SandboxExecResponse> => {
+  const args = syncCreateArgs.parse(rawArgs);
+  const collectionId = await resolveTeamType(ctx, args.collectionKey);
+  if (collectionId === null) return unknownType(args.collectionKey);
+
+  const source = await createSyncSource({
+    organizationId: ctx.organizationId,
+    teamId: ctx.teamId,
+    userId: ctx.userId,
+    collectionId,
+    kind: args.kind,
+    connectionId: args.connectionId,
+    // Stamped from the connection by the service — see
+    // `assertConnectionUsable`.
+    providerKey: "",
+    operation: args.operation,
+    args: args.args,
+    ...(args.resultPath === undefined ? {} : { resultPath: args.resultPath }),
+    ...(args.externalIdPath === undefined
+      ? {}
+      : { externalIdPath: args.externalIdPath }),
+    fields: args.fields,
+    schedule: args.schedule,
+    orphanPolicy: args.orphanPolicy,
+    ...(args.rowCap === undefined ? {} : { rowCap: args.rowCap }),
+  });
+  return { status: "ok", data: { sourceId: source.id, collectionId } };
+};
+
+const syncUpdateArgs = z.object({
+  sourceId: z.uuid(),
+  args: syncArgsSchema.optional(),
+  schedule: syncScheduleSchema.optional(),
+  orphanPolicy: syncOrphanPolicySchema.optional(),
+  rowCap: z.number().int().min(1).max(SYNC_LIMITS.maxRowCap).optional(),
+  fields: z.array(syncFieldArgs).max(SYNC_LIMITS.maxMappedFields).optional(),
+});
+
+const syncUpdate = async (
+  ctx: ExecContext,
+  rawArgs: Record<string, unknown>,
+): Promise<SandboxExecResponse> => {
+  const { sourceId, ...patch } = syncUpdateArgs.parse(rawArgs);
+  const source = await updateSyncSource({
+    id: sourceId,
+    teamId: ctx.teamId,
+    organizationId: ctx.organizationId,
+    userId: ctx.userId,
+    patch,
+  });
+  return { status: "ok", data: { sourceId: source.id } };
+};
+
+const syncDeleteArgs = z.object({ sourceId: z.uuid() });
+
+const syncDelete = async (
+  ctx: ExecContext,
+  rawArgs: Record<string, unknown>,
+): Promise<SandboxExecResponse> => {
+  const { sourceId } = syncDeleteArgs.parse(rawArgs);
+  await deleteSyncSource({
+    id: sourceId,
+    teamId: ctx.teamId,
+    organizationId: ctx.organizationId,
+  });
+  return { status: "ok", data: { sourceId, deleted: true } };
+};
+
+const syncSelectorArgs = z.object({
+  collectionKey: z.string().min(1).max(60).optional(),
+  sourceId: z.uuid().optional(),
+});
+
+/** The sources this call is about: one by id, a collection's, or the team's. */
+const selectSources = async (
+  ctx: ExecContext,
+  selector: z.infer<typeof syncSelectorArgs>,
+) => {
+  if (selector.sourceId !== undefined) {
+    const all = await listSyncSources({ teamId: ctx.teamId });
+    return all.filter((source) => source.id === selector.sourceId);
+  }
+  const collectionId =
+    selector.collectionKey === undefined
+      ? null
+      : await resolveTeamType(ctx, selector.collectionKey);
+  return listSyncSources({
+    teamId: ctx.teamId,
+    ...(collectionId === null ? {} : { collectionId }),
+  });
+};
+
+const syncRefresh = async (
+  ctx: ExecContext,
+  rawArgs: Record<string, unknown>,
+): Promise<SandboxExecResponse> => {
+  const selector = syncSelectorArgs.parse(rawArgs);
+  const runnable = (await selectSources(ctx, selector)).filter(
+    (source) => source.enabled,
+  );
+  if (runnable.length === 0) {
+    return {
+      status: "error",
+      message:
+        "NO_SYNC_SOURCE: nothing here is filled by an app, or its source is turned off. Check collections.sync.list() first.",
+    };
+  }
+  const queued = await Promise.all(
+    runnable.map(async (source) => ({
+      sourceId: source.id,
+      operation: source.operation,
+      ...(await requestSyncRefresh({
+        sourceId: source.id,
+        teamId: ctx.teamId,
+        trigger: "manual",
+        ...(ctx.userId == null ? {} : { userId: ctx.userId }),
+      })),
+    })),
+  );
+  return { status: "ok", data: { queued } };
+};
+
+const syncList = async (
+  ctx: ExecContext,
+  rawArgs: Record<string, unknown>,
+): Promise<SandboxExecResponse> => {
+  const sources = await selectSources(ctx, syncSelectorArgs.parse(rawArgs));
+  return {
+    status: "ok",
+    data: {
+      sources: sources.map((source) => ({
+        id: source.id,
+        kind: source.kind,
+        operation: source.operation,
+        schedule: source.schedule,
+        incremental: source.incremental,
+        lastSuccessAt: source.lastSuccessAt,
+        nextRunAt: source.nextRunAt,
+        health: source.health,
+        orphanPolicy: source.orphanPolicy,
+        enabled: source.enabled,
+      })),
+    },
+  };
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────

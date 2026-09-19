@@ -6,8 +6,6 @@ import {
   fieldDefinitionTypeSchema,
 } from "@fretik/shared/schemas/field-definitions";
 import { assertCanWriteType } from "@fretik/shared/services/collection-sharing/write-access";
-import { listSyncSources } from "@fretik/shared/services/collection-sync/list-sources";
-import { requestSyncRefresh } from "@fretik/shared/services/collection-sync/request-refresh";
 import { COLLECTION_LIMITS } from "@fretik/shared/services/collections/constants";
 import { createCollection } from "@fretik/shared/services/collections/create";
 import { createCollectionWithFields } from "@fretik/shared/services/collections/create-with-fields";
@@ -50,10 +48,11 @@ const dropInvalidOptionColors = (
  * provisions the typed table; deleting drops it and its records. Edit
  * individual fields later with `manageField`.
  *
- * `refreshSync` is deliberately the ONLY sync action here: declaring a source
- * (which app, which action, which arguments, which column takes which value) is
- * a mapping decision made against a live preview, and a tool that guessed it
- * would create a collection nobody can read. That path is the composer's.
+ * Nothing about SYNC lives here any more. Declaring a source — which app,
+ * which action, which arguments, which upstream path becomes which column,
+ * how often — is a mapping decision made against a live preview, and the one
+ * action that did live here (`refreshSync`) was a fragment of a workflow whose
+ * other half was missing. It is all `manageSync` now, including the refresh.
  */
 export const createManageCollectionTool = () =>
   tool({
@@ -65,7 +64,8 @@ export const createManageCollectionTool = () =>
       "- create: key (snake_case) + label + description + icon. Pass `fields` to build the whole schema in ONE call. Add relation/rollup fields after with manageField.",
       "- update: collectionKey + any of label, labelPlural, description, icon, enabled.",
       "- delete: collectionKey. Drops the type and all its records.",
-      "- refreshSync: collectionKey. Re-pulls the collection's app-fed columns now. Use it when the user says the figures look stale, or before quoting one whose `syncedFrom.lastSuccessAt` is older than the question. It returns immediately — the run lands in the background, so re-read the rows after, not in the same breath.",
+      "",
+      "A collection an app fills — creating one, changing its cadence, or refreshing it now — is `manageSync`.",
       "",
       "Types are private to the team by default. `sharing` widens the audience (records inherit it live). Owner team only; propose with askUserQuestion before sharing beyond the team — especially write or whole-org.",
       "",
@@ -73,7 +73,7 @@ export const createManageCollectionTool = () =>
       "`description` (the type and each field) is one line — what it is for. Required on create.",
     ].join("\n"),
     inputSchema: z.object({
-      action: z.enum(["create", "update", "delete", "refreshSync"]),
+      action: z.enum(["create", "update", "delete"]),
       key: z
         .string()
         .max(60)
@@ -83,9 +83,7 @@ export const createManageCollectionTool = () =>
         .string()
         .max(60)
         .optional()
-        .describe(
-          "Existing type slug. Required for update / delete / refreshSync.",
-        ),
+        .describe("Existing type slug. Required for update / delete."),
       label: z.string().optional(),
       labelPlural: z.string().nullish(),
       description: z
@@ -232,53 +230,6 @@ export const createManageCollectionTool = () =>
           teamId: ctx.teamId,
           organizationId: ctx.organizationId,
         });
-
-        if (input.action === "refreshSync") {
-          // No approval gate. A sync is a READ from the app, declared once by
-          // the person who created the source; the same reasoning that makes a
-          // page dataset `auto` rather than `approval` (nobody is in the
-          // conversation when the schedule fires, so a gate here would only be
-          // inconsistent with the identical run five minutes later).
-          const sources = await listSyncSources({
-            teamId: ctx.teamId,
-            collectionId,
-          });
-          const runnable = sources.filter((source) => source.enabled);
-          if (runnable.length === 0) {
-            return toolError(
-              TOOL_ERROR_CODES.COLLECTION_QUERY_ERROR,
-              `'${input.collectionKey}' has no enabled sync source to refresh.`,
-              sources.length > 0
-                ? "Its source is turned off — a person re-enables it in the collection's sync settings."
-                : "Its columns are filled by this workspace, not by a connected app.",
-            );
-          }
-          const outcomes = await Promise.all(
-            runnable.map(async (source) => ({
-              source,
-              outcome: await requestSyncRefresh({
-                sourceId: source.id,
-                teamId: ctx.teamId,
-                trigger: "manual",
-                ...(ctx.userId == null ? {} : { userId: ctx.userId }),
-              }),
-            })),
-          );
-          return {
-            ok: true,
-            // QUEUED, not finished. The run happens in the background and the
-            // rows change underneath, so the model must re-read them rather
-            // than report a refresh it has not seen land — and a source that
-            // refused (turned off, connection gone) says why in the same shape.
-            sources: outcomes.map(({ source, outcome }) => ({
-              app: source.providerKey,
-              operation: source.operation,
-              queued: outcome.enqueued,
-              ...(outcome.enqueued ? {} : { reason: outcome.reason }),
-            })),
-            note: "Refreshes run in the background. Re-read the records (or check the collection again) before quoting figures from them.",
-          };
-        }
 
         if (input.action === "delete") {
           const gate = await gateBuiltinWriteTool(ctx, {

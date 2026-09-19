@@ -3,6 +3,8 @@ import db from "../../db";
 import type { FieldDefinition } from "../../db/schema";
 import { collectionSyncSources, externalAppConnections } from "../../db/schema";
 import { getProvider } from "../../external-apps/registry";
+import type { SyncArgs, SyncSchedule } from "../../schemas/collection-sync";
+import { syncArgsBindSince } from "../../schemas/collection-sync";
 
 /**
  * Where a synced column's values come from, in the four words every surface
@@ -34,6 +36,18 @@ export interface SyncProvenance {
   lastSuccessAt: Date | null;
   enabled: boolean;
   lastError: string | null;
+  /**
+   * How often it runs. Read alongside `lastSuccessAt`, this is what separates
+   * "the figures are four hours old and that is normal" from "the figures are
+   * four hours old and something is wrong".
+   */
+  schedule: SyncSchedule;
+  /**
+   * The source asks the app for what CHANGED, not for everything. It matters
+   * to a reader because an incremental source's collection is complete only up
+   * to its last full walk — a row deleted upstream survives here until then.
+   */
+  incremental: boolean;
 }
 
 /**
@@ -54,6 +68,22 @@ export const syncSourceIdsOf = (
   ),
 ];
 
+/**
+ * The app as a person names it — the ONE answer to "what is this app called".
+ *
+ * Exported because a second surface (`describeCollection`, which reads the
+ * engine's own richer source list) asks the same question, and two expressions
+ * of this fallback chain is two different names for one app in two places the
+ * agent reads within a turn.
+ */
+export const appNameOf = (
+  providerKey: string,
+  connectionName: string | null,
+): string =>
+  getProvider(providerKey)?.manifest.displayName ??
+  connectionName ??
+  providerKey;
+
 const rowsToProvenance = (
   rows: {
     id: string;
@@ -64,6 +94,8 @@ const rowsToProvenance = (
     lastSuccessAt: Date | null;
     enabled: boolean;
     lastError: string | null;
+    schedule: SyncSchedule;
+    args: SyncArgs;
     connectionName: string | null;
   }[],
 ): Map<string, SyncProvenance> =>
@@ -74,15 +106,14 @@ const rowsToProvenance = (
         id: row.id,
         collectionId: row.collectionId,
         kind: row.kind,
-        app:
-          getProvider(row.providerKey)?.manifest.displayName ??
-          row.connectionName ??
-          row.providerKey,
+        app: appNameOf(row.providerKey, row.connectionName),
         providerKey: row.providerKey,
         operation: row.operation,
         lastSuccessAt: row.lastSuccessAt,
         enabled: row.enabled,
         lastError: row.lastError,
+        schedule: row.schedule,
+        incremental: syncArgsBindSince(row.args),
       },
     ]),
   );
@@ -96,6 +127,8 @@ const SELECTION = {
   lastSuccessAt: collectionSyncSources.lastSuccessAt,
   enabled: collectionSyncSources.enabled,
   lastError: collectionSyncSources.lastError,
+  schedule: collectionSyncSources.schedule,
+  args: collectionSyncSources.args,
   connectionName: externalAppConnections.displayName,
 } as const;
 

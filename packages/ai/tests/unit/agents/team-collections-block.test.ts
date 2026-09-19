@@ -83,12 +83,13 @@ describe("formatTeamCollectionsBlock", () => {
   });
 
   /**
-   * A synced column is queryable like any other and writable by nobody but its
-   * app. The agent reads BOTH facts here or nowhere: it would otherwise answer
-   * a question about this morning's snapshot as if it were live, and write an
-   * UPDATE the record path refuses.
+   * A synced column is queryable like any other, and its figures have an age.
+   *
+   * The age needs the CADENCE beside it or it says nothing: four hours old is
+   * normal on a daily source and a fault on a quarter-hourly one, and nothing
+   * else in the agent's context distinguishes them.
    */
-  it("tags a synced column and names the app, the action and the age", () => {
+  it("tags a synced column and names the app, the action, the age and the cadence", () => {
     const block = formatTeamCollectionsBlock([
       makeType({
         key: "orders",
@@ -100,14 +101,66 @@ describe("formatTeamCollectionsBlock", () => {
           app: "Acme",
           operation: "list_orders",
           lastSuccessAt: new Date("2026-09-16T09:12:34.000Z"),
+          schedule: { mode: "interval", everyMinutes: 15 },
+          incremental: false,
+          otherSources: 0,
         },
       }),
     ]);
     expect(block).toContain("revenue (number, synced)");
     // Not the title field, which is local.
     expect(block).toContain("reference (text, title)");
-    expect(block).toContain("synced: Acme list_orders, 2026-09-16 09:12");
-    expect(block).toContain("never UPDATE them");
+    expect(block).toContain(
+      "synced: Acme list_orders, 2026-09-16 09:12, every 15 min",
+    );
+  });
+
+  it("warns that an incremental source's deletions lag, and counts the others", () => {
+    const block = formatTeamCollectionsBlock([
+      makeType({
+        key: "orders",
+        fields: [{ key: "revenue", type: "number", synced: true }],
+        syncedFrom: {
+          app: "Acme",
+          operation: "list_orders",
+          lastSuccessAt: new Date("2026-09-16T09:12:34.000Z"),
+          schedule: { mode: "manual" },
+          incremental: true,
+          otherSources: 2,
+        },
+      }),
+    ]);
+    // A manual source has no cadence to state, and saying "every undefined
+    // min" would be worse than saying nothing.
+    expect(block).toContain("2026-09-16 09:12, manual");
+    // The collection is complete only up to the last full walk.
+    expect(block).toContain("full walk daily");
+    // Other sources fill other columns — findable, not listed here.
+    expect(block).toContain("+2 more source(s)");
+  });
+
+  /**
+   * The rule about what `synced` OBLIGES lives in `<collections>`, which is
+   * above the cache marker. This block is re-rendered every turn, so a rule
+   * restated here is the same sentence bought again on every message.
+   */
+  it("states no rule — the tag points, `<collections>` rules", () => {
+    const block = formatTeamCollectionsBlock([
+      makeType({
+        key: "orders",
+        fields: [{ key: "revenue", type: "number", synced: true }],
+        syncedFrom: {
+          app: "Acme",
+          operation: "list_orders",
+          lastSuccessAt: new Date("2026-09-16T09:12:34.000Z"),
+          schedule: { mode: "interval", everyMinutes: 60 },
+          incremental: false,
+          otherSources: 0,
+        },
+      }),
+    ]);
+    expect(block).not.toContain("never UPDATE");
+    expect(block).not.toContain("refreshSync");
   });
 
   it("says nothing about sync when nothing is synced", () => {

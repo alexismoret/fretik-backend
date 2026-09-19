@@ -375,6 +375,7 @@ collectionSyncRoutes.openapi(updateSourceRoute, async (c) => {
     id,
     teamId: team.id,
     organizationId: team.organizationId,
+    userId: c.get("user").id,
     patch: body,
   });
   const context = await loadSyncSourceContext([source]);

@@ -90,7 +90,7 @@ export const collectionSyncRunTriggerEnum = pgEnum(
   [
     // The source's own interval.
     "schedule",
-    // A person pressed Refresh, or the agent called `refreshSync`.
+    // A person pressed Refresh, or the agent called `manageSync refresh`.
     "manual",
     // A record changed and a `lookup` source reads one of the changed fields.
     "event",

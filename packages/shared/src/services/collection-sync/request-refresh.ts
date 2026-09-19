@@ -11,7 +11,7 @@ import { markRecordsPending } from "./record-state";
 
 /**
  * "Refresh this now" — the one entry point behind the button, the agent's
- * `refreshSync`, and the collection-open path.
+ * `manageSync refresh`, and the collection-open path.
  *
  * Idempotent by construction, because all three fire at once in normal use: a
  * person opens a stale collection (which asks), sees the banner and presses

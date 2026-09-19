@@ -19,6 +19,7 @@ import { createManageFieldTool } from "../../tools/manage-field";
 import { createManageLinkTool } from "../../tools/manage-link";
 import { createManagePageTool } from "../../tools/manage-page";
 import { createManageRecordTool } from "../../tools/manage-record";
+import { createManageSyncTool } from "../../tools/manage-sync";
 import { createManageWorkflowTool } from "../../tools/manage-workflow";
 import { createMemoryTool } from "../../tools/memory";
 import { buildPageProjectTools } from "../../tools/page-project";
@@ -284,6 +285,12 @@ export const buildDomainTools = () => ({
     category: "domain",
     searchHint:
       "create update delete collection schema table model define new kind of thing entity category rename",
+  }),
+  manageSync: buildChatbotTool({
+    ...createManageSyncTool(),
+    category: "domain",
+    searchHint:
+      "sync connect feed pull import external app connection refresh schedule cadence source api live data fill collection from app stale figures",
   }),
   manageField: buildChatbotTool({
     ...createManageFieldTool(),

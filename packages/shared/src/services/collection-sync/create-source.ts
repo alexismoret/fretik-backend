@@ -20,6 +20,7 @@ import { invalidateFieldDefinitionsCache } from "../field-definitions/cache";
 import { createFieldDefinition } from "../field-definitions/create";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
 import { slugifyFieldKey } from "../field-definitions/slugify-key";
+import { assertConnectionUsable } from "./assert-connection-scope";
 import { requestSyncRefresh } from "./request-refresh";
 
 /**
@@ -59,6 +60,18 @@ export const createSyncSource = async (
   if (collection === undefined || collection.teamId !== params.teamId) {
     return throwHttpError(404, notFound("Collection not found"));
   }
+
+  // Before anything is created: whose credentials would this run on.
+  const providerKey =
+    params.connectionId === undefined
+      ? params.providerKey
+      : (
+          await assertConnectionUsable({
+            connectionId: params.connectionId,
+            teamId: params.teamId,
+            userId: params.userId ?? null,
+          })
+        ).providerKey;
 
   if (params.kind === "table") {
     // The unique index would catch this, but "duplicate key value violates
@@ -138,7 +151,7 @@ export const createSyncSource = async (
       ...(params.connectionId !== undefined
         ? { connectionId: params.connectionId }
         : {}),
-      providerKey: params.providerKey,
+      providerKey,
       operation: params.operation,
       args: params.args,
       resultPath: params.resultPath ?? null,

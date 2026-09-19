@@ -214,6 +214,14 @@ export const CURATED: Record<string, CuratedCase> = {
   "obj-formula-margin": { capability: "objects" },
   "obj-formula-not-for-entered-values": { capability: "objects" },
   "obj-formula-is-read-only": { capability: "objects" },
+  // ── A collection an app fills (2026-09). Seeds a source on a credential-less
+  // connection with a hand-written `last_success_at`: nothing calls a third
+  // party, and the age three of these turn on is fixed rather than whenever
+  // the suite ran.
+  "obj-sync-age-quoted": { capability: "objects" },
+  "obj-sync-column-refused": { capability: "objects" },
+  "obj-sync-refresh-when-stale": { capability: "objects" },
+  "obj-sync-propose-from-app": { capability: "objects" },
   // ── Pages generation (2026-08) — the quality gate `managePage` shipped
   // without. Seeds its own deterministic collection, so NOT smoke. Graded on
   // the STORED definition (structure + the dry-run `warnings` channel of the

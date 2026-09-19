@@ -1051,10 +1051,218 @@ const formulaReadOnly: EvalCase = {
   ],
 };
 
+// ── A collection an app fills ───────────────────────────────────────────────
+//
+// Four things the agent has to know about a synced collection, none of which it
+// can work out from the rows: the figures have an AGE, the columns are not its
+// to write, a stale one is refreshed rather than apologised for, and a table
+// the team keeps in another system is a sync rather than a workflow or a CSV.
+//
+// The source is seeded with a connection that has no credentials and a
+// `last_success_at` set by hand. That is deliberate and it is what makes the
+// suite deterministic: nothing here is allowed to actually call a third party,
+// and the agent's job is to read the provenance, not to make the sync work.
+
+const SYNC_KEY = "eval_sync_orders";
+const SYNC_APP = "Eval Orders App";
+const SYNC_AGE_HOURS = 30;
+
+const seedSyncedType = async (ctx: EvalCaseContext): Promise<void> => {
+  await dropType(ctx, SYNC_KEY);
+  await db.execute(sql`
+    DELETE FROM external_app_connections
+     WHERE team_id = ${ctx.teamId}::uuid AND display_name = ${SYNC_APP}`);
+
+  const type = await createCollection({
+    organizationId: ctx.organizationId,
+    teamId: ctx.teamId,
+    key: SYNC_KEY,
+    label: "Eval Synced Order",
+    description: "Orders pulled from the team's order system.",
+  });
+  const fields: {
+    key: string;
+    type: FieldDefinitionType;
+    isTitle?: boolean;
+  }[] = [
+    { key: "reference", type: "text", isTitle: true },
+    { key: "amount", type: "number" },
+  ];
+  for (const [i, f] of fields.entries()) {
+    await createFieldDefinition({
+      organizationId: ctx.organizationId,
+      teamId: ctx.teamId,
+      collectionId: type.id,
+      key: f.key,
+      label: f.key,
+      type: f.type,
+      isTitle: f.isTitle,
+      displayOrder: i,
+    });
+  }
+  await reconcileCollectionTable({ collectionId: type.id });
+
+  const connection = await db.execute(sql`
+    INSERT INTO external_app_connections
+      (organization_id, team_id, provider_key, display_name, status)
+    VALUES (${ctx.organizationId}::uuid, ${ctx.teamId}::uuid,
+            'eval-orders', ${SYNC_APP}, 'active')
+    RETURNING id`);
+  const connectionId = Reflect.get(connection.rows[0] ?? {}, "id");
+  if (typeof connectionId !== "string") throw new Error("no eval connection");
+
+  // `last_success_at` is written by hand: a run that really called an app
+  // would make the age — the thing three of these cases turn on — depend on
+  // when the suite happened to run.
+  const source = await db.execute(sql`
+    INSERT INTO collection_sync_sources
+      (organization_id, team_id, collection_id, kind, connection_id,
+       provider_key, operation, args, external_id_path, field_mapping,
+       schedule, last_success_at, last_run_at)
+    VALUES (${ctx.organizationId}::uuid, ${ctx.teamId}::uuid, ${type.id}::uuid,
+            'table', ${connectionId}::uuid, 'eval-orders', 'list_orders',
+            '{}'::jsonb, 'id',
+            '[{"path":"reference","fieldKey":"reference"},{"path":"amount","fieldKey":"amount"}]'::jsonb,
+            '{"mode":"interval","everyMinutes":60}'::jsonb,
+            now() - interval '${sql.raw(String(SYNC_AGE_HOURS))} hours',
+            now() - interval '${sql.raw(String(SYNC_AGE_HOURS))} hours')
+    RETURNING id`);
+  const sourceId = Reflect.get(source.rows[0] ?? {}, "id");
+  if (typeof sourceId !== "string") throw new Error("no eval sync source");
+
+  // The stamp is what makes the columns the source's. Without it the field is
+  // an ordinary local one and every case here measures nothing.
+  await db.execute(sql`
+    UPDATE field_definitions SET sync_source_id = ${sourceId}::uuid
+     WHERE collection_id = ${type.id}::uuid AND key IN ('reference', 'amount')`);
+
+  for (const row of [
+    { reference: "EV-1001", amount: 1200 },
+    { reference: "EV-1002", amount: 800 },
+  ]) {
+    await createCollectionRecord({
+      organizationId: ctx.organizationId,
+      teamId: ctx.teamId,
+      collectionId: type.id,
+      data: row,
+    });
+  }
+};
+
+const dropSyncedType = async (ctx: EvalCaseContext): Promise<void> => {
+  await dropType(ctx, SYNC_KEY);
+  await db.execute(sql`
+    DELETE FROM external_app_connections
+     WHERE team_id = ${ctx.teamId}::uuid AND display_name = ${SYNC_APP}`);
+};
+
+const syncAgeQuoted: EvalCase = {
+  id: "obj-sync-age-quoted",
+  description:
+    "A figure read from a synced collection is quoted WITH its age — the block carries it, so silence is a choice.",
+  prompt: `Quel est le montant total des commandes dans ${SYNC_KEY} ?`,
+  tags: ["objects", "sync"],
+  seed: retryingSeed(seedSyncedType),
+  cleanup: dropSyncedType,
+  assertions: [
+    { type: "noError" },
+    {
+      type: "judge",
+      rubric:
+        "Correct ONLY IF the answer gives the total (2000) AND says the figures are not live — that they come from a connected app and date from a previous refresh (a day or so ago / yesterday / an explicit date). Partial if the total is right but nothing is said about freshness. Incorrect if it presents the number as the current state of the order system.",
+    },
+  ],
+};
+
+const syncColumnRefused: EvalCase = {
+  id: "obj-sync-column-refused",
+  description:
+    "A synced column is not the assistant's to write: it explains where the value comes from instead of editing it.",
+  prompt: `Change le montant de la commande EV-1001 dans ${SYNC_KEY} à 9999.`,
+  tags: ["objects", "sync", "data-quality"],
+  seed: retryingSeed(seedSyncedType),
+  cleanup: dropSyncedType,
+  assertions: [
+    { type: "noError" },
+    {
+      type: "custom",
+      name: "amount-unchanged",
+      fn: async (_result, ctx) => {
+        const typeId = await resolveCollectionId({
+          organizationId: ctx.organizationId,
+          teamId: ctx.teamId,
+          key: SYNC_KEY,
+        });
+        if (!typeId) return "synced type missing after run";
+        const rows = await db
+          .select({ id: collectionRecords.id })
+          .from(collectionRecords)
+          .where(
+            and(
+              eq(collectionRecords.teamId, ctx.teamId),
+              eq(collectionRecords.collectionId, typeId),
+              eq(collectionRecords.label, "EV-1001"),
+            ),
+          );
+        const id = rows[0]?.id;
+        if (!id) return "EV-1001 not found after run";
+        const data = (await getCollectionRecord({ id })).data;
+        if (data.amount !== 1200) {
+          return `amount is ${JSON.stringify(data.amount)} — a synced column was overwritten`;
+        }
+        return true;
+      },
+    },
+    {
+      type: "judge",
+      rubric: `Correct ONLY IF the assistant said this column is filled by a connected app (${SYNC_APP} / the order system) and cannot be edited here — ideally saying the change has to be made in that app. Incorrect if it claimed the amount is now 9999, or offered no explanation of why it could not.`,
+    },
+  ],
+};
+
+const syncRefreshWhenStale: EvalCase = {
+  id: "obj-sync-refresh-when-stale",
+  description:
+    "Told the figures look old, the assistant refreshes the source rather than apologising.",
+  prompt: `Les montants dans ${SYNC_KEY} ont l'air de dater. Tu peux les remettre à jour ?`,
+  tags: ["objects", "sync"],
+  seed: retryingSeed(seedSyncedType),
+  cleanup: dropSyncedType,
+  assertions: [
+    { type: "noError" },
+    { type: "toolUsed", tools: ["manageSync"] },
+    {
+      type: "judge",
+      rubric:
+        "Correct ONLY IF the assistant queued a refresh and said it runs in the background (so the figures will land shortly / to check again in a moment). Incorrect if it said the data cannot be refreshed, or claimed the refresh had already finished and quoted new figures.",
+    },
+  ],
+};
+
+const syncProposeFromApp: EvalCase = {
+  id: "obj-sync-propose-from-app",
+  description:
+    "A table the team keeps in another system is a sync source — not a workflow, and not a CSV export.",
+  prompt:
+    "Toutes nos commandes sont dans notre logiciel de commandes. On aimerait pouvoir les filtrer et les recouper avec nos clients ici. C'est possible ?",
+  tags: ["objects", "sync", "proactivity"],
+  seed: retryingSeed(seedSyncedType),
+  cleanup: dropSyncedType,
+  assertions: [
+    { type: "noError" },
+    { type: "toolUsed", tools: ["manageSync", "askUserQuestion"], mode: "any" },
+    {
+      type: "judge",
+      rubric:
+        "Correct ONLY IF the assistant proposed filling a collection from the connected app on a schedule (and asked what to map / how often, or showed a preview). Incorrect if it proposed a workflow to copy the data, asked for a CSV export, or said the data would have to be re-typed by hand.",
+    },
+  ],
+};
+
 export const collectionsAutonomySuite: EvalSuite = {
   name: "collections-autonomy",
   summary:
-    "Autonomous object management — proactive create, propose-don't-act on schema, no-data-loss updates, the relevance gate, tolerant value coercion (incl. rating + location), bulk CSV import, SQL→CSV export, and the computed-column decision (formula vs stored vs never-written).",
+    "Autonomous object management — proactive create, propose-don't-act on schema, no-data-loss updates, the relevance gate, tolerant value coercion (incl. rating + location), bulk CSV import, SQL→CSV export, the computed-column decision (formula vs stored vs never-written), and the four things a collection an app fills demands: quote its age, never write it, refresh it, propose it.",
   cases: [
     explicitCreate,
     implicitCreate,
@@ -1068,5 +1276,9 @@ export const collectionsAutonomySuite: EvalSuite = {
     formulaMargin,
     formulaDiscrimination,
     formulaReadOnly,
+    syncAgeQuoted,
+    syncColumnRefused,
+    syncRefreshWhenStale,
+    syncProposeFromApp,
   ],
 };

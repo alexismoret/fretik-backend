@@ -385,5 +385,125 @@ class _Schema:
         return _call_collections("schema.delete_collection", {"collectionKey": collection_key})
 
 
+class _Sync:
+    """Collections a connected app fills, on a cadence.
+
+    preview BEFORE create: the preview is where the stable id, the column
+    types and the pagination promise come from, and none can be guessed from
+    an action's name. A source runs on a connection's credentials, so a
+    personal connection is usable only by its owner.
+    """
+
+    def preview(
+        self,
+        connection_id: str,
+        operation: str,
+        args: dict[str, Any] | None = None,
+        result_path: str | None = None,
+        sample_record_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Call the app once and show what would be mapped: rows, proposed
+        columns, candidate stable ids, and whether it can be walked to the end.
+        """
+        return _call_collections(
+            "sync.preview",
+            _clean(
+                {
+                    "connectionId": connection_id,
+                    "operation": operation,
+                    "args": args,
+                    "resultPath": result_path,
+                    "sampleRecordId": sample_record_id,
+                }
+            ),
+        )
+
+    def create(
+        self,
+        collection_key: str,
+        connection_id: str,
+        operation: str,
+        fields: list[dict[str, Any]],
+        kind: str = "table",
+        args: dict[str, Any] | None = None,
+        result_path: str | None = None,
+        external_id_path: str | None = None,
+        schedule: dict[str, Any] | None = None,
+        orphan_policy: str | None = None,
+        row_cap: int | None = None,
+    ) -> dict[str, Any]:
+        """Declare the source. `fields` map upstream paths to columns:
+        [{"path": "customer.name", "label": "Client", "type": "text"}].
+        A table source needs `external_id_path` — the upstream row's own id.
+        The first run starts in the background.
+        """
+        return _call_collections(
+            "sync.create",
+            _clean(
+                {
+                    "collectionKey": collection_key,
+                    "connectionId": connection_id,
+                    "operation": operation,
+                    "fields": fields,
+                    "kind": kind,
+                    "args": args,
+                    "resultPath": result_path,
+                    "externalIdPath": external_id_path,
+                    "schedule": schedule,
+                    "orphanPolicy": orphan_policy,
+                    "rowCap": row_cap,
+                }
+            ),
+        )
+
+    def update(
+        self,
+        source_id: str,
+        args: dict[str, Any] | None = None,
+        schedule: dict[str, Any] | None = None,
+        orphan_policy: str | None = None,
+        row_cap: int | None = None,
+        fields: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Change what a source asks for, how often, or which columns it fills."""
+        return _call_collections(
+            "sync.update",
+            _clean(
+                {
+                    "sourceId": source_id,
+                    "args": args,
+                    "schedule": schedule,
+                    "orphanPolicy": orphan_policy,
+                    "rowCap": row_cap,
+                    "fields": fields,
+                }
+            ),
+        )
+
+    def delete(self, source_id: str) -> dict[str, Any]:
+        """Stop the sync. The columns stay as ordinary local ones; no record
+        is deleted.
+        """
+        return _call_collections("sync.delete", {"sourceId": source_id})
+
+    def refresh(
+        self,
+        collection_key: str | None = None,
+        source_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Queue a run now. Returns immediately — re-read the records after."""
+        return _call_collections(
+            "sync.refresh",
+            _clean({"collectionKey": collection_key, "sourceId": source_id}),
+        )
+
+    def list(self, collection_key: str | None = None) -> dict[str, Any]:
+        """Every source of a collection, or of the whole team."""
+        return _call_collections(
+            "sync.list", _clean({"collectionKey": collection_key})
+        )
+
+
 records = _Records()
 schema = _Schema()
+sync = _Sync()

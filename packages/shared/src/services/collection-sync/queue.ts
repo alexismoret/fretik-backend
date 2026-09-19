@@ -7,7 +7,7 @@ import { getProducerConnection } from "../../lib/queue/connection";
  *
  * Producer accessor in `shared`, consumer in `@fretik/jobs` — the
  * `bulk-operation` pattern, for the same reason: the producers are the API's
- * refresh endpoint, the agent's `refreshSync` tool and the collection-open
+ * refresh endpoint, the agent's `manageSync` tool and the collection-open
  * path, and `@fretik/api` must never import `@fretik/jobs`. The jobs package
  * re-exports the name and the payload from here so there is exactly one of
  * each.

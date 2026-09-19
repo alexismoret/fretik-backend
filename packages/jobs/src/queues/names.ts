@@ -53,7 +53,7 @@ export const MODEL_SYNC_QUEUE = "model-sync";
  *
  * The name and the payload are OWNED BY `@fretik/shared` and re-exported here,
  * not declared twice: the producers are the API's refresh endpoint, the agent's
- * `refreshSync` tool and the collection-open path, none of which may import
+ * `manageSync` tool and the collection-open path, none of which may import
  * `@fretik/jobs`. This package owns the consumer.
  *
  * Not the maintenance queue. One run walks a third party for up to ten minutes

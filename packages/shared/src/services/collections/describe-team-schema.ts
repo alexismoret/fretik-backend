@@ -2,6 +2,7 @@ import { and, asc, eq, isNull, or } from "drizzle-orm";
 import db from "../../db";
 import type { FieldDefinitionType } from "../../db/schema";
 import { collections, fieldDefinitions, linkTypes } from "../../db/schema";
+import type { SyncSchedule } from "../../schemas/collection-sync";
 import { qualifiedCollectionTable } from "../collection-schema/identifiers";
 import { loadSyncProvenance, syncSourceIdsOf } from "./sync-provenance";
 
@@ -24,6 +25,17 @@ export interface TeamSchemaSyncOrigin {
   app: string;
   operation: string;
   lastSuccessAt: Date | null;
+  /** How often it runs — the age above only means something against this. */
+  schedule: SyncSchedule;
+  /** Reads only what changed, so deletions land on the daily full walk. */
+  incremental: boolean;
+  /**
+   * How many OTHER sources fill columns of this collection. A collection has
+   * at most one `table` source but any number of `lookup` ones, and the line
+   * below names the one that explains where the rows came from — this count is
+   * what tells the agent the rest exist and are a `describeCollection` away.
+   */
+  otherSources: number;
 }
 
 /** One collection as the AI query path sees it: a typed view + its columns. */
@@ -135,6 +147,13 @@ export const describeTeamSchema = async (input: {
   // from the field defs already in hand, so a workspace with no sync source
   // pays nothing for this block.
   const syncSources = await loadSyncProvenance(syncSourceIdsOf(defs));
+  const sourceCounts = new Map<string, number>();
+  for (const source of syncSources.values()) {
+    sourceCounts.set(
+      source.collectionId,
+      (sourceCounts.get(source.collectionId) ?? 0) + 1,
+    );
+  }
   const syncByCollection = new Map<string, TeamSchemaSyncOrigin>();
   for (const source of syncSources.values()) {
     // A collection has at most one `table` source (it owns the rows) and may
@@ -147,6 +166,9 @@ export const describeTeamSchema = async (input: {
       app: source.app,
       operation: source.operation,
       lastSuccessAt: source.lastSuccessAt,
+      schedule: source.schedule,
+      incremental: source.incremental,
+      otherSources: (sourceCounts.get(source.collectionId) ?? 1) - 1,
     });
   }
 

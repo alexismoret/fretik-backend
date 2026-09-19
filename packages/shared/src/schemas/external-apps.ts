@@ -370,6 +370,48 @@ export const externalAppConnectionResponseSchema = z.object({
   /** `null` = follows the provider's manifest (`parallel` unless declared). */
   concurrencyMode: externalAppConcurrencyModeSchema.nullable(),
   /**
+   * What this connection may ask of its app, and what it has spent today.
+   *
+   * `effective` is the number actually enforced whatever set it — so a screen
+   * can say "600 per minute" without re-deriving a four-layer precedence the
+   * server already resolved. `override` is what THIS account was given, which
+   * is the only part a form may edit; `null` there means "following the app's
+   * own declaration", and the two read differently on purpose.
+   */
+  rateLimit: z.object({
+    effective: z
+      .object({
+        requests: z.number().int(),
+        perSeconds: z.number().int(),
+      })
+      .nullable(),
+    override: z
+      .object({
+        requests: z.number().int(),
+        perSeconds: z.number().int(),
+      })
+      .nullable(),
+    maxConcurrent: z.number().int().nullable(),
+    maxConcurrentOverride: z.number().int().nullable(),
+    /** The shared ceiling, when the provider declares one. Never editable. */
+    perProvider: z
+      .object({
+        requests: z.number().int(),
+        perSeconds: z.number().int(),
+      })
+      .nullable(),
+  }),
+  /**
+   * Today's counters, so the limits screen shows a real number instead of
+   * asking an operator to trust one nobody counts. UTC days; Redis-backed and
+   * therefore best-effort — a flushed cache resets them and costs nothing.
+   */
+  usage: z.object({
+    callsToday: z.number().int(),
+    rateLimitedToday: z.number().int(),
+    providerCallsToday: z.number().int(),
+  }),
+  /**
    * MCP connections only — the introspected tools of this connection's current
    * snapshot, so the tool-permissions UI can render a per-tool policy row.
    * `null` for manifest providers (their tools come from the provider catalogue)
@@ -496,6 +538,26 @@ export const updateConnectionRequestSchema = z
      * one an MCP connection has, since it carries no manifest.
      */
     concurrencyMode: externalAppConcurrencyModeSchema.nullable().optional(),
+    /**
+     * What this ACCOUNT is allowed to ask for, overriding the manifest.
+     *
+     * Whole-object, not three loose fields: a request count without a period
+     * is not a budget, and letting them arrive separately means a PATCH can
+     * leave the pair half-set. `null` clears the override and follows the
+     * manifest again.
+     *
+     * The shared `perProvider` ceiling is deliberately absent — it is every
+     * team's ceiling at once, so no one account's admin may move it.
+     */
+    rateLimit: z
+      .object({
+        requests: z.number().int().min(1).max(100_000),
+        perSeconds: z.number().int().min(1).max(86_400),
+      })
+      .nullable()
+      .optional(),
+    /** How many calls may be in flight on this account. `null` = the manifest. */
+    maxConcurrent: z.number().int().min(1).max(64).nullable().optional(),
   })
   .refine(
     (val) =>
@@ -504,10 +566,12 @@ export const updateConnectionRequestSchema = z
       val.scope !== undefined ||
       val.options !== undefined ||
       val.actionPolicies !== undefined ||
-      val.concurrencyMode !== undefined,
+      val.concurrencyMode !== undefined ||
+      val.rateLimit !== undefined ||
+      val.maxConcurrent !== undefined,
     {
       message:
-        "At least one of displayName, status, scope, options, actionPolicies or concurrencyMode must be provided",
+        "At least one of displayName, status, scope, options, actionPolicies, concurrencyMode, rateLimit or maxConcurrent must be provided",
     },
   );
 export type UpdateConnectionRequest = z.infer<

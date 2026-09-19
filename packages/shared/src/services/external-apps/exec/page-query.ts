@@ -36,8 +36,11 @@ import { validateActionArgs } from "./validate-args";
  *  - a Redis cache per (connection, operation, args, resultPath) — the normal
  *    render is a cache hit, and personal connections partition it per viewer
  *    by construction (distinct connection ids);
- *  - an upstream budget per connection per minute — a crowd can exhaust the
- *    budget, never the third party's patience;
+ *  - the call governor, taken by `executeReadAction` one level down. It used to
+ *    be a 120/minute counter written here, which protected PAGES and nothing
+ *    else: the sandbox, the sync engine and every approved plan reached the
+ *    same third party with no budget at all. A per-connection counter in one
+ *    caller is not a budget, it is a local habit;
  *  - a wait a caller will not exceed, and a run budget across all of a page's
  *    external datasets — a slow app costs its widget a message, not the page a
  *    hang.
@@ -65,32 +68,18 @@ import { validateActionArgs } from "./validate-args";
  *
  * Two things bound it from outside and neither is ours to raise here: the MCP
  * transport aborts at 30 s (`mcp/client.ts`), and a registry provider's own
- * client aborts at whatever it declares (Akanea: 60 s). The connection slot's
- * lease must exceed the LONGEST of those, not this — see `read-executor.ts`.
+ * client aborts at whatever it declares (one WMS client: 60 s). The governor's
+ * hold must exceed the LONGEST of those, not this — see `read-executor.ts`.
  */
 const UPSTREAM_TIMEOUT_MS = 45_000;
 /**
  * Below this much remaining run budget, a dataset that has not started does not
- * start: no answer can arrive inside what is left, so the call would take a
- * licence seat and a slot in the per-minute budget to return the same "still
- * working" it returns for free.
+ * start: no answer can arrive inside what is left, so the call would spend a
+ * seat and a slice of the app's budget to return the same "still working" it
+ * returns for free.
  */
 const MIN_CALL_MS = 3_000;
 /**
- * Upstream calls one connection may make per minute, SHARED by everyone
- * reading through it — which on a team connection means the whole team.
- *
- * That sharing is only survivable because of the cache in front of it: one
- * connection + operation + arguments is ONE upstream call per TTL window
- * however many people are looking, and concurrent misses collapse into a
- * single run. So this bounds DISTINCT questions per minute, not page views.
- *
- * 120 rather than 60: a six-widget page whose viewers hold different filter
- * values produces a few dozen distinct keys in its first minute, and a ceiling
- * a legitimate page can reach is a ceiling that will be hit by a user rather
- * than by an abuser.
- */
-const UPSTREAM_BUDGET_PER_MINUTE = 120;
 /** Ceiling on the JSON size of one dataset's rows. */
 const MAX_RESULT_BYTES = 1_000_000;
 const BINARY_OMITTED = "[binary content omitted]";
@@ -218,14 +207,6 @@ const capRows = (rows: PageValue[]): PageQueryRows => {
   return { rows: kept, truncated };
 };
 
-/** One upstream call per minute-window budget, per connection. */
-const underBudget = async (connectionId: string): Promise<boolean> => {
-  const key = `rl:page-ext:${connectionId}`;
-  const count = await redis.incr(key);
-  if (count === 1) await redis.expire(key, 60);
-  return count <= UPSTREAM_BUDGET_PER_MINUTE;
-};
-
 const blockedMessage = (
   operation: string,
   connection: ExternalAppConnection,
@@ -333,19 +314,6 @@ const runQuery = async (
   cacheKey: string,
   ttlSeconds: number,
 ): Promise<PageQueryResult> => {
-  let underMinuteBudget: boolean;
-  try {
-    underMinuteBudget = await underBudget(connection.id);
-  } catch {
-    underMinuteBudget = true;
-  }
-  if (!underMinuteBudget) {
-    return {
-      status: "error",
-      message: `"${connection.displayName}" hit its per-minute budget — the page is asking a third party too often; raise the dataset's cacheTtlSeconds`,
-    };
-  }
-
   let answer: { ok: true; data: unknown } | { ok: false; message: string };
   try {
     answer = await callUpstream(connection, input.operation, input.args);
@@ -393,8 +361,15 @@ export const externalPageQueryExecutor: ExternalPageQueryExecutor = {
   serialKey: (dataset) => {
     if (dataset.providerKey === undefined) return undefined;
     const providerKey = canonicalProviderKey(dataset.providerKey);
-    const declared = getProvider(providerKey)?.manifest.concurrency;
-    if (declared?.mode !== "serial") return undefined;
+    const manifest = getProvider(providerKey)?.manifest;
+    // Both spellings of "one at a time": the newer number and the older mode.
+    // Read from the MANIFEST rather than through `isSingleFlightConnection`,
+    // because scheduling happens before any connection is resolved — the
+    // viewer is not known here, which the comment above already explains.
+    const single =
+      manifest?.rateLimit?.maxConcurrent === 1 ||
+      manifest?.concurrency?.mode === "serial";
+    if (!single) return undefined;
     return dataset.connectionId ?? providerKey;
   },
   execute: async (input) => {

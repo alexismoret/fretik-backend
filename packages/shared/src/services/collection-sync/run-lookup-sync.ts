@@ -8,7 +8,7 @@ import { chunkForBulk, MAX_BULK_ITEMS } from "../../lib/db-bulk";
 import { isSyncFieldBinding, SYNC_LIMITS } from "../../schemas/collection-sync";
 import { bulkUpdateCollectionRecords } from "../collection-records/bulk-update";
 import { readRecordDataBatch } from "../collection-schema/record-io";
-import { isSerialConnection } from "../external-apps/exec/connection-slot";
+import { isSingleFlightConnection } from "../external-apps/exec/governor/policy";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
 import { syncActor } from "./agent-key";
 import { projectRow, readPath } from "./project-row";
@@ -345,12 +345,14 @@ const callOneByOne = async (ctx: {
   input: { connection: ExternalAppConnection; deadlineAt: number };
   state: RecordSyncStateWrite[];
 }): Promise<void> => {
-  // A serial connection holds ONE slot (`withConnectionSlot`, taken inside the
-  // executor), so firing four at it would only queue three on the Redis lock
-  // and time them out at `maxWaitMs`. Asking the declaration first turns that
-  // contention into a queue nobody has to wait out — the same reasoning
+  // A single-flight connection holds ONE seat (the permit, taken inside the
+  // executor), so firing four at it would only queue three on the governor and
+  // time them out at the policy's wait budget. Asking the policy first turns
+  // that contention into a queue nobody has to wait out — the same reasoning
   // `run-page-data` uses for a page's datasets.
-  const width = isSerialConnection(ctx.input.connection) ? 1 : PARALLEL_CALLS;
+  const width = isSingleFlightConnection(ctx.input.connection)
+    ? 1
+    : PARALLEL_CALLS;
   const queue = [...ctx.askable];
 
   const worker = async (): Promise<void> => {

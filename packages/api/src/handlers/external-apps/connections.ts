@@ -46,6 +46,8 @@ import { getConnectionConfigForReconnect } from "@fretik/shared/services/externa
 import { listConnections } from "@fretik/shared/services/external-apps/connections/list";
 import { testConnectionCredentials } from "@fretik/shared/services/external-apps/connections/test-credentials";
 import { updateConnection } from "@fretik/shared/services/external-apps/connections/update";
+import { readUpstreamStats } from "@fretik/shared/services/external-apps/exec/governor/permit";
+import { resolveGovernorPolicy } from "@fretik/shared/services/external-apps/exec/governor/policy";
 import { isMcpConnection } from "@fretik/shared/services/external-apps/mcp/connection-kind";
 import { inspectMcpServer } from "@fretik/shared/services/external-apps/mcp/inspect-server";
 import {
@@ -78,7 +80,49 @@ connectionsRoutes.use("*", authMiddleware);
 
 // ---- DTO mapper ------------------------------------------------------
 
-const toDto = (row: ExternalAppConnection): ExternalAppConnectionResponse => ({
+/**
+ * What is enforced, what this account overrode, and what it spent today.
+ *
+ * `effective` comes from the same `resolveGovernorPolicy` the runtime uses, so
+ * the screen cannot drift from the enforcement: a second implementation of the
+ * precedence here is how a UI ends up promising 600/min against a governor
+ * holding the connection to 300.
+ */
+const rateLimitDto = (
+  row: ExternalAppConnection,
+): ExternalAppConnectionResponse["rateLimit"] => {
+  const policy = resolveGovernorPolicy(row);
+  return {
+    effective:
+      policy.perConnection === undefined
+        ? null
+        : {
+            requests: policy.perConnection.requests,
+            perSeconds: policy.perConnection.perSeconds,
+          },
+    override:
+      row.rateLimitRequests === null || row.rateLimitPerSeconds === null
+        ? null
+        : {
+            requests: row.rateLimitRequests,
+            perSeconds: row.rateLimitPerSeconds,
+          },
+    maxConcurrent: policy.maxConcurrent === 0 ? null : policy.maxConcurrent,
+    maxConcurrentOverride: row.maxConcurrent,
+    perProvider:
+      policy.perProvider === undefined
+        ? null
+        : {
+            requests: policy.perProvider.requests,
+            perSeconds: policy.perProvider.perSeconds,
+          },
+  };
+};
+
+const toDto = (
+  row: ExternalAppConnection,
+  usage: ExternalAppConnectionResponse["usage"],
+): ExternalAppConnectionResponse => ({
   id: row.id,
   providerKey: row.providerKey,
   displayName: row.displayName,
@@ -102,6 +146,8 @@ const toDto = (row: ExternalAppConnection): ExternalAppConnectionResponse => ({
   options: row.options,
   actionPolicies: row.actionPolicies ?? null,
   concurrencyMode: row.concurrencyMode,
+  rateLimit: rateLimitDto(row),
+  usage,
   // Filled in by `toConnectionDto` for MCP connections (snapshot-backed);
   // manifest providers keep `null` — their tools come from the catalogue.
   actions: null,
@@ -127,7 +173,17 @@ const toConnectionDto = async (
   row: ExternalAppConnection,
   options?: { includeSignatures?: boolean },
 ): Promise<ExternalAppConnectionResponse> => {
-  const base = toDto(row);
+  // Best-effort by construction: the counters live in Redis and a connection
+  // screen must render whether or not Redis is reachable.
+  const stats = await readUpstreamStats(row).catch(() => ({
+    connection: { calls: 0, rateLimited: 0 },
+    provider: { calls: 0, rateLimited: 0 },
+  }));
+  const base = toDto(row, {
+    callsToday: stats.connection.calls,
+    rateLimitedToday: stats.connection.rateLimited,
+    providerCallsToday: stats.provider.calls,
+  });
   if (!isMcpConnection(row)) return base;
   const snapshot = await getSnapshotForConnection(row);
   if (snapshot === undefined) return base;
@@ -598,9 +654,14 @@ connectionsRoutes.openapi(updateRoute, async (c) => {
   // taking a shared connection private when you are not the member who
   // connected it. The service enforces both (personal connections stay
   // owner-only via caller visibility).
+  // The limits join that list for the same reason the concurrency mode is on
+  // it: a budget is shared by everyone who reads through the connection, so
+  // widening one is a decision about the whole team's traffic.
   const admin =
     patch.actionPolicies !== undefined ||
     patch.concurrencyMode !== undefined ||
+    patch.rateLimit !== undefined ||
+    patch.maxConcurrent !== undefined ||
     patch.scope !== undefined
       ? await isOrgAdmin(team.organizationId, user.id)
       : undefined;
@@ -614,6 +675,8 @@ connectionsRoutes.openapi(updateRoute, async (c) => {
     options: patch.options,
     actionPolicies: patch.actionPolicies,
     concurrencyMode: patch.concurrencyMode,
+    rateLimit: patch.rateLimit,
+    maxConcurrent: patch.maxConcurrent,
     isOrgAdmin: admin,
   });
   return c.json(await toConnectionDto(row), 200);

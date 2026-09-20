@@ -87,12 +87,12 @@ What the user has to provide vs. what the assistant can pick up from context. If
 ## Steps
 
 1. Numbered steps in order.
-2. Name the tool used at each step (`python`, `sql_query`, `read`, etc.) — don't make the future assistant guess.
+2. Name the tool used at each step (`python`, `querySql`, `read`, etc.) — don't make the future assistant guess.
 3. When a step produces an artifact, name where it lands (`outputs/<filename>`).
 
 ## Output
 
-What the user receives. A file? A chat reply? A table? If it's a file, end with `present_files` so the user actually sees it.
+What the user receives. A file? A chat reply? A table? If it's a file, end with `presentFiles` so the user actually sees it.
 
 ## Edge cases (optional)
 
@@ -105,26 +105,26 @@ Not every skill needs every section. A 30-line skill that does one thing well be
 
 Mention tools by their actual names — these match what the chatbot sees. Don't list every tool just to flex; only mention the ones the procedure actually uses.
 
-| Tool                                                                                             | When to mention it                                                                                                       |
-| ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
-| `python`                                                                                         | Data wrangling, file conversion, custom logic. The kernel is stateful across calls in the same conversation.             |
-| `bash`                                                                                           | Shell commands, CLI tools, moving files around.                                                                          |
-| `sql_query`                                                                                      | Read-only PostgreSQL on the team's database, auto-scoped to the current team.                                            |
-| `rag_search`                                                                                     | Semantic search over the team's documents and memories.                                                                  |
-| `web_search` / `web_fetch`                                                                       | External lookups.                                                                                                        |
-| `read`                                                                                           | Read a sandbox file (attachment, persisted output, drive download).                                                      |
-| `vision`                                                                                         | Visual analysis of an image or PDF page.                                                                                 |
-| `list_documents`, `list_entities`, `list_labels`, `get_entity_details`, `list_field_definitions` | Browse the team's data. These are domain tools — they need to be activated via `search_tools` before they can be called. |
-| `download_drive_document`                                                                        | Pull a file from the team's connected Drive into the sandbox.                                                            |
-| `present_files`                                                                                  | Surface a generated file to the user. Always end a "produce a file" skill with this.                                     |
-| `ask_user_question`                                                                              | Prompt the user when a required input is missing. One good question is better than three small ones.                     |
-| `manage_tasks`                                                                                   | Track multi-step progress inside the conversation. Useful for long procedures the user wants to follow along with.       |
+| Tool                                                              | When to mention it                                                                                                  |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `python`                                                          | Data wrangling, file conversion, custom logic. The kernel is stateful across calls in the same conversation.        |
+| `bash`                                                            | Shell commands, CLI tools, moving files around.                                                                     |
+| `querySql`                                                        | Read-only SQL over the team's collections, scoped to the current team.                                              |
+| `searchKnowledge`                                                 | Semantic search over the team's documents, memories, skills and context.                                            |
+| `searchWeb` / `webFetch`                                          | External lookups: search, then read a known page.                                                                   |
+| `read`                                                            | Read a sandbox file (attachment, persisted output, Drive download); documents and mail come back as text.           |
+| `extract`                                                         | Structured fields out of a PDF or image (line items, table rows) as JSON.                                           |
+| `vision`                                                          | A visual question on an image or PDF page.                                                                          |
+| `listDocuments`, `listRecords`, `getRecord`, `describeCollection` | Browse the team's documents and records. Domain tools — activated through `searchTools` before the first call.      |
+| `downloadDriveDocument`                                           | A Drive document's original bytes into the sandbox — to parse or reuse as a template, never for a content question. |
+| `presentFiles`                                                    | Surface a generated file to the user. Always end a "produce a file" skill with this.                                |
+| `askUserQuestion`                                                 | Prompt the user when a required input is missing. One good question is better than three small ones.                |
 
 ## Output: where files go
 
 The chatbot sandbox has a fixed layout. The two directories your skill body cares about:
 
-- `outputs/` — files the skill produces. Write here, then surface with `present_files`.
+- `outputs/` — files the skill produces. Write here, then surface with `presentFiles`.
 - `attachments/` — files the user uploaded in the current conversation. Read-only from the skill's perspective.
 
 Other paths exist (`drive/`, `skills/`, `context/`, `memory/`) but a typical skill doesn't touch them directly.
@@ -175,10 +175,10 @@ The user wants a single Markdown file recapping a recent period (defaults to the
 ## Steps
 
 1. Resolve the date range. If the user said "this week", interpret as Monday→today.
-2. Pull recent activity with `sql_query` — new documents, touched entities, updates in range.
+2. Pull recent activity with `querySql` — new documents, touched records, updates in range.
 3. Compose the digest in Markdown with three sections: **Documents**, **People & companies**, **Highlights**.
 4. Write to `outputs/weekly-digest.md`.
-5. Surface with `present_files({ paths: ["outputs/weekly-digest.md"] })`.
+5. Surface with `presentFiles({ paths: ["outputs/weekly-digest.md"] })`.
 
 ## Output
 
@@ -206,11 +206,11 @@ A quick read on a single budget. If the user wants a full breakdown or a chart, 
 
 ## Inputs
 
-- Budget name. Ask via `ask_user_question` if not in the message.
+- Budget name. Ask via `askUserQuestion` if not in the message.
 
 ## Steps
 
-1. Resolve the budget by name with `sql_query`.
+1. Resolve the budget by name with `querySql`.
 2. Compute `consumed = SUM(line_items.amount)` for that budget.
 3. Reply in chat: one short sentence with consumed / total / percentage, formatted as currency.
 

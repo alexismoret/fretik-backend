@@ -1185,6 +1185,19 @@ const seedSyncedType = async (ctx: EvalCaseContext): Promise<void> => {
     UPDATE field_definitions SET sync_source_id = ${sourceId}::uuid
      WHERE collection_id = ${type.id}::uuid AND key IN ('reference', 'amount')`);
 
+  // The ROWS are backdated to the same instant as the run that supposedly
+  // wrote them. Left at `now()`, the fixture contradicts itself — the source
+  // says "last refreshed 30 hours ago" while every row says "updated three
+  // seconds ago" — and the agent believed the rows, answered "the figures are
+  // from a few minutes ago", and failed a case about saying how stale they
+  // are. It was right to believe them: in a real synced collection the two
+  // timestamps agree, because the run is what wrote the rows.
+  await db.execute(sql`
+    UPDATE collection_records
+       SET created_at = now() - interval '${sql.raw(String(SYNC_AGE_HOURS))} hours',
+           updated_at = now() - interval '${sql.raw(String(SYNC_AGE_HOURS))} hours'
+     WHERE collection_id = ${type.id}::uuid`);
+
   // A raw UPDATE invalidates no cache, and the AI SERVICE is a separate
   // process holding its own. The cache is Redis-backed, so this reaches it —
   // and without it the service answers from definitions written a moment
@@ -1365,12 +1378,26 @@ const syncPageWantsSynced: EvalCase = {
  * `code` is deliberately a `text` column the team fills by hand: the point of
  * the case is that the app's list is matched against something already here,
  * not that a second table is created beside this one.
+ *
+ * The connection carries a REAL provider key, unlike every other seed here,
+ * and that is what makes the case answerable. The first version used the
+ * fixture's invented `eval-orders`: the agent looked for its read actions,
+ * found a provider the registry has never heard of, and correctly reported
+ * that it could not read the app at all rather than inventing a mapping. A
+ * fixture that cannot be read cannot test WHICH action to read with. `front`
+ * publishes both halves of the choice — `list_contacts` and `get_contact` for
+ * the same entity — so picking the list over the per-record read is a decision
+ * the agent can actually make here. No credentials, so nothing calls out.
  */
 const MATCH_KEY = "eval_sync_clients";
+const MATCH_APP = "Eval Contacts App";
 
 const seedMatchableType = async (ctx: EvalCaseContext): Promise<void> => {
   await dropType(ctx, MATCH_KEY);
-  await seedConnectionOnly(ctx);
+  await db.execute(sql`
+    DELETE FROM external_app_connections
+     WHERE team_id = ${ctx.teamId}::uuid AND display_name = ${MATCH_APP}`);
+  await insertEvalConnection(ctx, "front", MATCH_APP);
 
   const type = await createCollection({
     organizationId: ctx.organizationId,
@@ -1399,11 +1426,32 @@ const seedMatchableType = async (ctx: EvalCaseContext): Promise<void> => {
       displayOrder: i,
     });
   }
+  await reconcileCollectionTable({ collectionId: type.id });
+
+  // Rows the team typed — without them the case asks for something that would
+  // do nothing, and the agent said so: a `columns` source fills columns of
+  // records that ALREADY EXIST, so against an empty collection it matches
+  // nothing whatever key it is given. The first run failed here rather than on
+  // the doctrine, which is the fixture's fault, not the agent's.
+  for (const row of [
+    { name: "Eval Client Nord", code: "CL-001" },
+    { name: "Eval Client Sud", code: "CL-002" },
+    { name: "Eval Client Est", code: "CL-003" },
+  ]) {
+    await createCollectionRecord({
+      organizationId: ctx.organizationId,
+      teamId: ctx.teamId,
+      collectionId: type.id,
+      data: row,
+    });
+  }
 };
 
 const dropMatchableType = async (ctx: EvalCaseContext): Promise<void> => {
   await dropType(ctx, MATCH_KEY);
-  await dropSyncedType(ctx);
+  await db.execute(sql`
+    DELETE FROM external_app_connections
+     WHERE team_id = ${ctx.teamId}::uuid AND display_name = ${MATCH_APP}`);
 };
 
 /**
@@ -1417,7 +1465,7 @@ const syncColumnsByList: EvalCase = {
   id: "obj-sync-columns-by-list",
   description:
     "An app fills columns of a collection the team keeps → a columns source matched on an existing column, read by walking the app's list, not one call per record and not a second collection.",
-  prompt: `Dans ${MATCH_KEY}, je voudrais que l'encours de chaque client vienne de notre logiciel de commandes — il a la liste de tous nos clients. C'est faisable ?`,
+  prompt: `Dans ${MATCH_KEY}, je voudrais que les coordonnées de chaque client viennent de « ${MATCH_APP} » — il tient la liste de tous nos contacts. C'est faisable ?`,
   tags: ["objects", "sync", "platform"],
   seed: retryingSeed(seedMatchableType),
   cleanup: dropMatchableType,

@@ -4,14 +4,18 @@ import type {
   FieldDefinitionType,
 } from "@fretik/shared/db/schema";
 import {
-  NON_WRITABLE_FIELD_TYPES,
   collectionRecords,
+  NON_WRITABLE_FIELD_TYPES,
 } from "@fretik/shared/db/schema";
 import { createCollectionRecord } from "@fretik/shared/services/collection-records/create";
 import {
   getCollectionRecord,
   listCollectionRecords,
 } from "@fretik/shared/services/collection-records/retrieve";
+import {
+  qualifiedCollectionTable,
+  SYS_COL,
+} from "@fretik/shared/services/collection-schema/identifiers";
 import { reconcileCollectionTable } from "@fretik/shared/services/collection-schema/table";
 import { createCollection } from "@fretik/shared/services/collections/create";
 import { deleteCollection } from "@fretik/shared/services/collections/delete";
@@ -23,7 +27,7 @@ import { invalidateFieldDefinitionsCache } from "@fretik/shared/services/field-d
 import { createFieldDefinition } from "@fretik/shared/services/field-definitions/create";
 import { getFieldDefinitionsForTeam } from "@fretik/shared/services/field-definitions/get-for-team";
 import { and, eq, inArray, or, sql } from "drizzle-orm";
-import type { EvalCase, EvalCaseContext, EvalSuite } from "../types";
+import type { Assertion, EvalCase, EvalCaseContext, EvalSuite } from "../types";
 
 /**
  * Objects-autonomy suite (P8) — proves the agent manages the team's structured
@@ -1063,10 +1067,61 @@ const formulaReadOnly: EvalCase = {
 // `last_success_at` set by hand. That is deliberate and it is what makes the
 // suite deterministic: nothing here is allowed to actually call a third party,
 // and the agent's job is to read the provenance, not to make the sync work.
+//
+// UNCALLABLE IS NOT THE SAME AS UNREADABLE, and conflating the two is what made
+// this suite flap. Every connection here used to carry an INVENTED provider key
+// (`eval-orders`, `eval-billing`). A key the registry has never heard of has no
+// manifest, so it has no description, no categories, no action catalogue and no
+// `skills/<key>/SKILL.md` in the sandbox — the agent was handed an app it could
+// not even LOOK at, and `resolveSyncAction` answered every operation with
+// `unknown operation "list_orders" on eval-orders`. Measured over three runs of
+// the nine cases, five of them changed verdict between runs: the agent hit that
+// wall at a different point each time and improvised differently — sometimes
+// into a plan the judge accepted, sometimes into an honest "I cannot read this
+// app" the judge refused, once into 1 388 `bash` calls hunting a skill
+// directory that does not exist.
+//
+// So the keys below are REAL registry providers, and the display names stay
+// eval-specific (they are what cleanup keys on, and what the rubrics quote).
+// The app is fully readable — catalogue, actions, pagination, SKILL.md — and
+// still uncallable, because the connection has no credentials in Nango. That is
+// the fixture the cases were always written against: the agent can plan, and
+// nothing calls out.
 
 const SYNC_KEY = "eval_sync_orders";
 const SYNC_APP = "Eval Orders App";
 const SYNC_AGE_HOURS = 30;
+
+/**
+ * The app that OWNS the collection's rows.
+ *
+ * Shiptify, because the case wanted a system of record the team keeps its
+ * orders in and Shiptify is the shipped provider closest to that: it publishes
+ * `list_shipment_requests` (a paginated list) AND `get_shipment_request` (one
+ * record), which is the pair `obj-sync-columns-by-list` and `obj-sync-second-app`
+ * need the agent to choose between. A provider with only a list would decide
+ * that choice for it.
+ */
+const SYNC_PROVIDER = "shiptify";
+const SYNC_OPERATION = "list_shipment_requests";
+
+/**
+ * Every case below carries this, and it is on ALL of them rather than on the
+ * two that once ran away — because the one that ran away next was neither.
+ *
+ * Measured 2026-09-20 over the nine: a healthy trajectory here is 1, 4, 6, 7,
+ * 8, 16, 22 or 30 calls. In the same run `obj-sync-workflow-reads-collection`
+ * issued **1 394**, of which 1 382 were refused unexecuted by the per-step call
+ * cap — and scored `correctness: 1.000`, because its answer was right and
+ * nothing in the suite looked at the trajectory. A judge grades the destination;
+ * this grades the road, and a suite that grades only the destination will call
+ * a turn healthy right up until it times out.
+ *
+ * Forty is far above every healthy trajectory measured and far below a runaway,
+ * so it can only catch the pathology it is named for. It is an EVAL lever, not
+ * a product one: nothing about the model's output ceiling changes.
+ */
+const SYNC_CALL_CAP: Assertion = { type: "toolCallsUnder", max: 40 };
 
 /**
  * The credential-less connection every sync case hangs off, inserted in ONE
@@ -1081,6 +1136,23 @@ const SYNC_AGE_HOURS = 30;
  * `EVAL_USER_ID` is the author: it is already required for the run (it is what
  * `X-Context-User-Id` carries), so demanding it here adds no new precondition —
  * it just names the one that was silently unmet.
+ *
+ * THE NANGO REF IS NOT DECORATION. A manifest connection is Nango-backed by
+ * construction — `requireNangoRef` says so, and every row a real connect flow
+ * writes carries the pair. A row without it is a shape the product cannot
+ * produce, and the executor rejects it with an INVARIANT message ("has no Nango
+ * binding — expected a Nango-backed connection here") rather than an app-level
+ * one. Measured 2026-09-20, that single sentence cost three of the nine cases:
+ * `obj-sync-columns-by-list` retried `manageSync` twelve times into the step
+ * cap and answered nothing at all, `obj-sync-page-wants-synced` fell back to
+ * asking the user for an export, and `obj-sync-refresh-when-stale` reported an
+ * "integration error" although its refresh had been queued successfully two
+ * calls earlier — the agent believed the loudest error it had seen.
+ *
+ * The ref points at a connection Nango does not hold, which is the honest shape
+ * of this fixture: an app that is declared, readable and NOT usable. A call now
+ * fails the way a revoked connection fails — a fact about the app, which the
+ * agent can state and move past — instead of the way a bug fails.
  */
 const insertEvalConnection = async (
   ctx: EvalCaseContext,
@@ -1090,12 +1162,16 @@ const insertEvalConnection = async (
   if (ctx.userId === undefined) {
     throw new Error("EVAL_USER_ID is required to seed a sync connection");
   }
+  // Unique per seed, because `uniq_eac_nango` is a unique index on the pair and
+  // several of these connections coexist within one run.
+  const nangoConnectionId = `eval-${crypto.randomUUID()}`;
   const inserted = await db.execute(sql`
     INSERT INTO external_app_connections
       (organization_id, team_id, provider_key, display_name, status,
-       created_by_user_id)
+       created_by_user_id, nango_connection_id, nango_provider_config_key)
     VALUES (${ctx.organizationId}::uuid, ${ctx.teamId}::uuid,
-            ${providerKey}, ${displayName}, 'active', ${ctx.userId}::uuid)
+            ${providerKey}, ${displayName}, 'active', ${ctx.userId}::uuid,
+            ${nangoConnectionId}, ${providerKey})
     RETURNING id`);
   const id = Reflect.get(inserted.rows[0] ?? {}, "id");
   if (typeof id !== "string") throw new Error("no eval connection");
@@ -1137,7 +1213,7 @@ const seedSyncedType = async (ctx: EvalCaseContext): Promise<void> => {
   }
   await reconcileCollectionTable({ collectionId: type.id });
 
-  const connectionId = await insertEvalConnection(ctx, "eval-orders", SYNC_APP);
+  const connectionId = await insertEvalConnection(ctx, SYNC_PROVIDER, SYNC_APP);
 
   // `last_success_at` is written by hand: a run that really called an app
   // would make the age — the thing three of these cases turn on — depend on
@@ -1148,7 +1224,7 @@ const seedSyncedType = async (ctx: EvalCaseContext): Promise<void> => {
        provider_key, operation, args, external_id_path, field_mapping,
        schedule, last_success_at, last_run_at)
     VALUES (${ctx.organizationId}::uuid, ${ctx.teamId}::uuid, ${type.id}::uuid,
-            'table', ${connectionId}::uuid, 'eval-orders', 'list_orders',
+            'table', ${connectionId}::uuid, ${SYNC_PROVIDER}, ${SYNC_OPERATION},
             '{}'::jsonb, 'id',
             '[{"path":"reference","fieldKey":"reference"},{"path":"amount","fieldKey":"amount"}]'::jsonb,
             '{"mode":"interval","everyMinutes":60}'::jsonb,
@@ -1192,11 +1268,24 @@ const seedSyncedType = async (ctx: EvalCaseContext): Promise<void> => {
   // from a few minutes ago", and failed a case about saying how stale they
   // are. It was right to believe them: in a real synced collection the two
   // timestamps agree, because the run is what wrote the rows.
+  //
+  // BOTH tables, and that is the whole point: the registry row carries one
+  // pair of timestamps and the per-collection extension table carries its own.
+  // `querySql` — which is how the agent actually checks freshness — reads the
+  // EXTENSION table, so backdating only the registry left the contradiction
+  // exactly where the agent looks.
+  const backdate = sql.raw(
+    `now() - interval '${String(SYNC_AGE_HOURS)} hours'`,
+  );
   await db.execute(sql`
     UPDATE collection_records
-       SET created_at = now() - interval '${sql.raw(String(SYNC_AGE_HOURS))} hours',
-           updated_at = now() - interval '${sql.raw(String(SYNC_AGE_HOURS))} hours'
+       SET created_at = ${backdate}, updated_at = ${backdate}
      WHERE collection_id = ${type.id}::uuid`);
+  await db.execute(sql`
+    UPDATE ${sql.raw(qualifiedCollectionTable(type.id))}
+       SET ${sql.raw(SYS_COL.createdAt)} = ${backdate},
+           ${sql.raw(SYS_COL.updatedAt)} = ${backdate}
+     WHERE ${sql.raw(SYS_COL.team)} = ${ctx.teamId}::uuid`);
 
   // A raw UPDATE invalidates no cache, and the AI SERVICE is a separate
   // process holding its own. The cache is Redis-backed, so this reaches it —
@@ -1225,6 +1314,7 @@ const syncAgeQuoted: EvalCase = {
   cleanup: dropSyncedType,
   assertions: [
     { type: "noError" },
+    SYNC_CALL_CAP,
     {
       type: "judge",
       rubric:
@@ -1243,6 +1333,7 @@ const syncColumnRefused: EvalCase = {
   cleanup: dropSyncedType,
   assertions: [
     { type: "noError" },
+    SYNC_CALL_CAP,
     {
       type: "custom",
       name: "amount-unchanged",
@@ -1290,6 +1381,7 @@ const syncRefreshWhenStale: EvalCase = {
   assertions: [
     { type: "noError" },
     { type: "toolUsed", tools: ["manageSync"] },
+    SYNC_CALL_CAP,
     {
       type: "judge",
       rubric:
@@ -1309,6 +1401,7 @@ const syncProposeFromApp: EvalCase = {
   cleanup: dropSyncedType,
   assertions: [
     { type: "noError" },
+    SYNC_CALL_CAP,
     { type: "toolUsed", tools: ["manageSync", "askUserQuestion"], mode: "any" },
     {
       type: "judge",
@@ -1330,18 +1423,26 @@ const syncProposeFromApp: EvalCase = {
 /** The connection alone — for the case that must decide to build the source. */
 const seedConnectionOnly = async (ctx: EvalCaseContext): Promise<void> => {
   await dropSyncedType(ctx);
-  await insertEvalConnection(ctx, "eval-orders", SYNC_APP);
+  await insertEvalConnection(ctx, SYNC_PROVIDER, SYNC_APP);
 };
 
-/** The collection already fed by one app, plus a SECOND app to fill a column. */
+/**
+ * The collection already fed by one app, plus a SECOND app to fill a column.
+ *
+ * A DIFFERENT provider from `SYNC_PROVIDER`, and that is the case's whole
+ * point: two apps on one collection. Pbyp, because it reads arbitrary
+ * back-office collections (`query_items`) and so plausibly holds a payment
+ * status, which is the column the case asks for.
+ */
 const SYNC_APP_2 = "Eval Billing App";
+const SYNC_PROVIDER_2 = "pbyp";
 
 const seedTwoApps = async (ctx: EvalCaseContext): Promise<void> => {
   await seedSyncedType(ctx);
   await db.execute(sql`
     DELETE FROM external_app_connections
      WHERE team_id = ${ctx.teamId}::uuid AND display_name = ${SYNC_APP_2}`);
-  await insertEvalConnection(ctx, "eval-billing", SYNC_APP_2);
+  await insertEvalConnection(ctx, SYNC_PROVIDER_2, SYNC_APP_2);
 };
 
 const dropTwoApps = async (ctx: EvalCaseContext): Promise<void> => {
@@ -1363,6 +1464,7 @@ const syncPageWantsSynced: EvalCase = {
   assertions: [
     { type: "noError" },
     { type: "toolUsed", tools: ["manageSync", "askUserQuestion"], mode: "any" },
+    SYNC_CALL_CAP,
     {
       type: "judge",
       rubric:
@@ -1379,15 +1481,15 @@ const syncPageWantsSynced: EvalCase = {
  * the case is that the app's list is matched against something already here,
  * not that a second table is created beside this one.
  *
- * The connection carries a REAL provider key, unlike every other seed here,
- * and that is what makes the case answerable. The first version used the
- * fixture's invented `eval-orders`: the agent looked for its read actions,
- * found a provider the registry has never heard of, and correctly reported
- * that it could not read the app at all rather than inventing a mapping. A
- * fixture that cannot be read cannot test WHICH action to read with. `front`
- * publishes both halves of the choice — `list_contacts` and `get_contact` for
- * the same entity — so picking the list over the per-record read is a decision
- * the agent can actually make here. No credentials, so nothing calls out.
+ * This is where the invented-provider-key defect was caught first, and the fix
+ * here is the one every other seed above now follows: the agent looked for the
+ * app's read actions, found a provider the registry has never heard of, and
+ * correctly reported that it could not read the app at all rather than
+ * inventing a mapping. A fixture that cannot be read cannot test WHICH action
+ * to read with. `front` publishes both halves of the choice — `list_contacts`
+ * and `get_contact` for the same entity — so picking the list over the
+ * per-record read is a decision the agent can actually make here. No
+ * credentials, so nothing calls out.
  */
 const MATCH_KEY = "eval_sync_clients";
 const MATCH_APP = "Eval Contacts App";
@@ -1472,6 +1574,9 @@ const syncColumnsByList: EvalCase = {
   assertions: [
     { type: "noError" },
     { type: "toolUsed", tools: ["manageSync", "askUserQuestion"], mode: "any" },
+    // Setting one of these up is a handful of calls — this case answers in
+    // nine when the app is readable.
+    SYNC_CALL_CAP,
     {
       type: "judge",
       rubric: `Correct ONLY IF the assistant's plan adds the new column(s) to the EXISTING ${MATCH_KEY} collection, filled by the connected app, and recognises each of the app's rows by matching it against a column already on those records (the client code). Incorrect if it creates a SECOND collection for the app's clients, if it proposes asking the app once per client / per row / per record when the app has a list, or if it asks the user to choose between reading the app's list and querying it row by row — that is decided by which action the app offers, not by the user.`,
@@ -1494,6 +1599,12 @@ const syncSecondApp: EvalCase = {
   cleanup: dropTwoApps,
   assertions: [
     { type: "noError" },
+    // THE case this assertion was written for: measured 2026-09-20 it passed
+    // the judge while issuing 1 430 tool calls, 1 388 of them `bash`, over
+    // eleven minutes. Green on the answer, pathological in the trajectory, and
+    // the suite said nothing. It answers in sixteen now that the app is
+    // readable — the runaway was the fixture, not the model.
+    SYNC_CALL_CAP,
     {
       type: "judge",
       rubric: `Correct ONLY IF the assistant says yes and plans a SECOND source on the SAME ${SYNC_KEY} collection, owning only the payment-status column, recognising rows by a value the collection already carries (e.g. the order reference). Incorrect if it says a collection can only be fed by one app, proposes a separate collection for the billing data with a relation as the ONLY way, or proposes copying the data with a workflow.`,
@@ -1512,6 +1623,7 @@ const syncExplainPlainly: EvalCase = {
   assertions: [
     { type: "noError" },
     { type: "toolNotUsed", tools: ["manageRecord"] },
+    SYNC_CALL_CAP,
     {
       type: "judge",
       rubric: `Correct ONLY IF the assistant, in plain language with no tool or internal names, (a) explains that these columns are filled by the connected app "${SYNC_APP}" and that a value is corrected in that app, not here, AND (b) says how fresh the figures are — last refreshed about 30 hours ago on an hourly schedule, so they are behind — and offers to refresh them (or does). Incorrect if it says the figures are current, offers to change the amount here, or answers in technical vocabulary.`,
@@ -1562,6 +1674,7 @@ const syncWorkflowReadsCollection: EvalCase = {
       tools: ["manageWorkflow", "askUserQuestion"],
       mode: "any",
     },
+    SYNC_CALL_CAP,
     {
       type: "judge",
       rubric: `Correct ONLY IF the assistant set up (or proposed, with a concrete plan) a scheduled workflow whose runs take the orders from the existing "${SYNC_KEY}" collection the app already fills — refreshing it first is fine. Incorrect if it created or proposed another sync source, wrote a playbook that fetches the app's whole order list itself on every run, or told the user to export a file by hand.`,

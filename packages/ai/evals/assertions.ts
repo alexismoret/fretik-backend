@@ -129,6 +129,26 @@ const runOne = async (
         message: passed ? undefined : `latency was ${result.latencyMs}ms`,
       };
     }
+    case "toolCallsUnder": {
+      const used = result.toolCalls.length;
+      const passed = used <= assertion.max;
+      // Names the worst offender, because a runaway is always one tool: the
+      // number alone sends a reader back to the trace to learn which.
+      const tally = new Map<string, number>();
+      for (const call of result.toolCalls) {
+        tally.set(call.name, (tally.get(call.name) ?? 0) + 1);
+      }
+      const worst = [...tally].sort((a, b) => b[1] - a[1])[0];
+      return {
+        type: "toolCallsUnder",
+        label: `tool calls <= ${assertion.max}`,
+        passed,
+        score: passed ? 1 : 0,
+        message: passed
+          ? undefined
+          : `${used} tool calls${worst ? ` (${worst[1]}× ${worst[0]})` : ""}`,
+      };
+    }
     case "noError": {
       const errorish =
         Boolean(result.error) ||

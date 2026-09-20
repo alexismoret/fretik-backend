@@ -4,10 +4,12 @@
 sert à décider si le chantier vaut le coup, sous quelle forme, et dans quel
 ordre.
 
-> **Périmé depuis le 2026-09-19 — lire d'abord « Où ça en est » ci-dessous.**
-> Les phases 0 à 2 sont livrées. Ce qui suit reste vrai comme étude (§2 la
-> comparaison marché, §3 l'architecture, §4 les interactions) mais faux comme
-> état des lieux (§1) et comme plan (§7).
+> **Périmé — lire d'abord « Où ça en est — 2026-09-20 » ci-dessous.**
+> Les phases 0 à 2 sont livrées, et le modèle a changé depuis : le kind
+> `lookup` s'appelle `columns` et se lit de deux façons. Ce qui suit reste vrai
+> comme étude (§2 la comparaison marché, §3 l'architecture, §4 les
+> interactions) mais faux comme état des lieux (§1), comme vocabulaire (§3.2)
+> et comme plan (§7).
 
 Question posée : la partie collections est un mélange de base de données et
 de CRM, mais elle n'est jamais reliée directement aux données des apps
@@ -16,6 +18,100 @@ workflow de remplir des records. Un CRM/BI (Salesforce, Power BI) permet de
 construire des tableaux dont des colonnes viennent directement d'une app
 externe. Est-ce un gain réel, est-ce faisable de manière optimisée avec le
 système SQL existant, et comment gérer formules, index, pages, workflows ?
+
+---
+
+## Où ça en est — 2026-09-20
+
+Le gel du 19/09 est levé sur un point précis et un seul : **la façon de lire
+l'app**. Trois questions ont été posées, et elles se répondent par un seul
+changement de modèle.
+
+### Deux axes, un seul stocké
+
+| Axe                               | Valeurs                                                | Stocké ?                                                                  | Ce que ça décide                                                          |
+| --------------------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| **kind** — qui possède les lignes | `table` (l'app) · `columns` (l'équipe)                 | oui, enum `collection_sync_kind`                                          | création de lignes, orphelins, politique de suppression, index sémantique |
+| **read** — comment on lit l'app   | `walk` (page par page) · `row` (une requête par ligne) | **non, dérivé** : `syncArgFieldKeys(args).length > 0 → row`, sinon `walk` | coût, runner, ce que « manquant » veut dire                               |
+
+Le kind répond à « qui possède les lignes », qui décide de ce qu'est un
+orphelin et de ce qu'on a le droit de supprimer — cette question devait rester.
+Le `read` répond à « combien d'appels », et il se **dérive** : une source dont
+un argument porte `{"$field": …}` ne peut être lue que ligne par ligne, une
+source sans liaison se parcourt. Rien à choisir, donc rien à se tromper.
+
+Trois formes valides — la quatrième, `table` + `row`, n'a pas de sens :
+
+| kind + read        | Clé                                                               | Ligne inconnue côté app      | Coût pour N lignes |
+| ------------------ | ----------------------------------------------------------------- | ---------------------------- | ------------------ |
+| `table` + `walk`   | `external_id_path` ↔ `collection_records.external_id`             | créée                        | N / taille de page |
+| `columns` + `walk` | `external_id_path` (côté app) ↔ `match_field_key` (colonne d'ici) | ignorée, comptée `unmatched` | N / taille de page |
+| `columns` + `row`  | `{"$field": key}` dans les args                                   | n/a                          | N                  |
+
+**Ce que ça change concrètement :** 20 000 lignes à enrichir passent de 20 000
+requêtes à ~20. La lecture par ligne reste, comme repli quand l'app n'a pas de
+liste pour cette entité — suivi par numéro, enrichissement par identifiant.
+
+### Les trois réponses
+
+**1. « Une collection `table` peut-elle avoir des colonnes personnelles ? »**
+Oui, et c'était déjà vrai : le garde-fou d'écriture ne verrouille que les
+champs portant un `sync_source_id`, les mises à jour de la sync sont en
+`merge: true`, et même des **lignes** ajoutées à la main survivent (sans
+`external_id`, elles ne sont jamais orphelines). Une collection `table` est
+déjà « les données de l'app + vos colonnes ».
+
+**2. « Fusionner les deux principes ? »** Tout sauf un : la lecture fusionne,
+la propriété reste. C'est le tableau ci-dessus.
+
+**3. « Plusieurs apps sur une collection ? »** Déjà possible — la propriété est
+**par colonne** (`field_definitions.sync_source_id`), la seule contrainte étant
+une source `table` au plus par collection. Ce qui manquait : que la deuxième app
+coûte le prix d'une liste et non d'une requête par ligne. La clé d'une source
+`columns` peut être une colonne que la source `table` remplit, et le journal
+réinvalide en chaîne.
+
+### Deux décisions
+
+**Webhooks : inclus.** Une app qui notifie (forwarding Nango) marque ses sources
+incrémentales à rafraîchir ; le sondage devient le repli. On ne lit **pas** le
+payload — sa forme est propre à chaque fournisseur : l'événement dit « quelque
+chose a changé », le run incrémental dit quoi. Anti-rebond Redis d'un quart
+d'heure par connexion, et **seules** les sources incrémentales sont nudgées : une
+notification ne dit pas « refais un parcours de 100 pages ».
+
+**`lookup` → `columns`.** La paire `table` / `columns` dit ce que l'app donne,
+là où `lookup` disait comment on la lit — précisément l'axe qui vient de cesser
+d'être unique. Renommage mécanique, `ALTER TYPE … RENAME VALUE` écrit à la main
+(drizzle-kit `1.0.0-rc.4` n'émet pas cette instruction et produirait un
+`DROP TYPE` qui échoue sur toute ligne existante).
+
+### Deux défauts trouvés en chemin
+
+Aucun des deux n'était dans le plan ; les deux se voyaient dès qu'on faisait
+vraiment appeler une app par l'agent.
+
+- **`appNameOf` nommait les deux connexions pareil.** La précédence prenait le
+  `displayName` du manifeste avant le nom de la connexion — donc deux
+  connexions d'un même produit (« Front — Ventes », « Front — Support »)
+  s'affichaient toutes deux « Front », dans la phrase même censée dire laquelle
+  remplit quelle colonne. Inversée ; le nom donné par l'équipe gagne.
+- **Le type `markdown` n'était jamais proposé.** L'inférence de type ne
+  connaissait que `text`, donc une app qui rend du Markdown (Notion, entre
+  autres) produisait une colonne texte brute. `project-row.ts` le détecte
+  maintenant sur les marqueurs, et `markdown` l'emporte sur `text` quand les
+  deux sont candidats.
+
+### Ce qui reste ouvert
+
+- **Le type `money`** — l'inférence ne peut pas le proposer : le vocabulaire
+  `ParamSpec` du manifeste n'a pas de montant (string, integer, number,
+  boolean, email, date, datetime, enum, array, object), et l'étendre touche
+  aussi le générateur de SDK. Une colonne monétaire arrive donc en `number`.
+- **Fraîcheur à l'ouverture** et **écriture inverse** — décisions du 19/09
+  inchangées, déclenchées par une demande.
+- **Prod** : le service **jobs** sur Dokploy a besoin de `NANGO_HOST` /
+  `NANGO_SECRET_KEY`, sinon toute sync planifiée y échoue.
 
 ---
 
@@ -272,7 +368,12 @@ Une valeur externe atterrit dans **une colonne ordinaire** de
 Ce qui est **ajouté** : la provenance (d'où vient la colonne, quand, avec
 quelle clé), la lecture seule sur ces champs, et le moteur qui remplit.
 
-### 3.2 Deux formes, une seule abstraction : la « source de sync »
+### 3.2 Deux kinds, deux lectures : la « source de sync »
+
+> Le vocabulaire ci-dessous est celui de l'étude du 16/09. `lookup` s'appelle
+> `columns` depuis le 20/09, et se lit **de deux façons** (`walk` ou `row`) —
+> voir « Où ça en est — 2026-09-20 ». Le schéma réel porte en plus
+> `match_field_key` et `unmatched_count`.
 
 Une table `collection_sync_sources` porte la déclaration, dans les deux
 formes :

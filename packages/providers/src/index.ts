@@ -1,5 +1,6 @@
 import { setProviders } from "@fretik/shared/external-apps/registry";
 import { akaneaWmsEntry } from "./akanea-wms";
+import { evalFixtureEntry } from "./eval-fixture";
 import { exchangeEntry } from "./exchange";
 import { frontEntry } from "./front";
 import { ftpSftpEntry } from "./ftp-sftp";
@@ -35,10 +36,17 @@ setProviders({
   sharepoint: sharepointEntry,
   "akanea-wms": akaneaWmsEntry,
   pbyp: pbypEntry,
+  // A test double, registered unconditionally rather than behind an env flag:
+  // `gen:sdk` enumerates the registry and CI diffs its output, so a provider
+  // that appears only under a flag would have its generated SDK + SKILL deleted
+  // by every run that did not set it. `manifest.testOnly` is what keeps it out
+  // of the connect catalogue and out of the credential fetch.
+  "eval-fixture": evalFixtureEntry,
 });
 
 export {
   akaneaWmsEntry,
+  evalFixtureEntry,
   exchangeEntry,
   frontEntry,
   ftpSftpEntry,

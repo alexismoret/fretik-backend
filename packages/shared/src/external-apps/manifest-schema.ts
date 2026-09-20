@@ -952,6 +952,30 @@ export const providerManifestSchema = z
      */
     notifiesChanges: z.boolean().optional(),
     /**
+     * A provider that exists only so automated tests can exercise this whole
+     * path — catalogue, generated SKILL + SDK, sync walker, governor — against
+     * something that answers, without a third party.
+     *
+     * Two consequences, and they are the definition rather than a policy laid
+     * on top of it:
+     *  - it is NOT offered in `GET /external-apps/providers`, so nobody can
+     *    connect it from the app;
+     *  - it holds no credentials, so `callCustomHandler` does not ask Nango for
+     *    any. A connection to it is a row and nothing more.
+     *
+     * Why this exists at all. The sync eval suite spent three runs measuring an
+     * app it could not call: every refusal — a missing manifest, then a missing
+     * Nango binding, then a 404 from Nango — reached the agent as a DIFFERENT
+     * failure, and it improvised differently each time, so five of nine cases
+     * changed verdict between runs (2026-09-20). A fixture that cannot answer
+     * cannot test what the agent does with an answer. Its handlers return rows
+     * from memory and reach no network, so the suite stays hermetic.
+     *
+     * `custom-handler` only — there is nothing to proxy. Never set it on a
+     * provider a customer connects.
+     */
+    testOnly: z.literal(true).optional(),
+    /**
      * Frontend credentials form descriptor — required when the provider
      * uses a `custom-handler` transport (since the frontend cannot rely
      * on the Nango Connect UI for OAuth flows in that case).
@@ -1036,6 +1060,20 @@ export const providerManifestSchema = z
         code: "custom",
         message:
           "iconGradient requires iconColor — it is the flat fallback and the container tint",
+      });
+    }
+
+    // A test-only provider has no third party behind it, so there is nothing
+    // for Nango to proxy and nothing for a user to connect. Any other transport
+    // would go looking for one.
+    if (
+      manifest.testOnly === true &&
+      manifest.transport.kind !== "custom-handler"
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        message:
+          "testOnly requires a custom-handler transport — there is no third party to proxy to",
       });
     }
 

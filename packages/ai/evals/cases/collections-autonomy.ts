@@ -1063,30 +1063,30 @@ const formulaReadOnly: EvalCase = {
 // to write, a stale one is refreshed rather than apologised for, and a table
 // the team keeps in another system is a sync rather than a workflow or a CSV.
 //
-// The source is seeded with a connection that has no credentials and a
-// `last_success_at` set by hand. That is deliberate and it is what makes the
-// suite deterministic: nothing here is allowed to actually call a third party,
-// and the agent's job is to read the provenance, not to make the sync work.
+// The source's `last_success_at` is set by hand, because three of these cases
+// turn on how OLD the data is and a run that stamped itself would make that age
+// depend on when the suite happened to execute.
 //
-// UNCALLABLE IS NOT THE SAME AS UNREADABLE, and conflating the two is what made
-// this suite flap. Every connection here used to carry an INVENTED provider key
-// (`eval-orders`, `eval-billing`). A key the registry has never heard of has no
-// manifest, so it has no description, no categories, no action catalogue and no
-// `skills/<key>/SKILL.md` in the sandbox — the agent was handed an app it could
-// not even LOOK at, and `resolveSyncAction` answered every operation with
-// `unknown operation "list_orders" on eval-orders`. Measured over three runs of
-// the nine cases, five of them changed verdict between runs: the agent hit that
-// wall at a different point each time and improvised differently — sometimes
-// into a plan the judge accepted, sometimes into an honest "I cannot read this
-// app" the judge refused, once into 1 388 `bash` calls hunting a skill
-// directory that does not exist.
+// THE APP ANSWERS, and getting there took three wrong fixtures. The first
+// invented a provider key (`eval-orders`) the registry had never heard of: no
+// manifest, so no description, no action catalogue and no `skills/<key>/SKILL.md`
+// in the sandbox, and `resolveSyncAction` refused every operation. The second
+// pointed at a real provider with no Nango binding, so the executor refused with
+// an INVARIANT message that reads like a bug. The third gave it a binding Nango
+// does not hold, so every call came back 404. Each refusal reached the agent as
+// a DIFFERENT kind of failure, it improvised differently against each, and five
+// of the nine cases changed verdict between runs (2026-09-20).
 //
-// So the keys below are REAL registry providers, and the display names stay
-// eval-specific (they are what cleanup keys on, and what the rubrics quote).
-// The app is fully readable — catalogue, actions, pagination, SKILL.md — and
-// still uncallable, because the connection has no credentials in Nango. That is
-// the fixture the cases were always written against: the agent can plan, and
-// nothing calls out.
+// A fixture that cannot answer cannot test what an agent does with an answer.
+// So the connections below point at `eval-fixture`, a `testOnly` provider whose
+// handlers serve fixed rows from memory: the suite exercises the real
+// catalogue, the real SKILL, the real walker, the real governor and the real
+// diff, reaches no network, and stays hermetic. Its rows are chosen to line up
+// with what is seeded here — see `providers/src/eval-fixture/data.ts`.
+//
+// Two CONNECTIONS of that one provider, not two providers: `obj-sync-second-app`
+// needs two apps on one collection, and two connections is what a team actually
+// has. The display names are what the rubrics quote and what cleanup keys on.
 
 const SYNC_KEY = "eval_sync_orders";
 const SYNC_APP = "Eval Orders App";
@@ -1095,15 +1095,13 @@ const SYNC_AGE_HOURS = 30;
 /**
  * The app that OWNS the collection's rows.
  *
- * Shiptify, because the case wanted a system of record the team keeps its
- * orders in and Shiptify is the shipped provider closest to that: it publishes
- * `list_shipment_requests` (a paginated list) AND `get_shipment_request` (one
- * record), which is the pair `obj-sync-columns-by-list` and `obj-sync-second-app`
- * need the agent to choose between. A provider with only a list would decide
- * that choice for it.
+ * `list_orders` is paginated and declares `incremental`, and `get_order` reads
+ * one record — the pair `obj-sync-columns-by-list` and `obj-sync-second-app`
+ * need the agent to choose between. A provider offering only a list would
+ * decide that choice for it.
  */
-const SYNC_PROVIDER = "shiptify";
-const SYNC_OPERATION = "list_shipment_requests";
+const SYNC_PROVIDER = "eval-fixture";
+const SYNC_OPERATION = "list_orders";
 
 /**
  * Every case below carries this, and it is on ALL of them rather than on the
@@ -1137,22 +1135,20 @@ const SYNC_CALL_CAP: Assertion = { type: "toolCallsUnder", max: 40 };
  * `X-Context-User-Id` carries), so demanding it here adds no new precondition —
  * it just names the one that was silently unmet.
  *
- * THE NANGO REF IS NOT DECORATION. A manifest connection is Nango-backed by
- * construction — `requireNangoRef` says so, and every row a real connect flow
- * writes carries the pair. A row without it is a shape the product cannot
- * produce, and the executor rejects it with an INVARIANT message ("has no Nango
- * binding — expected a Nango-backed connection here") rather than an app-level
- * one. Measured 2026-09-20, that single sentence cost three of the nine cases:
- * `obj-sync-columns-by-list` retried `manageSync` twelve times into the step
- * cap and answered nothing at all, `obj-sync-page-wants-synced` fell back to
- * asking the user for an export, and `obj-sync-refresh-when-stale` reported an
- * "integration error" although its refresh had been queued successfully two
- * calls earlier — the agent believed the loudest error it had seen.
+ * THE NANGO REF IS NOT DECORATION, even though nothing reads it here. A
+ * manifest connection is Nango-backed by construction, and `runRead` calls
+ * `requireNangoRef` BEFORE it reaches the transport switch — so a row without
+ * the pair is refused with an INVARIANT message ("has no Nango binding") that
+ * reads to the agent like a bug rather than like an app. Measured 2026-09-20,
+ * that one sentence cost three of the nine cases: `obj-sync-columns-by-list`
+ * retried `manageSync` twelve times into the step cap and answered nothing at
+ * all, `obj-sync-page-wants-synced` fell back to asking the user for an export,
+ * and `obj-sync-refresh-when-stale` reported an "integration error" although its
+ * refresh had been queued successfully two calls earlier — the agent believed
+ * the loudest error it had seen.
  *
- * The ref points at a connection Nango does not hold, which is the honest shape
- * of this fixture: an app that is declared, readable and NOT usable. A call now
- * fails the way a revoked connection fails — a fact about the app, which the
- * agent can state and move past — instead of the way a bug fails.
+ * Past that guard the provider is `testOnly`, so `callCustomHandler` never asks
+ * Nango for anything and the values below are never sent anywhere.
  */
 const insertEvalConnection = async (
   ctx: EvalCaseContext,
@@ -1429,13 +1425,16 @@ const seedConnectionOnly = async (ctx: EvalCaseContext): Promise<void> => {
 /**
  * The collection already fed by one app, plus a SECOND app to fill a column.
  *
- * A DIFFERENT provider from `SYNC_PROVIDER`, and that is the case's whole
- * point: two apps on one collection. Pbyp, because it reads arbitrary
- * back-office collections (`query_items`) and so plausibly holds a payment
- * status, which is the column the case asks for.
+ * A second CONNECTION of the same provider, which is what a team actually has
+ * when two of its systems are the same product — and what matters to the case
+ * is that they are two apps to the agent, with two display names and two
+ * `connectionId`s. `list_invoices` is the surface it needs: every invoice
+ * carries `order_reference`, the same value `list_orders` wrote into the
+ * collection's `reference` column, so the second source keys on something the
+ * first one already filled. That chain is the case's whole point.
  */
 const SYNC_APP_2 = "Eval Billing App";
-const SYNC_PROVIDER_2 = "pbyp";
+const SYNC_PROVIDER_2 = SYNC_PROVIDER;
 
 const seedTwoApps = async (ctx: EvalCaseContext): Promise<void> => {
   await seedSyncedType(ctx);
@@ -1481,15 +1480,16 @@ const syncPageWantsSynced: EvalCase = {
  * the case is that the app's list is matched against something already here,
  * not that a second table is created beside this one.
  *
- * This is where the invented-provider-key defect was caught first, and the fix
- * here is the one every other seed above now follows: the agent looked for the
- * app's read actions, found a provider the registry has never heard of, and
- * correctly reported that it could not read the app at all rather than
- * inventing a mapping. A fixture that cannot be read cannot test WHICH action
- * to read with. `front` publishes both halves of the choice — `list_contacts`
- * and `get_contact` for the same entity — so picking the list over the
- * per-record read is a decision the agent can actually make here. No
- * credentials, so nothing calls out.
+ * This is where the unreadable-app defect was caught first, and the fix here is
+ * the one every other seed above now follows: the agent looked for the app's
+ * read actions, found a provider the registry has never heard of, and correctly
+ * reported that it could not read the app at all rather than inventing a
+ * mapping. A fixture that cannot be read cannot test WHICH action to read with.
+ *
+ * `list_customers` / `get_customer` publish both halves of that choice for the
+ * same entity, so picking the list over the per-record read is a decision the
+ * agent can actually make — and the customers it returns carry the same `code`
+ * values seeded below, so a walk really does match them.
  */
 const MATCH_KEY = "eval_sync_clients";
 const MATCH_APP = "Eval Contacts App";
@@ -1499,7 +1499,7 @@ const seedMatchableType = async (ctx: EvalCaseContext): Promise<void> => {
   await db.execute(sql`
     DELETE FROM external_app_connections
      WHERE team_id = ${ctx.teamId}::uuid AND display_name = ${MATCH_APP}`);
-  await insertEvalConnection(ctx, "front", MATCH_APP);
+  await insertEvalConnection(ctx, SYNC_PROVIDER, MATCH_APP);
 
   const type = await createCollection({
     organizationId: ctx.organizationId,

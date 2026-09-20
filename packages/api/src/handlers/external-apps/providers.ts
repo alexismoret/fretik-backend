@@ -51,7 +51,11 @@ providersRoutes.openapi(listRoute, (c) => {
   if (!team) return c.json(teamRequired(), 403);
   const { includeSignatures } = c.req.valid("query");
 
-  const manifests = listProviderManifests();
+  // `testOnly` providers exist for the eval suites and have no third party
+  // behind them — offering one in the connect catalogue would be offering an
+  // app that does not exist. The registry still holds them, because the SDK
+  // generator and the dispatcher must see every provider.
+  const manifests = listProviderManifests().filter((m) => m.testOnly !== true);
   const providers: ProviderCatalogEntry[] = manifests.map((m) => ({
     key: m.key,
     displayName: m.displayName,

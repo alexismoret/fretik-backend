@@ -20,6 +20,7 @@
     "./codegen": "./src/codegen/index.ts",
     "./mcp": "./src/mcp/introspect.ts",
     "./akanea-wms": "./src/akanea-wms/index.ts",
+    "./eval-fixture": "./src/eval-fixture/index.ts",
     "./outlook": "./src/outlook/index.ts",
     "./imap-smtp": "./src/imap-smtp/index.ts",
     "./exchange": "./src/exchange/index.ts",

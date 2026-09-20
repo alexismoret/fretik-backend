@@ -24,10 +24,10 @@ export interface SyncProvenance {
   collectionId: string;
   kind: CollectionSyncKind;
   /**
-   * The app as a person names it: the manifest's display name, else the
-   * connection's own (an MCP server has no manifest), else the bare key —
-   * which is still better than saying nothing, and is what a source whose
-   * connection was deleted falls back to.
+   * The app as a person names it: the connection's own name, else the
+   * manifest's display name, else the bare key — which is still better than
+   * saying nothing, and is what a source whose connection was deleted falls
+   * back to. See `appNameOf` for why the connection wins.
    */
   app: string;
   providerKey: string;
@@ -71,6 +71,15 @@ export const syncSourceIdsOf = (
 /**
  * The app as a person names it — the ONE answer to "what is this app called".
  *
+ * THE CONNECTION'S NAME WINS, and the order matters. It defaults to the
+ * provider's (`ConnectPanel` prefills it, and even offers
+ * `"<Provider> — <account>"` once an account is picked), so for the ordinary
+ * connection the two strings are identical and this changes nothing. It differs
+ * exactly when the team RENAMED it — and a team renames a connection when it
+ * has two of the same product. Preferring the manifest there printed "Front"
+ * for both a support inbox and a sales one, in the very sentence meant to say
+ * which app fills which column.
+ *
  * Exported because a second surface (`describeCollection`, which reads the
  * engine's own richer source list) asks the same question, and two expressions
  * of this fallback chain is two different names for one app in two places the
@@ -80,8 +89,8 @@ export const appNameOf = (
   providerKey: string,
   connectionName: string | null,
 ): string =>
-  getProvider(providerKey)?.manifest.displayName ??
   connectionName ??
+  getProvider(providerKey)?.manifest.displayName ??
   providerKey;
 
 const rowsToProvenance = (

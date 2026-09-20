@@ -222,6 +222,22 @@ const CALENDAR_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const EMAIL_LIKE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const URL_LIKE = /^https?:\/\/\S+$/i;
 
+/** A heading, a bullet, a numbered item, a quote, bold, a link, or a fence. */
+const MARKDOWN_MARKERS =
+  /(^|\n)\s{0,3}(#{1,6}\s|[-*+]\s|\d+\.\s|>\s)|\*\*[^*\n]+\*\*|\[[^\]\n]+\]\([^)\s]+\)|```/;
+
+/**
+ * Formatted prose rather than a value.
+ *
+ * A newline alone is enough, and that is the point: a value with a line break
+ * in it is already wrong in a single-line column, whether or not it carries any
+ * markdown syntax. The markers catch the other half — an app that returns one
+ * long line of "## Title\n" is rare, but "**Paid** — see [invoice](…)" on one
+ * line is not.
+ */
+const looksLikeMarkdown = (value: string): boolean =>
+  value.includes("\n") || MARKDOWN_MARKERS.test(value);
+
 /**
  * Field type from sampled VALUES — the MCP and Directus path, where the answer
  * carries no schema at all (`returns: {fields: {}}`).
@@ -261,7 +277,9 @@ export const inferFieldTypeFromSamples = (
               ? "email"
               : URL_LIKE.test(value)
                 ? "url"
-                : "text",
+                : looksLikeMarkdown(value)
+                  ? "markdown"
+                  : "text",
       );
     } else kinds.add("mixed");
   }
@@ -271,6 +289,12 @@ export const inferFieldTypeFromSamples = (
       ? { type: "multi_select", config: { freeform: true } }
       : { type: "text" };
   }
+  // `markdown` and `text` are the SAME storage and differ only in how the
+  // column is rendered, so they agree with each other rather than cancelling
+  // out — and the widest sample decides, because a column that has ever held a
+  // heading has to render one. Every other pair still disagrees: this is a
+  // widening within free text, not a hole in the "all samples agree" rule.
+  if (kinds.has("markdown") && kinds.has("text")) kinds.delete("text");
   if (kinds.size !== 1) return { type: "text" };
   const [only] = [...kinds];
   switch (only) {
@@ -286,6 +310,8 @@ export const inferFieldTypeFromSamples = (
       return { type: "email" };
     case "url":
       return { type: "url" };
+    case "markdown":
+      return { type: "markdown" };
     default:
       return { type: "text" };
   }

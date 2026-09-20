@@ -318,6 +318,42 @@ describe("inferFieldTypeFromSamples — timid on purpose", () => {
     expect(inferFieldTypeFromSamples([null, null]).type).toBe("text");
   });
 
+  it("proposes markdown for formatted prose, not a single-line text column", () => {
+    // The case this exists for: a Notion page body, a description, a comment
+    // thread. They arrive through the SAMPLE path, because a source with no
+    // declared schema (MCP, Directus) is exactly where such columns come from —
+    // so landing them in `text` put a document in a one-line field.
+    expect(inferFieldTypeFromSamples(["## Brief\n\n- one\n- two"]).type).toBe(
+      "markdown",
+    );
+    expect(inferFieldTypeFromSamples(["line one\nline two"]).type).toBe(
+      "markdown",
+    );
+    expect(
+      inferFieldTypeFromSamples(["**Paid** — see [invoice](https://x.co/i)"])
+        .type,
+    ).toBe("markdown");
+  });
+
+  it("leaves an ordinary string alone", () => {
+    // Widening every text column to markdown would be the same mistake in the
+    // other direction, and a reference is not prose.
+    expect(inferFieldTypeFromSamples(["EV-1001", "EV-1002"]).type).toBe("text");
+    expect(inferFieldTypeFromSamples(["Acme Ltd"]).type).toBe("text");
+  });
+
+  it("a column that is prose in ONE row is a markdown column", () => {
+    // `markdown` and `text` are the same storage; the question is only how the
+    // column renders, and it has to render the widest thing it has held. Every
+    // other disagreement still falls back to `text` — see the case above.
+    expect(
+      inferFieldTypeFromSamples(["short note", "## Title\n\nbody"]).type,
+    ).toBe("markdown");
+    expect(inferFieldTypeFromSamples(["## Title\n\nbody", 42]).type).toBe(
+      "text",
+    );
+  });
+
   it("recognises the two date shapes, an email and a url", () => {
     expect(inferFieldTypeFromSamples(["2026-01-02"])).toEqual({
       type: "date",

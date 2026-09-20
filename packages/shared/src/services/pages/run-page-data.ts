@@ -261,7 +261,7 @@ export const runPageData = async (params: {
   // (`PageDataSource.serialKey` — an app that leases a licence seat per call).
   // Those queue behind each other inside their own group; every group, and
   // everything ungrouped, still runs together. Without this the datasets would
-  // still be CORRECT — `withConnectionSlot` serialises them anyway — but they
+  // still be CORRECT — the governor's permit serialises them anyway — but they
   // would spend the render fighting over a lock they could simply have taken
   // in turn.
   //

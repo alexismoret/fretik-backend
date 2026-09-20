@@ -196,6 +196,47 @@ export const syncArgsBindSince = (args: SyncArgs): boolean => {
   return Object.values(args).some(walk);
 };
 
+/**
+ * WHERE the `{"$since": true}` bindings sit — the top-level keys carrying one,
+ * and whether any sits deeper than the top level.
+ *
+ * `syncArgsBindSince` asks only "is there one anywhere", and that answer alone
+ * decides whether the orphan bracket runs. So a `$since` bound to the WRONG
+ * parameter costs twice: the app never receives a lower bound and answers with
+ * everything, and the run calls itself incremental and skips the diff — a
+ * source that quietly stops noticing deletions, reporting `success` the whole
+ * time. Nothing downstream can tell the two apart, which is why the placement
+ * is checked once, where the source is declared, against the parameter the
+ * action actually declares as incremental.
+ */
+export const syncArgsSincePlacement = (
+  args: SyncArgs,
+): { topLevel: string[]; nested: boolean } => {
+  const topLevel: string[] = [];
+  let nested = false;
+  const walk = (value: SyncArgValue): void => {
+    if (isSyncSinceBinding(value)) {
+      nested = true;
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const entry of value) walk(entry);
+      return;
+    }
+    if (typeof value === "object" && value !== null) {
+      for (const entry of Object.values(value)) walk(entry);
+    }
+  };
+  for (const [key, value] of Object.entries(args)) {
+    if (isSyncSinceBinding(value)) {
+      topLevel.push(key);
+      continue;
+    }
+    walk(value);
+  }
+  return { topLevel, nested };
+};
+
 // ── Field mapping ─────────────────────────────────────────────────────
 
 /**

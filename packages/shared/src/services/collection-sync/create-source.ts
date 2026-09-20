@@ -22,6 +22,7 @@ import { createFieldDefinition } from "../field-definitions/create";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
 import { slugifyFieldKey } from "../field-definitions/slugify-key";
 import { assertConnectionUsable } from "./assert-connection-scope";
+import { assertSinceBindingForSource } from "./assert-since-binding";
 import { requestSyncRefresh } from "./request-refresh";
 
 /**
@@ -73,6 +74,18 @@ export const createSyncSource = async (
             userId: params.userId ?? null,
           })
         ).providerKey;
+
+  // Before any column exists: is `{"$since": true}` bound where the action can
+  // honour it. Misplaced, it is the one argument whose failure is invisible —
+  // the app returns everything and the run still calls itself incremental, so
+  // the orphan diff never runs again.
+  await assertSinceBindingForSource({
+    args: params.args,
+    teamId: params.teamId,
+    connectionId: params.connectionId ?? null,
+    providerKey,
+    operation: params.operation,
+  });
 
   if (params.kind === "table") {
     // The unique index would catch this, but "duplicate key value violates

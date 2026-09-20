@@ -10,6 +10,7 @@ import {
   type EventActor,
   SYSTEM_ACTOR,
 } from "../domain-events/emit";
+import { assertFieldNotSynced } from "./assert-not-synced";
 import { invalidateFieldDefinitionsCache } from "./cache";
 import {
   assertNoFormulaDependents,
@@ -58,6 +59,10 @@ export const deleteFieldDefinition = async (data: {
         ),
       );
     }
+
+    // Before the value count, because "0 records carry a value" would let a
+    // freshly declared synced column be dropped out from under its source.
+    await assertFieldNotSynced(existing, "delete");
 
     // A formula reading this field would lose its meaning — and Postgres would
     // refuse the column drop anyway, with a message naming a physical column and

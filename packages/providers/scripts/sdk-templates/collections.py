@@ -497,6 +497,16 @@ class _Sync:
             _clean({"collectionKey": collection_key, "sourceId": source_id}),
         )
 
+    def confirm_full_resync(self, source_id: str) -> dict[str, Any]:
+        """Let the next run apply the orphan policy it refused.
+
+        A run that would have orphaned most of a collection stops and asks
+        instead. Only confirm what the user confirmed.
+        """
+        return _call_collections(
+            "sync.confirmFullResync", {"sourceId": source_id}
+        )
+
     def list(self, collection_key: str | None = None) -> dict[str, Any]:
         """Every source of a collection, or of the whole team."""
         return _call_collections(

@@ -13,6 +13,7 @@ import { createFieldDefinition } from "../field-definitions/create";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
 import { slugifyFieldKey } from "../field-definitions/slugify-key";
 import { assertConnectionUsable } from "./assert-connection-scope";
+import { assertSinceBindingForSource } from "./assert-since-binding";
 import { assertAdoptable, assertDraftLimit } from "./create-source";
 import { computeNextRunAt } from "./sweep";
 
@@ -56,6 +57,20 @@ export const updateSyncSource = async (params: {
       connectionId: patch.connectionId,
       teamId: params.teamId,
       userId: params.userId ?? null,
+    });
+  }
+
+  // An edit can acquire a misplaced `{"$since": true}` as easily as a create —
+  // either by rewriting the arguments, or by moving the source to a connection
+  // whose action declares a different incremental parameter. Checked against
+  // whichever pair the source will END UP with.
+  if (patch.args !== undefined || patch.connectionId != null) {
+    await assertSinceBindingForSource({
+      args: patch.args ?? source.args,
+      teamId: params.teamId,
+      connectionId: patch.connectionId ?? source.connectionId,
+      providerKey: source.providerKey,
+      operation: source.operation,
     });
   }
 

@@ -278,8 +278,13 @@ describe("what it counts", () => {
     await govAcquire(p, "refused", 5_000, NOW);
     await govBlock(p, "conn", 5_000, NOW);
 
-    const own = await readGovernorStats("conn", p.connectionId);
-    const shared = await readGovernorStats("prov", p.providerKey);
+    // Read the day the WRITES belong to. `readGovernorStats` defaults to
+    // today, and every call above was stamped `NOW` — so the default read the
+    // right bucket on the day this was written and an empty one every day
+    // after. A test that passes on one date is not a test.
+    const day = statsDay(new Date(NOW));
+    const own = await readGovernorStats("conn", p.connectionId, day);
+    const shared = await readGovernorStats("prov", p.providerKey, day);
     // Three admitted; the refusal is not a call, because nothing left.
     expect(own.calls).toBe(3);
     expect(shared.calls).toBe(3);

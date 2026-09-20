@@ -7,6 +7,7 @@ import type {
   ReturnSpec,
 } from "../../external-apps/manifest-schema";
 import { getAction } from "../../external-apps/registry";
+import type { GovernorMode } from "../external-apps/exec/governor/permit";
 import { executeReadAction } from "../external-apps/exec/read-executor";
 import { validateActionArgs } from "../external-apps/exec/validate-args";
 import { isMcpConnection } from "../external-apps/mcp/connection-kind";
@@ -69,6 +70,20 @@ export interface SyncReadAction {
 export type ResolveSyncActionResult =
   { ok: true; action: SyncReadAction } | { ok: false; message: string };
 
+export interface ResolveSyncActionOptions {
+  /**
+   * How long the resolved `call` may wait for a permit before the governor
+   * refuses it. A run passes `background` with its own deadline: it has
+   * minutes where a person has seconds, and a refusal it can act on — the
+   * walker turns one into a `rate_limited` stop that keeps its position and
+   * reschedules, rather than a leg that gave up after the interactive 8 s.
+   *
+   * Left out, the default stands and the call behaves like any other read.
+   * That is right for the preview, where somebody IS waiting.
+   */
+  governor?: GovernorMode;
+}
+
 /**
  * Resolve `operation` on `connection` into a callable read action.
  *
@@ -80,6 +95,7 @@ export type ResolveSyncActionResult =
 export const resolveSyncAction = async (
   connection: ExternalAppConnection,
   operation: string,
+  opts?: ResolveSyncActionOptions,
 ): Promise<ResolveSyncActionResult> => {
   if (isMcpConnection(connection)) {
     const snapshot = await getSnapshotForConnection(connection);
@@ -140,12 +156,16 @@ export const resolveSyncAction = async (
           ? { incremental: action.incremental }
           : {}),
         walksItself: false,
-        // `mcpCallTool` takes the connection slot itself (see its comment): the
-        // MCP transport opens a new client per call, so the slot belongs there
-        // and NOT here. Taking it again would deadlock against a serial
-        // connection's own lock.
+        // `mcpCallTool` takes the permit itself (see its comment): the MCP
+        // transport opens a new client per call, so the seat belongs there and
+        // NOT here. Taking it again would deadlock against a serial
+        // connection's own lock. The mode still has to reach it, or a run
+        // would wait out the interactive budget on a transport that has no
+        // manifest to say how patient it should be.
         call: async (args) =>
-          normalizeMcpResult(await mcpCallTool(connection, toolName, args)),
+          normalizeMcpResult(
+            await mcpCallTool(connection, toolName, args, opts?.governor),
+          ),
       },
     };
   }
@@ -200,13 +220,14 @@ export const resolveSyncAction = async (
         ? { incremental: manifestAction.incremental }
         : {}),
       walksItself: manifestAction.paginate === true,
-      // `executeReadAction` takes the connection slot. Nothing above it in this
-      // stack may take it again — see the call-site table in `read-executor.ts`.
+      // `executeReadAction` takes the permit. Nothing above it in this stack
+      // may take it again — see the call-site table in `read-executor.ts`.
       call: async (args) =>
         await executeReadAction(
           resolved,
           connection,
           validateActionArgs(qualifiedName, manifestAction, args),
+          opts,
         ),
     },
   };

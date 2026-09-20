@@ -186,10 +186,18 @@ export const runSyncSource = async (input: {
         "the connection this source reads through is gone — reconnect the app and the data is picked up again; nothing stored has been lost",
       );
     }
-    const resolved = await resolveSyncAction(connection, source.operation);
-    if (!resolved.ok) throw new Error(resolved.message);
-
+    // The deadline is settled BEFORE the action is resolved, because the
+    // resolved `call` closes over it: every upstream call this run makes waits
+    // for its permit in `background` mode, against this run's own budget. Left
+    // interactive — which it was — a run gave up on a busy connection after
+    // eight seconds and reported `rate_limited`, discarding minutes it had in
+    // hand and a position it could have kept walking from.
     const deadlineAt = startedAt + SYNC_LIMITS.runBudgetMs;
+
+    const resolved = await resolveSyncAction(connection, source.operation, {
+      governor: { kind: "background", deadlineAt },
+    });
+    if (!resolved.ok) throw new Error(resolved.message);
 
     if (source.kind === "lookup") {
       const outcome = await runLookupSync({

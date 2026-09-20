@@ -134,7 +134,7 @@ For MANY records or restructuring a type (merge/move/split, data-preserving rety
 - `collections.records.bulk_update(updates)` / `collections.records.bulk_delete(record_ids)` — `updates` = `[{"id","data"}]`; patches the given keys (pass `merge=False` to replace the whole record, clearing omitted keys).
 - `collections.records.query(collection_key, filters=…)` — read a batch to transform then write back.
 - `collections.schema.create_collection(key, label, description, fields=[…])` / `update_collection(collection_key, add_fields=[…])` / `add_field` / `change_field(action="update"|"changeType"|"delete")` / `delete_collection`. Type and each field need a one-line `description`. `create_collection` / `update_collection` also take `sharing` to set the type's audience (see the Sharing section).
-- `collections.sync.preview(connection_id, operation, args=…)` / `create(collection_key, connection_id, operation, fields=[…], external_id_path=…)` / `update(source_id, …)` / `delete(source_id)` / `refresh(collection_key=…)` / `list(collection_key=…)` — the section above, in one script.
+- `collections.sync.preview(connection_id, operation, args=…)` / `create(collection_key, connection_id, operation, fields=[…], external_id_path=…)` / `update(source_id, …)` / `delete(source_id)` / `refresh(collection_key=…)` / `confirm_full_resync(source_id)` / `list(collection_key=…)` — the section above, in one script.
 
 A migration is ONE script: `create_collection` the target → `query` the source → `bulk_create` into the target → `bulk_delete` the source. Keep results in variables; print only counts.
 

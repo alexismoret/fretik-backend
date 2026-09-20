@@ -49,6 +49,7 @@ import {
 } from "../collection-records/bulk-update";
 import { queryCollectionRecords } from "../collection-records/query";
 import { getRecordSnapshots } from "../collection-records/snapshot-batch";
+import { confirmFullResync } from "../collection-sync/confirm-full-resync";
 import { createSyncSource } from "../collection-sync/create-source";
 import { deleteSyncSource } from "../collection-sync/delete-source";
 import { listSyncSources } from "../collection-sync/list-sources";
@@ -209,6 +210,8 @@ export const dispatchCollections = async (
         return await syncDelete(ctx, rawArgs);
       case "sync.refresh":
         return await syncRefresh(ctx, rawArgs);
+      case "sync.confirmFullResync":
+        return await syncConfirmFullResync(ctx, rawArgs);
       case "sync.list":
         return await syncList(ctx, rawArgs);
       default:
@@ -1201,6 +1204,21 @@ const syncDelete = async (
     organizationId: ctx.organizationId,
   });
   return { status: "ok", data: { sourceId, deleted: true } };
+};
+
+const syncConfirmArgs = z.object({ sourceId: z.uuid() });
+
+const syncConfirmFullResync = async (
+  ctx: ExecContext,
+  rawArgs: Record<string, unknown>,
+): Promise<SandboxExecResponse> => {
+  const { sourceId } = syncConfirmArgs.parse(rawArgs);
+  const { enqueued } = await confirmFullResync({
+    sourceId,
+    teamId: ctx.teamId,
+    ...(ctx.userId == null ? {} : { userId: ctx.userId }),
+  });
+  return { status: "ok", data: { sourceId, enqueued } };
 };
 
 const syncSelectorArgs = z.object({

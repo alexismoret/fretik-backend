@@ -2,7 +2,10 @@ import { and, eq } from "drizzle-orm";
 import db from "../../db";
 import { workflowRuns } from "../../db/schema";
 import { forbidden, notFound, throwHttpError } from "../../lib/errors";
-import type { WorkflowRunResponse } from "../../schemas/workflows";
+import type {
+  WorkflowGateDecision,
+  WorkflowRunResponse,
+} from "../../schemas/workflows";
 import { createWorkflowRun } from "./create-run";
 import { getWorkflowRow } from "./get";
 import type { WorkflowRequester } from "./visibility";
@@ -58,11 +61,28 @@ export const overrideBlockedWorkflowRun = async (params: {
   });
   if (!workflow) return throwHttpError(404, notFound("Workflow"));
 
-  // Free the dedup identity first, and only for a row still `blocked` — two
-  // people pressing the button together must produce one run, and the loser
-  // matches zero rows here rather than creating a second.
+  const decision: WorkflowGateDecision = {
+    ...(blocked.gateDecision ?? {
+      outcome: "blocked",
+      decidedAt: new Date().toISOString(),
+    }),
+    outcome: "overridden",
+    overriddenAt: new Date().toISOString(),
+    overriddenByUserId: params.userId,
+  };
+
+  // CLAIM the row, and only while it is still `blocked` — two people pressing
+  // the button together must produce one run, and the loser matches zero rows
+  // here rather than creating a second.
+  //
+  // A claim rather than the delete this needs eventually, because
+  // `createWorkflowRun` makes a network call to Trigger.dev and can throw.
+  // Deleting first would lose BOTH the run and the record of the refusal, and
+  // the journal cursor passed that event long ago — there is nothing left to
+  // re-derive it from.
   const [claimed] = await db
-    .delete(workflowRuns)
+    .update(workflowRuns)
+    .set({ gateDecision: decision })
     .where(
       and(
         eq(workflowRuns.id, params.runId),
@@ -74,6 +94,11 @@ export const overrideBlockedWorkflowRun = async (params: {
     return throwHttpError(403, forbidden("This run has already been started."));
   }
 
+  // `(workflow_id, source_event_id)` is unique, so the blocked row has to go
+  // before the real one can take the identity. The window between the two is
+  // safe: this event was swept long ago and the cursor never goes back.
+  await db.delete(workflowRuns).where(eq(workflowRuns.id, params.runId));
+
   return createWorkflowRun({
     workflow,
     triggerType: "event",
@@ -82,14 +107,6 @@ export const overrideBlockedWorkflowRun = async (params: {
     ...(blocked.sourceEventId !== null
       ? { sourceEventId: blocked.sourceEventId }
       : {}),
-    gateDecision: {
-      ...(blocked.gateDecision ?? {
-        outcome: "blocked",
-        decidedAt: new Date().toISOString(),
-      }),
-      outcome: "overridden",
-      overriddenAt: new Date().toISOString(),
-      overriddenByUserId: params.userId,
-    },
+    gateDecision: decision,
   });
 };

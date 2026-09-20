@@ -3,6 +3,8 @@ import db from "../../db";
 import { documents, folders } from "../../db/schema";
 import type { DecisionQuestion } from "../../schemas/decisions";
 import { chosenOption, decide } from "../decisions/decide";
+import { redactSensitiveFacts } from "../facts/redact";
+import type { FactSheet } from "../facts/types";
 
 /**
  * Decide where a document with no expressed destination belongs.
@@ -131,14 +133,20 @@ export const autoFileDocument = async (params: {
   documentId: string;
   teamId: string;
   organizationId: string;
-  facts: Record<string, string | number | boolean | null | string[]>;
+  /** The whole sheet, not its facts: redaction needs the event type to know
+   * which of them carry content. */
+  sheet: FactSheet;
 }): Promise<{ folderId: string; confidence: number | null } | null> => {
   try {
     const candidates = await listFilingCandidates({ teamId: params.teamId });
     if (candidates.length === 0) return null;
 
     const response = await decide({
-      state: params.facts,
+      // Redacted HERE, at the one point a fact sheet leaves the platform —
+      // the same seam the trigger gate uses. Without it
+      // `FACTS_ALLOW_CONTENT_EGRESS=false` would be a setting that reads as
+      // honoured and is not, which is worse than not having it.
+      state: redactSensitiveFacts(params.sheet).facts,
       questions: { [QUESTION_ID]: buildFilingQuestion(candidates) },
       context: {
         teamId: params.teamId,
@@ -156,26 +164,34 @@ export const autoFileDocument = async (params: {
     if (chosen.probability === null) return null;
     if (chosen.probability < DRIVE_FILING_THRESHOLD) return null;
 
-    // Only move a document still at the root: a person who filed it in the
-    // meantime has said where it goes, and that beats any inference.
-    const [moved] = await db
-      .update(documents)
-      .set({ folderId: chosen.choice })
-      .where(
-        and(
-          eq(documents.id, params.documentId),
-          eq(documents.teamId, params.teamId),
-          isNull(documents.folderId),
-        ),
-      )
-      .returning({ id: documents.id });
-    if (!moved) return null;
+    // The move and the counter in ONE transaction, like every other move
+    // (`documents/update.ts`). `folders.documentCount` is not decoration: it
+    // orders the filing candidates and gates the nightly describe pass, so a
+    // failure between the two would skew both, permanently, with nothing to
+    // recompute it from.
+    const moved = await db.transaction(async (tx) => {
+      // Only move a document still at the root: a person who filed it in the
+      // meantime has said where it goes, and that beats any inference.
+      const [row] = await tx
+        .update(documents)
+        .set({ folderId: chosen.choice })
+        .where(
+          and(
+            eq(documents.id, params.documentId),
+            eq(documents.teamId, params.teamId),
+            isNull(documents.folderId),
+          ),
+        )
+        .returning({ id: documents.id });
+      if (!row) return false;
 
-    // Same counter maintenance every other move does (`documents/update.ts`).
-    await db
-      .update(folders)
-      .set({ documentCount: sql`${folders.documentCount} + 1` })
-      .where(eq(folders.id, chosen.choice));
+      await tx
+        .update(folders)
+        .set({ documentCount: sql`${folders.documentCount} + 1` })
+        .where(eq(folders.id, chosen.choice));
+      return true;
+    });
+    if (!moved) return null;
 
     return { folderId: chosen.choice, confidence: chosen.probability };
   } catch (error) {

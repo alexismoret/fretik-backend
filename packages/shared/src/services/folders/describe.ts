@@ -29,6 +29,8 @@ const MIN_DOCUMENTS = 3;
  * one cheap call. Newest first: a folder's recent contents are what it is for
  * NOW, and a description is used to file the next thing, not the last. */
 const SAMPLE_SIZE = 12;
+/** Per-summary cap, matching `/internal/folder-description`'s own schema. */
+const SUMMARY_MAX_CHARS = 2000;
 /** New documents since the last generation before it is rewritten. A folder
  * that has gained this many may have changed what it is for, and a stale
  * description files things wrongly with complete confidence. */
@@ -110,8 +112,13 @@ export const describeFolder = async (params: {
     .orderBy(sql`${documents.createdAt} DESC`)
     .limit(SAMPLE_SIZE);
 
+  // Clipped to the endpoint's own per-summary cap. The pre-extract prompt
+  // targets 500 characters with 1000 as its hard limit, so an over-long one
+  // is rare — and rare is exactly the shape of bug that would 400 the same
+  // folder every night with nobody noticing. What the model needs is the
+  // PATTERN across summaries, which the opening sentences carry.
   const summaries = rows
-    .map((r) => r.summary.trim())
+    .map((r) => r.summary.trim().slice(0, SUMMARY_MAX_CHARS))
     .filter((s) => s.length > 0);
   if (summaries.length < MIN_DOCUMENTS) return false;
 

@@ -168,6 +168,54 @@ const renderThumbnail = async (args: {
   }
 };
 
+/**
+ * File a processed document, when it arrived with no destination and the
+ * caller asked for one.
+ *
+ * HERE and not at upload: the whole value of the decision is the semantic
+ * match, and the summary that makes it possible does not exist until the
+ * extraction has finished. A document that sits at the Drive root for the
+ * length of its own pipeline and is then filed, with a banner saying so, is
+ * the intended experience — the alternative is choosing a folder from a
+ * filename.
+ *
+ * NEVER THROWS, and that is not belt-and-braces. By the time this runs the
+ * document is already `ready` and the job's retry early-returns on that, so a
+ * throw here would fail the job, the retry would do nothing, and the only
+ * visible result would be an upload marked failed that in fact succeeded.
+ * `autoFileDocument` swallows its own; this catches everything before it,
+ * including the fact-sheet read.
+ *
+ * Awaited rather than fired and forgotten: the worker process can exit
+ * between jobs, and an orphaned promise is a document that is never filed.
+ */
+const maybeAutoFile = async (job: DocumentProcessingJobData): Promise<void> => {
+  if (job.autoFile !== true) return;
+  const documentId = job.metadata.id;
+  try {
+    const sheet = await documentFacts({
+      documentId,
+      teamId: job.teamId,
+    });
+    const filed = await autoFileDocument({
+      documentId,
+      teamId: job.teamId,
+      organizationId: job.organizationId,
+      sheet,
+    });
+    if (filed) {
+      console.info(
+        `[document-processing] ${documentId} auto-filed into ${filed.folderId}`,
+      );
+    }
+  } catch (error) {
+    console.warn(
+      `[document-processing] auto-file skipped for ${documentId}:`,
+      error instanceof Error ? error.message : error,
+    );
+  }
+};
+
 export const processDocument = async (
   job: DocumentProcessingJobData,
 ): Promise<void> => {
@@ -323,6 +371,11 @@ export const processDocument = async (
         .where(eq(documents.id, documentId));
     });
 
+    // A duplicate's extraction was cloned, not skipped — it has a summary and
+    // custom fields like any other document, so it deserves a destination for
+    // exactly the same reasons. Forgetting this exit is how a feature works
+    // for every file except the ones a team uploads twice.
+    await maybeAutoFile(job);
     emitUploadEvent({ documentId, status: "ready" });
     return;
   }
@@ -573,34 +626,7 @@ export const processDocument = async (
     }
   }
 
-  // Step 8: file it, if it arrived with no destination and the caller asked.
-  //
-  // HERE and not at upload: the whole value of the decision is the semantic
-  // match, and the summary that makes it possible did not exist until the
-  // extraction above finished. A document that sits at the Drive root for the
-  // length of its own pipeline and is then filed, with a banner saying so, is
-  // the intended experience — the alternative is choosing a folder from a
-  // filename.
-  //
-  // Awaited rather than fired and forgotten (the process can exit), but its
-  // failures are swallowed inside `autoFileDocument`: the document is already
-  // `ready`, and an undecided destination must never fail an upload that
-  // worked.
-  if (job.autoFile === true) {
-    const sheet = await documentFacts({ documentId, teamId });
-    const filed = await autoFileDocument({
-      documentId,
-      teamId,
-      organizationId,
-      facts: sheet.facts,
-    });
-    if (filed) {
-      console.info(
-        `[document-processing] ${documentId} auto-filed into ${filed.folderId}`,
-      );
-    }
-  }
-
+  await maybeAutoFile(job);
   emitUploadEvent({ documentId, status: "ready" });
 };
 

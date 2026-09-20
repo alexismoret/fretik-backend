@@ -10,12 +10,14 @@ import {
   MODEL_SYNC_QUEUE,
   RECORD_CARD_QUEUE,
   VECTOR_RECONCILE_QUEUE,
+  WORKFLOW_GATE_QUEUE,
   WORKFLOW_TRIGGER_QUEUE,
   type DreamingTeamJobData,
   type EagerConsolidateJobData,
   type MemoryDistillJobData,
   type MemoryResolveJobData,
   type RecordCardJobData,
+  type WorkflowGateJobData,
   type WorkflowRunCreateJobData,
 } from "./names";
 
@@ -80,6 +82,15 @@ export const getWorkflowTriggerQueue = (): Queue<WorkflowRunCreateJobData> => {
     { connection: getProducerConnection() },
   );
   return workflowTriggerQueue;
+};
+
+let workflowGateQueue: Queue<WorkflowGateJobData> | null = null;
+
+export const getWorkflowGateQueue = (): Queue<WorkflowGateJobData> => {
+  workflowGateQueue ??= new Queue<WorkflowGateJobData>(WORKFLOW_GATE_QUEUE, {
+    connection: getProducerConnection(),
+  });
+  return workflowGateQueue;
 };
 
 let mcpRefreshQueue: Queue | null = null;

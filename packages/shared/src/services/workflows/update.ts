@@ -131,6 +131,9 @@ export const updateWorkflow = async (params: {
         ...(input.triggerConfig !== undefined
           ? { triggerConfig: input.triggerConfig }
           : {}),
+        ...(input.triggerCriterion !== undefined
+          ? { triggerCriterion: input.triggerCriterion }
+          : {}),
         ...(input.playbook !== undefined ? { playbook: input.playbook } : {}),
         ...(input.autonomy !== undefined ? { autonomy: input.autonomy } : {}),
         ...(input.modelProfileKey !== undefined

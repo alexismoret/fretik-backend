@@ -5,6 +5,7 @@ import { internalError, throwHttpError } from "../../lib/errors";
 import { triggerWorkflowRun } from "../../lib/trigger-client";
 import { requiredRunFileInputs } from "../../schemas/workflow-triggers";
 import type {
+  WorkflowGateDecision,
   WorkflowRunResponse,
   WorkflowTaskState,
   WorkflowTriggerType,
@@ -54,6 +55,13 @@ export const createWorkflowRun = async (params: {
   /** The CHAT conversation that launched this run (builder `run_test`), so the
    * run posts its completion notice back there. NULL for cron/event/API runs. */
   sourceConversationId?: string | null;
+  /**
+   * The trigger gate's verdict on this launch, when it was gated. Carried in
+   * rather than read from the workflow so the run holds what was decided AT
+   * THE TIME — a criterion edited afterwards must not rewrite the record of a
+   * launch it never applied to.
+   */
+  gateDecision?: WorkflowGateDecision | null;
   /** Files handed to the run (a form submission's uploads) — stored on the
    * run's conversation as `ai_chat_files` so the agent reads them via
    * `<file_attachments>`. Written before the task fires. */
@@ -110,6 +118,7 @@ export const createWorkflowRun = async (params: {
         sourceConversationId: params.sourceConversationId ?? null,
         conversationId: conversation.id,
         taskStates: snapshotTaskStates(workflow),
+        gateDecision: params.gateDecision ?? null,
         isTest: params.isTest ?? false,
       })
       .returning({ id: workflowRuns.id });

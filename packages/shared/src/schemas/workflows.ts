@@ -526,6 +526,127 @@ export const WorkflowRunOutputSchema = z.object({
 });
 export type WorkflowRunOutput = z.infer<typeof WorkflowRunOutputSchema>;
 
+// ==================== //
+// TRIGGER GATE         //
+// ==================== //
+
+/**
+ * How long a trigger criterion may be.
+ *
+ * Short on purpose. It is one sentence answering one question — "is this
+ * firing mine?" — and a criterion that needs a paragraph is a criterion
+ * nobody can verify at a glance, which is the property that makes a silent
+ * wrong veto possible.
+ */
+export const WORKFLOW_TRIGGER_CRITERION_MAX_CHARS = 600;
+
+export const workflowTriggerCriterionSchema = z
+  .string()
+  .trim()
+  .min(10, "A trigger criterion needs to say what makes a firing relevant.")
+  .max(WORKFLOW_TRIGGER_CRITERION_MAX_CHARS);
+
+/** What the gate did with one firing. */
+export const WORKFLOW_GATE_OUTCOMES = [
+  /** The criterion was judged and cleared the threshold — the run started. */
+  "allowed",
+  /** The criterion was judged and did not clear it — no run was started. */
+  "blocked",
+  /**
+   * No answer was available (the model was off, timed out, or errored) and
+   * the launch proceeded. The one outcome that must never be silent: it means
+   * the gate was not applied, and a stretch of these is an incident.
+   */
+  "fell_open",
+  /** A human overrode a block with "run anyway". */
+  "overridden",
+] as const;
+export const workflowGateOutcomeSchema = z.enum(WORKFLOW_GATE_OUTCOMES);
+export type WorkflowGateOutcome = z.infer<typeof workflowGateOutcomeSchema>;
+
+/**
+ * The decision behind one launch — or one refusal.
+ *
+ * Everything needed to answer "why did this not run?" without a join, and
+ * everything needed to tell later whether the gate was right: the
+ * probability, the threshold it was measured against, and the criterion
+ * EXACTLY as it read at the time.
+ */
+export const WorkflowGateDecisionSchema = z.object({
+  outcome: workflowGateOutcomeSchema,
+  /** The criterion as it read when judged — never re-read from the workflow. */
+  criterion: z.string().max(WORKFLOW_TRIGGER_CRITERION_MAX_CHARS).optional(),
+  /** P(relevant) the model returned. Absent when it never answered. */
+  probability: z.number().min(0).max(1).optional(),
+  /** The bar it was measured against, so a later threshold change is legible. */
+  threshold: z.number().min(0).max(1).optional(),
+  /** Why no answer was available — only on `fell_open`. */
+  reason: z.string().max(200).optional(),
+  latencyMs: z.number().int().nonnegative().optional(),
+  costUsd: z.number().nonnegative().optional(),
+  modelId: z.string().max(120).optional(),
+  decidedAt: z.string(),
+  /** Set when someone pressed "run anyway" on a blocked launch. */
+  overriddenAt: z.string().optional(),
+  overriddenByUserId: z.string().optional(),
+});
+export type WorkflowGateDecision = z.infer<typeof WorkflowGateDecisionSchema>;
+
+/**
+ * The bar P(relevant) must clear for a launch to proceed.
+ *
+ * LOW, and asymmetric on purpose. The two ways to be wrong do not cost the
+ * same: a run that should not have started burns tokens and shows up in the
+ * `not_applicable` count, where anyone can see it. A run that should have
+ * started and did not is INVISIBLE — nobody notices a workflow that quietly
+ * stopped firing until a client asks why their document was never processed.
+ * So the gate only refuses when the model is confidently negative, and
+ * anything ambiguous runs.
+ */
+const parseGateThreshold = (): number => {
+  const raw = process.env["WORKFLOW_GATE_THRESHOLD"];
+  if (raw === undefined || raw === "") return 0.15;
+  const parsed = Number.parseFloat(raw);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
+    throw new Error(
+      `Invalid WORKFLOW_GATE_THRESHOLD: "${raw}" — expected a number in [0,1].`,
+    );
+  }
+  return parsed;
+};
+export const WORKFLOW_GATE_THRESHOLD = parseGateThreshold();
+
+/**
+ * Criteria that would gate on the wrong thing, rejected at activation.
+ *
+ * The failure this catches is specific and was predicted before a line of it
+ * ran: an agent writing a criterion from ONE example file writes the example
+ * into it — "the filename is facture_2026_03.pdf", "the document id is
+ * 4f3a…". That passes the test run it was written against and silently
+ * refuses every real firing afterwards, which is the exact shape of the
+ * invisible failure the low threshold exists to avoid.
+ *
+ * Returns the reason it cannot go live, or null.
+ */
+export const workflowCriterionError = (criterion: string): string | null => {
+  const parsed = workflowTriggerCriterionSchema.safeParse(criterion);
+  if (!parsed.success) {
+    return parsed.error.issues[0]?.message ?? "Invalid criterion.";
+  }
+  const value = parsed.data;
+  if (
+    /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(value)
+  ) {
+    return "A criterion must not name a specific id — it has to hold for every future firing, not the one it was written against.";
+  }
+  if (
+    /\b[\w.-]+\.(pdf|docx?|xlsx?|pptx?|csv|txt|md|png|jpe?g)\b/i.test(value)
+  ) {
+    return "A criterion must not name a specific file — describe what makes a document relevant instead.";
+  }
+  return null;
+};
+
 export const WorkflowRunErrorSchema = z.object({
   code: z.string().min(1).max(60),
   message: z.string().max(2000),
@@ -625,6 +746,18 @@ export const CreateWorkflowSchema = z
     color: z.string().max(20).optional(),
     triggerType: workflowTriggerTypeSchema.default("manual"),
     triggerConfig: WorkflowTriggerConfigSchema.default({}),
+    /**
+     * One sentence deciding whether a trigger firing deserves a run. Omitted
+     * or null leaves the workflow ungated — it fires on everything its
+     * subscriptions match, which is what every workflow did before the gate.
+     * `workflowCriterionError` is enforced at ACTIVATION, not here: the
+     * builder autosaves while the agent is still writing it.
+     */
+    triggerCriterion: z
+      .string()
+      .max(WORKFLOW_TRIGGER_CRITERION_MAX_CHARS)
+      .nullable()
+      .optional(),
     playbook: WorkflowPlaybookSchema,
     autonomy: workflowAutonomySchema.default("approval_required"),
     modelProfileKey: z.string().max(64).optional(),
@@ -652,6 +785,18 @@ export const UpdateWorkflowSchema = z
     color: z.string().max(20).optional(),
     triggerType: workflowTriggerTypeSchema.optional(),
     triggerConfig: WorkflowTriggerConfigSchema.optional(),
+    /**
+     * One sentence deciding whether a trigger firing deserves a run. Omitted
+     * or null leaves the workflow ungated — it fires on everything its
+     * subscriptions match, which is what every workflow did before the gate.
+     * `workflowCriterionError` is enforced at ACTIVATION, not here: the
+     * builder autosaves while the agent is still writing it.
+     */
+    triggerCriterion: z
+      .string()
+      .max(WORKFLOW_TRIGGER_CRITERION_MAX_CHARS)
+      .nullable()
+      .optional(),
     playbook: WorkflowPlaybookSchema.optional(),
     autonomy: workflowAutonomySchema.optional(),
     modelProfileKey: z.string().max(64).nullable().optional(),
@@ -697,6 +842,9 @@ export const WorkflowResponseSchema = z.object({
   status: workflowStatusSchema,
   triggerType: workflowTriggerTypeSchema,
   triggerConfig: WorkflowTriggerConfigSchema,
+  /** One sentence deciding whether a firing deserves a run. NULL = ungated,
+   * which is what every workflow created before the gate carries. */
+  triggerCriterion: z.string().nullable(),
   playbook: WorkflowPlaybookSchema,
   autonomy: workflowAutonomySchema,
   modelProfileKey: z.string().nullable(),
@@ -747,6 +895,9 @@ export const WorkflowRunResponseSchema = z.object({
   /** Pending approval id while `status === "needs_approval"` — lets the run
    * page render the same inline approve/reject card as the chat. */
   approvalRequestId: z.string().nullable(),
+  /** What the trigger gate decided about this launch, when it was gated. The
+   * run page reads it to explain a `blocked` row and offer "run anyway". */
+  gateDecision: WorkflowGateDecisionSchema.nullable(),
   isTest: z.boolean(),
   triggeredByUserId: z.uuid().nullable(),
   startedAt: isoDate.nullable(),

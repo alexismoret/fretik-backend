@@ -1,4 +1,5 @@
 import type { AiVectorSourceType } from "@fretik/shared/db/schema";
+import type { WorkflowGateDecision } from "@fretik/shared/schemas/workflows";
 
 /**
  * Queue names + typed job payloads — the single source for every queue this
@@ -23,6 +24,14 @@ export const MEMORY_DREAMING_QUEUE = "memory-dreaming";
 // enqueues here; the slow part (createWorkflowRun → Trigger.dev network call)
 // runs on this queue so it never blocks the 15s journal/trigger sweeps.
 export const WORKFLOW_TRIGGER_QUEUE = "workflow-trigger";
+// Dedicated queue for the trigger GATE, which sits between the sweep and the
+// run creation above. It resolves a fact sheet (a couple of indexed reads) and
+// calls the AI service for a decision — a network hop, so the same rule that
+// keeps `createWorkflowRun` off the 15s maintenance queue applies here, one
+// step earlier. Its own queue rather than a stage of `workflow-trigger` so a
+// decision provider gone slow backs up decisions and not the creation of the
+// runs already cleared.
+export const WORKFLOW_GATE_QUEUE = "workflow-gate";
 // Dedicated queue for the nightly MCP tool-snapshot drift refresh — each pass
 // re-introspects every active MCP connection over the network (Nango proxy), so
 // it must never share the 15s maintenance queue.
@@ -101,6 +110,29 @@ export interface WorkflowRunCreateJobData {
   teamId: string;
   sourceEventId: string;
   triggerPayload: Record<string, unknown>;
+  /**
+   * What the gate decided about this launch, when it was gated. Carried on
+   * the job so the run row records the verdict that produced it — absent for
+   * a workflow with no criterion, which is ungated by construction.
+   */
+  gateDecision?: WorkflowGateDecision;
+}
+
+/**
+ * One EVENT to gate, with every workflow it matched — jobId
+ * `wfgate-{eventId}` so a re-swept event asks nothing twice.
+ *
+ * Keyed by event rather than by (workflow, event) pair, and that is the whole
+ * economy of the gate: the fact sheet is resolved once and the decision model
+ * is asked ONE question per workflow in ONE call. Twenty workflows listening
+ * for uploads cost one request whose expensive half — the state — is paid for
+ * a single time, instead of twenty requests each re-sending it.
+ */
+export interface WorkflowGateJobData {
+  eventId: string;
+  teamId: string;
+  organizationId: string;
+  workflowIds: string[];
 }
 
 /** Maintenance job names (scheduled on MEMORY_MAINTENANCE_QUEUE). */
@@ -155,6 +187,9 @@ export const EAGER_CONSOLIDATE_JOB = "eager-consolidate";
 
 /** Job name on WORKFLOW_TRIGGER_QUEUE. */
 export const WORKFLOW_RUN_CREATE_JOB = "workflow-run-create";
+/** Job name on WORKFLOW_GATE_QUEUE — decide which of an event's matched
+ * workflows deserve a run before any of them is created. */
+export const WORKFLOW_GATE_JOB = "workflow-gate";
 
 /**
  * Job names on VECTOR_RECONCILE_QUEUE. The sweep detects and enqueues; each

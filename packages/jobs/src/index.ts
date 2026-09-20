@@ -22,6 +22,7 @@ import { startMemoryResolveWorker } from "./workers/memory-resolve";
 import { startModelSyncWorker } from "./workers/model-sync";
 import { startRecordCardWorker } from "./workers/record-card";
 import { startVectorReconcileWorker } from "./workers/vector-reconcile";
+import { startWorkflowGateWorker } from "./workers/workflow-gate";
 import { startWorkflowRunCreateWorker } from "./workers/workflow-run-create";
 
 /**
@@ -54,6 +55,7 @@ startMemoryResolveWorker();
 startMemoryDistillWorker();
 startRecordCardWorker();
 startDreamingWorker();
+startWorkflowGateWorker();
 startWorkflowRunCreateWorker();
 startMaintenanceWorker();
 startMcpRefreshWorker();

@@ -9,11 +9,13 @@ import { describeFormFieldsForAgent } from "@fretik/shared/schemas/workflow-form
 import {
   buildTriggerCatalog,
   describeTriggerConfigForAgent,
+  describeTriggerCriterionForAgent,
 } from "@fretik/shared/schemas/workflow-triggers";
 import {
   type CreateWorkflowInput,
   type UpdateWorkflowInput,
   WORKFLOW_MAX_EXTERNAL_APPS,
+  WORKFLOW_TRIGGER_CRITERION_MAX_CHARS,
   WorkflowPlaybookSchema,
   WorkflowTriggerConfigSchema,
   workflowAutonomySchema,
@@ -311,6 +313,8 @@ export const createManageWorkflowTool = () =>
       "",
       "Event trigger (triggerType 'event'): triggerConfig.event = { events: [{ type, filter? }] } — a LIST, matched as an OR. Subscribe to every event that carries the input the playbook needs, not just the obvious one: replacing an existing document emits `document.revised`, never `document.uploaded`, so 'run when a document arrives' is both. Same type twice with different filters (two watched folders) is a normal shape. Activating with an empty list is refused.",
       "",
+      "triggerCriterion — WRITE ONE for every event trigger. An event trigger fires on EVERYTHING of its kind: a workflow watching uploads wakes for every file the team adds, and each firing that is not its file still costs a full run. One sentence naming what makes a firing this workflow's turns that into a sub-second check. Write it from the playbook's goal, against the facts in `get_trigger_catalog` — never from the one example file you were shown, and never naming a filename or an id (activation refuses both). Describe the KIND of thing: 'the document is a supplier invoice or a credit note', not 'the filename contains facture'. Omit it only for a trigger that genuinely should run on everything.",
+      "",
       "Form trigger (triggerType 'form'): a person fills a form; each submission starts a run whose triggerPayload is the answers, with uploaded files attached to the run — write the playbook to consume triggerPayload. triggerConfig.form = { title, description?, fields[] (≥1 to activate), visibility ('public' = anyone with the link, 'private' = the workflow's team/owner), submitLabel?, successMessage? }. Each field = { key (snake_case, unique), type, label, required, +per-type constraints (minLength/maxLength, min/max/step, options[{value,label}], accept/maxFiles/maxFileSizeMb) }.",
       describeFormFieldsForAgent(),
       "After activate, `get` returns `formUrl` — the shareable link to hand the user.",
@@ -367,6 +371,12 @@ export const createManageWorkflowTool = () =>
       triggerConfig: WorkflowTriggerConfigSchema.optional().describe(
         describeTriggerConfigForAgent(),
       ),
+      triggerCriterion: z
+        .string()
+        .max(WORKFLOW_TRIGGER_CRITERION_MAX_CHARS)
+        .nullable()
+        .optional()
+        .describe(describeTriggerCriterionForAgent()),
       playbook: WorkflowPlaybookSchema.optional().describe(
         "The plan: goal + ordered tasks. Required for create_draft.",
       ),
@@ -459,6 +469,9 @@ export const createManageWorkflowTool = () =>
                 playbook,
                 triggerType: input.triggerType ?? "manual",
                 triggerConfig: input.triggerConfig ?? {},
+                ...(input.triggerCriterion !== undefined
+                  ? { triggerCriterion: input.triggerCriterion }
+                  : {}),
                 autonomy: input.autonomy ?? "approval_required",
                 limits: {},
                 ...(safeIcon ? { icon: safeIcon } : {}),
@@ -520,6 +533,9 @@ export const createManageWorkflowTool = () =>
                   : {}),
                 ...(input.triggerConfig !== undefined
                   ? { triggerConfig: input.triggerConfig }
+                  : {}),
+                ...(input.triggerCriterion !== undefined
+                  ? { triggerCriterion: input.triggerCriterion }
                   : {}),
                 ...(sanitized ? { playbook: sanitized.playbook } : {}),
                 ...(input.autonomy !== undefined
@@ -616,6 +632,7 @@ export const createManageWorkflowTool = () =>
                   status: workflow.status,
                   triggerType: workflow.triggerType,
                   triggerConfig: workflow.triggerConfig,
+                  triggerCriterion: workflow.triggerCriterion,
                   autonomy: workflow.autonomy,
                   modelProfileKey: workflow.modelProfileKey,
                   limits: workflow.limits,
@@ -631,6 +648,9 @@ export const createManageWorkflowTool = () =>
             }
 
             case "get_trigger_catalog": {
+              // The catalog now carries `facts` — what a criterion may be
+              // judged against. Without it the agent writes one against facts
+              // it imagines rather than the ones the gate will actually see.
               return { ok: true, catalog: buildTriggerCatalog() };
             }
 

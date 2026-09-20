@@ -48,6 +48,7 @@ import { getWorkflowRunRow } from "@fretik/shared/services/workflows/get-run";
 import { listWorkflows } from "@fretik/shared/services/workflows/list";
 import { listActiveWorkflowRuns } from "@fretik/shared/services/workflows/list-active-runs";
 import { listWorkflowRuns } from "@fretik/shared/services/workflows/list-runs";
+import { overrideBlockedWorkflowRun } from "@fretik/shared/services/workflows/override-blocked-run";
 import { pauseWorkflow } from "@fretik/shared/services/workflows/pause";
 import { serializeWorkflowRun } from "@fretik/shared/services/workflows/serialize";
 import { updateWorkflow } from "@fretik/shared/services/workflows/update";
@@ -376,6 +377,25 @@ const stopRunRoute = createRoute({
   },
 });
 
+const runAnywayRoute = createRoute({
+  method: "post",
+  path: "/runs/{runId}/run-anyway",
+  summary: "Start a run the trigger gate blocked",
+  description:
+    "Overrides a `blocked` launch and starts it. The blocked row is consumed — it holds the (workflow, source event) identity that dedups event runs — and the decision it carried is stamped `overridden` on the new run, so the refusal stays on the record of the launch that overruled it. This is also the only signal there is for a gate false negative.",
+  tags: ["Workflows"],
+  request: { params: runIdParamSchema },
+  responses: {
+    200: {
+      content: { "application/json": { schema: WorkflowRunResponseSchema } },
+      description: "The started run",
+    },
+    ...responseForbiddenSchema,
+    ...responseNotFoundSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
 const transcriptRoute = createRoute({
   method: "get",
   path: "/runs/{runId}/transcript",
@@ -618,6 +638,24 @@ workflowRoutes.openapi(stopRunRoute, async (c) => {
   const requester = await resolveRequester(user, team);
   const run = await cancelWorkflowRun({ runId, teamId: team.id, requester });
   if (!run) return throwHttpError(404, notFound("Run not found"));
+  return c.json(run, 200);
+});
+
+workflowRoutes.openapi(runAnywayRoute, async (c) => {
+  const team = c.get("team");
+  if (!team) return c.json(teamRequired(), 403);
+  const user = c.get("user");
+  const { runId } = c.req.valid("param");
+  const requester = await resolveRequester(user, team);
+  // A private workflow's blocked run is no more startable by a teammate than
+  // its normal runs are visible to them, hence the same requester the read
+  // routes resolve.
+  const run = await overrideBlockedWorkflowRun({
+    runId,
+    teamId: team.id,
+    userId: user.id,
+    requester,
+  });
   return c.json(run, 200);
 });
 

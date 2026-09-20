@@ -5,6 +5,7 @@ import { badRequest, throwHttpError } from "../../lib/errors";
 import { createWorkflowCronSchedule } from "../../lib/trigger-client";
 import { workflowFormActivationError } from "../../schemas/workflow-forms";
 import {
+  workflowCriterionError,
   workflowEventActivationError,
   type WorkflowResponse,
 } from "../../schemas/workflows";
@@ -51,6 +52,17 @@ export const activateWorkflow = async (params: {
   if (row.triggerType === "event") {
     const eventError = workflowEventActivationError(row.triggerConfig);
     if (eventError) return throwHttpError(400, badRequest(eventError));
+  }
+
+  // The trigger criterion is checked at the same moment, and for a sharper
+  // version of the same reason: a bad one does not activate into silence, it
+  // activates into a workflow that LOOKS live and refuses every real firing.
+  // The failure it catches was predicted before a line of the gate ran — an
+  // agent writing a criterion from one example file writes the example into
+  // it, which passes the test run it was written against and nothing after.
+  if (row.triggerCriterion !== null) {
+    const criterionError = workflowCriterionError(row.triggerCriterion);
+    if (criterionError) return throwHttpError(400, badRequest(criterionError));
   }
 
   // A form trigger autosaves incomplete drafts; the completeness gate (title +

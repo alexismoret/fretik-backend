@@ -1,6 +1,7 @@
 import db from "../../db";
 import { publishConversationTaskResume } from "../../lib/conversation-task-resume";
 import { completeConversationTask } from "../conversation-tasks/complete";
+import { terminalTaskStatusOfRun } from "../conversation-tasks/kinds";
 import { notifySourceConversation } from "./notify-source-conversation";
 
 /**
@@ -30,18 +31,13 @@ export const onWorkflowRunTerminal = async (params: {
     where: { id: params.runId },
     columns: { status: true, sourceConversationId: true },
   });
-  if (
-    run?.status !== "succeeded" &&
-    run?.status !== "failed" &&
-    run?.status !== "canceled"
-  ) {
-    return;
-  }
+  const terminal = run ? terminalTaskStatusOfRun(run.status) : null;
+  if (terminal === null) return;
 
   const { conversationId } = await completeConversationTask({
     kind: "workflow_run",
     ref: params.runId,
-    status: run.status,
+    status: terminal,
   });
 
   await notifySourceConversation({ runId: params.runId });

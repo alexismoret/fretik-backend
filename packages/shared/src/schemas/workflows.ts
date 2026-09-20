@@ -57,7 +57,52 @@ export const WORKFLOW_RUN_STATUS_VALUES = [
   "succeeded",
   "failed",
   "canceled",
+  /**
+   * The run executed and found nothing to do — the trigger input was not what
+   * this workflow is for. Distinct from `succeeded` because the two answer
+   * different questions: "did the playbook work?" and "was this launch worth
+   * making?". Folding them together is why the cost of a workflow firing on
+   * every upload was invisible until someone counted tokens by hand.
+   *
+   * Derived, never reported by the agent: `isNoOpOutcome` reads the task
+   * states a run closed with, so the turn protocol and the (separately
+   * deployed) Trigger.dev orchestrator stay byte-identical.
+   */
+  "not_applicable",
+  /**
+   * The run never started — the trigger gate judged the input irrelevant to
+   * this workflow's criterion. The row exists ON PURPOSE: a blocked launch
+   * that left no trace is a silent veto, and a workflow that stops firing with
+   * nothing to look at is the one failure mode this whole feature must not
+   * introduce. It carries the decision that produced it and offers
+   * "run anyway", which is also how a wrong block gets labelled.
+   */
+  "blocked",
 ] as const;
+
+/**
+ * The statuses a run can never leave. `finalizeRun`'s idempotency guard and
+ * every "is this run over" read share this list, so a new terminal status is
+ * declared once instead of being remembered in five `notInArray`s.
+ *
+ * `blocked` is terminal too: a blocked run is re-launched by mutating the row
+ * back to `queued` through the explicit override path, never by a finalize.
+ */
+export const WORKFLOW_RUN_TERMINAL_STATUSES = [
+  "succeeded",
+  "failed",
+  "canceled",
+  "not_applicable",
+  "blocked",
+] as const;
+
+const TERMINAL_RUN_STATUSES: ReadonlySet<string> = new Set(
+  WORKFLOW_RUN_TERMINAL_STATUSES,
+);
+
+/** True once a run can no longer change on its own. */
+export const isTerminalRunStatus = (status: string): boolean =>
+  TERMINAL_RUN_STATUSES.has(status);
 /**
  * Per-task lifecycle status. NOT a `pgEnum` — task states live inside the
  * `workflow_runs.task_states` jsonb, so this set is validated by Zod only.
@@ -436,6 +481,23 @@ export const currentWorkflowTask = (
   tasks.find((t) => t.status === "in_progress") ??
   tasks.find((t) => t.status === "pending") ??
   null;
+
+/**
+ * Did this run conclude without doing any of its work?
+ *
+ * The signal is the playbook itself: every task terminal and NOT ONE of them
+ * completed. That is exactly the shape `completeTask({ outcome: "skipped",
+ * fatal: true })` leaves behind, which is the gesture the prompt tells the
+ * executor to make when the trigger input is not what the workflow is for —
+ * so the outcome is read off the run instead of asking the model to classify
+ * itself, and the turn protocol never learns a new status.
+ *
+ * A failed task is not a no-op: the run tried. An empty playbook is not one
+ * either — it never had work to skip, so it stays `succeeded` rather than
+ * being reported as a useless launch.
+ */
+export const isNoOpOutcome = (tasks: WorkflowTaskState[]): boolean =>
+  tasks.length > 0 && tasks.every((t) => t.status === "skipped");
 
 export const WorkflowRunUsageSchema = z.object({
   inputTokens: z.number().int().nonnegative().default(0),

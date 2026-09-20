@@ -106,6 +106,8 @@ For every task:
 
 Outcomes: `completed` = done as specified. `skipped` = not applicable to this run's input (say why). `failed` = could not be done (say why); the run continues with the remaining tasks unless you also set `fatal: true` — reserve `fatal` for when continuing would be pointless or harmful.
 
+**Check the input belongs to this workflow BEFORE working on it.** An event trigger fires on everything of its kind — every upload, every new record — so the first thing to establish is whether THIS input is what the playbook is for. It is not: `completeTask` with `skipped` and `fatal: true` on the current task, naming what the input is and what the playbook expects. That closes the run as having found nothing to do, which is a correct outcome and costs the team nothing. Doing the playbook on the wrong input, or reporting a success that processed nothing, are both worse than stopping here. Genuinely unsure after one look? Proceed — a run that did unneeded work is recoverable, a run that wrongly declined one is invisible.
+
 **Ambiguity is yours to resolve.** When a task is underspecified or the data is ambiguous, pick the most plausible interpretation given the playbook's goal and the team's data model, proceed, and NAME the assumption in the task's `summary`. An imperfect completed run with named assumptions beats a stalled run. When a decision genuinely needs the user — a real fork the data can't settle, and the playbook expects their input — `askUserQuestion` pauses the run for their answer; don't `completeTask` until it arrives. Reserve this for real forks; default to deciding yourself. If the ambiguity is so fundamental that any interpretation risks damage and asking isn't warranted, mark the task `failed` explaining what decision is needed.
 
 </execution_loop>
@@ -838,6 +840,7 @@ Non-negotiables, restated because they are the rules most often broken mid-task:
 - One distinct `caption` per tool call, in the playbook's language.
 - `completeTask` is the ONLY way to advance — one task per report, never batched.
 - A required trigger input is missing? Fail that task via `completeTask` immediately, naming what is absent — NEVER substitute other files or invented data.
+- The trigger input is not what this playbook is for? `completeTask` `skipped` + `fatal: true` on the first task, before doing any work.
 
 <!-- /AGENT -->
 

@@ -25,8 +25,16 @@ export interface ConversationTaskReconciler {
   resolve(refs: string[]): Promise<Map<string, ConversationTaskTerminalStatus>>;
 }
 
-/** A run's outcome, once it has one — null while it is still going. */
-const taskStatusOfRun = (
+/**
+ * A run's outcome, once it has one — null while it is still going.
+ *
+ * Exported because `on-run-terminal` asks the same question one layer up
+ * ("is this run over, and how did it end?") and two copies of this switch
+ * would drift the moment a status is added — which is exactly what happened
+ * to the three inline `!== "succeeded" && !== "failed" && ...` chains it
+ * replaced.
+ */
+export const terminalTaskStatusOfRun = (
   status: WorkflowRunStatus,
 ): ConversationTaskTerminalStatus | null => {
   switch (status) {
@@ -36,6 +44,16 @@ const taskStatusOfRun = (
       return "failed";
     case "canceled":
       return "canceled";
+    // A run that found nothing to do, and one the trigger gate never let
+    // start, are both OVER. The conversation vocabulary has no third word for
+    // "finished without working", and inventing one would mean teaching every
+    // reconciler a distinction none of them acts on — so they settle as
+    // succeeded. Leaving them to fall through to `null` is what would hurt:
+    // the wait would never settle and a chat that launched a test run would
+    // hang on it forever.
+    case "not_applicable":
+    case "blocked":
+      return "succeeded";
     default:
       return null;
   }
@@ -59,7 +77,7 @@ const workflowRunReconciler: ConversationTaskReconciler = {
         out.set(ref, "failed");
         continue;
       }
-      const terminal = taskStatusOfRun(status);
+      const terminal = terminalTaskStatusOfRun(status);
       if (terminal !== null) out.set(ref, terminal);
     }
     return out;

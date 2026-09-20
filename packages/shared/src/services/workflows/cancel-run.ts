@@ -1,6 +1,9 @@
 import { cancelWorkflowTriggerRun } from "../../lib/trigger-client";
 import { publishWorkflowAbort } from "../../lib/workflow-abort";
-import type { WorkflowRunResponse } from "../../schemas/workflows";
+import {
+  isTerminalRunStatus,
+  type WorkflowRunResponse,
+} from "../../schemas/workflows";
 import { finalizeRun } from "./finalize-run";
 import { getWorkflowRun, getWorkflowRunRow } from "./get-run";
 import { onWorkflowRunTerminal } from "./on-run-terminal";
@@ -25,11 +28,7 @@ export const cancelWorkflowRun = async (params: {
     requester: params.requester,
   });
   if (!run) return undefined;
-  if (
-    run.status === "succeeded" ||
-    run.status === "failed" ||
-    run.status === "canceled"
-  ) {
+  if (isTerminalRunStatus(run.status)) {
     return getWorkflowRun({ id: params.runId, teamId: params.teamId });
   }
 

@@ -66,6 +66,41 @@ const parseChatbotMaxSteps = (): number =>
   parseIntEnv("CHATBOT_MAX_STEPS", { fallback: 30, min: 1, max: 200 });
 
 /**
+ * Hard per-step output cap — the bound the chat path did not have.
+ *
+ * The workflow agent has carried one since its own runaway (64 829 output
+ * tokens in one step); this path never did, and `stopWhen` / `prepareStep` run
+ * BETWEEN steps, so nothing in the product could see a single generation go
+ * wrong, let alone stop it.
+ *
+ * Measured 2026-09-20 over 370 `chat` generations: p50 584 output tokens, p95
+ * 2 432, and the largest legitimate one 3 835 (3 478 of it reasoning). In the
+ * same window three runaway generations each emitted about **155 000** — one
+ * tool call repeated until the model physically could not continue — taking
+ * 588 to 694 seconds and 654 tool calls, of which only the first twelve ran.
+ * Reasoning in those three was 159 to 1 038 tokens: the volume was repetition,
+ * not thought.
+ *
+ * 32 000 is eight times the largest generation ever measured here and a fifth
+ * of a runaway. Set deliberately above the workflow's 16 000: this path also
+ * serves a page build writing several files in one call, and the sample above
+ * cannot have seen the widest of those.
+ *
+ * Safe to truncate, for the reason the workflow cap records: truncated prose
+ * ends the loop cleanly and resumes next turn, and a truncated tool call is
+ * healed by `llmRepairToolCall`. Profiles carrying `omitMaxTokens` never
+ * receive it — `agent-builder.ts` drops it, because their ZDR endpoint would
+ * answer 404 to the parameter. Tunable via `CHATBOT_STEP_MAX_OUTPUT_TOKENS`,
+ * so a rollback needs no deploy.
+ */
+const parseChatbotStepMaxOutputTokens = (): number =>
+  parseIntEnv("CHATBOT_STEP_MAX_OUTPUT_TOKENS", {
+    fallback: 32_000,
+    min: 1000,
+    max: 128_000,
+  });
+
+/**
  * A web tool is suppressed when an operator sets `AI_WEB_TOOLS_ENABLED=false`
  * or its own backend has no key — per tool, not as a block, because the three
  * no longer share a provider (`isWebToolAvailable` in `lib/web-egress.ts`,
@@ -501,6 +536,10 @@ const makeSubAgentPrimarySet = (
       isStepCount(parseSubAgentMaxSteps()),
       hasToolCall("askUserQuestion"),
     ],
+    // A sub-agent is the same loop with fewer tools, so it can fail the same
+    // way — and nobody is watching its stream, which makes an unbounded
+    // generation here cheaper to miss than in the parent turn.
+    maxOutputTokens: parseChatbotStepMaxOutputTokens(),
     repairToolCall: llmRepairToolCall<SubAgentTools>(),
     prepareStep: subAgentPrepareStep,
     buildRuntimeContextBase: buildChatbotRuntimeContextBase,
@@ -547,6 +586,7 @@ const makeSubAgentCheapSet = (
       isStepCount(parseSubAgentMaxSteps()),
       hasToolCall("askUserQuestion"),
     ],
+    maxOutputTokens: parseChatbotStepMaxOutputTokens(),
     repairToolCall: llmRepairToolCall<SubAgentTools>(),
     prepareStep: subAgentPrepareStep,
     buildRuntimeContextBase: buildChatbotRuntimeContextBase,
@@ -590,6 +630,13 @@ const pageBuilderSystemPrompt = (ctx: AgentRuntimeContext): Promise<string> =>
  * has, it may call on every step. The team policy gate still applies, which is
  * why it shares `subAgentPrepareStep`: a team that disabled `managePage` must
  * not get pages through a delegate.
+ *
+ * DELIBERATELY WITHOUT the per-step output cap the chat and sub-agent sets
+ * carry. It writes several files in one step, so its legitimate generation is
+ * the widest on this path — and the 2026-09-20 sample that fixed 32 000 as a
+ * safe ceiling contains no page build, so applying that number here would be
+ * guessing with a truncation as the failure mode. Measure this agent's own
+ * distribution before capping it.
  */
 const makePageBuilderSet = (
   model: ResolvedModel,
@@ -720,6 +767,7 @@ const makeChatbotAgentSet = (
       // matches the grant by `lookupHash`.
       stopOnPendingApproval<ChatbotTools>(),
     ],
+    maxOutputTokens: parseChatbotStepMaxOutputTokens(),
     repairToolCall: llmRepairToolCall<ChatbotTools>(),
     prepareStep: chatbotPrepareStep,
     buildRuntimeContextBase: buildChatbotRuntimeContextBase,

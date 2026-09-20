@@ -175,6 +175,23 @@ needs its own copies:
 `packages/shared/src/services/model-registry/sync/` onto the jobs service** —
 that code runs wherever the sync runs.
 
+The **workflow trigger gate** and the **Drive filer** also live here, and both
+call the AI service rather than a provider directly — so jobs needs
+`AI_SERVICE_URL` and `INTERNAL_KEY`, the same pair the document pipeline
+already uses. Without them every decision fails, and both callers fall open:
+workflows fire on everything (the behaviour that shipped before the gate) and
+documents stay at the Drive root. Nothing breaks loudly, which is exactly why
+it is written here.
+
+| Var                          | Notes                                                                                                                                                                                                                                                                                                        |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `WORKFLOW_GATE_THRESHOLD`    | Default `0.15`. P(relevant) a firing must clear to start a run. LOW and asymmetric on purpose: a run that should not have started is visible (`not_applicable`, countable), while one that should have started and did not is invisible until a client asks. Raise it only against measured false positives. |
+| `DRIVE_FILING_THRESHOLD`     | Default `0.7`. The INVERSE asymmetry: a misfiled document is worse than an unfiled one, because nobody knows where to look for it. Below the bar, the document stays at the root.                                                                                                                            |
+| `FACTS_ALLOW_CONTENT_EGRESS` | Default on. `false` strips content-bearing facts (document summaries, extracted field values, mentioned organisations) from anything posted to the decision vendor. The gate keeps working on metadata alone — degraded, not broken. Set it when a deployment's data policy says content may not leave.      |
+
+Decision behaviour itself (`DECISIONS_ENABLED`, `DECISION_MODEL_ID`,
+`DECISION_TIMEOUT_MS`) is read in **@fretik/ai**, where the call is made.
+
 ### One-off, on the production database
 
 `harden_sql_tool` creates the role `fretik_sql_tool` with `LOGIN` and **no

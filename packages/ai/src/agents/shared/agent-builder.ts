@@ -384,7 +384,10 @@ export const buildToolsContext = (
  *     26 tool cards and no words. With no tool to reach for, the model can
  *     only answer, so the turn ends with an explanation instead of a wall.
  *  3. ABORT at 8 — the stop condition, for the model that keeps trying past a
- *     withdrawal or loops on something with no tool left to take away.
+ *     withdrawal or loops on something with no tool left to take away. It holds
+ *     for one step when stages 1 and 2 were never reached because the threshold
+ *     was crossed in a SINGLE step — see `stopOnRepeatedToolErrors`, which is
+ *     where that rule lives and where the measurement is recorded.
  *
  * Ending the turn is not ending the work: a workflow run re-steers on its next
  * turn, a chat hands control back to the user.
@@ -566,7 +569,7 @@ const buildToolLoopAgent = <CALL_OPTIONS, TTools extends ToolSet>(
   // Compose the loop guard's hard backstop into every agent's stop set.
   const stopWhen = [
     ...(Array.isArray(configuredStop) ? configuredStop : [configuredStop]),
-    stopOnRepeatedToolErrors<TTools>(LOOP_GUARD_ABORT_AT),
+    stopOnRepeatedToolErrors<TTools>(LOOP_GUARD_ABORT_AT, LOOP_GUARD_DISARM_AT),
   ];
   const onStepEnd = withUsageLedger<TTools>(
     config.id,

@@ -6,7 +6,7 @@ import type {
   ExternalAppConnection,
 } from "../../db/schema";
 import { externalAppConnections } from "../../db/schema";
-import { getAction } from "../../external-apps/registry";
+import { getAction, getProvider } from "../../external-apps/registry";
 import { chunkForBulk } from "../../lib/db-bulk";
 import type {
   SyncRunResponse,
@@ -234,6 +234,11 @@ export const serializeSyncSource = (
     // the agent's `describeCollection`, the run list — gets the same answer
     // from the same arguments.
     read: source.kind === "table" ? "walk" : syncReadStrategy(source.args),
+    // From the registry, not from the row: whether an app notifies is a
+    // property of the integration, and storing a copy per source would go stale
+    // the day an operator registers the webhook URL upstream.
+    notifiesChanges:
+      getProvider(source.providerKey)?.manifest.notifiesChanges === true,
     fieldMapping: source.fieldMapping,
     schedule: source.schedule,
     orphanPolicy: source.orphanPolicy,

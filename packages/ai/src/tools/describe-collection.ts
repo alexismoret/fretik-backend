@@ -144,6 +144,11 @@ export const createDescribeCollectionTool = () =>
                   operation: source.operation,
                   connectionId: source.connectionId,
                   schedule: source.schedule,
+                  // The schedule alone understates how fresh this is when the
+                  // app pushes: a daily source on an app that notifies is
+                  // minutes behind, not a day. Saying "yesterday's figures"
+                  // there is wrong in the direction that loses trust.
+                  ...(source.notifiesChanges ? { notifiesChanges: true } : {}),
                   incremental: source.incremental,
                   // An incremental source is complete only up to here: a row
                   // deleted upstream survives until the next full walk.

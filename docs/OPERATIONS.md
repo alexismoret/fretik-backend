@@ -684,6 +684,39 @@ Nango retries a non-2xx, so the route answers 200 to anything it knowingly
 ignores (a different event type, a body that will never parse) and reserves
 401 / 500 for the failures a redelivery could actually fix.
 
+### `forward` — an app that says it changed (per integration, operator step)
+
+The same route accepts Nango's `forward` event: a provider's OWN webhook,
+relayed. A delivery brings that connection's **incremental** sync sources
+forward (`collection-sync/nudge-on-notify.ts`) — nothing else. The payload is
+never read, so there is no per-provider parser to maintain: the event says the
+app is not idle, and the incremental run that follows says what changed.
+
+Polling is not replaced and must not be. A provider that stops delivering, a
+lost delivery, or an integration whose webhook URL was never registered costs
+**freshness**, never correctness — the schedule still runs.
+
+Enabling it for one provider is two steps, and the second is the one that is
+easy to forget:
+
+1. In Nango → **Integrations → \<integration\> → Webhooks**, copy the forwarding
+   URL Nango generates for that integration.
+2. Register that URL **with the provider**, in their own developer console, and
+   subscribe to the events that matter. Nango relays what the provider sends it;
+   it does not subscribe on your behalf.
+
+Only once step 2 is done may the manifest set `notifiesChanges: true`. That flag
+is display only — it is what makes a source's cadence line read "Once a day, and
+whenever \<app\> tells us". Setting it without a registered webhook does not
+break a sync; it tells a team their data is fresher than it is, which is worse,
+because the cadence is what they judge the figures by.
+
+Two limits worth knowing before enabling it on a chatty app: the nudge is
+debounced per connection for 15 minutes (`SYNC_LIMITS.minIntervalMinutes`,
+cluster-wide via Redis), and a source that does not bind `{"$since": true}` is
+never nudged — a full walk brought forward by every notification would spend its
+whole page budget per burst.
+
 ### Still worth adopting
 
 - **Self-hosted audit trail** (`NANGO_AUDIT_POSTGRES_*`), GA in this range and

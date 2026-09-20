@@ -786,6 +786,13 @@ export const syncSourceResponseSchema = z.object({
    * cost line is built on.
    */
   read: z.enum(["walk", "row"]),
+  /**
+   * `true` when the app tells us it changed instead of waiting for the next
+   * tick (`manifest.notifiesChanges`). Read by the cadence line and by nothing
+   * else: it makes "Once a day" honest by adding ", and whenever <app> tells
+   * us", and a source still runs on its schedule either way.
+   */
+  notifiesChanges: z.boolean(),
   fieldMapping: z.array(syncFieldMappingSchema),
   schedule: syncScheduleSchema,
   orphanPolicy: syncOrphanPolicySchema,

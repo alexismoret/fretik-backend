@@ -935,6 +935,23 @@ export const providerManifestSchema = z
      */
     rateLimit: providerRateLimitSchema.optional(),
     /**
+     * `true` when this app tells us something changed instead of waiting to be
+     * asked — its webhook is relayed by Nango and a delivery brings the
+     * connection's incremental sync sources forward
+     * (`collection-sync/nudge-on-notify.ts`).
+     *
+     * DISPLAY ONLY, and nothing branches on it. It changes one sentence a team
+     * reads about a source's cadence ("Once a day, and whenever <app> tells
+     * us"), and that sentence is the whole value: a cadence the team believes
+     * is what they judge the data by. The nudging itself is keyed on the
+     * delivery arriving, not on this flag, so a `true` here with no webhook
+     * registered upstream is a LIE to the user and not a broken sync — which is
+     * why it may only be set once the operator has registered the integration's
+     * webhook URL with the provider (`backend/docs/OPERATIONS.md`), and not
+     * when the provider merely supports webhooks.
+     */
+    notifiesChanges: z.boolean().optional(),
+    /**
      * Frontend credentials form descriptor — required when the provider
      * uses a `custom-handler` transport (since the frontend cannot rely
      * on the Nango Connect UI for OAuth flows in that case).

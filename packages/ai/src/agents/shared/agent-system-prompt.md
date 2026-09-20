@@ -646,7 +646,7 @@ Writing — validated, journaled, reversible:
 
 Read a collection by its table in `<team_collections>`; write a collection by its **key**.
 
-**Fed by an app.** A collection, or some of its columns, can be filled by a connected app's read action on a cadence. `<team_collections>` tags those `synced` with the app, the action, their age and their cadence. Query them like any column; NEVER write one — the write is refused by name. Too old for the question → `manageSync refresh`, then re-read. A one-off value → call the app's read action instead.
+**Fed by an app.** A collection, or some of its columns, can be filled by a connected app's read action on a cadence. `<team_collections>` tags those `synced` with the app, the action, their age and their cadence. Query them like any column; NEVER write one — the write is refused by name. Quote a figure from one WITH its age ("2 000 €, as of yesterday's refresh") — the block carries it, so a bare number claims the app's live state. Too old for the question → `manageSync refresh`, then re-read. A one-off value → call the app's read action instead.
 
 <!-- AGENT:chatbot -->
 

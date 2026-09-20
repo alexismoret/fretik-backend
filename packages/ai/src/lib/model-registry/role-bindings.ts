@@ -45,28 +45,45 @@ import type { ModelRole, RoleBinding } from "./types";
  * must remain a different family from the serving models.
  */
 export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
-  // Gated flip 2026-08-02 (run 8e3ea13a8b4b3968): minimax-m3 → deepseek-v4-flash.
-  // Faster (56.3s → 30.8s avg), ~2.9× cheaper per turn, ahead on reasoning and
-  // tool-use. The displaced M3 becomes `chat-fallback` below, which keeps
-  // primary and fallback on different families and different upstreams.
-  // KNOWN REGRESSION in that run, accepted with eyes open: EXTRACTION. The gate
-  // read 0.964 → 0.821; two dedicated `--capability extraction` runs then
-  // measured 0.869 twice, byte-identical (pass-rate 0.714, 0 fallbacks). So it
-  // is NOT judge noise on this subset — it is a real, reproducible ~0.1 gap
-  // against M3, worth ~0.67 case-equivalents, inside the ≤1 threshold but on a
-  // capability central to this product. It is the price of the switch, not a
-  // measurement artefact: revisit it if extraction complaints appear, and
-  // re-check it first when this binding is next gated. generation 1.000→0.933
-  // and instruction-following 1.000→0.944 are the other two, both in threshold.
+  // Flip 2026-09-21: deepseek-v4-flash → zai-glm-5-3-flash.
+  //
+  // WHAT THE STAMP BELOW COVERS, AND WHAT IT DOES NOT. It is NOT an
+  // `evals:gate` run: it is a paired pair of dataset runs over the NINE
+  // `collections-autonomy` sync cases, twice each — `ae47960ba5bd5906` (GLM)
+  // against `5fc9302dfbe9ad88` (DeepSeek), same evening, same code, same
+  // service, the parent model the only difference. 9 of the 123 curated cases.
+  // The full gate was cut for time and is OWED; run it before this binding is
+  // trusted beyond what follows.
+  //
+  // On that scope every axis moved the same way, and the cheaper one won:
+  // pass-stability 0.556 → 0.889, pass-rate 0.722 → 0.944, correctness
+  // 0.921 → 0.986, avg tool calls per turn 71.8 → 5.7, tool-error-rate
+  // 0.880 → 0.068, redundant-call-rate 0.278 → 0.000, avg latency 184s → 55s,
+  // cost/turn $0.022 → $0.017.
+  //
+  // WHY it moved is the part worth keeping: DeepSeek V4 Flash re-emits a
+  // BYTE-IDENTICAL tool call — same caption, same ids, same arguments —
+  // hundreds of times inside ONE generation (435 `manageSync`, 753 `querySql`,
+  // 349 `manageRecord` on three different turns). That is a decoding loop, not
+  // a tool failing and being retried, and no guard between steps can see inside
+  // one. Four of eighteen turns ran away; GLM ran none. The longest turn fell
+  // from 785s to 116s.
+  //
+  // WHAT IS UNMEASURED HERE: every capability outside sync, EXTRACTION first.
+  // The 2026-08-02 flip TO DeepSeek cost a reproducible ~0.1 there (0.964 →
+  // 0.821 on the gate, 0.869 twice on two dedicated runs) and it was accepted
+  // as the price of that switch. Whether GLM gives it back, keeps it, or
+  // deepens it is not known — `pre-extract` still runs DeepSeek, so the
+  // question now belongs to that binding as much as to this one.
   chat: {
     role: "chat",
-    profileKey: "deepseek-v4-flash",
+    profileKey: "zai-glm-5-3-flash",
     settingsKind: "chat",
     wrapCache: true,
     evalGate: {
       status: "passed",
-      lastRunId: "8e3ea13a8b4b3968",
-      gatedAt: "2026-08-02",
+      lastRunId: "ae47960ba5bd5906",
+      gatedAt: "2026-09-21",
     },
   },
   // Deliberately a DIFFERENT family and a different upstream from `chat`:
@@ -95,16 +112,20 @@ export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
   // the team's flagship tier pick; a workflow may override per-run via its
   // `modelProfileKey`. The agent already delegates mechanical sub-tasks to the
   // cheap model via `dispatchAgent`, so the default need not be the cheap one.
-  // Tracks `chat` (reliability first) — flipped in the same gated change.
+  // Tracks `chat` (reliability first) — flipped with it on 2026-09-21, and
+  // carrying the same stamp and the same limits: see the `chat` comment for
+  // what those nine cases measured and what they did not. A workflow run has
+  // nobody watching it, so a decoding loop costs more here than in a chat turn,
+  // which is the half of that measurement that transfers best.
   workflow: {
     role: "workflow",
-    profileKey: "deepseek-v4-flash",
+    profileKey: "zai-glm-5-3-flash",
     settingsKind: "chat",
     wrapCache: true,
     evalGate: {
       status: "passed",
-      lastRunId: "8e3ea13a8b4b3968",
-      gatedAt: "2026-08-02",
+      lastRunId: "ae47960ba5bd5906",
+      gatedAt: "2026-09-21",
     },
   },
   "dispatch-cheap": {

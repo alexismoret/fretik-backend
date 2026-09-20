@@ -300,10 +300,13 @@ const INTELLIGENCE_VOLUME = floorAt(0.08);
  *
  * `TPS_CONVERSATIONAL` is the "50-60 tok/s" band a turn a person is watching
  * should decode in, minus the margin that same knife edge argues for:
- * `deepseek-v4-flash` serves `chat`, `workflow`, `pre-extract`, `transform` and
- * `compaction-summarizer` at exactly 50.0, so a floor AT 50 would put both the
- * assistant's and the documents' own default one slow night from ineligible.
- * 45 is also the fleet's measured p25, i.e. "not in the slow quarter".
+ * `deepseek-v4-flash` serves `pre-extract`, `transform` and
+ * `compaction-summarizer` at exactly 50.0, so a floor AT 50 would put the
+ * documents' own default one slow night from ineligible. 45 is also the fleet's
+ * measured p25, i.e. "not in the slow quarter". (It held `chat` and `workflow`
+ * too until 2026-09-21, which is where the "assistant's default" half of this
+ * argument came from; those moved to `zai-glm-5-3-flash`, whose fastest
+ * endpoint measures 107 tok/s and is not near this floor.)
  *
  * A 90 tok/s recall floor admitted exactly ONE published model, and a function
  * with one option is not a choice. 70 sits between the published median (60.8)

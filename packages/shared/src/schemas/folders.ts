@@ -37,6 +37,10 @@ export const driveListParamsSchema = paramsListSchema.extend({
 
 export type DriveListParams = z.infer<typeof driveListParamsSchema>;
 
+/** Hard cap on a folder description — see `services/folders/describe.ts`:
+ * sixty of these ride one filing decision inside a 32k context window. */
+export const FOLDER_DESCRIPTION_MAX_CHARS = 220;
+
 /**
  * Schéma de validation pour la création d'un dossier
  */
@@ -50,7 +54,17 @@ export type CreateFolderInput = z.infer<typeof CreateFolderSchema>;
 /**
  * Schéma de validation pour la mise à jour d'un dossier
  */
-export const UpdateFolderSchema = CreateFolderSchema.partial();
+export const UpdateFolderSchema = CreateFolderSchema.partial().extend({
+  /**
+   * What this folder is for, read by the Drive filer when a document arrives
+   * with no destination. Setting it marks the description MANUAL, after which
+   * the nightly generator never touches it again — a person saying where
+   * things should go outranks anything inferred from what is already inside.
+   *
+   * Empty string clears it back to automatic.
+   */
+  description: z.string().max(FOLDER_DESCRIPTION_MAX_CHARS).nullish(),
+});
 
 export type UpdateFolderInput = z.infer<typeof UpdateFolderSchema>;
 
@@ -61,6 +75,10 @@ export const FolderResponseSchema = z.object({
   parentFolderId: z.uuid().nullable(),
   subFolderCount: z.number().int().min(0),
   documentCount: z.number().int().min(0),
+  /** What this folder is for — what the Drive filer matches against. */
+  description: z.string().nullable(),
+  /** `manual` once a person has written it; the generator then leaves it be. */
+  descriptionSource: z.enum(["auto", "manual"]).nullable(),
   createdAt: z.date(),
   updatedAt: z.date(),
 });

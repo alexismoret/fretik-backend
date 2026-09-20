@@ -29,7 +29,9 @@ import { emitUploadEvent } from "../../lib/upload-events";
 import { preExtractionResponseSchema } from "../../schemas/pre-extraction";
 import { readRecordData } from "../collection-schema/record-io";
 import { MENTIONS_LINK_TYPE_KEY } from "../collections/seed-system-types";
+import { documentFacts } from "../facts/document";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
+import { autoFileDocument } from "../folders/auto-file";
 import {
   captureHtmlScreenshot,
   captureMarkdownScreenshot,
@@ -39,6 +41,7 @@ import {
 import { joinDocumentPagesMarkdown } from "./markdown";
 import { syncDocumentGraph } from "./sync-document-graph";
 import { generateImageThumbnail, generatePdfThumbnail } from "./thumbnails";
+import { vectorisationSkipReason } from "./vectorisable";
 
 // ==================== //
 // TYPES                //
@@ -65,6 +68,14 @@ export interface DocumentProcessingJobData {
   documentId: string;
   organizationId: string;
   teamId: string;
+  /**
+   * File this document automatically if it has no folder when processing
+   * ends. An EXPLICIT request from the caller, never inferred from
+   * `folderId === null`: that value means "no destination" for a chat
+   * attachment and "the root, deliberately" for someone uploading from the
+   * root view, and moving the second kind is how a feature loses trust.
+   */
+  autoFile?: boolean;
   /** S3 key of the original file, written by `uploadDocument` before enqueue. */
   originalKey: string;
   metadata: DocumentFileMetadata;
@@ -509,41 +520,85 @@ export const processDocument = async (
     }
   }
 
-  try {
-    const vectorResult = await callAiService(
-      "/internal/vectorize",
-      {
-        sourceType: "documents",
-        sourceId: documentId,
-        content: vectorContent,
-        metadata: {
-          file_name: metadata.originalFilename,
-          file_type: metadata.mimeType,
-          page_count: preExtractResult.pageCount ?? null,
-          document_language: preExtractResult.documentLanguage ?? null,
-          document_summary: preExtractResult.documentSummary ?? null,
-          entities: mentionVectorInfo,
-          custom_fields: vectorisableCustomFields,
-        },
-        teamId,
-        organizationId,
-      },
-      aiVectorizeResponseSchema,
-      { teamId, organizationId },
+  // A document the extraction could make nothing of is not worth indexing:
+  // in the index it is a row the semantic arm can return INSTEAD of a real
+  // answer, and every chunk of it is an embedding paid for. Deterministic by
+  // design — see `vectorisable.ts` for why this is not a model call.
+  const skipReason = vectorisationSkipReason({
+    documentSummary: preExtractResult.documentSummary,
+    confidenceScore: preExtractResult.confidenceScore,
+  });
+  if (skipReason !== null) {
+    console.info(
+      `[document-processing] not indexing ${documentId}: ${skipReason}`,
     );
+  }
 
-    if (!vectorResult.success) {
-      console.warn(
-        `[document-processing] AI service vector storage returned success=false for ${documentId}`,
+  if (skipReason === null) {
+    try {
+      const vectorResult = await callAiService(
+        "/internal/vectorize",
+        {
+          sourceType: "documents",
+          sourceId: documentId,
+          content: vectorContent,
+          metadata: {
+            file_name: metadata.originalFilename,
+            file_type: metadata.mimeType,
+            page_count: preExtractResult.pageCount ?? null,
+            document_language: preExtractResult.documentLanguage ?? null,
+            document_summary: preExtractResult.documentSummary ?? null,
+            entities: mentionVectorInfo,
+            custom_fields: vectorisableCustomFields,
+          },
+          teamId,
+          organizationId,
+        },
+        aiVectorizeResponseSchema,
+        { teamId, organizationId },
+      );
+
+      if (!vectorResult.success) {
+        console.warn(
+          `[document-processing] AI service vector storage returned success=false for ${documentId}`,
+        );
+      }
+    } catch (error) {
+      // Vectorisation is best-effort — RAG can be re-indexed later; a failure
+      // here must not fail the whole job (the document is already `ready`).
+      console.error(
+        `[document-processing] AI service vector storage failed for ${documentId}:`,
+        error,
       );
     }
-  } catch (error) {
-    // Vectorisation is best-effort — RAG can be re-indexed later; a failure
-    // here must not fail the whole job (the document is already `ready`).
-    console.error(
-      `[document-processing] AI service vector storage failed for ${documentId}:`,
-      error,
-    );
+  }
+
+  // Step 8: file it, if it arrived with no destination and the caller asked.
+  //
+  // HERE and not at upload: the whole value of the decision is the semantic
+  // match, and the summary that makes it possible did not exist until the
+  // extraction above finished. A document that sits at the Drive root for the
+  // length of its own pipeline and is then filed, with a banner saying so, is
+  // the intended experience — the alternative is choosing a folder from a
+  // filename.
+  //
+  // Awaited rather than fired and forgotten (the process can exit), but its
+  // failures are swallowed inside `autoFileDocument`: the document is already
+  // `ready`, and an undecided destination must never fail an upload that
+  // worked.
+  if (job.autoFile === true) {
+    const sheet = await documentFacts({ documentId, teamId });
+    const filed = await autoFileDocument({
+      documentId,
+      teamId,
+      organizationId,
+      facts: sheet.facts,
+    });
+    if (filed) {
+      console.info(
+        `[document-processing] ${documentId} auto-filed into ${filed.folderId}`,
+      );
+    }
   }
 
   emitUploadEvent({ documentId, status: "ready" });

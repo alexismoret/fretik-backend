@@ -2,6 +2,7 @@ import { getProducerConnection } from "@fretik/shared/lib/queue/connection";
 import { Queue } from "bullmq";
 import {
   COLLECTION_INDEX_QUEUE,
+  FOLDER_DESCRIBE_QUEUE,
   MCP_REFRESH_QUEUE,
   MEMORY_DISTILL_QUEUE,
   MEMORY_DREAMING_QUEUE,
@@ -14,6 +15,7 @@ import {
   WORKFLOW_TRIGGER_QUEUE,
   type DreamingTeamJobData,
   type EagerConsolidateJobData,
+  type FolderDescribeTeamJobData,
   type MemoryDistillJobData,
   type MemoryResolveJobData,
   type RecordCardJobData,
@@ -91,6 +93,16 @@ export const getWorkflowGateQueue = (): Queue<WorkflowGateJobData> => {
     connection: getProducerConnection(),
   });
   return workflowGateQueue;
+};
+
+let folderDescribeQueue: Queue<FolderDescribeTeamJobData> | null = null;
+
+export const getFolderDescribeQueue = (): Queue<FolderDescribeTeamJobData> => {
+  folderDescribeQueue ??= new Queue<FolderDescribeTeamJobData>(
+    FOLDER_DESCRIBE_QUEUE,
+    { connection: getProducerConnection() },
+  );
+  return folderDescribeQueue;
 };
 
 let mcpRefreshQueue: Queue | null = null;

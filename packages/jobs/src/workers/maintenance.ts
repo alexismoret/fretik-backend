@@ -6,6 +6,7 @@ import { type Job, Worker } from "bullmq";
 import {
   CONVERSATION_TASK_SWEEP_JOB,
   DREAMING_SWEEP_JOB,
+  FOLDER_DESCRIBE_SWEEP_JOB,
   GC_DEMOTE_JOB,
   JOURNAL_SWEEP_JOB,
   MEMORY_MAINTENANCE_QUEUE,
@@ -15,6 +16,7 @@ import {
   WORKFLOW_TRIGGER_SWEEP_JOB,
 } from "../queues/names";
 import { runDreamingSweep } from "./dreaming";
+import { runFolderDescribeSweep } from "./folder-describe";
 import { runGcDemote } from "./gc-demote";
 import { runJournalSweep } from "./journal-sweep";
 import { runModelAlertSweep } from "./model-alert-sweep";
@@ -37,6 +39,15 @@ export const startMaintenanceWorker = (): Worker => {
           if (swept > 0) {
             console.info(
               `[journal-sweep] fanned out ${swept.toString()} events`,
+            );
+          }
+          return;
+        }
+        case FOLDER_DESCRIBE_SWEEP_JOB: {
+          const { teams } = await runFolderDescribeSweep();
+          if (teams > 0) {
+            console.info(
+              `[folder-describe] fanned out ${teams.toString()} team jobs`,
             );
           }
           return;

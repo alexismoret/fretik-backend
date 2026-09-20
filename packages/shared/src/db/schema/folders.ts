@@ -7,8 +7,14 @@ import {
   text,
   timestamp,
   uuid,
+  varchar,
 } from "drizzle-orm/pg-core";
 import { team, user } from "./auth-schema";
+
+/** Who wrote a folder's description. A `varchar` rather than a pgEnum: two
+ * values with no behaviour of their own, and an enum would cost a migration
+ * to add a third. */
+export type FolderDescriptionSource = "auto" | "manual";
 
 /**
  * Folders for organizing documents hierarchically
@@ -33,6 +39,37 @@ export const folders = pgTable(
 
     // Full path for fast queries (e.g., "/root/subfolder/current")
     fullPath: text("full_path").notNull(),
+
+    /**
+     * What this folder is FOR, in one or two sentences.
+     *
+     * It exists because a file with no destination has to be filed somewhere,
+     * and a folder name alone rarely says enough to choose between "Clients"
+     * and "Contracts". Almost nobody writes one by hand, so the nightly pass
+     * derives it from the documents already inside — the extraction summaries
+     * are in `document_properties` already, so it costs one cheap call per
+     * folder and no re-reading of a single file.
+     */
+    description: text("description"),
+    /**
+     * `manual` once a person has edited it, and then the generator NEVER
+     * touches it again. A description someone wrote is a statement of intent
+     * about where things should go; regenerating over it would silently undo
+     * the one signal worth more than anything inferred.
+     */
+    descriptionSource: varchar("description_source", {
+      length: 10,
+    }).$type<FolderDescriptionSource>(),
+    descriptionGeneratedAt: timestamp("description_generated_at", {
+      withTimezone: true,
+    }),
+    /**
+     * `documentCount` at generation time — the drift measure. A folder that
+     * has gained a dozen documents since may have changed what it is for, and
+     * a description that outlives its folder's purpose files things wrongly
+     * with complete confidence.
+     */
+    descriptionDocumentCount: integer("description_document_count"),
 
     // Created by
     createdById: uuid("created_by_id").references(() => user.id, {

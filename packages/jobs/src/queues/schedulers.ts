@@ -2,6 +2,7 @@ import {
   COLLECTION_INDEX_SWEEP_JOB,
   CONVERSATION_TASK_SWEEP_JOB,
   DREAMING_SWEEP_JOB,
+  FOLDER_DESCRIBE_SWEEP_JOB,
   GC_DEMOTE_JOB,
   JOURNAL_SWEEP_JOB,
   MCP_SNAPSHOT_REFRESH_JOB,
@@ -37,6 +38,13 @@ const SWEEP_INTERVAL_MS = 15_000;
 /** Reclaim stalled workflow runs every 5 min (backs the orchestrator's own
  * onFailure finalize; heartbeat-gap is 20 min, so 5 min is timely enough). */
 const STALL_SWEEP_INTERVAL_MS = 5 * 60_000;
+/**
+ * 02:30 UTC — after the index sweep, before dreaming. The pass reads document
+ * summaries and writes one sentence per folder, so it wants the quiet window
+ * and nothing more: it is fan-out only here, and the LLM calls land on
+ * `folder-describe`.
+ */
+const FOLDER_DESCRIBE_CRON = "30 2 * * *";
 /** Dreaming at 03:00 UTC, GC an hour later — both in the quiet window. */
 const DREAMING_CRON = "0 3 * * *";
 const GC_CRON = "0 4 * * *";
@@ -104,6 +112,11 @@ export const registerSchedulers = async (): Promise<void> => {
         removeOnFail: { count: 100 },
       },
     },
+  );
+  await maintenance.upsertJobScheduler(
+    FOLDER_DESCRIBE_SWEEP_JOB,
+    { pattern: FOLDER_DESCRIBE_CRON, tz: "UTC" },
+    { name: FOLDER_DESCRIBE_SWEEP_JOB, opts: CRON_OPTS },
   );
   await maintenance.upsertJobScheduler(
     DREAMING_SWEEP_JOB,

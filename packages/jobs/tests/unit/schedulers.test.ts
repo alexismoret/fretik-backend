@@ -87,10 +87,10 @@ describe("scheduler identities", () => {
     for (const r of registrations) expect(r.template.name).toBe(r.id);
   });
 
-  test("the whole timetable is thirteen entries", () => {
+  test("the whole timetable is fourteen entries", () => {
     // A count, so that adding or removing a scheduled pass has to be a
     // deliberate edit to this file rather than a diff nobody reads.
-    expect(registrations).toHaveLength(13);
+    expect(registrations).toHaveLength(14);
   });
 });
 
@@ -100,6 +100,9 @@ describe("what may share the 15-second maintenance queue", () => {
       [
         "conversation-task-sweep",
         "dreaming-sweep",
+        // Fan-out only: it lists the teams and enqueues one job each. The
+        // model calls it causes all land on `folder-describe`.
+        "folder-describe-sweep",
         "gc-demote",
         "journal-sweep",
         "model-alert-sweep",
@@ -118,6 +121,10 @@ describe("what may share the 15-second maintenance queue", () => {
     expect(on("collection-index")).toEqual(["collection-index-sweep"]);
     expect(on("mcp-refresh")).toEqual(["mcp-snapshot-refresh"]);
     expect(on("vector-reconcile")).toEqual(["vector-reconcile-sweep"]);
+    // `folder-describe` hosts the per-team jobs, which are the long half; the
+    // sweep that fans them out is on `memory-maintenance` above, so nothing
+    // is scheduled on this queue directly.
+    expect(on("folder-describe")).toEqual([]);
     expect(on("model-sync").sort()).toEqual([
       "model-candidate-bench",
       "model-sync-nightly",

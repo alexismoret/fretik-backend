@@ -65,9 +65,32 @@ export const resolveDocumentFacts = async (
 ): Promise<FactSheet> => {
   const documentId = event.payload["documentId"];
   if (typeof documentId !== "string") return emptyFactSheet(event.type);
+  return documentFacts({
+    documentId,
+    teamId: event.teamId,
+    eventType: event.type,
+  });
+};
+
+/**
+ * The same sheet, addressed by document instead of by event.
+ *
+ * The Drive filer needs these facts at the tail of the processing pipeline,
+ * where there is a document and no event to hand — and minting a fake one to
+ * satisfy the signature would be a lie the type system happened to accept.
+ */
+export const documentFacts = async (params: {
+  documentId: string;
+  teamId: string;
+  /** What the sheet reports as its origin. Defaults to the upload event,
+   * which is what the filer's document has just been through. */
+  eventType?: string;
+}): Promise<FactSheet> => {
+  const { documentId, teamId } = params;
+  const eventType = params.eventType ?? "document.uploaded";
 
   const document = await db.query.documents.findFirst({
-    where: { id: documentId, teamId: event.teamId },
+    where: { id: documentId, teamId },
     columns: {
       id: true,
       originalFilename: true,
@@ -101,7 +124,7 @@ export const resolveDocumentFacts = async (
   // Deleted between the emit and the sweep, or another team's — either way
   // there is nothing to say about it, and an empty sheet is the honest
   // answer. A gate reading one decides nothing and falls open.
-  if (!document) return emptyFactSheet(event.type);
+  if (!document) return emptyFactSheet(eventType);
 
   // Live edges only: a `mentions` link is invalidated rather than deleted, so
   // reading them all would keep naming an organisation the extraction has
@@ -140,7 +163,7 @@ export const resolveDocumentFacts = async (
     // and a gate that throws is a gate that blocks nothing.
     try {
       const fields = await getFieldDefinitionsForTeam({
-        teamId: event.teamId,
+        teamId,
         collectionId: mirror.collectionId,
       });
       const data = await readRecordData({
@@ -160,5 +183,5 @@ export const resolveDocumentFacts = async (
     }
   }
 
-  return { eventType: event.type, facts };
+  return { eventType, facts };
 };

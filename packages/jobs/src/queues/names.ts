@@ -57,6 +57,12 @@ export const VECTOR_RECONCILE_QUEUE = "vector-reconcile";
 // workflow-trigger sweeps would not run for as long as the crawl lasts. Same
 // reasoning `mcp-refresh` and `vector-reconcile` already carry.
 export const MODEL_SYNC_QUEUE = "model-sync";
+// Dedicated queue for the nightly folder-description pass. One cheap LLM call
+// per folder that needs one, fanned out per team — the same shape as dreaming,
+// and off the concurrency-1 maintenance queue for the same reason: a big
+// workspace would hold it for minutes and the 15s journal and trigger sweeps
+// would not run at all while it did.
+export const FOLDER_DESCRIBE_QUEUE = "folder-describe";
 
 /** One journal event to resolve against the collection graph (P3). */
 export interface MemoryResolveJobData {
@@ -135,6 +141,13 @@ export interface WorkflowGateJobData {
   workflowIds: string[];
 }
 
+/** One team's nightly folder-description pass — jobId
+ * `folder-describe-{teamId}-{date}`. */
+export interface FolderDescribeTeamJobData {
+  teamId: string;
+  organizationId: string;
+}
+
 /** Maintenance job names (scheduled on MEMORY_MAINTENANCE_QUEUE). */
 export const JOURNAL_SWEEP_JOB = "journal-sweep";
 /** 03:00 UTC cron — lists active teams and fans out DREAMING_TEAM_JOBs. */
@@ -190,6 +203,10 @@ export const WORKFLOW_RUN_CREATE_JOB = "workflow-run-create";
 /** Job name on WORKFLOW_GATE_QUEUE — decide which of an event's matched
  * workflows deserve a run before any of them is created. */
 export const WORKFLOW_GATE_JOB = "workflow-gate";
+/** Job name on FOLDER_DESCRIBE_QUEUE — one team's folders. */
+export const FOLDER_DESCRIBE_TEAM_JOB = "folder-describe-team";
+/** 02:30 UTC cron on the maintenance queue — fans the above out per team. */
+export const FOLDER_DESCRIBE_SWEEP_JOB = "folder-describe-sweep";
 
 /**
  * Job names on VECTOR_RECONCILE_QUEUE. The sweep detects and enqueues; each

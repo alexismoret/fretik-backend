@@ -16,6 +16,16 @@
  * forwarding to `console.warn` here keeps every core warning visible while
  * that one provider line goes quiet. Delete this module when the provider
  * ships signature-preserving streaming (watch its releases past 3.0.0).
+ *
+ * Checked against 3.1.0 (2026-09-20): still not shipped. That release is
+ * additive — `decisionModel()`/`evaluationModel()` on the Decisions API, plus
+ * `decisionsBaseURL` — and the two reasoning fixes worth knowing about landed
+ * EARLIER and are already in 3.0.0: #477 stopped reasoning-delta frames from
+ * each carrying a full accumulated `reasoning_details` snapshot (2.7.0, the
+ * O(N²) payload), and #487 kept an empty `reasoning_details` array instead of
+ * dropping it (2.8.1) — which is the one that matters here, since DeepSeek V4
+ * in thinking mode serves our `chat` binding and 4xxs the follow-up turn when
+ * that array goes missing.
  */
 const forward = (warnings: unknown): void => {
   if (Array.isArray(warnings)) {

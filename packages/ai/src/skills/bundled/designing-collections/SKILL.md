@@ -101,13 +101,15 @@ Create the type and all its scalar fields in **one** `manageCollection create` w
 
 A collection can be filled by an app the team has connected, on a cadence, instead of being typed. Its columns are then read-only here and carry an age. `manageSync` declares it; `collections.sync.*` is the Python mirror.
 
-**When.** The team already keeps this data in another system and wants to filter, join or chart it alongside their own — orders, invoices, contacts, stock. **When not.** A one-off answer (call the app's read action), something nobody will look at twice, or data the team edits here (a synced column refuses every write). Live read, synced collection or workflow is decided in `skills/platform-guide/SKILL.md` § "Data another system holds"; this section is how to build the second.
+**When.** The team already keeps this data in another system and wants to filter, join or chart it alongside their own — orders, invoices, contacts, stock; or a collection they type themselves needs a few columns an app holds. **When not.** A one-off answer (call the app's read action), something nobody will look at twice, or data the team edits here (a synced column refuses every write). Live read, synced collection or workflow is decided in `skills/platform-guide/SKILL.md` § "Data another system holds"; this section is how to build the second.
 
 **Workflow.**
 
 ```
 1. read("skills/<provider>/SKILL.md") — which read actions the app has, and what they return
-2. manageSync preview — connectionId + operation (+ args). Costs one call to the app.
+   (a list action is the cheap one; it decides the read)
+2. manageSync preview — connectionId + operation (+ args), and for a walked
+   `columns` source also collectionKey + matchFieldKey + externalIdPath, to see `matched`
 3. askUserQuestion — the mapping (which columns), the cadence, and what happens to a row that disappears upstream
 4. manageSync create
 5. Say the first run is under way
@@ -115,8 +117,12 @@ A collection can be filled by an app the team has connected, on a cadence, inste
 
 **Mapping.**
 
+- **Whose rows?** The app's → `table`. The team's → `columns`, which fills columns and never creates or deletes a record. That is the only question about kind, and a collection takes one `table` source plus any number of `columns` ones: Akanea owns the order rows, Stripe fills the payment column, Notion the note.
 - A `table` source needs a stable upstream id (`externalIdPath`). It is the key of every later run: pick one that will not change, or each run duplicates the collection instead of updating it. The preview ranks the candidates.
-- A `lookup` source fills columns of records that already exist. At least one argument binds `{"$field": "<column key>"}` — that binding is what ties an answer to a record. It costs **one call per record** unless the action declares that it takes several ids at once, so it is right for a few columns beside data the team already keeps, and wrong for bringing a table over — 200 records a run against a `table` source's thousand rows a call. `preview` returns `cost.recordsPerRun`: divide the collection's size by it, and if that is more than one refresh, say so before creating anything — then propose the app's own table as its OWN collection (a `table` source, a page per call) with a relation to theirs, which is the same data for a hundredth of the requests.
+- **A `columns` source is read the way its ACTION allows — you do not choose, you pick the action.** A list action (`list_customers`) is walked: pass `matchFieldKey` (the column of the existing records) plus `externalIdPath` (the value in the app's row that must equal it), and it costs **one call per page**. An action answering about one object (`get_customer`) is called per record: bind `{"$field": "<column key>"}` into its argument instead, and it costs **one call per RECORD**. Prefer the list whenever the app has one — 20 calls against 20 000 on the same data.
+- **Preview the match before creating a walked source.** Pass `collectionKey` + `matchFieldKey` + `externalIdPath` and read `matched`. `found: 0` means the two sides do not line up: the source would run, report success, and fill nothing. Fix the key rather than creating it.
+- The match column must hold something stable and comparable — a code, a reference, an email, a number. Compared exactly, capitals included. It can be a column the `table` source fills, which is how a second app keys off the first.
+- On a per-record read, `preview` returns `cost.recordsPerRun`: divide the collection's size by it, and if that is more than one refresh, say so before creating anything — then look for a list action, and only if there is none propose the app's own table as its OWN collection with a relation to theirs.
 - `{"$since": true}` on the argument the action declares as incremental asks for what CHANGED. Much cheaper, and deletions then only land on the daily full walk — say so if the team asks "is this complete?".
 - Map fewer columns than the app offers, and say which ones you left out. A column nobody reads is a column that still costs a write on every run.
 
@@ -134,7 +140,7 @@ For MANY records or restructuring a type (merge/move/split, data-preserving rety
 - `collections.records.bulk_update(updates)` / `collections.records.bulk_delete(record_ids)` — `updates` = `[{"id","data"}]`; patches the given keys (pass `merge=False` to replace the whole record, clearing omitted keys).
 - `collections.records.query(collection_key, filters=…)` — read a batch to transform then write back.
 - `collections.schema.create_collection(key, label, description, fields=[…])` / `update_collection(collection_key, add_fields=[…])` / `add_field` / `change_field(action="update"|"changeType"|"delete")` / `delete_collection`. Type and each field need a one-line `description`. `create_collection` / `update_collection` also take `sharing` to set the type's audience (see the Sharing section).
-- `collections.sync.preview(connection_id, operation, args=…)` / `create(collection_key, connection_id, operation, fields=[…], external_id_path=…)` / `update(source_id, …)` / `delete(source_id)` / `refresh(collection_key=…)` / `confirm_full_resync(source_id)` / `list(collection_key=…)` — the section above, in one script.
+- `collections.sync.preview(connection_id, operation, args=…, collection_key=…, match_field_key=…, external_id_path=…)` / `create(collection_key, connection_id, operation, fields=[…], kind=…, external_id_path=…, match_field_key=…)` / `update(source_id, …)` / `delete(source_id)` / `refresh(collection_key=…)` / `confirm_full_resync(source_id)` / `list(collection_key=…)` — the section above, in one script.
 
 A migration is ONE script: `create_collection` the target → `query` the source → `bulk_create` into the target → `bulk_delete` the source. Keep results in variables; print only counts.
 

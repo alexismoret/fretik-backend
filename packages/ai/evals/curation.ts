@@ -229,6 +229,13 @@ export const CURATED: Record<string, CuratedCase> = {
   "obj-sync-page-wants-synced": { capability: "objects" },
   "obj-sync-explain-plainly": { capability: "objects" },
   "obj-sync-workflow-reads-collection": { capability: "objects" },
+  // ── One collection, several apps, and the read the ACTION decides
+  // (2026-09-20). The first guards the expensive shape — asking an app once
+  // per record when it publishes a list — and the second guards the
+  // assumption that one app owns a table, which was never true: column
+  // ownership is per field.
+  "obj-sync-columns-by-list": { capability: "objects" },
+  "obj-sync-second-app": { capability: "objects" },
   // ── Pages generation (2026-08) — the quality gate `managePage` shipped
   // without. Seeds its own deterministic collection, so NOT smoke. Graded on
   // the STORED definition (structure + the dry-run `warnings` channel of the

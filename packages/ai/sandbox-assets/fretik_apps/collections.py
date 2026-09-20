@@ -401,9 +401,16 @@ class _Sync:
         args: dict[str, Any] | None = None,
         result_path: str | None = None,
         sample_record_id: str | None = None,
+        collection_key: str | None = None,
+        match_field_key: str | None = None,
+        external_id_path: str | None = None,
     ) -> dict[str, Any]:
         """Call the app once and show what would be mapped: rows, proposed
-        columns, candidate stable ids, and whether it can be walked to the end.
+        columns, candidate stable ids, `read`, and the cost of a cadence.
+
+        Pass `collection_key` + `match_field_key` + `external_id_path` to try
+        the match as well: `matched` comes back `{"sampled", "found"}`, and
+        `found == 0` means the source would run, succeed and fill nothing.
         """
         return _call_collections(
             "sync.preview",
@@ -414,6 +421,9 @@ class _Sync:
                     "args": args,
                     "resultPath": result_path,
                     "sampleRecordId": sample_record_id,
+                    "collectionKey": collection_key,
+                    "matchFieldKey": match_field_key,
+                    "externalIdPath": external_id_path,
                 }
             ),
         )
@@ -428,13 +438,21 @@ class _Sync:
         args: dict[str, Any] | None = None,
         result_path: str | None = None,
         external_id_path: str | None = None,
+        match_field_key: str | None = None,
         schedule: dict[str, Any] | None = None,
         orphan_policy: str | None = None,
         row_cap: int | None = None,
     ) -> dict[str, Any]:
         """Declare the source. `fields` map upstream paths to columns:
         [{"path": "customer.name", "label": "Client", "type": "text"}].
-        A table source needs `external_id_path` — the upstream row's own id.
+
+        A `table` source needs `external_id_path` — the upstream row's own id.
+        A `columns` source needs whichever key its ACTION allows: a list action
+        is walked, so pass `match_field_key` (the column of the existing
+        records) plus `external_id_path` (the value in the app's row that must
+        equal it); an action answering about one object is called per record,
+        so bind {"$field": "<column key>"} into `args` instead. Not both.
+
         The first run starts in the background.
         """
         return _call_collections(
@@ -449,6 +467,7 @@ class _Sync:
                     "args": args,
                     "resultPath": result_path,
                     "externalIdPath": external_id_path,
+                    "matchFieldKey": match_field_key,
                     "schedule": schedule,
                     "orphanPolicy": orphan_policy,
                     "rowCap": row_cap,

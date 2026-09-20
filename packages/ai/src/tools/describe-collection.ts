@@ -129,6 +129,14 @@ export const createDescribeCollectionTool = () =>
                 sources: sources.map((source) => ({
                   id: source.id,
                   kind: source.kind,
+                  // `kind` says whose rows these are; `read` says what one
+                  // refresh costs — a call per page, or a call per record.
+                  // Neither is derivable from the other, and the second is the
+                  // one that decides whether a cadence is affordable.
+                  read: source.read,
+                  ...(source.matchFieldKey === null
+                    ? {}
+                    : { matchFieldKey: source.matchFieldKey }),
                   app: appNameOf(
                     source.providerKey,
                     source.connection?.displayName ?? null,

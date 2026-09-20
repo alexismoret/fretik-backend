@@ -40,7 +40,7 @@ Three questions, in order:
 2. **Who reads it?** One person, one glance → live. A team, a dashboard reopened every day, a public link → synced: the app is asked once per refresh instead of once per reader, and a public page over a live app is refused at publish anyway.
 3. **Does anyone act on it here?** A follow-up status, a note, a relation to a client, a formula beside the app's figures → synced; the team's own columns sit next to the app's read-only ones. Something to be DONE with the data on a schedule or an event → a workflow, which reads the synced collection (refreshing it first when it must be current) and never rebuilds the mirror itself.
 
-A fast, unlimited app changes none of this: live is cheap per call, but it still cannot join, total over everything, or be shared. What synced costs is freshness — the cadence (every 15 minutes at most) or a refresh — so say so. Hybrid is normal: a page over the synced collection plus one live dataset for the value that must be this-second. Never one live call per row of a list (that is a `lookup` source), never a live app behind a public page.
+A fast, unlimited app changes none of this: live is cheap per call, but it still cannot join, total over everything, or be shared. What synced costs is freshness — the cadence (every 15 minutes at most) or a refresh — so say so. Hybrid is normal: a page over the synced collection plus one live dataset for the value that must be this-second. Never one live call per row of a list — if the app has a list action, a `columns` source walks it a page at a time — and never a live app behind a public page.
 
 ## Features compose — propose systems, not pieces
 

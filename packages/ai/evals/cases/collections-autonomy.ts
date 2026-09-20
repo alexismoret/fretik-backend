@@ -1278,6 +1278,28 @@ const seedConnectionOnly = async (ctx: EvalCaseContext): Promise<void> => {
             'eval-orders', ${SYNC_APP}, 'active')`);
 };
 
+/** The collection already fed by one app, plus a SECOND app to fill a column. */
+const SYNC_APP_2 = "Eval Billing App";
+
+const seedTwoApps = async (ctx: EvalCaseContext): Promise<void> => {
+  await seedSyncedType(ctx);
+  await db.execute(sql`
+    DELETE FROM external_app_connections
+     WHERE team_id = ${ctx.teamId}::uuid AND display_name = ${SYNC_APP_2}`);
+  await db.execute(sql`
+    INSERT INTO external_app_connections
+      (organization_id, team_id, provider_key, display_name, status)
+    VALUES (${ctx.organizationId}::uuid, ${ctx.teamId}::uuid,
+            'eval-billing', ${SYNC_APP_2}, 'active')`);
+};
+
+const dropTwoApps = async (ctx: EvalCaseContext): Promise<void> => {
+  await dropSyncedType(ctx);
+  await db.execute(sql`
+    DELETE FROM external_app_connections
+     WHERE team_id = ${ctx.teamId}::uuid AND display_name = ${SYNC_APP_2}`);
+};
+
 const syncPageWantsSynced: EvalCase = {
   id: "obj-sync-page-wants-synced",
   description:
@@ -1294,6 +1316,101 @@ const syncPageWantsSynced: EvalCase = {
       type: "judge",
       rubric:
         "Correct ONLY IF the assistant's plan brings the orders into a collection the connected app fills on a schedule (proposed, previewed or created) and puts the dashboard over THAT collection. Incorrect if it builds or proposes a page that reads the app live on every open as the way to filter and join, proposes a workflow that copies the data, or asks for an export.",
+    },
+  ],
+};
+
+/**
+ * A collection the TEAM types, with a column an app could key on — the setup
+ * a `columns` source exists for.
+ *
+ * `code` is deliberately a `text` column the team fills by hand: the point of
+ * the case is that the app's list is matched against something already here,
+ * not that a second table is created beside this one.
+ */
+const MATCH_KEY = "eval_sync_clients";
+
+const seedMatchableType = async (ctx: EvalCaseContext): Promise<void> => {
+  await dropType(ctx, MATCH_KEY);
+  await seedConnectionOnly(ctx);
+
+  const type = await createCollection({
+    organizationId: ctx.organizationId,
+    teamId: ctx.teamId,
+    key: MATCH_KEY,
+    label: "Eval Client",
+    description: "Clients the team keeps by hand.",
+  });
+  const fields: {
+    key: string;
+    type: FieldDefinitionType;
+    isTitle?: boolean;
+  }[] = [
+    { key: "name", type: "text", isTitle: true },
+    { key: "code", type: "text" },
+  ];
+  for (const [i, f] of fields.entries()) {
+    await createFieldDefinition({
+      organizationId: ctx.organizationId,
+      teamId: ctx.teamId,
+      collectionId: type.id,
+      key: f.key,
+      label: f.key,
+      type: f.type,
+      isTitle: f.isTitle,
+      displayOrder: i,
+    });
+  }
+};
+
+const dropMatchableType = async (ctx: EvalCaseContext): Promise<void> => {
+  await dropType(ctx, MATCH_KEY);
+  await dropSyncedType(ctx);
+};
+
+/**
+ * The cheap read, on a collection the team already owns.
+ *
+ * The failure this guards is the one the whole chantier is about: asking the
+ * app once per record when it has a list to walk. Second failure guarded: a
+ * new collection beside the team's own, which throws away the rows they typed.
+ */
+const syncColumnsByList: EvalCase = {
+  id: "obj-sync-columns-by-list",
+  description:
+    "An app fills columns of a collection the team keeps → a columns source matched on an existing column, read by walking the app's list, not one call per record and not a second collection.",
+  prompt: `Dans ${MATCH_KEY}, je voudrais que l'encours de chaque client vienne de notre logiciel de commandes — il a la liste de tous nos clients. C'est faisable ?`,
+  tags: ["objects", "sync", "platform"],
+  seed: retryingSeed(seedMatchableType),
+  cleanup: dropMatchableType,
+  assertions: [
+    { type: "noError" },
+    { type: "toolUsed", tools: ["manageSync", "askUserQuestion"], mode: "any" },
+    {
+      type: "judge",
+      rubric: `Correct ONLY IF the assistant's plan adds the new column(s) to the EXISTING ${MATCH_KEY} collection, filled by the connected app, and recognises each of the app's rows by matching it against a column already on those records (the client code). Incorrect if it creates a SECOND collection for the app's clients, if it proposes asking the app once per client / per row / per record when the app has a list, or if it asks the user to choose between reading the app's list and querying it row by row — that is decided by which action the app offers, not by the user.`,
+    },
+  ],
+};
+
+/**
+ * Several apps on one collection. Structurally allowed from the start (field
+ * ownership is per COLUMN), and the thing an agent gets wrong by assuming one
+ * app owns a table.
+ */
+const syncSecondApp: EvalCase = {
+  id: "obj-sync-second-app",
+  description:
+    "A collection an app already fills gains a column from a SECOND app → another source on the same collection, not a second collection and not a refusal.",
+  prompt: `${SYNC_KEY} vient déjà de notre logiciel de commandes. Je voudrais aussi voir le statut de paiement, qui est dans notre outil de facturation. On peut avoir les deux dans le même tableau ?`,
+  tags: ["objects", "sync", "platform"],
+  seed: retryingSeed(seedTwoApps),
+  cleanup: dropTwoApps,
+  assertions: [
+    { type: "noError" },
+    {
+      type: "judge",
+      rubric: `Correct ONLY IF the assistant says yes and plans a SECOND source on the SAME ${SYNC_KEY} collection, owning only the payment-status column, recognising rows by a value the collection already carries (e.g. the order reference). Incorrect if it says a collection can only be fed by one app, proposes a separate collection for the billing data with a relation as the ONLY way, or proposes copying the data with a workflow.`,
     },
   ],
 };
@@ -1388,6 +1505,8 @@ export const collectionsAutonomySuite: EvalSuite = {
     syncRefreshWhenStale,
     syncProposeFromApp,
     syncPageWantsSynced,
+    syncColumnsByList,
+    syncSecondApp,
     syncExplainPlainly,
     syncWorkflowReadsCollection,
   ],

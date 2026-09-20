@@ -71,6 +71,8 @@ const fieldDraftSchema = z.object({
 const briefOf = (source: {
   id: string;
   kind: string;
+  read: string;
+  matchFieldKey: string | null;
   providerKey: string;
   connection: { displayName: string } | null;
   operation: string;
@@ -85,6 +87,12 @@ const briefOf = (source: {
 }): Record<string, unknown> => ({
   id: source.id,
   kind: source.kind,
+  // What one refresh COSTS, which `kind` does not say: a walk is a call per
+  // page, a per-record read a call per record.
+  read: source.read,
+  ...(source.matchFieldKey === null
+    ? {}
+    : { matchFieldKey: source.matchFieldKey }),
   app: appNameOf(source.providerKey, source.connection?.displayName ?? null),
   operation: source.operation,
   schedule: source.schedule,
@@ -104,12 +112,14 @@ export const createManageSyncTool = () =>
     description: [
       "Fill a collection — or some of its columns — from a connected app, on a schedule. This is how a table whose data lives in another system gets into the workspace: declared once, refreshed by itself, queryable like any other collection.",
       "",
-      "Two shapes. A `table` source OWNS a collection's rows: it walks a list action and each upstream row becomes a record, keyed by a stable upstream id. A `lookup` source fills COLUMNS of records that already exist: each record's own values bind the arguments, and the answer lands in the mapped columns.",
+      "Two kinds. A `table` source OWNS a collection's rows: each upstream row becomes a record, keyed by a stable upstream id. A `columns` source fills COLUMNS of records the team already keeps, and never creates or deletes one. Any number of `columns` sources can feed one collection — a second and a third app each own their own columns.",
+      "",
+      'Two reads, and the ACTION decides which. An action that returns a list is walked page by page and each row is matched locally on `matchFieldKey` — one call per page. An action that answers about one object is called once per record, keyed by a `{"$field"}` argument — one call per RECORD. No action does both, so this is not a choice to offer the user: to read per record, pick the action that answers about one (`get_customer`, not `list_customers`).',
       "",
       `Actions: preview | create | update | delete | refresh | confirmFullResync | list. ${PREVIEW_FIRST}`,
       "",
-      "- preview: connectionId + operation (+ args). Returns up to 20 real rows, a proposed column for each path, the candidate stable ids, whether the action can be walked to the end, and what the chosen cadence would cost against the app's published budget. Costs one call to the app.",
-      "- create: collectionKey for an existing collection, OR key + label + description + icon to make a new one. Plus connectionId, operation, args, fields, externalIdPath (table), schedule, orphanPolicy. The first run starts in the background.",
+      "- preview: connectionId + operation (+ args). Returns up to 20 real rows, a proposed column for each path, the candidate stable ids, `read`, and what the chosen cadence would cost. Add collectionKey + matchFieldKey + externalIdPath to TRY THE MATCH: `matched` comes back `{sampled, found}`, and `found: 0` is the one number worth stopping on — the source would run, succeed and fill nothing. Costs one call to the app.",
+      "- create: collectionKey for an existing collection, OR key + label + description + icon to make a new one. Plus connectionId, operation, args, fields, schedule, orphanPolicy, and the key: externalIdPath (table), or matchFieldKey + externalIdPath (columns, walked). The first run starts in the background.",
       "- update: sourceId + any of args, schedule, orphanPolicy, rowCap, enabled, fields.",
       "- delete: sourceId. The columns stay and become ordinary local ones — the records are NOT deleted.",
       "- refresh: sourceId (or collectionKey for all of a collection's). Queues a run and returns immediately; re-read the rows afterwards, not in the same breath.",

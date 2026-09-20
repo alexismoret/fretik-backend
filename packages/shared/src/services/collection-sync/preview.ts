@@ -135,6 +135,9 @@ export const previewSyncSource = async (input: {
         ? { maxLimit: pagination.maxLimit }
         : {}),
     },
+    ...(action.batch !== undefined
+      ? { batch: { maxItems: action.batch.maxItems } }
+      : {}),
   };
 };
 

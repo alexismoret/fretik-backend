@@ -4,6 +4,11 @@
 sert à décider si le chantier vaut le coup, sous quelle forme, et dans quel
 ordre.
 
+> **Périmé depuis le 2026-09-19 — lire d'abord « Où ça en est » ci-dessous.**
+> Les phases 0 à 2 sont livrées. Ce qui suit reste vrai comme étude (§2 la
+> comparaison marché, §3 l'architecture, §4 les interactions) mais faux comme
+> état des lieux (§1) et comme plan (§7).
+
 Question posée : la partie collections est un mélange de base de données et
 de CRM, mais elle n'est jamais reliée directement aux données des apps
 externes. Le seul chemin aujourd'hui est de demander au chatbot ou à un
@@ -11,6 +16,58 @@ workflow de remplir des records. Un CRM/BI (Salesforce, Power BI) permet de
 construire des tableaux dont des colonnes viennent directement d'une app
 externe. Est-ce un gain réel, est-ce faisable de manière optimisée avec le
 système SQL existant, et comment gérer formules, index, pages, workflows ?
+
+---
+
+## Où ça en est — 2026-09-19
+
+Les phases 0, 1 et 2 sont livrées : le moteur parcourt en flux et reprend sur
+point de reprise, le gouverneur d'appels protège les apps tierces, le plancher
+d'orphelins demande confirmation au lieu de détruire, l'agent a `manageSync` et
+sait choisir entre une lecture en direct, une collection synchronisée et un
+workflow. La phase 3 (webhooks, relations par `external_id`, écriture inverse)
+n'est pas commencée.
+
+### Trois décisions prises le 2026-09-19
+
+**1. Le moteur est gelé jusqu'à ce qu'un vrai client s'en serve.** Pas de
+webhooks, pas de relations par `external_id`, pas de nouveau mode de
+pagination tant qu'une équipe réelle n'a pas rempli une collection et n'a pas
+buté sur quelque chose. Le moteur est plus capable que la demande : il tient
+un million de lignes et personne n'en a encore synchronisé dix mille. La
+prochaine heure d'ingénierie vaut plus sur ce qu'un utilisateur aura
+effectivement demandé que sur la ligne suivante du plan. Ce qui reste ouvert
+ci-dessous est un inventaire, pas une file d'attente.
+
+**2. L'écriture inverse (modifier une colonne ici met à jour l'app) est un
+chantier déclenché par la demande, pas planifié.** C'est la seule chose qui
+transformerait une collection synchronisée en poste de travail plutôt qu'en
+miroir, et c'est aussi la seule qui puisse casser les données de quelqu'un
+d'autre. Elle exige, au minimum : une action d'écriture déclarée par le
+manifeste et testée par fournisseur, un chemin d'approbation (le `plan-executor`
+existe), une résolution de conflit quand l'app a changé la valeur entre-temps,
+et une réponse honnête quand l'écriture réussit chez nous et échoue chez eux.
+Rien de tout ça ne se conçoit dans l'abstrait : on attend le premier client qui
+dit « je veux corriger ce statut ici », et on le construit pour son app.
+
+**3. « Actualiser à l'ouverture » n'existe pas — le réglage a été retiré du
+formulaire.** `refreshOnOpenAfterMinutes` est enregistré, validé, et le trigger
+`open` figure dans l'enum des runs — mais rien ne lit l'un ni ne produit
+l'autre. Le formulaire promettait donc quelque chose qui n'arrivait jamais. La
+colonne et l'enum restent (la fonctionnalité est prévue, et c'est précisément
+la réponse à « on préfère voir en direct » : une page sur une collection
+synchronisée qui se rafraîchit à l'ouverture) ; l'interrupteur, lui, est parti.
+
+### Ce qui reste ouvert
+
+- **Fraîcheur à l'ouverture** — ci-dessus. Le chantier le plus proche d'une
+  vraie demande utilisateur.
+- **Découvrabilité du `lookup`** — une source `lookup` coûte un appel par
+  record et rien dans le formulaire ne le dit : l'estimation de coût
+  (`estimate-cost.ts`) suppose une page par run, ce qui est juste pour une
+  source `table` et faux jusqu'à 200× pour un `lookup`. À corriger avant, ou
+  en même temps, que toute décision sur qui a le droit d'en créer une.
+- **Phase 3** — webhooks, relations par `external_id`, écriture inverse.
 
 ---
 

@@ -16,6 +16,7 @@ import type {
 } from "../../schemas/collection-sync";
 import { SYNC_LIMITS } from "../../schemas/collection-sync";
 import { fieldConfigSchema } from "../../schemas/field-definitions";
+import { RESERVED_FIELD_KEYS } from "../collection-schema/identifiers";
 import { invalidateFieldDefinitionsCache } from "../field-definitions/cache";
 import { createFieldDefinition } from "../field-definitions/create";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
@@ -123,7 +124,13 @@ export const createSyncSource = async (
       // service would fail the `(collectionId, key)` index; omitting it lets
       // `resolveUniqueFieldKey` derive `status_2`, and the mapping then records
       // whatever key came back rather than the one we asked for.
-      ...(existing === undefined ? { key: desiredKey } : {}),
+      //
+      // A RESERVED key is taken in the same sense and goes the same way. The
+      // preview offers the app's `id` as a column and pre-selects it, so the
+      // default mapping of almost every action asks for exactly this.
+      ...(existing === undefined && !RESERVED_FIELD_KEYS.has(desiredKey)
+        ? { key: desiredKey }
+        : {}),
       label: draft.label,
       type: draft.type,
       ...(draft.config !== undefined

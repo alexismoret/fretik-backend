@@ -210,6 +210,89 @@ describe("the lookup work list", () => {
     });
     expect(rested.map((entry) => entry.recordId).sort()).toEqual([a, b].sort());
   });
+
+  /**
+   * THE RUN THAT WAS NOT ASKED FOR.
+   *
+   * A `lookup` source does not only run on its cadence: any change to a bound
+   * column sets `next_run_at = now()`, and the sweep then claims it as an
+   * ordinary `schedule` run. The rotation used to fill whatever seats the
+   * queued records left over — so one edit on a 200-row collection cost two
+   * hundred upstream calls, a hundred and ninety-nine of them re-asking rows
+   * answered a minute earlier. The counters called it `unchanged: 199`, which
+   * is what a healthy sync looks like, so nothing anywhere said it happened.
+   */
+  test("a run triggered by one edit does not fill its seats with fresh rows", async () => {
+    const h = await harness(6);
+    const [edited, ...others] = h.recordIds;
+    if (edited === undefined || others.length !== 5) {
+      throw new Error("fixture: six records");
+    }
+    // The last run answered all six a minute ago; then one record was edited.
+    for (const id of others) await setState(h.sourceId, id, "ok", "1 minute");
+    await setState(h.sourceId, edited, "pending", "1 minute");
+    await db.execute(sql`
+      UPDATE collection_sync_sources
+         SET untracked_scan_done_at = now()
+       WHERE id = ${h.sourceId}::uuid`);
+
+    const picked = await selectLookupCandidates({
+      source: await reload(h.sourceId),
+      limit: SYNC_LIMITS.lookupBatchSize,
+    });
+
+    // One call, for the one row that changed. The other five are barely older
+    // than a minute on a quarter-hourly source: nothing is due.
+    expect(picked.map((entry) => entry.recordId)).toEqual([edited]);
+  });
+
+  test("the rotation still comes round once the cadence has passed", async () => {
+    const h = await harness(3);
+    const [a, b, c] = h.recordIds;
+    if (!a || !b || !c) throw new Error("fixture: three records");
+    // Half of fifteen minutes is the floor, so eight minutes is due and six is
+    // not. The middle case is what stops the floor becoming a freeze.
+    await setState(h.sourceId, a, "ok", "8 minutes");
+    await setState(h.sourceId, b, "ok", "6 minutes");
+    await setState(h.sourceId, c, "ok", "2 hours");
+    await db.execute(sql`
+      UPDATE collection_sync_sources
+         SET untracked_scan_done_at = now()
+       WHERE id = ${h.sourceId}::uuid`);
+
+    const picked = await selectLookupCandidates({
+      source: await reload(h.sourceId),
+      limit: SYNC_LIMITS.lookupBatchSize,
+    });
+
+    expect(picked.map((entry) => entry.recordId)).toEqual([c, a]);
+  });
+
+  /**
+   * An hourly source gives its rows half an hour of grace, not seven minutes.
+   * Reading the floor off the schedule is what keeps "how often" meaning one
+   * thing: a row refreshed inside the current cycle is not asked about again.
+   */
+  test("the floor follows the source's own cadence", async () => {
+    const h = await harness(2);
+    const [a, b] = h.recordIds;
+    if (!a || !b) throw new Error("fixture: two records");
+    await db.execute(sql`
+      UPDATE collection_sync_sources
+         SET schedule = '{"mode":"interval","everyMinutes":60}'::jsonb,
+             untracked_scan_done_at = now()
+       WHERE id = ${h.sourceId}::uuid`);
+    await setState(h.sourceId, a, "ok", "20 minutes");
+    await setState(h.sourceId, b, "ok", "40 minutes");
+
+    const picked = await selectLookupCandidates({
+      source: await reload(h.sourceId),
+      limit: SYNC_LIMITS.lookupBatchSize,
+    });
+
+    // Twenty minutes into an hourly cycle is not stale. Forty is.
+    expect(picked.map((entry) => entry.recordId)).toEqual([b]);
+  });
 });
 
 describe("a record change makes a lookup source due", () => {

@@ -21,7 +21,8 @@ import { SYNC_LIMITS } from "../../schemas/collection-sync";
  *     what makes the wait short.
  *  2. `pending` — an edit changed a bound field. Indexed by
  *     `record_sync_state_source_status_idx`.
- *  3. STALEST — ordinary rotation, by `record_sync_state_source_synced_idx`.
+ *  3. STALEST — ordinary rotation, by `record_sync_state_source_synced_idx`,
+ *     and only rows past `rotateBefore` (see `lookupRotationFloor`).
  *  4. NEVER TRACKED, AT A CURSOR — the first pass over a collection. The
  *     cursor is what stops this being the O(collection) anti-join the sort
  *     used to be: once every record is tracked, the scan finishes, records the
@@ -39,6 +40,41 @@ export interface LookupCandidate {
 
 /** `missing` rows one run may re-ask. Deliberately a floor's worth, not a share. */
 const MISSING_RETRY_PER_RUN = 50;
+
+/**
+ * How stale a tracked row must be before the rotation spends a call on it.
+ *
+ * A `lookup` run does NOT only happen on its cadence. `invalidate-on-change`
+ * sets `next_run_at = now()` whenever a bound column moves — an edit, a
+ * creation, a `table` source rewriting the key — and the sweep then picks the
+ * source up as an ordinary `schedule` run. Without a floor, step (3) filled
+ * every such run to its limit with whatever happened to be stalest, so
+ * creating five records cost two hundred upstream calls: five that were asked
+ * for and a hundred and ninety-five that had been answered minutes earlier.
+ * Nothing in the run said so — the counters read `unchanged: 195`, which is
+ * what a well-behaved sync looks like.
+ *
+ * HALF the cadence, not the whole of it. At the whole interval a row refreshed
+ * in the closing seconds of a long run is a hair too fresh when the next tick
+ * starts, so it waits a full extra cycle and the rotation drifts to half speed.
+ * Half leaves room for a run's own duration while still refusing a call on a
+ * row answered moments ago, which is the case this exists for.
+ *
+ * A manual source is floored at the tightest cadence the product offers: it
+ * has no interval of its own, and "only on demand" is the one setting where an
+ * edit-triggered rotation is most clearly not what was asked for.
+ */
+export const lookupRotationFloor = (
+  source: Pick<CollectionSyncSource, "schedule">,
+  now: Date = new Date(),
+): Date => {
+  const everyMinutes =
+    source.schedule.mode === "interval" &&
+    source.schedule.everyMinutes !== undefined
+      ? source.schedule.everyMinutes
+      : SYNC_LIMITS.minIntervalMinutes;
+  return new Date(now.getTime() - (everyMinutes * 60_000) / 2);
+};
 
 export const selectLookupCandidates = async (input: {
   source: CollectionSyncSource;
@@ -91,13 +127,14 @@ export const selectLookupCandidates = async (input: {
   absorb(pending.rows);
   if (remaining() <= 0) return [...picked.values()];
 
-  // (3) The stalest already-tracked rows.
+  // (3) The stalest already-tracked rows that are actually due.
   const stalest = await db.execute(sql`
     SELECT s.record_id::text AS id,
            s.content_hash    AS content_hash
       FROM record_sync_state s
      WHERE s.sync_source_id = ${source.id}::uuid
        AND s.status IN ('ok'::record_sync_status, 'error'::record_sync_status)
+       AND s.synced_at < ${lookupRotationFloor(source)}
      ORDER BY s.synced_at ASC
      LIMIT ${remaining()}`);
   absorb(stalest.rows);

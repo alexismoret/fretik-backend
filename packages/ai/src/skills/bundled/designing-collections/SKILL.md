@@ -1,6 +1,6 @@
 ---
 name: designing-collections
-description: Design or modify the team's collections, fields, and select options (field types, config, icons), fill a collection from a connected app on a cadence — AND bulk-import or migrate MANY records via the Python objects SDK. Use when the user asks to create/rename/restructure a type, add/change/remove fields (including a computed/formula column), set up options, pull a table out of an app the team has connected, or import/restructure many records at once (e.g. paste a CSV of rows to add). A single record is manageRecord; reading is querySql.
+description: Design or modify the team's collections, fields, and select options (field types, config, icons), fill a collection from a connected app on a cadence — AND bulk-import or migrate MANY records via the Python `collections` SDK. Use when the user asks to create/rename/restructure a type, add/change/remove fields (including a computed/formula column), set up options, pull a table out of an app the team has connected, or import/restructure many records at once (e.g. paste a CSV of rows to add). A single record is manageRecord; reading is querySql.
 ---
 
 # Designing collections
@@ -101,7 +101,7 @@ Create the type and all its scalar fields in **one** `manageCollection create` w
 
 A collection can be filled by an app the team has connected, on a cadence, instead of being typed. Its columns are then read-only here and carry an age. `manageSync` declares it; `collections.sync.*` is the Python mirror.
 
-**When.** The team already keeps this data in another system and wants to filter, join or chart it alongside their own — orders, invoices, contacts, stock. **When not.** A one-off answer (call the app's read action), something nobody will look at twice, or data the team edits here (a synced column refuses every write).
+**When.** The team already keeps this data in another system and wants to filter, join or chart it alongside their own — orders, invoices, contacts, stock. **When not.** A one-off answer (call the app's read action), something nobody will look at twice, or data the team edits here (a synced column refuses every write). Live read, synced collection or workflow is decided in `skills/platform-guide/SKILL.md` § "Data another system holds"; this section is how to build the second.
 
 **Workflow.**
 
@@ -116,7 +116,7 @@ A collection can be filled by an app the team has connected, on a cadence, inste
 **Mapping.**
 
 - A `table` source needs a stable upstream id (`externalIdPath`). It is the key of every later run: pick one that will not change, or each run duplicates the collection instead of updating it. The preview ranks the candidates.
-- A `lookup` source fills columns of records that already exist. At least one argument binds `{"$field": "<column key>"}` — that binding is what ties an answer to a record.
+- A `lookup` source fills columns of records that already exist. At least one argument binds `{"$field": "<column key>"}` — that binding is what ties an answer to a record. It costs **one call per record** unless the action declares that it takes several ids at once, so it is right for a few columns beside data the team already keeps, and wrong for bringing a table over — 200 records a run against a `table` source's thousand rows a call. `preview` returns `cost.recordsPerRun`: divide the collection's size by it, and if that is more than one refresh, say so before creating anything — then propose the app's own table as its OWN collection (a `table` source, a page per call) with a relation to theirs, which is the same data for a hundredth of the requests.
 - `{"$since": true}` on the argument the action declares as incremental asks for what CHANGED. Much cheaper, and deletions then only land on the daily full walk — say so if the team asks "is this complete?".
 - Map fewer columns than the app offers, and say which ones you left out. A column nobody reads is a column that still costs a write on every run.
 
@@ -130,11 +130,11 @@ A collection can be filled by an app the team has connected, on a cadence, inste
 
 For MANY records or restructuring a type (merge/move/split, data-preserving retype, big filtered update), write ONE python script with `from fretik_apps import collections`. It runs server-side — same validation, grants and journal as the tools — and the bulk rows never re-enter your context. The interactive tools above are for single edits; this is the batch path.
 
-- `objects.records.bulk_create(collection_key, rows)` — `rows` = list of field maps. To link a new record in the same write, give a row as `{"data": {…}, "relations": [{"relation_key": "client", "to_record_id": "…"}]}` (target by `to_record_id`, or an uploaded file's `to_document_id`). Returns `{ids, okCount, errors, relationErrors}`; `ids[i]` aligns with `rows[i]`.
-- `objects.records.bulk_update(updates)` / `objects.records.bulk_delete(record_ids)` — `updates` = `[{"id","data"}]`; patches the given keys (pass `merge=False` to replace the whole record, clearing omitted keys).
-- `objects.records.query(collection_key, filters=…)` — read a batch to transform then write back.
-- `objects.schema.create_collection(key, label, description, fields=[…])` / `update_collection(collection_key, add_fields=[…])` / `add_field` / `change_field(action="update"|"changeType"|"delete")` / `delete_collection`. Type and each field need a one-line `description`. `create_collection` / `update_collection` also take `sharing` to set the type's audience (see the Sharing section).
-- `objects.sync.preview(connection_id, operation, args=…)` / `create(collection_key, connection_id, operation, fields=[…], external_id_path=…)` / `update(source_id, …)` / `delete(source_id)` / `refresh(collection_key=…)` / `list(collection_key=…)` — the section above, in one script.
+- `collections.records.bulk_create(collection_key, rows)` — `rows` = list of field maps. To link a new record in the same write, give a row as `{"data": {…}, "relations": [{"relation_key": "client", "to_record_id": "…"}]}` (target by `to_record_id`, or an uploaded file's `to_document_id`). Returns `{ids, okCount, errors, relationErrors}`; `ids[i]` aligns with `rows[i]`.
+- `collections.records.bulk_update(updates)` / `collections.records.bulk_delete(record_ids)` — `updates` = `[{"id","data"}]`; patches the given keys (pass `merge=False` to replace the whole record, clearing omitted keys).
+- `collections.records.query(collection_key, filters=…)` — read a batch to transform then write back.
+- `collections.schema.create_collection(key, label, description, fields=[…])` / `update_collection(collection_key, add_fields=[…])` / `add_field` / `change_field(action="update"|"changeType"|"delete")` / `delete_collection`. Type and each field need a one-line `description`. `create_collection` / `update_collection` also take `sharing` to set the type's audience (see the Sharing section).
+- `collections.sync.preview(connection_id, operation, args=…)` / `create(collection_key, connection_id, operation, fields=[…], external_id_path=…)` / `update(source_id, …)` / `delete(source_id)` / `refresh(collection_key=…)` / `list(collection_key=…)` — the section above, in one script.
 
 A migration is ONE script: `create_collection` the target → `query` the source → `bulk_create` into the target → `bulk_delete` the source. Keep results in variables; print only counts.
 

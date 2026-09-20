@@ -8,6 +8,7 @@ import type {
 import { collectionSyncRuns } from "../../db/schema";
 import {
   SYNC_LIMITS,
+  syncArgsBindSince,
   type SyncRunCounts,
   type SyncStopReason,
   type TableWalkCheckpoint,
@@ -82,11 +83,28 @@ const configHashOf = (source: CollectionSyncSource): string =>
  * `fullWalkIntervalMinutes`. That periodic full pass is not an optimisation: it
  * is the ONLY moment a deletion upstream can be noticed, because an incremental
  * answer never mentions the rows that did not change.
+ *
+ * The answer decides whether the orphan diff runs at all, so getting it wrong
+ * is silent in both directions: say "incremental" of a complete answer and
+ * deletions go unseen; say "full" of a partial one and the untouched
+ * collection is declared gone.
  */
 export const shouldWalkEverything = (
-  source: Pick<CollectionSyncSource, "lastSuccessAt" | "lastFullWalkAt">,
+  source: Pick<
+    CollectionSyncSource,
+    "args" | "lastSuccessAt" | "lastFullWalkAt"
+  >,
   now: Date = new Date(),
 ): boolean => {
+  // Nothing binds `{"$since": true}` ⇒ the app is asked the same unbounded
+  // question every time, so every answer is the whole truth and every walk is a
+  // full one. Without this the periodic pass was the only one that diffed, and
+  // a source that CANNOT read incrementally — which is every source the form
+  // produces unless somebody binds the parameter — spent 24 hours treating
+  // complete answers as partial ones. An upstream returning nothing was then
+  // recorded as a clean `success` with zero orphans: the exact reading the
+  // floor exists to refuse.
+  if (!syncArgsBindSince(source.args)) return true;
   if (source.lastSuccessAt === null) return true;
   if (source.lastFullWalkAt === null) return true;
   const age = now.getTime() - source.lastFullWalkAt.getTime();

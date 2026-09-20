@@ -1,5 +1,6 @@
 import db from "../../db";
-import type { SyncSchedule } from "../../schemas/collection-sync";
+import type { SyncKind, SyncSchedule } from "../../schemas/collection-sync";
+import { syncRunCeiling } from "../../schemas/collection-sync";
 import { resolveGovernorPolicy } from "../external-apps/exec/governor/policy";
 
 /**
@@ -10,16 +11,20 @@ import { resolveGovernorPolicy } from "../external-apps/exec/governor/policy";
  * fail loudly — it gets throttled by the governor, runs late, and looks like a
  * slow app.
  *
- * Deliberately a WORST case, and labelled as one. Nobody knows at this point
- * how many rows the collection will hold, so the calls-per-run figure assumes
- * the walk goes all the way to `rowCap`. An estimate that guessed low would be
- * worse than none: the whole use of the number is to catch a cadence that
- * cannot fit, and that comparison only works against the ceiling.
+ * Deliberately a WORST case — see `syncRunCeiling`, which owns the arithmetic
+ * and the reason it has to be a ceiling. This function's own job is only to
+ * turn one run into a day and compare it with the app's published budget.
  */
 export interface SyncCostEstimate {
   runsPerDay: number;
-  callsPerRunAtRowCap: number;
-  callsPerDayAtRowCap: number;
+  /**
+   * Rows one run reaches at most: `rowCap` for a `table`, and for a `lookup`
+   * the records it refreshes per run — which is the number that tells someone
+   * their 5 000-row collection takes a day and a half to come round.
+   */
+  recordsPerRun: number;
+  callsPerRun: number;
+  callsPerDay: number;
   /** The app's published budget, converted to a day. Absent when it publishes
    * none — most APIs are generous enough not to. */
   appLimitPerDay?: number;
@@ -28,34 +33,45 @@ export interface SyncCostEstimate {
 }
 
 export const estimateSyncCost = (input: {
+  kind: SyncKind;
   schedule: SyncSchedule;
-  rowCap: number;
+  /** `table` only. */
+  rowCap?: number;
   /** Rows the action returns per call, when it declares a page size. */
   pageSize: number | undefined;
+  /** Ids the action takes per call, when it declares batching (`lookup`). */
+  batchMaxItems?: number;
   budget: { requests: number; perSeconds: number } | undefined;
 }): SyncCostEstimate => {
   const runsPerDay =
     input.schedule.mode === "interval" && input.schedule.everyMinutes
       ? Math.floor(1440 / input.schedule.everyMinutes)
       : 0;
-  const callsPerRunAtRowCap =
-    input.pageSize === undefined || input.pageSize <= 0
-      ? 1
-      : Math.ceil(input.rowCap / input.pageSize);
-  const callsPerDayAtRowCap = runsPerDay * callsPerRunAtRowCap;
+  const ceiling = syncRunCeiling({
+    kind: input.kind,
+    ...(input.rowCap === undefined ? {} : { rowCap: input.rowCap }),
+    ...(input.pageSize === undefined ? {} : { pageSize: input.pageSize }),
+    ...(input.batchMaxItems === undefined
+      ? {}
+      : { batchMaxItems: input.batchMaxItems }),
+  });
+  const callsPerDay = runsPerDay * ceiling.calls;
   const appLimitPerDay =
     input.budget === undefined
       ? undefined
       : Math.floor((input.budget.requests * 86_400) / input.budget.perSeconds);
   return {
     runsPerDay,
-    callsPerRunAtRowCap,
-    callsPerDayAtRowCap,
+    recordsPerRun: ceiling.records,
+    callsPerRun: ceiling.calls,
+    callsPerDay,
     ...(appLimitPerDay === undefined ? {} : { appLimitPerDay }),
-    ...(appLimitPerDay !== undefined && callsPerDayAtRowCap > appLimitPerDay
+    ...(appLimitPerDay !== undefined && callsPerDay > appLimitPerDay
       ? {
           warning:
-            "At this cadence a full collection would exceed the app's published budget. Slow the cadence, cap the rows, or bind an incremental argument.",
+            input.kind === "lookup"
+              ? "At this cadence this source would exceed the app's published budget — a lookup spends one request per record unless the action takes several ids at once. Slow the cadence, or fill these columns from a table source instead."
+              : "At this cadence a full collection would exceed the app's published budget. Slow the cadence, cap the rows, or bind an incremental argument.",
         }
       : {}),
   };
@@ -72,9 +88,11 @@ export const estimateSyncCost = (input: {
 export const estimateSyncCostForConnection = async (input: {
   teamId: string;
   connectionId: string;
+  kind: SyncKind;
   schedule: SyncSchedule;
-  rowCap: number;
+  rowCap?: number;
   pageSize: number | undefined;
+  batchMaxItems?: number;
 }): Promise<SyncCostEstimate> => {
   const connection = await db.query.externalAppConnections.findFirst({
     where: { id: input.connectionId, teamId: input.teamId },
@@ -91,9 +109,13 @@ export const estimateSyncCostForConnection = async (input: {
   const policy =
     connection === undefined ? undefined : resolveGovernorPolicy(connection);
   return estimateSyncCost({
+    kind: input.kind,
     schedule: input.schedule,
-    rowCap: input.rowCap,
+    ...(input.rowCap === undefined ? {} : { rowCap: input.rowCap }),
     pageSize: input.pageSize,
+    ...(input.batchMaxItems === undefined
+      ? {}
+      : { batchMaxItems: input.batchMaxItems }),
     budget: policy?.perConnection ?? policy?.perProvider,
   });
 };

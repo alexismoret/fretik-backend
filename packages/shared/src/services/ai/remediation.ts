@@ -7,3 +7,11 @@
  */
 export const TOOL_PERMISSIONS_REMEDIATION =
   "Tell the user it can be re-enabled in Settings → Tool permissions.";
+
+/**
+ * Why a workflow run may not declare or reshape a sync source. Two doors reach
+ * the rule — the `manageSync` tool and the Python `collections.sync.*` ops —
+ * and a rule enforced on one door is enforced on neither.
+ */
+export const SYNC_LOCKED_IN_WORKFLOW =
+  "A run never creates or changes a sync source — it would add columns and schedule calls to a third party. Note the gap in the task summary. Refreshing an existing one is allowed.";

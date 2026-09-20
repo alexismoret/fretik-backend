@@ -1259,10 +1259,117 @@ const syncProposeFromApp: EvalCase = {
   ],
 };
 
+// ── Live read, synced collection, or workflow ───────────────────────────────
+//
+// The decision the platform guide settles for data another system holds: a
+// dashboard the team filters and joins goes over a collection the app fills,
+// not over the app itself; a scheduled deliverable is a workflow that READS
+// that collection rather than a second copy of it; and a person who cannot edit
+// a synced column gets the arrangement explained in their own words. None of
+// the four cases above asks the agent to CHOOSE between the three.
+
+/** The connection alone — for the case that must decide to build the source. */
+const seedConnectionOnly = async (ctx: EvalCaseContext): Promise<void> => {
+  await dropSyncedType(ctx);
+  await db.execute(sql`
+    INSERT INTO external_app_connections
+      (organization_id, team_id, provider_key, display_name, status)
+    VALUES (${ctx.organizationId}::uuid, ${ctx.teamId}::uuid,
+            'eval-orders', ${SYNC_APP}, 'active')`);
+};
+
+const syncPageWantsSynced: EvalCase = {
+  id: "obj-sync-page-wants-synced",
+  description:
+    "A dashboard over an app's table the team filters and joins → the collection the app fills comes first, not a page reading the app live.",
+  prompt:
+    "Je veux un tableau de bord de nos commandes — elles sont dans notre logiciel de commandes : les filtrer par client, le total par mois, et les recouper avec nos clients ici. Tu peux me faire ça ?",
+  tags: ["objects", "sync", "pages", "platform"],
+  seed: retryingSeed(seedConnectionOnly),
+  cleanup: dropSyncedType,
+  assertions: [
+    { type: "noError" },
+    { type: "toolUsed", tools: ["manageSync", "askUserQuestion"], mode: "any" },
+    {
+      type: "judge",
+      rubric:
+        "Correct ONLY IF the assistant's plan brings the orders into a collection the connected app fills on a schedule (proposed, previewed or created) and puts the dashboard over THAT collection. Incorrect if it builds or proposes a page that reads the app live on every open as the way to filter and join, proposes a workflow that copies the data, or asks for an export.",
+    },
+  ],
+};
+
+const syncExplainPlainly: EvalCase = {
+  id: "obj-sync-explain-plainly",
+  description:
+    "A user who cannot edit a synced column and doubts the figures gets it explained in their words: the app fills it, corrected there, refreshed on a cadence, currently behind.",
+  prompt: `Dans le tableau ${SYNC_KEY}, je n'arrive pas à modifier le montant d'une commande, et je ne sais pas si les chiffres sont à jour. Tu peux m'expliquer ?`,
+  tags: ["objects", "sync", "platform", "language"],
+  seed: retryingSeed(seedSyncedType),
+  cleanup: dropSyncedType,
+  assertions: [
+    { type: "noError" },
+    { type: "toolNotUsed", tools: ["manageRecord"] },
+    {
+      type: "judge",
+      rubric: `Correct ONLY IF the assistant, in plain language with no tool or internal names, (a) explains that these columns are filled by the connected app "${SYNC_APP}" and that a value is corrected in that app, not here, AND (b) says how fresh the figures are — last refreshed about 30 hours ago on an hourly schedule, so they are behind — and offers to refresh them (or does). Incorrect if it says the figures are current, offers to change the amount here, or answers in technical vocabulary.`,
+    },
+  ],
+};
+
+// `workflows` carries no conversation id, so the draft this case creates is
+// found by the seed's own timestamp — no other case in the suite creates one.
+let workflowCaseSeededAt: Date | null = null;
+
+const seedForWorkflowCase = async (ctx: EvalCaseContext): Promise<void> => {
+  await seedSyncedType(ctx);
+  workflowCaseSeededAt = new Date();
+};
+
+const cleanupWorkflowCase = async (ctx: EvalCaseContext): Promise<void> => {
+  if (workflowCaseSeededAt !== null) {
+    const since = workflowCaseSeededAt.toISOString();
+    await db.execute(sql`
+      DELETE FROM workflow_runs
+       WHERE workflow_id IN (
+         SELECT id FROM workflows
+          WHERE team_id = ${ctx.teamId}::uuid
+            AND created_at >= ${since}::timestamptz)`);
+    await db.execute(sql`
+      DELETE FROM workflows
+       WHERE team_id = ${ctx.teamId}::uuid
+         AND created_at >= ${since}::timestamptz`);
+    workflowCaseSeededAt = null;
+  }
+  await dropSyncedType(ctx);
+};
+
+const syncWorkflowReadsCollection: EvalCase = {
+  id: "obj-sync-workflow-reads-collection",
+  description:
+    "A scheduled deliverable over an app's orders is a workflow that reads the collection the app already fills — not a second sync source, not a playbook that re-fetches the app.",
+  prompt:
+    "Chaque matin à 8h, prépare-moi un fichier Excel des commandes de plus de 1000 € de notre logiciel de commandes.",
+  tags: ["objects", "sync", "workflows", "platform"],
+  seed: retryingSeed(seedForWorkflowCase),
+  cleanup: cleanupWorkflowCase,
+  assertions: [
+    { type: "noError" },
+    {
+      type: "toolUsed",
+      tools: ["manageWorkflow", "askUserQuestion"],
+      mode: "any",
+    },
+    {
+      type: "judge",
+      rubric: `Correct ONLY IF the assistant set up (or proposed, with a concrete plan) a scheduled workflow whose runs take the orders from the existing "${SYNC_KEY}" collection the app already fills — refreshing it first is fine. Incorrect if it created or proposed another sync source, wrote a playbook that fetches the app's whole order list itself on every run, or told the user to export a file by hand.`,
+    },
+  ],
+};
+
 export const collectionsAutonomySuite: EvalSuite = {
   name: "collections-autonomy",
   summary:
-    "Autonomous object management — proactive create, propose-don't-act on schema, no-data-loss updates, the relevance gate, tolerant value coercion (incl. rating + location), bulk CSV import, SQL→CSV export, the computed-column decision (formula vs stored vs never-written), and the four things a collection an app fills demands: quote its age, never write it, refresh it, propose it.",
+    "Autonomous object management — proactive create, propose-don't-act on schema, no-data-loss updates, the relevance gate, tolerant value coercion (incl. rating + location), bulk CSV import, SQL→CSV export, the computed-column decision (formula vs stored vs never-written), the four things a collection an app fills demands (quote its age, never write it, refresh it, propose it), and the choice between reading an app live, syncing it, and automating over it.",
   cases: [
     explicitCreate,
     implicitCreate,
@@ -1280,5 +1387,8 @@ export const collectionsAutonomySuite: EvalSuite = {
     syncColumnRefused,
     syncRefreshWhenStale,
     syncProposeFromApp,
+    syncPageWantsSynced,
+    syncExplainPlainly,
+    syncWorkflowReadsCollection,
   ],
 };

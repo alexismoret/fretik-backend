@@ -5,6 +5,7 @@ import {
   syncScheduleSchema,
 } from "@fretik/shared/schemas/collection-sync";
 import { fieldDefinitionTypeSchema } from "@fretik/shared/schemas/field-definitions";
+import { SYNC_LOCKED_IN_WORKFLOW } from "@fretik/shared/services/ai/remediation";
 import { confirmFullResync } from "@fretik/shared/services/collection-sync/confirm-full-resync";
 import { createSyncSource } from "@fretik/shared/services/collection-sync/create-source";
 import { deleteSyncSource } from "@fretik/shared/services/collection-sync/delete-source";
@@ -200,6 +201,18 @@ export const createManageSyncTool = () =>
       const ctx = getRuntimeContext(options);
       const userId = ctx.userId ?? null;
 
+      // The same door the Python `collections.sync.*` ops hold: a run refreshes
+      // and reads, never declares. Held here rather than in the prompt alone —
+      // the prompt said it, and this tool let it through.
+      if (
+        ctx.workflowRunId !== undefined &&
+        input.action !== "refresh" &&
+        input.action !== "list" &&
+        input.action !== "preview"
+      ) {
+        return toolError(TOOL_ERROR_CODES.FORBIDDEN, SYNC_LOCKED_IN_WORKFLOW);
+      }
+
       // The real argument shape, checked here rather than in the tool schema —
       // see the `args` note above.
       const parsedArgs = syncArgsSchema.safeParse(input.args ?? {});
@@ -261,15 +274,26 @@ export const createManageSyncTool = () =>
             fields: preview.fields,
             suggestedIdPaths: preview.suggestedIdPaths,
             pagination: preview.pagination,
+            ...(preview.batch === undefined ? {} : { batch: preview.batch }),
             ...(preview.warning === undefined
               ? {}
               : { warning: preview.warning }),
+            // The kind decides the whole cost model — one call per page against
+            // one call per record — so it is passed even though `create`
+            // defaults it, and a preview asked without one is priced as the
+            // `table` it will become.
             cost: await estimateSyncCostForConnection({
               teamId: ctx.teamId,
               connectionId: input.connectionId,
+              kind: input.kind ?? "table",
               schedule: input.schedule ?? { mode: "manual" },
-              rowCap: input.rowCap ?? SYNC_LIMITS.maxRowCap,
+              ...(input.kind === "lookup"
+                ? {}
+                : { rowCap: input.rowCap ?? SYNC_LIMITS.maxRowCap }),
               pageSize: preview.pagination?.maxLimit,
+              ...(preview.batch === undefined
+                ? {}
+                : { batchMaxItems: preview.batch.maxItems }),
             }),
           };
         }

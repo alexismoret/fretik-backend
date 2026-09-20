@@ -222,6 +222,13 @@ export const CURATED: Record<string, CuratedCase> = {
   "obj-sync-column-refused": { capability: "objects" },
   "obj-sync-refresh-when-stale": { capability: "objects" },
   "obj-sync-propose-from-app": { capability: "objects" },
+  // ── Live read vs synced collection vs workflow (2026-09-19): the decision
+  // the platform guide settles for data another system holds, in the three
+  // shapes users actually bring it — a dashboard, a question about a column
+  // they cannot edit, a scheduled deliverable.
+  "obj-sync-page-wants-synced": { capability: "objects" },
+  "obj-sync-explain-plainly": { capability: "objects" },
+  "obj-sync-workflow-reads-collection": { capability: "objects" },
   // ── Pages generation (2026-08) — the quality gate `managePage` shipped
   // without. Seeds its own deterministic collection, so NOT smoke. Graded on
   // the STORED definition (structure + the dry-run `warnings` channel of the

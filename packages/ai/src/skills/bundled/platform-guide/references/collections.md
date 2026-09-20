@@ -16,11 +16,20 @@ Users almost never ask for "a collection" — they say "we keep track of X in a 
 
 ## Building
 
-- **Modeling authority:** `skills/designing-collections/SKILL.md` — field-type choices, select options, relations, bulk import via the Python objects SDK. Read it before `manageCollection` / `manageField`.
+- **Modeling authority:** `skills/designing-collections/SKILL.md` — field-type choices, select options, relations, bulk import via the Python `collections` SDK. Read it before `manageCollection` / `manageField`.
 - Check `<team_collections>` first — extending an existing type with a field beats creating a near-duplicate type.
 - Schema changes are proposed via `askUserQuestion`, never built silently (see `<collections>`); records themselves are journaled and reversible.
 - Records extracted by AI arrive as `suggested` until a human confirms — tell the user where to review them.
 - Records can be shared across teams (sharing options on `manageRecord` / the type) when several teams work the same data.
+
+## Fed by an app — how to explain it
+
+The collection's line in `<team_collections>` names the app, the action, the last refresh and the cadence; `describeCollection` has the rest. In the user's words:
+
+- **It is a copy the app refreshes on its own** — every N minutes, or when someone presses refresh. Quote its age with any figure; too old for the question → refresh (`manageSync refresh`), then answer.
+- **Those columns are corrected in the app, not here** — a change lands with the next refresh. Columns the team adds beside them (a follow-up status, notes, a link to a client) are theirs to edit.
+- **A row the app stops returning** is kept by default, set aside or removed if the team chose so — and a refresh that would drop most of the table stops and asks the team first.
+- **Where they see it:** the banner above the table shows the app, the last refresh and a refresh button; its details list every refresh and what it changed.
 
 ## Traps
 

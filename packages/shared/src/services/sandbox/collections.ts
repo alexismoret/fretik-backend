@@ -16,7 +16,10 @@ import {
 import { recordRelationInputSchema } from "../../schemas/ontology";
 import type { ToolPolicyLevel } from "../../schemas/tool-policies";
 import type { WorkflowAutonomy } from "../../schemas/workflows";
-import { TOOL_PERMISSIONS_REMEDIATION } from "../ai/remediation";
+import {
+  SYNC_LOCKED_IN_WORKFLOW,
+  TOOL_PERMISSIONS_REMEDIATION,
+} from "../ai/remediation";
 import { gateRecordWriteApproval } from "../approvals/gate-record-write";
 import { recordImportLookupHash } from "../approvals/hash";
 import {
@@ -133,8 +136,7 @@ export const dispatchCollections = async (
   ) {
     return {
       status: "error",
-      message:
-        "SYNC_LOCKED_IN_WORKFLOW: a run never creates or changes a sync source — it would add columns and schedule calls to a third party. Note the gap in the task summary. Refreshing an existing one is allowed.",
+      message: `SYNC_LOCKED_IN_WORKFLOW: ${SYNC_LOCKED_IN_WORKFLOW}`,
     };
   }
   // In chat, the config-tool policy governs schema edits — blocked outright, or

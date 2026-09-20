@@ -28,6 +28,10 @@ What is yours, through `managePage`: read a page — its manifest, and one file 
 
 A page earns its keep when the team will REOPEN it.
 
+## Where its outside data comes from
+
+A page reads a connected app live (an `external` dataset) for one thing, this moment; when the team filters, joins, charts or shares that data, it goes into a synced collection first (`manageSync`) and the page reads the collection — a live dataset then stays only for the value that must be this-second. The choice is `skills/platform-guide/SKILL.md` § "Data another system holds": make it before calling `buildPage`, and name the result in `task`.
+
 ## Publishing
 
 `publish` mints a link anyone can open without an account. The code is frozen at that moment; the data stays live under the owning team's scope. **Ask the user before publishing** — it exposes what the team can see. Pages that read or write a connected app are refused at the gate. Re-publish to refresh the snapshot; `unpublish` kills the link for good.

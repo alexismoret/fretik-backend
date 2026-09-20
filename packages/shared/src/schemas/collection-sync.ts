@@ -310,7 +310,67 @@ export interface TableWalkCheckpoint {
 // ── Wire: create / update ─────────────────────────────────────────────
 
 export const syncKindSchema = z.enum(["table", "lookup"]);
+export type SyncKind = z.infer<typeof syncKindSchema>;
 export const syncOrphanPolicySchema = z.enum(["keep", "reject", "delete"]);
+
+/**
+ * The most one run of this source could reach, and what that costs upstream.
+ *
+ * A WORST case, and the only honest kind of estimate here: nobody knows at
+ * preview time how many rows the app holds or how many records the collection
+ * will end up with, and an estimate that guessed low would be worse than none.
+ * The whole use of the number is to catch a cadence that cannot fit, and that
+ * comparison only works against the ceiling.
+ *
+ * The two kinds cost differently by an order of magnitude and the difference is
+ * invisible on screen, which is exactly why this exists. A `table` source pays
+ * one call per PAGE — a thousand rows for one call, on a well-declared action.
+ * A `lookup` source pays one call per RECORD unless the action declares that it
+ * takes several ids at once. Before this function, `estimateSyncCost` gave
+ * every unpaginated action one call per run, which is right for a `table` whose
+ * answer is whole and wrong by up to `lookupBatchSize` for every `lookup` —
+ * understating the one cost a person most needs to see, in the one direction
+ * that hurts.
+ *
+ * Mirrored in the frontend's `types/api/collectionSync.ts`, beside the copy of
+ * `SYNC_LIMITS` it reads. The form has to show the number while the cadence is
+ * still being chosen, so it cannot wait for a round trip.
+ */
+export const syncRunCeiling = (input: {
+  kind: SyncKind;
+  /** `table` only — the source's own cap on rows per run. */
+  rowCap?: number;
+  /** Rows the action returns per call, when it declares a page size. */
+  pageSize?: number;
+  /** Ids the action takes per call, when it declares batching. */
+  batchMaxItems?: number;
+}): { records: number; calls: number } => {
+  if (input.kind === "table") {
+    const records = input.rowCap ?? SYNC_LIMITS.defaultRowCap;
+    // No declared page size means the answer arrives whole: one call.
+    const calls =
+      input.pageSize === undefined || input.pageSize <= 0
+        ? 1
+        : Math.ceil(records / input.pageSize);
+    return { records, calls };
+  }
+  // `candidateLimit` in `run-lookup-sync.ts`, which is what actually bounds the
+  // work list. Without batching the call budget IS the bound, so the two
+  // numbers are the same and a person reading "200 rows, 200 requests" has
+  // understood the whole cost model of a lookup in one line.
+  const batch = input.batchMaxItems;
+  if (batch === undefined || batch <= 1) {
+    return {
+      records: SYNC_LIMITS.lookupBatchSize,
+      calls: SYNC_LIMITS.lookupBatchSize,
+    };
+  }
+  const records = Math.min(
+    SYNC_LIMITS.maxUpstreamCallsPerRun * batch,
+    SYNC_LIMITS.lookupMaxRecordsPerRun,
+  );
+  return { records, calls: Math.ceil(records / batch) };
+};
 
 /**
  * A column the caller wants the source to CREATE (`table` sources). The type is
@@ -460,6 +520,16 @@ export const previewSyncSourceResponseSchema = z.object({
       maxLimit: z.number().optional(),
     })
     .optional(),
+  /**
+   * What the action declares about taking several ids at once.
+   *
+   * Absent means one call per record, which is the whole cost model of a
+   * `lookup` source and the one thing a person choosing a cadence has to know
+   * before they choose it. It travels on the preview rather than being looked
+   * up separately because the preview is already the moment the form learns
+   * what this action can do.
+   */
+  batch: z.object({ maxItems: z.number() }).optional(),
 });
 export type PreviewSyncSourceResponse = z.infer<
   typeof previewSyncSourceResponseSchema

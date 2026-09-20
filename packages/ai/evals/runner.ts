@@ -21,6 +21,7 @@ import type {
   EvalCase,
   EvalCaseContext,
   EvalSuite,
+  InvokeResult,
 } from "./types";
 
 /**
@@ -134,6 +135,26 @@ const seedOrFail = async (
   }
 };
 
+/**
+ * The request never completed — the network, not the model.
+ *
+ * Measured 2026-09-20: two of eighteen turns came back with "The socket
+ * connection was closed unexpectedly", no text and no tool call, and were
+ * scored 0.250 — `noError` red, `toolUsed` red, and the judge grading an empty
+ * answer. A suite that scores a dropped socket as a bad answer reports model
+ * quality it did not measure, and it does it in the direction that hides
+ * improvements.
+ *
+ * Deliberately narrow. An `httpStatus` means the service ANSWERED — a 500 is
+ * ours and belongs in the score — so only a failure with no status at all, and
+ * no frame of any kind, counts as transport.
+ */
+const isTransportFailure = (result: InvokeResult): boolean =>
+  result.error !== undefined &&
+  result.httpStatus === undefined &&
+  result.toolCalls.length === 0 &&
+  result.text.trim().length === 0;
+
 export const runCase = async (
   suite: EvalSuite,
   c: EvalCase,
@@ -172,20 +193,29 @@ export const runCase = async (
       const seedFailure = await seedOrFail(suite, c, ctx);
       if (seedFailure !== undefined) return seedFailure;
     }
-    const invoke = await raceDeadline(
-      () =>
-        invokeChatbot(c.prompt, conversationId, {
-          modelProfileKey: opts?.modelProfileKey,
-          pageBuildProfileKey: opts?.pageBuildProfileKey,
-          recallMode: opts?.recallMode,
-          standingMode: opts?.standingMode,
-          // Case-level, not run-level: the privacy probe is the only turn that
-          // must arrive as somebody other than the eval user.
-          asOtherUser: c.runAsOtherUser,
-        }),
-      CASE_DEADLINE_MS,
-      `${suite.name}/${c.id}`,
-    );
+    const turn = () =>
+      raceDeadline(
+        () =>
+          invokeChatbot(c.prompt, conversationId, {
+            modelProfileKey: opts?.modelProfileKey,
+            pageBuildProfileKey: opts?.pageBuildProfileKey,
+            recallMode: opts?.recallMode,
+            standingMode: opts?.standingMode,
+            // Case-level, not run-level: the privacy probe is the only turn
+            // that must arrive as somebody other than the eval user.
+            asOtherUser: c.runAsOtherUser,
+          }),
+        CASE_DEADLINE_MS,
+        `${suite.name}/${c.id}`,
+      );
+    let invoke = await turn();
+    if (isTransportFailure(invoke)) {
+      console.warn(
+        `[evals] ${c.id}: transport failure, retrying once —`,
+        invoke.error,
+      );
+      invoke = await turn();
+    }
     const assertions = await runAssertions(
       selectAssertions(c.assertions, opts),
       invoke,

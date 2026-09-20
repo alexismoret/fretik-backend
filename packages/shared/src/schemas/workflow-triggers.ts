@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { WORKFLOW_TRIGGERABLE_EVENT_TYPES } from "../services/domain-events/event-types";
+import { buildFactCatalog } from "../services/facts/registry";
+import { FACT_KINDS } from "../services/facts/types";
 import {
   WORKFLOW_FORM_FIELD_DESCRIPTORS,
   WorkflowFormFieldDescriptorSchema,
@@ -358,12 +360,45 @@ export const WORKFLOW_TRIGGERABLE_EVENT_DESCRIPTORS: WorkflowEventTypeDescriptor
 // CATALOG + AGENT      //
 // ==================== //
 
+const FactDescriptorSchema = z.object({
+  key: z.string(),
+  kind: z.enum(FACT_KINDS),
+  labelKey: z.string(),
+  agentHint: z.string(),
+  available: z.boolean(),
+  sensitive: z.boolean().optional(),
+});
+
+const EventFactsDescriptorSchema = z.object({
+  eventType: z.string(),
+  facts: z.array(FactDescriptorSchema),
+  /** The per-team namespace this event's facts may also carry — a team's own
+   * document fields, a connector's payload. Its members cannot be listed
+   * statically, so the namespace is declared instead. */
+  dynamicPrefix: z
+    .object({
+      prefix: z.string(),
+      labelKey: z.string(),
+      agentHint: z.string(),
+      sensitive: z.boolean(),
+    })
+    .optional(),
+});
+
 export const TriggerCatalogSchema = z.object({
   triggerTypes: z.array(WorkflowTriggerKindDescriptorSchema),
   eventTypes: z.array(WorkflowEventTypeDescriptorSchema),
   /** Form trigger — the field types (+ which constraints apply) a form can
    * carry. Read by the front form builder and the agent. */
   formFieldTypes: z.array(WorkflowFormFieldDescriptorSchema),
+  /**
+   * What a trigger CRITERION may be judged against, per event type — the
+   * facts the gate resolves before deciding. Served here rather than on a
+   * route of its own because it answers the same question the rest of this
+   * catalog does ("what can I configure about a trigger?") and a second
+   * endpoint would mean a second cache with its own staleness.
+   */
+  facts: z.array(EventFactsDescriptorSchema),
 });
 export type TriggerCatalog = z.infer<typeof TriggerCatalogSchema>;
 
@@ -379,6 +414,7 @@ export const buildTriggerCatalog = (): TriggerCatalog => ({
   ),
   eventTypes: WORKFLOW_TRIGGERABLE_EVENT_DESCRIPTORS,
   formFieldTypes: WORKFLOW_FORM_FIELD_DESCRIPTORS,
+  facts: buildFactCatalog(),
 });
 
 /**
@@ -434,6 +470,21 @@ export const describeTriggerForCard = (
     }
   }
 };
+
+/**
+ * What a trigger criterion is, as the `manageWorkflow` parameter reads it.
+ *
+ * Short on purpose: the long form lives in the tool's prose block, and a
+ * parameter description that repeats it is the regression the agent-context
+ * framework names by name.
+ */
+export const describeTriggerCriterionForAgent = (): string =>
+  [
+    "One sentence deciding whether a trigger firing deserves a run, judged against the event's facts before anything is launched.",
+    "Write it from the playbook's goal and the fact catalog (`get_trigger_catalog`), describing the KIND of input that concerns this workflow.",
+    "Never name a filename, an id or a value from the example you were shown — activation refuses both, because such a criterion passes its test run and then refuses every real firing.",
+    "Null / omitted = ungated: the workflow runs on every firing its subscriptions match.",
+  ].join(" ");
 
 /** Compact trigger reference for the `manageWorkflow` tool — generated from the
  * registry so the agent contract never drifts from the editor's. */

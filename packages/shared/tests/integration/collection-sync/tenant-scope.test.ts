@@ -56,7 +56,7 @@ const insertSource = async (teamId: string): Promise<string> => {
       teamId,
       // The SAME collection as the legitimate source. Only `team_id` differs.
       collectionId,
-      kind: "lookup",
+      kind: "columns",
       connectionId: connection.id,
       providerKey: connection.providerKey,
       operation: "get_order",

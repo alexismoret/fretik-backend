@@ -1,6 +1,6 @@
 import "@hono/zod-openapi";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { runTableSync } from "../../../src/services/collection-sync/run-table-sync";
+import { runTableWalk } from "../../../src/services/collection-sync/walk-by-external-id";
 import { UpstreamRateLimitedError } from "../../../src/services/external-apps/exec/governor/upstream-error";
 import {
   createWorkspaceFixture,
@@ -58,10 +58,10 @@ const fivePages = (): UpstreamRow[][] => [
 const leg = async (
   fixture: TableSourceFixture,
   walk: { runId: string; walkStartedAt: Date },
-  action: Parameters<typeof runTableSync>[0]["action"],
-  extra: Partial<Parameters<typeof runTableSync>[0]> = {},
+  action: Parameters<typeof runTableWalk>[0]["action"],
+  extra: Partial<Parameters<typeof runTableWalk>[0]> = {},
 ) =>
-  runTableSync({
+  runTableWalk({
     source: await fixture.reload(),
     action,
     deadlineAt: Date.now() + 60_000,

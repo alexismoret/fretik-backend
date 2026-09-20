@@ -1,6 +1,6 @@
 import { eq, inArray } from "drizzle-orm";
 import db from "../../db";
-import type { FieldDefinition } from "../../db/schema";
+import type { CollectionSyncKind, FieldDefinition } from "../../db/schema";
 import { collectionSyncSources, externalAppConnections } from "../../db/schema";
 import { getProvider } from "../../external-apps/registry";
 import type { SyncArgs, SyncSchedule } from "../../schemas/collection-sync";
@@ -22,7 +22,7 @@ import { syncArgsBindSince } from "../../schemas/collection-sync";
 export interface SyncProvenance {
   id: string;
   collectionId: string;
-  kind: "table" | "lookup";
+  kind: CollectionSyncKind;
   /**
    * The app as a person names it: the manifest's display name, else the
    * connection's own (an MCP server has no manifest), else the bare key —
@@ -88,7 +88,7 @@ const rowsToProvenance = (
   rows: {
     id: string;
     collectionId: string;
-    kind: "table" | "lookup";
+    kind: CollectionSyncKind;
     providerKey: string;
     operation: string;
     lastSuccessAt: Date | null;

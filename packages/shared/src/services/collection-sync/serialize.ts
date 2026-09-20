@@ -13,7 +13,10 @@ import type {
   SyncSourceHealth,
   SyncSourceResponse,
 } from "../../schemas/collection-sync";
-import { syncArgsBindSince } from "../../schemas/collection-sync";
+import {
+  syncArgsBindSince,
+  syncReadStrategy,
+} from "../../schemas/collection-sync";
 import { isMcpConnection } from "../external-apps/mcp/connection-kind";
 import { getSnapshotForConnection } from "../external-apps/mcp/snapshot-store";
 import { SYNC_CLAIM_TIMEOUT_MS } from "./sweep";
@@ -182,6 +185,7 @@ export const serializeSyncRun = (run: CollectionSyncRun): SyncRunResponse => ({
   orphanCount: run.orphanCount,
   failedCount: run.failedCount,
   missingCount: run.missingCount,
+  unmatchedCount: run.unmatchedCount,
   upstreamCalls: run.upstreamCalls,
   truncated: run.truncated,
   legs: run.legs,
@@ -225,6 +229,11 @@ export const serializeSyncSource = (
     args: source.args,
     resultPath: source.resultPath,
     externalIdPath: source.externalIdPath,
+    matchFieldKey: source.matchFieldKey,
+    // Derived here rather than stored, so every reader — the form's cost line,
+    // the agent's `describeCollection`, the run list — gets the same answer
+    // from the same arguments.
+    read: source.kind === "table" ? "walk" : syncReadStrategy(source.args),
     fieldMapping: source.fieldMapping,
     schedule: source.schedule,
     orphanPolicy: source.orphanPolicy,

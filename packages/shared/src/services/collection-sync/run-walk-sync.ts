@@ -14,49 +14,43 @@ import { bulkUpdateCollectionRecords } from "../collection-records/bulk-update";
 import { reconcileFieldIndexes } from "../collection-schema/reconcile-indexes";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
 import { syncActor } from "./agent-key";
-import { applyOrphanPolicy } from "./apply-orphans";
+import { projectRow } from "./project-row";
 import {
-  countNewOrphans,
-  hitsOrphanFloor,
-  listOrphanIds,
-  orphanFloorReason,
-} from "./orphan-bracket";
-import { projectRow, readPath } from "./project-row";
-import {
-  loadTableSyncIndexFor,
   type RecordSyncStateWrite,
   touchRecordSyncState,
   upsertRecordSyncState,
+  type WalkIndexEntry,
 } from "./record-state";
 import type { SyncReadAction } from "./resolve-action";
 import { walkPages } from "./walk-read";
 
 /**
- * One run of a `table` source: the upstream list becomes the collection.
- *
- * PAGE BY PAGE, which is the shape of everything below:
+ * One walk of an app's list, page by page — the engine BOTH walked kinds run on.
  *
  *   for each page the walker yields →
- *     project → ask Postgres about THOSE ids → partition into new / changed /
- *     unchanged → create the new → merge the changed → stamp the unchanged
- *   then, and only after a FULL walk: count the orphans, check the floor,
- *   apply the policy in pages
+ *     project → ask Postgres which records those keys belong to → partition
+ *     into new / changed / unchanged → write → stamp
+ *   then, and only after a FULL walk: whatever the resolver does with the rows
+ *   this walk did not see.
  *
- * Two properties fall out of doing it this way rather than collecting first.
- * The run holds one page, never the collection — the old version's in-memory
+ * Two properties fall out of doing it page-wise rather than collecting first.
+ * The run holds one page, never the collection — the first version's in-memory
  * index of a million rows was 150-200 MB and did not survive a resume in
  * another process. And a run that stops half way has ALREADY WRITTEN what it
  * read, so the next leg resumes from a checkpoint instead of re-asking the
  * third party for everything.
  *
- * The content hash still does the work it always did: an hourly sync of 10 000
- * rows where nothing moved writes no record UPDATE, so no `domain_events`, so
- * no record-card re-embedding and no workflow-trigger candidates. What page-wise
- * working adds is one `UPDATE … SET synced_at` per page of unchanged rows,
- * which is what the orphan bracket reads and the cheapest possible mark.
+ * WHAT THE RESOLVER DECIDES, and the only things it decides: how a row is
+ * KEYED, which records that key belongs to, what to do with a key that belongs
+ * to none, and what a completed full walk owes the rows it did not see. A
+ * `table` source keys on the upstream id, creates what it has never seen, and
+ * runs the orphan bracket; a `columns` source keys on one of the collection's
+ * own columns, ignores what it cannot match, and marks the unseen `missing`.
+ * Everything between those four points — the paging, the budgets, the
+ * checkpoint, the hash diff, the chunked writes, the state stamps — is written
+ * once, here.
  *
- * Two invariants it never breaks, both enforced by construction rather than by
- * care:
+ * Two invariants it never breaks, both by construction rather than by care:
  *  - it writes ONLY the columns this source owns (`fieldMapping` ∩ fields whose
  *    `syncSourceId` is this source), so a user's local column on a synced
  *    collection survives every run — which is why the update is `merge: true`
@@ -75,22 +69,23 @@ export const emptyCounts = (): SyncRunCounts => ({
   orphanCount: 0,
   failedCount: 0,
   missingCount: 0,
+  unmatchedCount: 0,
   upstreamCalls: 0,
   truncated: false,
 });
 
-/** Orphan ids taken per page when the policy is applied. */
-const ORPHAN_PAGE = 2_000;
-
 /**
- * How a `table` run ended.
+ * How a walk ended.
  *
- *  - `complete`  : every row walked and diffed. The only outcome that stamps
- *                  `last_success_at`.
+ *  - `complete`  : every row walked and reconciled. The only outcome that
+ *                  stamps `last_success_at`.
  *  - `suspended` : a budget bit and the walk has somewhere to resume from.
  *  - `floor`     : the walk finished, and the diff was too large to believe.
+ *  - `skipped`   : the resolver answered before the first call that there was
+ *                  nothing to walk FOR. Not a failure and not a truncation —
+ *                  a run that correctly cost nothing.
  */
-export type TableSyncOutcome =
+export type WalkSyncOutcome =
   | { kind: "complete"; counts: SyncRunCounts }
   | {
       kind: "suspended";
@@ -99,11 +94,8 @@ export type TableSyncOutcome =
       reason: SyncStopReason;
       retryAfterMs?: number;
     }
-  | {
-      kind: "floor";
-      counts: SyncRunCounts;
-      reason: string;
-    };
+  | { kind: "floor"; counts: SyncRunCounts; reason: string }
+  | { kind: "skipped"; counts: SyncRunCounts; reason: SyncStopReason };
 
 /**
  * The columns a source may write: mapped AND stamped as belonging to it.
@@ -123,6 +115,49 @@ export const ownedFields = (
   );
 };
 
+/** What a completed full walk owes the rows it did not see. */
+export interface AfterFullWalkInput {
+  walkStartedAt: Date;
+  ignoreOrphanFloor: boolean;
+  counts: SyncRunCounts;
+}
+
+export interface WalkResolver {
+  /** This row's key, or `undefined` when it carries none. */
+  keyOf: (row: Record<string, unknown>) => string | undefined;
+  /**
+   * Which records each key belongs to. A LIST, because a match column is not
+   * unique: two records may carry the same reference and both should receive
+   * the app's answer.
+   */
+  resolve: (keys: readonly string[]) => Promise<Map<string, WalkIndexEntry[]>>;
+  /**
+   * A key belonging to no record. `create` makes one (the source owns the
+   * rows); `count` tallies it in `unmatchedCount` and moves on (the team owns
+   * the rows, and an app whose list is wider than their table is the normal
+   * case, not a problem).
+   */
+  unknownRows: "create" | "count";
+  /**
+   * Asked once, before the first call of a FRESH walk — never on a resumed
+   * leg, where the calls are already spent and the answer would be stale.
+   */
+  precheck?: () => Promise<
+    { skip: false } | { skip: true; reason: SyncStopReason }
+  >;
+  /** Once, after a complete full walk. May refuse. */
+  afterFullWalk: (
+    input: AfterFullWalkInput,
+  ) => Promise<{ kind: "applied" } | { kind: "floor"; reason: string }>;
+}
+
+export type WalkResolverFactory = (ctx: {
+  source: CollectionSyncSource;
+  fieldDefs: readonly FieldDefinition[];
+  fields: FieldDefinition[];
+  actor: ReturnType<typeof syncActor>;
+}) => WalkResolver;
+
 /**
  * Which stop reasons are worth resuming.
  *
@@ -138,7 +173,7 @@ const RESUMABLE: ReadonlySet<SyncStopReason> = new Set<SyncStopReason>([
   "call_cap",
 ]);
 
-export const runTableSync = async (input: {
+export interface RunWalkSyncInput {
   source: CollectionSyncSource;
   action: SyncReadAction;
   deadlineAt: number;
@@ -153,17 +188,21 @@ export const runTableSync = async (input: {
   fullWalk: boolean;
   /** A confirmed full resync applies the policy however large the diff. */
   ignoreOrphanFloor: boolean;
-}): Promise<TableSyncOutcome> => {
+  resolver: WalkResolverFactory;
+}
+
+export const runWalkSync = async (
+  input: RunWalkSyncInput,
+): Promise<WalkSyncOutcome> => {
   const { source, resume } = input;
-  const counts = resume ? { ...resume.counts } : emptyCounts();
-  const externalIdPath = source.externalIdPath;
-  if (externalIdPath === null || externalIdPath === "") {
-    // The create schema refuses this, so reaching it means a row was written
-    // around the service. Failing loudly beats duplicating the collection.
-    throw new Error(
-      "this table source has no externalIdPath — without a stable upstream id every run would duplicate the collection",
-    );
-  }
+  // A checkpoint frozen before a counter existed has no field for it, and
+  // `undefined + 1` is `NaN` — which reaches the run row as a failed UPDATE.
+  // Spreading over a fresh zeroed set costs nothing and keeps a walk that was
+  // in flight across a deploy resumable, where bumping the checkpoint version
+  // would have thrown it away.
+  const counts: SyncRunCounts = resume
+    ? { ...emptyCounts(), ...resume.counts }
+    : emptyCounts();
 
   const fieldDefs = await getFieldDefinitionsForTeam({
     teamId: source.teamId,
@@ -171,6 +210,13 @@ export const runTableSync = async (input: {
   });
   const fields = ownedFields(source, fieldDefs);
   const actor = syncActor(source.id);
+  const resolver = input.resolver({ source, fieldDefs, fields, actor });
+
+  if (resume == null && resolver.precheck !== undefined) {
+    const verdict = await resolver.precheck();
+    if (verdict.skip)
+      return { kind: "skipped", counts, reason: verdict.reason };
+  }
 
   // The `{"$since"}` bound is frozen for the WHOLE walk, not recomputed per
   // leg: a second leg binding a fresher `lastSuccessAt` would ask for a
@@ -236,7 +282,7 @@ export const runTableSync = async (input: {
         };
       }
       // Not resumable: the walk is as finished as it will ever be. A truncated
-      // one still skips the diff — see below.
+      // one still skips the reconcile — see below.
       if (stop !== undefined) counts.truncated = true;
       break;
     }
@@ -250,32 +296,28 @@ export const runTableSync = async (input: {
       fields,
       actor,
       rows: page.rows,
-      externalIdPath,
+      resolver,
       counts,
     });
     if (wrote) wroteRecords = true;
   }
 
   // A TRUNCATED walk saw part of the answer, and an INCREMENTAL one saw only
-  // what changed. Neither can say "this row is gone", so neither diffs. The
-  // incremental half is the subtler of the two and the more dangerous: under
-  // `delete` it would empty the collection on the second run, which is exactly
-  // what a filter-narrowing looks like from here.
-  const mayDiff = !counts.truncated && input.fullWalk;
-  if (mayDiff) {
-    const census = await countNewOrphans({
-      syncSourceId: source.id,
+  // what changed. Neither can say "this row is gone", so neither reconciles.
+  // The incremental half is the subtler of the two and the more dangerous: for
+  // a `table` source under `delete` it would empty the collection on the second
+  // run, which is exactly what a filter-narrowing looks like from here.
+  const mayReconcile = !counts.truncated && input.fullWalk;
+  if (mayReconcile) {
+    const verdict = await resolver.afterFullWalk({
       walkStartedAt: input.walkStartedAt,
+      ignoreOrphanFloor: input.ignoreOrphanFloor,
+      counts,
     });
-    if (!input.ignoreOrphanFloor && hitsOrphanFloor(census)) {
+    if (verdict.kind === "floor") {
       afterWrites(source, wroteRecords);
-      return { kind: "floor", counts, reason: orphanFloorReason(census) };
+      return { kind: "floor", counts, reason: verdict.reason };
     }
-    counts.orphanCount = await applyOrphans({
-      source,
-      walkStartedAt: input.walkStartedAt,
-      actor,
-    });
   }
 
   afterWrites(source, wroteRecords);
@@ -283,7 +325,7 @@ export const runTableSync = async (input: {
 };
 
 /**
- * One page: project, diff against Postgres, write. Returns true if it wrote
+ * One page: project, resolve against Postgres, write. Returns true if it wrote
  * records (so the run knows whether the indexes need reconciling at the end).
  */
 const absorbPage = async (ctx: {
@@ -291,42 +333,39 @@ const absorbPage = async (ctx: {
   fields: FieldDefinition[];
   actor: ReturnType<typeof syncActor>;
   rows: Record<string, unknown>[];
-  externalIdPath: string;
+  resolver: WalkResolver;
   counts: SyncRunCounts;
 }): Promise<boolean> => {
-  const { source, counts } = ctx;
+  const { source, counts, resolver } = ctx;
 
-  // Last one wins on a repeated id WITHIN a page. A provider whose pages
+  // Last one wins on a repeated key WITHIN a page. A provider whose pages
   // overlap (an offset walk over a list something is being inserted into) can
-  // still send the same id in two different pages; the second one then finds
+  // still send the same key in two different pages; the second one then finds
   // the record the first created and updates it, which is the right answer and
-  // costs one diff query.
+  // costs one resolve query.
   const projected = new Map<
     string,
     { data: Record<string, unknown>; hash: string }
   >();
   for (const row of ctx.rows) {
-    const rawId = readPath(row, ctx.externalIdPath);
-    const externalId =
-      typeof rawId === "string"
-        ? rawId
-        : typeof rawId === "number" && Number.isFinite(rawId)
-          ? String(rawId)
-          : undefined;
-    if (externalId === undefined || externalId === "") {
-      // A row with no id cannot be updated on any later run, only duplicated.
-      // Counted so the run says how many, and dropped.
-      counts.failedCount += 1;
+    const key = resolver.keyOf(row);
+    if (key === undefined || key === "") {
+      // A keyless row means different things to the two resolvers, and both
+      // are counted rather than dropped in silence. Owning the rows, it is a
+      // row that could only ever be duplicated — a defect. Matching them, it
+      // is simply a row about something this collection does not track.
+      if (resolver.unknownRows === "create") counts.failedCount += 1;
+      else counts.unmatchedCount += 1;
       continue;
     }
     projected.set(
-      externalId,
+      key,
       projectRow({ row, mapping: source.fieldMapping, fields: ctx.fields }),
     );
   }
   if (projected.size === 0) return false;
 
-  const index = await loadTableSyncIndexFor(source.id, [...projected.keys()]);
+  const index = await resolver.resolve([...projected.keys()]);
 
   const toCreate: {
     externalId: string;
@@ -340,22 +379,30 @@ const absorbPage = async (ctx: {
   }[] = [];
   const unchanged: string[] = [];
 
-  for (const [externalId, row] of projected) {
-    const existing = index.get(externalId);
-    if (existing === undefined) {
-      toCreate.push({ externalId, ...row });
+  for (const [key, row] of projected) {
+    const existing = index.get(key) ?? [];
+    if (existing.length === 0) {
+      if (resolver.unknownRows === "count") {
+        counts.unmatchedCount += 1;
+        continue;
+      }
+      toCreate.push({ externalId: key, ...row });
       continue;
     }
-    // An identical hash is only "unchanged" when the last attempt SUCCEEDED. A
-    // row with no state (a run that died between the record and its state) or
-    // one marked `missing`/`error` is re-written even though its values match:
-    // the cheap thing here is skipping the UPDATE, and skipping the state row
-    // too would leave the record permanently invisible to the next diff.
-    if (existing.contentHash === row.hash && existing.status === "ok") {
-      unchanged.push(existing.recordId);
-      continue;
+    for (const entry of existing) {
+      // An identical hash is only "unchanged" when the last attempt SUCCEEDED.
+      // A row with no state (a run that died between the record and its state)
+      // or one marked `missing`/`error` is re-written even though its values
+      // match: the cheap thing here is skipping the UPDATE, and skipping the
+      // state row too would leave the record permanently invisible to the next
+      // reconcile — and, for a matched source, permanently `missing` while the
+      // app has been answering about it all along.
+      if (entry.contentHash === row.hash && entry.status === "ok") {
+        unchanged.push(entry.recordId);
+        continue;
+      }
+      toUpdate.push({ recordId: entry.recordId, ...row });
     }
-    toUpdate.push({ recordId: existing.recordId, ...row });
   }
 
   const state: RecordSyncStateWrite[] = [];
@@ -426,45 +473,12 @@ const absorbPage = async (ctx: {
 
   await upsertRecordSyncState(source.id, state);
   // The unchanged rows: no record write, no journal entry, one timestamp — the
-  // mark the orphan bracket reads. Written AFTER the upsert so a row that
-  // appears in both (it cannot, but the ordering is free) ends up stamped.
+  // mark the reconcile reads. Written AFTER the upsert so a row that appears in
+  // both (it cannot, but the ordering is free) ends up stamped.
   await touchRecordSyncState(source.id, unchanged);
   counts.unchangedCount += unchanged.length;
 
   return toCreate.length > 0 || toUpdate.length > 0;
-};
-
-/** Apply the policy to every orphan, a page of ids at a time. */
-const applyOrphans = async (ctx: {
-  source: CollectionSyncSource;
-  walkStartedAt: Date;
-  actor: ReturnType<typeof syncActor>;
-}): Promise<number> => {
-  let applied = 0;
-  let after: string | null = null;
-  for (;;) {
-    const ids: string[] = await listOrphanIds({
-      syncSourceId: ctx.source.id,
-      walkStartedAt: ctx.walkStartedAt,
-      after,
-      limit: ORPHAN_PAGE,
-    });
-    if (ids.length === 0) return applied;
-    applied += await applyOrphanPolicy({
-      organizationId: ctx.source.organizationId,
-      teamId: ctx.source.teamId,
-      syncSourceId: ctx.source.id,
-      policy: ctx.source.orphanPolicy,
-      recordIds: ids,
-      actor: ctx.actor,
-    });
-    // `keep` and `reject` leave the row in place with `status = 'missing'`, so
-    // the query that found it no longer will — but `delete` removes it and
-    // `keep` on a row that was already `missing` is a no-op. The cursor is what
-    // makes all three terminate: it only ever moves forward.
-    after = ids[ids.length - 1] ?? null;
-    if (ids.length < ORPHAN_PAGE) return applied;
-  }
 };
 
 /**

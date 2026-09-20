@@ -1,6 +1,6 @@
 import { redis } from "@fretik/shared/lib/redis";
 import {
-  invalidateLookupSources,
+  invalidateColumnSources,
   type RecordChange,
 } from "@fretik/shared/services/collection-sync/invalidate-on-change";
 import {
@@ -346,7 +346,7 @@ const runSweepPass = async (): Promise<number> => {
   // what makes "type the SIRET, watch the columns fill" work: no webhook, no
   // polling, just the journal the sweep is already reading.
   //
-  // Cheap by construction: `invalidateLookupSources` caches each team's sources
+  // Cheap by construction: `invalidateColumnSources` caches each team's sources
   // in process for a minute, so a sweep over a workspace with no lookup source
   // issues no query at all.
   const changes: RecordChange[] = [];
@@ -370,7 +370,7 @@ const runSweepPass = async (): Promise<number> => {
   if (changes.length > 0) {
     // Not caught: a Redis or Postgres failure here must fail the sweep so the
     // cursor stays put and the batch replays — same rationale as the adds above.
-    await invalidateLookupSources(changes);
+    await invalidateColumnSources(changes);
   }
 
   const last = events[events.length - 1];

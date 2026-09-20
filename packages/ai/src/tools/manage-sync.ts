@@ -1,5 +1,6 @@
 import {
   SYNC_LIMITS,
+  syncArgFieldKeys,
   syncArgsSchema,
   syncOrphanPolicySchema,
   syncScheduleSchema,
@@ -152,9 +153,11 @@ export const createManageSyncTool = () =>
         .describe("What this collection is for, one line."),
       icon: z.string().optional(),
       kind: z
-        .enum(["table", "lookup"])
+        .enum(["table", "columns"])
         .optional()
-        .describe("Defaults to table."),
+        .describe(
+          "Who owns the rows: table (the app, one upstream row per record) or columns (the team, the source only fills columns). Defaults to table.",
+        ),
       connectionId: z.string().optional(),
       operation: z
         .string()
@@ -170,7 +173,7 @@ export const createManageSyncTool = () =>
         .record(z.string(), z.unknown())
         .optional()
         .describe(
-          'Literals, plus two bindings: {"$field": "<column key>"} takes the value from the record being filled (lookup), {"$since": true} asks the app for what changed since the last run.',
+          'Literals, plus two bindings: {"$field": "<column key>"} asks the app about ONE record at a time, keyed by that column — use it only when the app has no list of these; {"$since": true} asks for what changed since the last run, on the parameter the action declares as incremental.',
         ),
       resultPath: z
         .string()
@@ -180,7 +183,13 @@ export const createManageSyncTool = () =>
         .string()
         .optional()
         .describe(
-          "The upstream row's own stable id. Required for a table source — without it every run duplicates the collection instead of updating it.",
+          "The value that keys an upstream row. For a table source it is the row's own stable id — required, or every run duplicates the collection. For a walked columns source it is the value that must equal matchFieldKey's column.",
+        ),
+      matchFieldKey: z
+        .string()
+        .optional()
+        .describe(
+          "columns source, read by list: the column of the EXISTING records an upstream row's externalIdPath value must equal. One call per page instead of one per record — prefer this whenever the app has a list.",
         ),
       fields: z.array(fieldDraftSchema).optional(),
       schedule: syncScheduleSchema
@@ -195,7 +204,7 @@ export const createManageSyncTool = () =>
       sampleRecordId: z
         .string()
         .optional()
-        .describe("Preview a lookup against this record's values."),
+        .describe("Preview a per-record read against this record's values."),
     }),
     execute: async (input, options) => {
       const ctx = getRuntimeContext(options);
@@ -255,6 +264,11 @@ export const createManageSyncTool = () =>
               "List the team's connections, then pass the app's read action name.",
             );
           }
+          // A preview may also try the MATCH, which is what tells a walked
+          // `columns` source apart from one that will run green and fill
+          // nothing. Needs the collection, so it is resolved here.
+          const previewCollectionId = (await collectionIdOf()) ?? undefined;
+
           const preview = await previewSyncSource({
             teamId: ctx.teamId,
             userId,
@@ -267,7 +281,26 @@ export const createManageSyncTool = () =>
             ...(input.sampleRecordId === undefined
               ? {}
               : { sampleRecordId: input.sampleRecordId }),
+            ...(previewCollectionId === undefined
+              ? {}
+              : { collectionId: previewCollectionId }),
+            ...(input.matchFieldKey === undefined
+              ? {}
+              : { matchFieldKey: input.matchFieldKey }),
+            ...(input.externalIdPath === undefined
+              ? {}
+              : { externalIdPath: input.externalIdPath }),
           });
+
+          // HOW the app would be read decides the whole cost model — one call
+          // per page against one call per record — and it is not the kind that
+          // says so. A `columns` source binding `{"$field"}` is per record;
+          // everything else is a walk.
+          const read =
+            input.kind === "columns" && syncArgFieldKeys(args).length > 0
+              ? "row"
+              : "walk";
+
           return {
             ok: true,
             rows: preview.rows,
@@ -275,19 +308,19 @@ export const createManageSyncTool = () =>
             suggestedIdPaths: preview.suggestedIdPaths,
             pagination: preview.pagination,
             ...(preview.batch === undefined ? {} : { batch: preview.batch }),
+            ...(preview.matched === undefined
+              ? {}
+              : { matched: preview.matched }),
             ...(preview.warning === undefined
               ? {}
               : { warning: preview.warning }),
-            // The kind decides the whole cost model — one call per page against
-            // one call per record — so it is passed even though `create`
-            // defaults it, and a preview asked without one is priced as the
-            // `table` it will become.
+            read,
             cost: await estimateSyncCostForConnection({
               teamId: ctx.teamId,
               connectionId: input.connectionId,
-              kind: input.kind ?? "table",
+              read,
               schedule: input.schedule ?? { mode: "manual" },
-              ...(input.kind === "lookup"
+              ...(read === "row"
                 ? {}
                 : { rowCap: input.rowCap ?? SYNC_LIMITS.maxRowCap }),
               pageSize: preview.pagination?.maxLimit,

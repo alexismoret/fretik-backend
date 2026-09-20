@@ -9,6 +9,7 @@ import { collectionSyncRuns } from "../../db/schema";
 import {
   SYNC_LIMITS,
   syncArgsBindSince,
+  syncReadStrategy,
   type SyncRunCounts,
   type SyncStopReason,
   type TableWalkCheckpoint,
@@ -16,9 +17,11 @@ import {
 import { canonicalHash } from "../approvals/hash";
 import { enqueueContinuation } from "./queue";
 import { resolveSyncAction } from "./resolve-action";
-import { runLookupSync } from "./run-lookup-sync";
-import { emptyCounts, runTableSync } from "./run-table-sync";
+import { runRowSync } from "./run-row-sync";
+import { emptyCounts } from "./run-walk-sync";
 import { claimSyncSource, scheduleNextRun } from "./sweep";
+import { runTableWalk } from "./walk-by-external-id";
+import { runColumnsWalk } from "./walk-by-match-field";
 
 /**
  * One run, start to finish — the only thing the worker calls.
@@ -173,6 +176,7 @@ export const runSyncSource = async (input: {
   let floorReason: string | undefined;
   let retryAfterMs: number | undefined;
   let fullWalk = false;
+  let skippedWalk = false;
 
   try {
     const connection =
@@ -199,8 +203,14 @@ export const runSyncSource = async (input: {
     });
     if (!resolved.ok) throw new Error(resolved.message);
 
-    if (source.kind === "lookup") {
-      const outcome = await runLookupSync({
+    // WHICH RUNNER, in two questions. The kind says whose the rows are; the
+    // arguments say how the app is read. Only a `columns` source binding
+    // `{"$field"}` takes the per-record path — everything else is a walk.
+    const read =
+      source.kind === "table" ? "walk" : syncReadStrategy(source.args);
+
+    if (read === "row") {
+      const outcome = await runRowSync({
         source,
         connection,
         action: resolved.action,
@@ -225,7 +235,7 @@ export const runSyncSource = async (input: {
       const confirmed = source.fullResyncConfirmedAt !== null;
       fullWalk =
         resume?.fullWalk ?? (confirmed || shouldWalkEverything(source));
-      const outcome = await runTableSync({
+      const walkInput = {
         source,
         action: resolved.action,
         deadlineAt,
@@ -235,7 +245,11 @@ export const runSyncSource = async (input: {
         resume,
         fullWalk,
         ignoreOrphanFloor: resume?.ignoreOrphanFloor ?? confirmed,
-      });
+      };
+      const outcome =
+        source.kind === "table"
+          ? await runTableWalk(walkInput)
+          : await runColumnsWalk(walkInput);
       counts = outcome.counts;
       if (outcome.kind === "suspended") {
         // The walk is NOT over, so the run row stays `running` and nothing is
@@ -251,6 +265,13 @@ export const runSyncSource = async (input: {
         status = "partial";
         stopReason = "orphan_floor";
         floorReason = outcome.reason;
+      } else if (outcome.kind === "skipped") {
+        // Nothing to walk FOR, decided before the first call. A success that
+        // cost nothing — but NOT a full walk, so `last_full_walk_at` is left
+        // alone below and the next real walk is still a complete one.
+        skippedWalk = true;
+        stopReason = outcome.reason;
+        status = "success";
       } else {
         // `partial` is the honest word for both shapes of incomplete: rows that
         // failed, and a walk that stopped at a bound nothing can resume.
@@ -274,6 +295,7 @@ export const runSyncSource = async (input: {
              orphan_count = ${counts.orphanCount},
              failed_count = ${counts.failedCount},
              missing_count = ${counts.missingCount},
+             unmatched_count = ${counts.unmatchedCount},
              upstream_calls = ${counts.upstreamCalls},
              truncated = ${counts.truncated},
              legs = ${legs},
@@ -318,7 +340,13 @@ export const runSyncSource = async (input: {
     // Clearing it on a transient 500 would take the offer off the screen and
     // make the person wait for the floor to trip a second time.
     reachedVerdict: status !== "failed",
-    ...(status === "success" && fullWalk ? { fullWalkAt: new Date() } : {}),
+    // A skipped walk made no calls, so it saw nothing and cannot claim to have
+    // walked everything. Stamping it would push the next full walk a day out
+    // and leave the collection unreconciled for exactly as long as its key
+    // column was empty.
+    ...(status === "success" && fullWalk && !skippedWalk
+      ? { fullWalkAt: new Date() }
+      : {}),
     ...(floorReason !== undefined ? { floorReason } : {}),
   });
 

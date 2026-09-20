@@ -5,10 +5,10 @@ import db from "../../../src/db";
 import { collectionSyncSources } from "../../../src/db/schema";
 import { SYNC_LIMITS } from "../../../src/schemas/collection-sync";
 import {
-  invalidateLookupSourceCache,
-  invalidateLookupSources,
+  invalidateColumnSourceCache,
+  invalidateColumnSources,
 } from "../../../src/services/collection-sync/invalidate-on-change";
-import { selectLookupCandidates } from "../../../src/services/collection-sync/lookup-candidates";
+import { selectRowCandidates } from "../../../src/services/collection-sync/row-candidates";
 import {
   createWorkspaceFixture,
   type WorkspaceFixture,
@@ -43,7 +43,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  invalidateLookupSourceCache();
+  invalidateColumnSourceCache();
   await fx.cleanup();
 });
 
@@ -63,7 +63,7 @@ const harness = async (recordCount: number): Promise<Harness> => {
       organizationId: fx.organizationId,
       teamId: fx.teamId,
       collectionId: collection.id,
-      kind: "lookup",
+      kind: "columns",
       connectionId: connection.id,
       providerKey: connection.providerKey,
       operation: "get_order",
@@ -117,7 +117,7 @@ describe("the lookup work list", () => {
 
     const mine = h.recordIds[0];
     if (mine === undefined) throw new Error("fixture: three records");
-    const picked = await selectLookupCandidates({
+    const picked = await selectRowCandidates({
       source: h.source,
       limit: 10,
       requested: [mine, outsider.id],
@@ -137,7 +137,7 @@ describe("the lookup work list", () => {
     await setState(h.sourceId, b, "ok", "10 days");
     await setState(h.sourceId, c, "pending", "1 second");
 
-    const picked = await selectLookupCandidates({ source: h.source, limit: 2 });
+    const picked = await selectRowCandidates({ source: h.source, limit: 2 });
 
     // Two seats: the queued one and the stalest. Not the one refreshed a
     // minute ago, whatever its `synced_at` ordering would say.
@@ -147,7 +147,7 @@ describe("the lookup work list", () => {
   test("untracked records are picked up, then the scan records that it finished", async () => {
     const h = await harness(4);
 
-    const first = await selectLookupCandidates({ source: h.source, limit: 10 });
+    const first = await selectRowCandidates({ source: h.source, limit: 10 });
     expect(first.length).toBe(4);
     expect(first.every((entry) => entry.contentHash === null)).toBe(true);
 
@@ -158,14 +158,14 @@ describe("the lookup work list", () => {
     expect(after.untrackedScanDoneAt).not.toBeNull();
     expect(after.untrackedScanCursor).toBeNull();
 
-    const second = await selectLookupCandidates({ source: after, limit: 10 });
+    const second = await selectRowCandidates({ source: after, limit: 10 });
     expect(second).toEqual([]);
   });
 
   test("a long collection is scanned at a cursor, a page at a time", async () => {
     const h = await harness(5);
 
-    const first = await selectLookupCandidates({ source: h.source, limit: 2 });
+    const first = await selectRowCandidates({ source: h.source, limit: 2 });
     expect(first.length).toBe(2);
     const afterFirst = await reload(h.sourceId);
     // A FULL page means there may be more, so the walk stores where it got to
@@ -173,7 +173,7 @@ describe("the lookup work list", () => {
     expect(afterFirst.untrackedScanCursor).toBe(first[1]?.recordId ?? null);
     expect(afterFirst.untrackedScanDoneAt).toBeNull();
 
-    const second = await selectLookupCandidates({
+    const second = await selectRowCandidates({
       source: afterFirst,
       limit: 2,
     });
@@ -194,7 +194,7 @@ describe("the lookup work list", () => {
          SET untracked_scan_done_at = now()
        WHERE id = ${h.sourceId}::uuid`);
 
-    const resting = await selectLookupCandidates({
+    const resting = await selectRowCandidates({
       source: await reload(h.sourceId),
       limit: 10,
     });
@@ -204,7 +204,7 @@ describe("the lookup work list", () => {
     const days = SYNC_LIMITS.lookupMissingRetryMs / 86_400_000 + 1;
     await setState(h.sourceId, a, "missing", `${String(days)} days`);
 
-    const rested = await selectLookupCandidates({
+    const rested = await selectRowCandidates({
       source: await reload(h.sourceId),
       limit: 10,
     });
@@ -236,7 +236,7 @@ describe("the lookup work list", () => {
          SET untracked_scan_done_at = now()
        WHERE id = ${h.sourceId}::uuid`);
 
-    const picked = await selectLookupCandidates({
+    const picked = await selectRowCandidates({
       source: await reload(h.sourceId),
       limit: SYNC_LIMITS.lookupBatchSize,
     });
@@ -260,7 +260,7 @@ describe("the lookup work list", () => {
          SET untracked_scan_done_at = now()
        WHERE id = ${h.sourceId}::uuid`);
 
-    const picked = await selectLookupCandidates({
+    const picked = await selectRowCandidates({
       source: await reload(h.sourceId),
       limit: SYNC_LIMITS.lookupBatchSize,
     });
@@ -285,7 +285,7 @@ describe("the lookup work list", () => {
     await setState(h.sourceId, a, "ok", "20 minutes");
     await setState(h.sourceId, b, "ok", "40 minutes");
 
-    const picked = await selectLookupCandidates({
+    const picked = await selectRowCandidates({
       source: await reload(h.sourceId),
       limit: SYNC_LIMITS.lookupBatchSize,
     });
@@ -298,7 +298,7 @@ describe("the lookup work list", () => {
 describe("a record change makes a lookup source due", () => {
   test("only records of the source's OWN collection are marked", async () => {
     const h = await harness(1);
-    invalidateLookupSourceCache(fx.teamId);
+    invalidateColumnSourceCache(fx.teamId);
     const other = await fx.createCollection();
     const elsewhere = await fx.createRecord({ collectionId: other.id });
     const mine = h.recordIds[0];
@@ -307,7 +307,7 @@ describe("a record change makes a lookup source due", () => {
     // Both records, same team, same change set. Only one belongs to the
     // collection this source fills — and the collection predicate lives in the
     // INSERT's own statement, which is the only place it can be observed.
-    const queued = await invalidateLookupSources([
+    const queued = await invalidateColumnSources([
       { recordId: mine, teamId: fx.teamId, changedKeys: [], agentKey: null },
       {
         recordId: elsewhere.id,
@@ -328,11 +328,11 @@ describe("a record change makes a lookup source due", () => {
 
   test("a change to a key the arguments do not read is ignored", async () => {
     const h = await harness(1);
-    invalidateLookupSourceCache(fx.teamId);
+    invalidateColumnSourceCache(fx.teamId);
     const mine = h.recordIds[0];
     if (mine === undefined) throw new Error("fixture: one record");
 
-    const queued = await invalidateLookupSources([
+    const queued = await invalidateColumnSources([
       {
         recordId: mine,
         teamId: fx.teamId,

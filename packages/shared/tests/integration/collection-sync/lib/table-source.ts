@@ -2,9 +2,14 @@ import { sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import db from "../../../../src/db";
 import type { CollectionSyncSource } from "../../../../src/db/schema";
-import { collectionSyncSources } from "../../../../src/db/schema";
+import {
+  collectionRecords,
+  collectionSyncSources,
+} from "../../../../src/db/schema";
+import { bulkCreateCollectionRecords } from "../../../../src/services/collection-records/bulk-create";
 import type { SyncReadAction } from "../../../../src/services/collection-sync/resolve-action";
 import { createCollectionWithFields } from "../../../../src/services/collections/create-with-fields";
+import { invalidateFieldDefinitionsCache } from "../../../../src/services/field-definitions/cache";
 import type { WorkspaceFixture } from "../../../lib/db-fixtures";
 
 /**
@@ -95,6 +100,184 @@ export const offsetUpstream = (
         return answer;
       },
     },
+  };
+};
+
+/**
+ * A `columns` source read BY LIST, over a collection the TEAM owns.
+ *
+ * Deliberately different in shape from `createTableSource`, because the thing
+ * under test is different: the records here are created by the "team" before
+ * the source ever runs, they carry a `siret` the source does NOT own, and the
+ * source's job is to recognise them by it.
+ *
+ * The records go through `bulkCreateCollectionRecords` rather than the
+ * fixture's `createRecord`, which writes the registry row only — the match
+ * reads the extension table's physical column, so a record with no row there
+ * is invisible to every assertion below and each one would pass against
+ * nothing.
+ */
+export interface ColumnsWalkFixture {
+  collectionId: string;
+  source: CollectionSyncSource;
+  /** `siret` → record id, for the assertions. */
+  recordIds: Map<string, string>;
+  reload: () => Promise<CollectionSyncSource>;
+}
+
+export const createColumnsWalkSource = async (
+  fx: WorkspaceFixture,
+  options: {
+    /** The key column's type — `text` unless a test is about coercion. */
+    matchType?: "text" | "number";
+    /** `siret` values to seed, in order. `null` seeds a record with no key. */
+    keys?: (string | number | null)[];
+    /** Seed these into ANOTHER team, same collection. */
+    otherTeamKeys?: string[];
+    otherTeamId?: string;
+    overrides?: Partial<typeof collectionSyncSources.$inferInsert>;
+  } = {},
+): Promise<ColumnsWalkFixture> => {
+  const connection = await fx.createConnection();
+  const matchType = options.matchType ?? "text";
+  const collection = await createCollectionWithFields({
+    organizationId: fx.organizationId,
+    teamId: fx.teamId,
+    key: `clients_${randomUUID().slice(0, 8)}`,
+    label: "Clients",
+    fields: [
+      { label: "Name", key: "name", type: "text", isTitle: true },
+      { label: "Siret", key: "siret", type: matchType },
+      { label: "Label", key: "label", type: "text" },
+      { label: "Amount", key: "amount", type: "number" },
+    ],
+  });
+
+  const seed = async (
+    teamId: string,
+    keys: readonly (string | number | null)[],
+  ): Promise<string[]> => {
+    if (keys.length === 0) return [];
+    const created = await bulkCreateCollectionRecords({
+      organizationId: fx.organizationId,
+      teamId,
+      collectionId: collection.id,
+      rows: keys.map((key, i) => ({
+        data: {
+          name: `Client ${String(i)}`,
+          ...(key === null ? {} : { siret: key }),
+        },
+      })),
+      source: "user_manual",
+    });
+    const ids = created.ids.filter((id): id is string => id !== null);
+    // A seed that silently produced nothing is how a tenant test passes
+    // against an empty table: the "other team's" record it was meant to prove
+    // is invisible to was never there. Loud, so the harness cannot lie.
+    if (ids.length !== keys.length) {
+      throw new Error(
+        `fixture: seeded ${String(ids.length)} of ${String(keys.length)} records${
+          created.errors.length > 0
+            ? ` — ${created.errors.map((e) => e.error).join("; ")}`
+            : ""
+        }`,
+      );
+    }
+    return ids;
+  };
+
+  const keys = options.keys ?? [];
+  const ids = await seed(fx.teamId, keys);
+
+  // The other team's rows go in by raw SQL, and that is not laziness. Field
+  // definitions are scoped to (team, collection), so `bulkCreateCollectionRecords`
+  // for another team against this collection is refused — "unknown field" —
+  // and the seed would silently produce nothing, which is exactly how a tenant
+  // test passes against an empty table. What is under test here is the READ
+  // predicate on a table an org-scoped collection genuinely shares between
+  // teams, so the row is written where that predicate looks.
+  if (
+    options.otherTeamId !== undefined &&
+    options.otherTeamKeys !== undefined
+  ) {
+    const table = `data.coll_${collection.id.replace(/-/g, "")}`;
+    for (const key of options.otherTeamKeys) {
+      const [record] = await db
+        .insert(collectionRecords)
+        .values({
+          organizationId: fx.organizationId,
+          teamId: options.otherTeamId,
+          collectionId: collection.id,
+          label: `Other ${key}`,
+        })
+        .returning();
+      if (record === undefined) throw new Error("fixture: no record row");
+      await db.execute(sql`
+        INSERT INTO ${sql.raw(table)} (id, _team_id, _label, siret)
+        VALUES (${record.id}::uuid, ${options.otherTeamId}::uuid, ${`Other ${key}`}, ${key})`);
+    }
+  }
+
+  const recordIds = new Map<string, string>();
+  keys.forEach((key, i) => {
+    const id = ids[i];
+    if (key !== null && id !== undefined) recordIds.set(String(key), id);
+  });
+
+  const [source] = await db
+    .insert(collectionSyncSources)
+    .values({
+      organizationId: fx.organizationId,
+      teamId: fx.teamId,
+      collectionId: collection.id,
+      kind: "columns",
+      connectionId: connection.id,
+      providerKey: connection.providerKey,
+      operation: "list_orders",
+      args: {},
+      externalIdPath: "id",
+      matchFieldKey: "siret",
+      fieldMapping: [
+        { path: "label", fieldKey: "label" },
+        { path: "amount", fieldKey: "amount" },
+      ],
+      schedule: { mode: "interval", everyMinutes: 15 },
+      rowCap: 100_000,
+      ...options.overrides,
+    })
+    .returning();
+  if (source === undefined) throw new Error("fixture: no sync source");
+
+  // Only the two MAPPED columns are stamped. `siret` stays the team's, which
+  // is the whole point — a source that owned its own match column would
+  // overwrite the key that finds its rows.
+  await db.execute(sql`
+    UPDATE field_definitions
+       SET sync_source_id = ${source.id}::uuid
+     WHERE collection_id = ${collection.id}::uuid
+       AND key IN ('label', 'amount')`);
+  // Seeding the records above READ the field definitions, so the stamp this
+  // raw UPDATE just wrote is invisible to the cache. `ownedFields` would come
+  // back empty and every walk would write nothing while reporting rows
+  // updated — a green run against untouched columns.
+  await invalidateFieldDefinitionsCache({
+    organizationId: fx.organizationId,
+    teamId: fx.teamId,
+  });
+
+  const reload = async (): Promise<CollectionSyncSource> => {
+    const fresh = await db.query.collectionSyncSources.findFirst({
+      where: { id: source.id },
+    });
+    if (fresh === undefined) throw new Error("fixture: source vanished");
+    return fresh;
+  };
+
+  return {
+    collectionId: collection.id,
+    source: await reload(),
+    recordIds,
+    reload,
   };
 };
 

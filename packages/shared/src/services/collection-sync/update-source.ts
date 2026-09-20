@@ -2,11 +2,17 @@ import { and, eq, inArray, notInArray } from "drizzle-orm";
 import db from "../../db";
 import type { CollectionSyncSource } from "../../db/schema";
 import { collectionSyncSources, fieldDefinitions } from "../../db/schema";
-import { internalError, notFound, throwHttpError } from "../../lib/errors";
+import {
+  badRequest,
+  internalError,
+  notFound,
+  throwHttpError,
+} from "../../lib/errors";
 import type {
   SyncFieldMapping,
   UpdateSyncSourceInput,
 } from "../../schemas/collection-sync";
+import { columnsShapeIssue } from "../../schemas/collection-sync";
 import { fieldConfigSchema } from "../../schemas/field-definitions";
 import { invalidateFieldDefinitionsCache } from "../field-definitions/cache";
 import { createFieldDefinition } from "../field-definitions/create";
@@ -15,6 +21,7 @@ import { slugifyFieldKey } from "../field-definitions/slugify-key";
 import { assertConnectionUsable } from "./assert-connection-scope";
 import { assertSinceBindingForSource } from "./assert-since-binding";
 import { assertAdoptable, assertDraftLimit } from "./create-source";
+import { invalidateColumnSourceCache } from "./invalidate-on-change";
 import { computeNextRunAt } from "./sweep";
 
 /**
@@ -74,6 +81,19 @@ export const updateSyncSource = async (params: {
     });
   }
 
+  // An edit rewriting the arguments can leave a `columns` source with NEITHER
+  // way of tying an answer to a record (dropping its `{"$field"}` binding when
+  // it has no match column), or with BOTH (adding one when it has). Asked
+  // against the shape the source would END UP with, not the one it was given.
+  if (patch.args !== undefined && source.kind === "columns") {
+    const issue = columnsShapeIssue({
+      args: patch.args,
+      matchFieldKey: source.matchFieldKey,
+      externalIdPath: source.externalIdPath,
+    });
+    if (issue !== undefined) return throwHttpError(400, badRequest(issue));
+  }
+
   let mapping: SyncFieldMapping[] | undefined;
   let fieldsChanged = false;
   if (patch.fields !== undefined) {
@@ -89,6 +109,17 @@ export const updateSyncSource = async (params: {
 
     for (const draft of patch.fields) {
       const desiredKey = draft.fieldKey ?? slugifyFieldKey(draft.label);
+      // Mapping the match column to this same source would have the app
+      // overwrite the key that finds its rows. Refused on an edit as on a
+      // create — the shape is immutable, the mapping is not.
+      if (desiredKey === source.matchFieldKey) {
+        return throwHttpError(
+          400,
+          badRequest(
+            `"${desiredKey}" is how this source matches rows, so it cannot also fill it. Map a different column.`,
+          ),
+        );
+      }
       const existing = byKey.get(desiredKey);
       if (existing !== undefined) {
         // Already ours: nothing to do but keep it. Otherwise the same two
@@ -183,5 +214,11 @@ export const updateSyncSource = async (params: {
       teamId: params.teamId,
     });
   }
+  // The journal sweep caches which keys each source watches, for a minute.
+  // Nothing dropped that cache on an edit, so for up to a minute after the
+  // arguments changed a record edit was matched against the OLD keys — which
+  // is a wrong answer in both directions. The file's own comment expected this
+  // call; it was never made.
+  invalidateColumnSourceCache(params.teamId);
   return updated;
 };

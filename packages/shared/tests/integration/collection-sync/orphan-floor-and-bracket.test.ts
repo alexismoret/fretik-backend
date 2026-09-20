@@ -2,7 +2,7 @@ import "@hono/zod-openapi";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { sql } from "drizzle-orm";
 import db from "../../../src/db";
-import { runTableSync } from "../../../src/services/collection-sync/run-table-sync";
+import { runTableWalk } from "../../../src/services/collection-sync/walk-by-external-id";
 import {
   createWorkspaceFixture,
   type WorkspaceFixture,
@@ -56,7 +56,7 @@ const walk = async (
   // `started_at` comes from the database on a real run; here the walk's own
   // boundary is taken the same way, so `synced_at < walkStartedAt` compares
   // two clocks that agree. See `dbNow`.
-  return runTableSync({
+  return runTableWalk({
     source,
     action: singlePageUpstream(rows).action,
     deadlineAt: Date.now() + 60_000,

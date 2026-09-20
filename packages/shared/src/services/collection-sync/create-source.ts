@@ -16,7 +16,9 @@ import type {
 } from "../../schemas/collection-sync";
 import { SYNC_LIMITS } from "../../schemas/collection-sync";
 import { fieldConfigSchema } from "../../schemas/field-definitions";
+import { isMatchableField } from "../collection-schema/find-by-column";
 import { RESERVED_FIELD_KEYS } from "../collection-schema/identifiers";
+import { noteIndexWanted } from "../collection-schema/reconcile-indexes";
 import { invalidateFieldDefinitionsCache } from "../field-definitions/cache";
 import { createFieldDefinition } from "../field-definitions/create";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
@@ -111,6 +113,18 @@ export const createSyncSource = async (
   });
   const byKey = new Map(existingFields.map((field) => [field.key, field]));
 
+  // Before a single column is created: can this source recognise its rows at
+  // all. Checked here rather than at the first run, because a source that
+  // cannot match is one that runs green and fills nothing.
+  const matchField =
+    params.matchFieldKey === undefined
+      ? undefined
+      : assertMatchField(
+          byKey.get(params.matchFieldKey),
+          params.matchFieldKey,
+          params.fields.map((draft) => draft.fieldKey ?? ""),
+        );
+
   const mapping: SyncFieldMapping[] = [];
   const adoptedFieldIds: string[] = [];
   const createdFieldIds: string[] = [];
@@ -119,10 +133,10 @@ export const createSyncSource = async (
     const desiredKey = draft.fieldKey ?? slugifyFieldKey(draft.label);
     const existing = byKey.get(desiredKey);
 
-    // A `lookup` source fills columns of a collection that already exists, so
+    // A `columns` source fills columns of a collection that already exists, so
     // ADOPTING is the normal case, not the exception — the user picked the
     // columns from a list of the ones already there.
-    if (existing !== undefined && params.kind === "lookup") {
+    if (existing !== undefined && params.kind === "columns") {
       assertAdoptable(existing);
       adoptedFieldIds.push(existing.id);
       mapping.push({ path: draft.path, fieldKey: existing.key });
@@ -176,6 +190,7 @@ export const createSyncSource = async (
       args: params.args,
       resultPath: params.resultPath ?? null,
       externalIdPath: params.externalIdPath ?? null,
+      matchFieldKey: params.matchFieldKey ?? null,
       fieldMapping: mapping,
       schedule: params.schedule,
       orphanPolicy: params.orphanPolicy,
@@ -201,6 +216,13 @@ export const createSyncSource = async (
       organizationId: params.organizationId,
       teamId: params.teamId,
     });
+  }
+
+  // The match column is read on every page of every walk, so the index that
+  // serves it must not be pruned away under a source that runs once a day.
+  // Reviving costs a statement only when one was actually dropped.
+  if (matchField !== undefined) {
+    noteIndexWanted({ fields: existingFields, keys: [matchField.key] });
   }
 
   // A synced collection is usually a working table — orders, invoices, stock
@@ -254,6 +276,49 @@ export const assertAdoptable = (
       ),
     );
   }
+};
+
+/**
+ * The column a walked `columns` source recognises its rows by.
+ *
+ * Three refusals, each because the failure it prevents is silent. A column
+ * that does not exist, or has been disabled, matches nothing — the source runs
+ * green and fills no column. A type with no single comparable value (`money`
+ * is two columns, `multi_select` an array, `location` a foreign key) cannot be
+ * equated at all. And a column this same source WRITES would move the target
+ * between runs: the app's own value would overwrite the key that found it, and
+ * the next walk would land on a different record, or none.
+ */
+export const assertMatchField = (
+  field: FieldDefinition | undefined,
+  key: string,
+  mappedKeys: readonly string[],
+): FieldDefinition => {
+  if (field === undefined) {
+    return throwHttpError(
+      400,
+      badRequest(
+        `There is no column "${key}" on this collection to match rows on. Pick one of its existing columns, or add it first.`,
+      ),
+    );
+  }
+  if (!isMatchableField(field)) {
+    return throwHttpError(
+      400,
+      badRequest(
+        `The column "${key}" cannot identify a row: a ${field.type}${field.enabled ? "" : " that is turned off"} has no single value to compare. Match on a code, a reference, an email or a number.`,
+      ),
+    );
+  }
+  if (mappedKeys.includes(key)) {
+    return throwHttpError(
+      400,
+      badRequest(
+        `"${key}" is how rows are matched, so this source cannot also fill it — the app's own value would overwrite the key that found the row. Map a different column.`,
+      ),
+    );
+  }
+  return field;
 };
 
 /** Shared by create and update: the draft list a source may carry. */

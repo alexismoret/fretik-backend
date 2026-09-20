@@ -7,6 +7,11 @@ import type {
   SyncArgs,
 } from "../../schemas/collection-sync";
 import { SYNC_LIMITS } from "../../schemas/collection-sync";
+import {
+  findRecordIdsByColumnValues,
+  isMatchableField,
+  matchKeyOf,
+} from "../collection-schema/find-by-column";
 import { readRecordDataBatch } from "../collection-schema/record-io";
 import { resolvePageConnection } from "../external-apps/connections/resolve-for-page";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
@@ -50,8 +55,15 @@ export const previewSyncSource = async (input: {
   operation: string;
   args: SyncArgs;
   resultPath?: string;
-  /** Resolve `{"$field"}` bindings against this record (a `lookup` preview). */
+  /** Resolve `{"$field"}` bindings against this record (a per-record preview). */
   sampleRecordId?: string;
+  /**
+   * Try the match too — all three together, or none. See
+   * `countMatchedSampleRows`.
+   */
+  collectionId?: string;
+  matchFieldKey?: string;
+  externalIdPath?: string;
 }): Promise<PreviewSyncSourceResponse> => {
   const resolution = await resolvePageConnection({
     teamId: input.teamId,
@@ -121,10 +133,24 @@ export const previewSyncSource = async (input: {
   });
 
   const fields = proposeFields(rows, action.returnFields);
+  const matched = await countMatchedSampleRows({
+    teamId: input.teamId,
+    rows,
+    ...(input.collectionId === undefined
+      ? {}
+      : { collectionId: input.collectionId }),
+    ...(input.matchFieldKey === undefined
+      ? {}
+      : { matchFieldKey: input.matchFieldKey }),
+    ...(input.externalIdPath === undefined
+      ? {}
+      : { externalIdPath: input.externalIdPath }),
+  });
   return {
     rows,
     fields,
     suggestedIdPaths: rankIdPaths(fields),
+    ...(matched === undefined ? {} : { matched }),
     ...(warning !== undefined ? { warning } : {}),
     ...(action.returns !== undefined
       ? { returnsShape: Object.keys(action.returns)[0] ?? "unknown" }
@@ -139,6 +165,71 @@ export const previewSyncSource = async (input: {
       ? { batch: { maxItems: action.batch.maxItems } }
       : {}),
   };
+};
+
+/**
+ * How the match would go, on the rows just read.
+ *
+ * ONE indexed query, over at most twenty keys — the cheapest possible answer
+ * to the question that otherwise costs a source, a run, and a week of a column
+ * that stays empty. A walked `columns` source with a key that does not line up
+ * is not an error: it runs, succeeds, counts everything `unmatched` and fills
+ * nothing. `matched: 0` here is the one moment that is obvious.
+ *
+ * `found` is out of the rows SAMPLED, never out of the collection. Three of
+ * twenty is not a bad key — it is an app whose list is wider than the team's
+ * table, which is the ordinary case. Zero is the one that means something.
+ *
+ * Exported for its own test: it is the only part of the preview that reads the
+ * workspace rather than the app.
+ */
+export const countMatchedSampleRows = async (input: {
+  teamId: string;
+  rows: readonly Record<string, unknown>[];
+  collectionId?: string;
+  matchFieldKey?: string;
+  externalIdPath?: string;
+}): Promise<{ sampled: number; found: number } | undefined> => {
+  const { collectionId, matchFieldKey, externalIdPath } = input;
+  if (
+    collectionId === undefined ||
+    matchFieldKey === undefined ||
+    externalIdPath === undefined
+  ) {
+    return undefined;
+  }
+
+  const fields = await getFieldDefinitionsForTeam({
+    teamId: input.teamId,
+    collectionId,
+    includeDisabled: true,
+  });
+  const field = fields.find((candidate) => candidate.key === matchFieldKey);
+  if (field === undefined || !isMatchableField(field)) {
+    // Not a refusal: the form asks about a column the user is still choosing,
+    // and "we cannot say" is a better answer than an error on a half-filled
+    // form. `createSyncSource` is where an unusable column is refused by name.
+    return undefined;
+  }
+
+  const keys = input.rows
+    .map((row) => matchKeyOf(field, readPath(row, externalIdPath)))
+    .filter((key): key is string => key !== undefined);
+  if (keys.length === 0) {
+    return { sampled: input.rows.length, found: 0 };
+  }
+
+  const byKey = await findRecordIdsByColumnValues({
+    collectionId,
+    teamId: input.teamId,
+    field,
+    keys,
+  });
+  // Counted over the ROWS, not over the distinct keys: two sampled rows sharing
+  // a key are two rows that would land, and the number on screen is about the
+  // rows the user is looking at.
+  const found = keys.filter((key) => (byKey.get(key)?.length ?? 0) > 0).length;
+  return { sampled: input.rows.length, found };
 };
 
 const readSampleRecord = async (

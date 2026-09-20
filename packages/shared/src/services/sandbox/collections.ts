@@ -1088,6 +1088,14 @@ const syncPreviewArgs = z.object({
   args: syncArgsSchema.default({}),
   resultPath: z.string().max(200).optional(),
   sampleRecordId: z.uuid().optional(),
+  // Try the match before creating anything: all three together, or none.
+  collectionKey: z.string().min(1).max(60).optional(),
+  matchFieldKey: z
+    .string()
+    .regex(/^[a-z][a-z0-9_]*$/)
+    .max(60)
+    .optional(),
+  externalIdPath: z.string().max(200).optional(),
 });
 
 const syncPreview = async (
@@ -1095,6 +1103,13 @@ const syncPreview = async (
   rawArgs: Record<string, unknown>,
 ): Promise<SandboxExecResponse> => {
   const args = syncPreviewArgs.parse(rawArgs);
+  const collectionId =
+    args.collectionKey === undefined
+      ? null
+      : await resolveTeamType(ctx, args.collectionKey);
+  if (args.collectionKey !== undefined && collectionId === null) {
+    return unknownType(args.collectionKey);
+  }
   const preview = await previewSyncSource({
     teamId: ctx.teamId,
     userId: ctx.userId,
@@ -1105,6 +1120,13 @@ const syncPreview = async (
     ...(args.sampleRecordId === undefined
       ? {}
       : { sampleRecordId: args.sampleRecordId }),
+    ...(collectionId === null ? {} : { collectionId }),
+    ...(args.matchFieldKey === undefined
+      ? {}
+      : { matchFieldKey: args.matchFieldKey }),
+    ...(args.externalIdPath === undefined
+      ? {}
+      : { externalIdPath: args.externalIdPath }),
   });
   return { status: "ok", data: preview };
 };
@@ -1130,6 +1152,11 @@ const syncCreateArgs = z.object({
   args: syncArgsSchema.default({}),
   resultPath: z.string().max(200).optional(),
   externalIdPath: z.string().max(200).optional(),
+  matchFieldKey: z
+    .string()
+    .regex(/^[a-z][a-z0-9_]*$/)
+    .max(60)
+    .optional(),
   schedule: syncScheduleSchema.default({ mode: "manual" }),
   orphanPolicy: syncOrphanPolicySchema.default("keep"),
   rowCap: z.number().int().min(1).max(SYNC_LIMITS.maxRowCap).optional(),
@@ -1155,6 +1182,9 @@ const syncCreate = async (
     providerKey: "",
     operation: args.operation,
     args: args.args,
+    ...(args.matchFieldKey === undefined
+      ? {}
+      : { matchFieldKey: args.matchFieldKey }),
     ...(args.resultPath === undefined ? {} : { resultPath: args.resultPath }),
     ...(args.externalIdPath === undefined
       ? {}

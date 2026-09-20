@@ -64,7 +64,7 @@ const seedDueSources = async (perTeam: number): Promise<string[]> => {
           organizationId: fx.organizationId,
           teamId,
           collectionId: collection.id,
-          kind: "lookup",
+          kind: "columns",
           providerKey: "it-app",
           operation: "list_orders",
           schedule: { mode: "interval", everyMinutes: 15 },

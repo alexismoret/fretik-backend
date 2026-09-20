@@ -46,20 +46,27 @@ import { externalAppConnections } from "./external-apps";
  */
 
 /**
- * What a source owns.
+ * What a source owns — WHOSE the rows are. The one question that cannot be
+ * derived, because it decides what an orphan is and what may be deleted.
  *
- *  - `table`  : the source owns the COLLECTION. One upstream row (an order,
- *               a contact) becomes one record, keyed by `externalIdPath`. The
- *               user adds local fields — a formula, a relation, a note —
- *               alongside the synced ones, and those survive every run.
- *  - `lookup` : the source owns SOME COLUMNS of an existing collection. The
- *               arguments are resolved per record from its own values
- *               (`{"$field": "siret"}`), so the collection keeps its own
- *               identity and lifecycle and only the mapped columns are filled.
+ *  - `table`   : the source owns the COLLECTION. One upstream row (an order,
+ *                a contact) becomes one record, keyed by `externalIdPath`. The
+ *                user adds local fields — a formula, a relation, a note —
+ *                alongside the synced ones, and those survive every run.
+ *  - `columns` : the source owns SOME COLUMNS of a collection the team owns.
+ *                It never creates or deletes a record; a row it cannot match
+ *                is counted and ignored.
+ *
+ * HOW the app is read is a second, orthogonal question, and it is DERIVED
+ * rather than stored (`syncReadStrategy`): a source whose arguments bind
+ * `{"$field"}` is read one call per record, and any other is read by walking
+ * the action's list. A `table` source is always walked. Deriving it is what
+ * keeps the two from drifting apart — there is no state to contradict the
+ * arguments.
  */
 export const collectionSyncKindEnum = pgEnum("collection_sync_kind", [
   "table",
-  "lookup",
+  "columns",
 ]);
 
 /**
@@ -92,7 +99,7 @@ export const collectionSyncRunTriggerEnum = pgEnum(
     "schedule",
     // A person pressed Refresh, or the agent called `manageSync refresh`.
     "manual",
-    // A record changed and a `lookup` source reads one of the changed fields.
+    // A record changed and a per-record `columns` source reads a changed field.
     "event",
     // Someone opened the collection and the data was older than the source's
     // `refreshOnOpenAfterMinutes`.
@@ -105,11 +112,12 @@ export const collectionSyncRunTriggerEnum = pgEnum(
 /** Per-record freshness against ONE source. */
 export const recordSyncStatusEnum = pgEnum("record_sync_status", [
   "ok",
-  // The last attempt for this row failed (a `lookup` whose call errored).
+  // The last attempt for this row failed (a `columns` call that errored).
   "error",
-  // `table`: the upstream row is gone. `lookup`: the record has no value for
-  // the key the arguments need, so no call was made — which is not an error,
-  // and must not be retried until the record changes.
+  // `table`: the upstream row is gone. `columns`: the app had no row for this
+  // record — either its key resolved to nothing, so no call was made, or a
+  // complete walk went by without matching it. Not an error, and not retried
+  // until the record changes.
   "missing",
   // Enqueued for a refresh that has not run yet.
   "pending",
@@ -164,11 +172,31 @@ export const collectionSyncSources = pgTable(
     resultPath: text("result_path"),
 
     /**
-     * `table` only — dot path to the upstream row's stable id. REQUIRED for a
-     * table source: without it a run cannot tell an updated row from a new one,
-     * and every run would duplicate the whole collection.
+     * Dot path to the value that KEYS an upstream row.
+     *
+     * For a `table` source it is the row's own stable id, and it is REQUIRED:
+     * without it a run cannot tell an updated row from a new one, and every
+     * run would duplicate the whole collection.
+     *
+     * For a walked `columns` source it is the app side of the match — the
+     * value that must equal `matchFieldKey`'s column on a record here.
      */
     externalIdPath: text("external_id_path"),
+
+    /**
+     * `columns`, walked — the collection field whose value an upstream row's
+     * `externalIdPath` must equal for the row to land on that record.
+     *
+     * Its presence is what makes a `columns` source walkable: with it the app
+     * is read a PAGE at a time and matched locally, without it the only way
+     * left is one call per record through a `{"$field"}` binding. Exactly one
+     * of the two, enforced at both doors.
+     *
+     * Immutable, like `externalIdPath` and `kind`: it decides which record an
+     * answer belongs to, so changing it under a filled collection would
+     * re-point every column at once.
+     */
+    matchFieldKey: varchar("match_field_key", { length: 120 }),
 
     /** `[{ path, fieldKey }]` — which upstream value fills which column. */
     fieldMapping: jsonb("field_mapping")
@@ -256,7 +284,7 @@ export const collectionSyncSources = pgTable(
     }),
 
     /**
-     * `lookup` — how far the "never tracked" scan has walked the collection.
+     * `columns`, per record — how far the "never tracked" scan has walked.
      *
      * Without it the anti-join that finds untracked records is O(collection)
      * on every run once they are all tracked, which is exactly when it finds
@@ -342,12 +370,23 @@ export const collectionSyncRuns = pgTable(
     orphanCount: integer("orphan_count").notNull().default(0),
     failedCount: integer("failed_count").notNull().default(0),
     /**
-     * `lookup` — rows the app had no answer for. NOT a failure: a company that
-     * does not exist upstream is the normal case, and counting it here rather
-     * than in `failed_count` is what keeps a healthy run green while still
-     * saying how many rows came back empty.
+     * `columns` — records the app had no answer for. NOT a failure: a company
+     * that does not exist upstream is the normal case, and counting it here
+     * rather than in `failed_count` is what keeps a healthy run green while
+     * still saying how many rows came back empty.
      */
     missingCount: integer("missing_count").notNull().default(0),
+    /**
+     * `columns`, walked — upstream rows that matched no record here.
+     *
+     * The mirror image of `missing_count`, and it is not a problem either: a
+     * source filling three columns of the team's 200 clients from an app that
+     * holds 5 000 is SUPPOSED to leave 4 800 unmatched. What it is for is the
+     * one number that tells a wrong match column from a right one — a run
+     * where every row is unmatched means the key does not line up, which the
+     * preview's `matched` should have said first.
+     */
+    unmatchedCount: integer("unmatched_count").notNull().default(0),
     /**
      * Calls actually made to the third party. The number that tells a team
      * whether its cadence is affordable, and the only one they can act on.
@@ -388,8 +427,8 @@ export const collectionSyncRuns = pgTable(
  * workflow trigger sweep. Without it an hourly sync of a large collection would
  * re-embed the whole thing every hour and fire a workflow run per row.
  *
- * It is also the work queue for `lookup` sources: "oldest `synced_at` first"
- * is one indexed read.
+ * It is also the work queue for per-record `columns` sources: "oldest
+ * `synced_at` first" is one indexed read.
  */
 export const recordSyncState = pgTable(
   "record_sync_state",

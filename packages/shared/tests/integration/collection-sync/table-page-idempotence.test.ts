@@ -1,6 +1,6 @@
 import "@hono/zod-openapi";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { runTableSync } from "../../../src/services/collection-sync/run-table-sync";
+import { runTableWalk } from "../../../src/services/collection-sync/walk-by-external-id";
 import {
   createWorkspaceFixture,
   type WorkspaceFixture,
@@ -47,7 +47,7 @@ const runOnce = async (
 ) => {
   const upstream = offsetUpstream(pages, { pageSize: 2 });
   const source = await fixture.reload();
-  const outcome = await runTableSync({
+  const outcome = await runTableWalk({
     source,
     action: upstream.action,
     deadlineAt: Date.now() + 60_000,
@@ -130,7 +130,7 @@ describe("a table run's diff", () => {
     const fixture = await createTableSource(fx);
     const nameless = { label: "no id here", amount: 3 };
 
-    const outcome = await runTableSync({
+    const outcome = await runTableWalk({
       source: await fixture.reload(),
       action: offsetUpstream([[row("a"), nameless as never], []], {
         pageSize: 2,

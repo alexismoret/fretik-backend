@@ -4,8 +4,12 @@ import type { CollectionSyncSource } from "../../db/schema";
 import { SYNC_LIMITS } from "../../schemas/collection-sync";
 
 /**
- * "Which records should this `lookup` run refresh?" — five bounded queries, in
- * the order a person would pick.
+ * "Which records should this PER-RECORD run refresh?" — five bounded queries,
+ * in the order a person would pick.
+ *
+ * Only a `columns` source read one call per record asks this. A walked source
+ * — the default, and the cheap one — reads the app's list and matches what
+ * comes back, so it has no work list to choose: it sees every row the app has.
  *
  * WHY FIVE AND NOT ONE. The first version asked it with a single statement:
  * a `LEFT JOIN` of the whole collection against the whole state table, sorted
@@ -22,7 +26,7 @@ import { SYNC_LIMITS } from "../../schemas/collection-sync";
  *  2. `pending` — an edit changed a bound field. Indexed by
  *     `record_sync_state_source_status_idx`.
  *  3. STALEST — ordinary rotation, by `record_sync_state_source_synced_idx`,
- *     and only rows past `rotateBefore` (see `lookupRotationFloor`).
+ *     and only rows past `rotateBefore` (see `rowRotationFloor`).
  *  4. NEVER TRACKED, AT A CURSOR — the first pass over a collection. The
  *     cursor is what stops this being the O(collection) anti-join the sort
  *     used to be: once every record is tracked, the scan finishes, records the
@@ -33,7 +37,7 @@ import { SYNC_LIMITS } from "../../schemas/collection-sync";
  *     stay unanswered, and they must never crowd out the rotation.
  */
 
-export interface LookupCandidate {
+export interface RowCandidate {
   recordId: string;
   contentHash: string | null;
 }
@@ -44,7 +48,7 @@ const MISSING_RETRY_PER_RUN = 50;
 /**
  * How stale a tracked row must be before the rotation spends a call on it.
  *
- * A `lookup` run does NOT only happen on its cadence. `invalidate-on-change`
+ * A per-record run does NOT only happen on its cadence. `invalidate-on-change`
  * sets `next_run_at = now()` whenever a bound column moves — an edit, a
  * creation, a `table` source rewriting the key — and the sweep then picks the
  * source up as an ordinary `schedule` run. Without a floor, step (3) filled
@@ -64,7 +68,7 @@ const MISSING_RETRY_PER_RUN = 50;
  * has no interval of its own, and "only on demand" is the one setting where an
  * edit-triggered rotation is most clearly not what was asked for.
  */
-export const lookupRotationFloor = (
+export const rowRotationFloor = (
   source: Pick<CollectionSyncSource, "schedule">,
   now: Date = new Date(),
 ): Date => {
@@ -76,13 +80,13 @@ export const lookupRotationFloor = (
   return new Date(now.getTime() - (everyMinutes * 60_000) / 2);
 };
 
-export const selectLookupCandidates = async (input: {
+export const selectRowCandidates = async (input: {
   source: CollectionSyncSource;
   limit: number;
   requested?: string[];
-}): Promise<LookupCandidate[]> => {
+}): Promise<RowCandidate[]> => {
   const { source } = input;
-  const picked = new Map<string, LookupCandidate>();
+  const picked = new Map<string, RowCandidate>();
   const remaining = (): number => input.limit - picked.size;
 
   const absorb = (rows: Record<string, unknown>[]): void => {
@@ -134,7 +138,7 @@ export const selectLookupCandidates = async (input: {
       FROM record_sync_state s
      WHERE s.sync_source_id = ${source.id}::uuid
        AND s.status IN ('ok'::record_sync_status, 'error'::record_sync_status)
-       AND s.synced_at < ${lookupRotationFloor(source)}
+       AND s.synced_at < ${rowRotationFloor(source)}
      ORDER BY s.synced_at ASC
      LIMIT ${remaining()}`);
   absorb(stalest.rows);

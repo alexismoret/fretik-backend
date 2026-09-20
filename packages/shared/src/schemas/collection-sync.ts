@@ -197,6 +197,68 @@ export const syncArgsBindSince = (args: SyncArgs): boolean => {
 };
 
 /**
+ * HOW a source reads its app, derived from its arguments alone.
+ *
+ *  - `row`  : one call per record. The arguments bind `{"$field": "<key>"}`,
+ *             so each record's own values ARE the call — there is nothing to
+ *             walk, because the app answers about one thing at a time.
+ *  - `walk` : one call per page. The action's list is read to the end and each
+ *             row is matched locally.
+ *
+ * Derived rather than stored, and that is the point: a stored strategy is a
+ * third thing that can disagree with the arguments and with the action, and
+ * the disagreement would only show up as a run that cost 200 calls instead of
+ * two. Here there is nothing to contradict — a `{$field}` binding IS the
+ * per-record read.
+ *
+ * A `table` source is always walked and never asks this: its rows come from
+ * the list, so a `{$field}` binding on one is refused at the door.
+ */
+export type SyncReadStrategy = "walk" | "row";
+
+export const syncReadStrategy = (args: SyncArgs): SyncReadStrategy =>
+  syncArgFieldKeys(args).length > 0 ? "row" : "walk";
+
+/**
+ * Why a `columns` source's shape is not usable, or `undefined` when it is.
+ *
+ * A `columns` source needs EXACTLY ONE way to tie an answer to a record:
+ * either a `{"$field"}` binding (ask the app about this record) or a match
+ * column plus the path to compare it against (walk the list and recognise the
+ * record). Neither, and the source has no way to know whose answer is whose.
+ * Both, and two mechanisms describe the same thing — the runner would pick
+ * one and silently ignore what the user configured in the other.
+ *
+ * One function, two callers: the create schema's `superRefine` and the update
+ * service, which has to re-ask the question against the shape an edit would
+ * LEAVE BEHIND rather than the one it was given.
+ */
+export const columnsShapeIssue = (input: {
+  args: SyncArgs;
+  matchFieldKey?: string | null;
+  externalIdPath?: string | null;
+}): string | undefined => {
+  const bound = syncArgFieldKeys(input.args).length > 0;
+  const hasMatch =
+    input.matchFieldKey !== undefined && input.matchFieldKey !== null;
+  const hasPath =
+    input.externalIdPath !== undefined && input.externalIdPath !== null;
+
+  if (bound && (hasMatch || hasPath)) {
+    return 'a columns source is read one way or the other: bind {"$field": "<column key>"} to ask the app about each record, OR give matchFieldKey + externalIdPath to walk its list and match rows. Not both.';
+  }
+  if (bound) return undefined;
+  if (hasMatch && hasPath) return undefined;
+  if (hasMatch) {
+    return "matchFieldKey names the column on your records; externalIdPath must name the value in the app's row it has to equal.";
+  }
+  if (hasPath) {
+    return "externalIdPath names the value in the app's row; matchFieldKey must name the column on your records it has to equal.";
+  }
+  return 'a columns source needs a way to tie an answer to a record: either matchFieldKey + externalIdPath (one call per page, the cheap one), or an argument bound to {"$field": "<column key>"} (one call per record, for an app with no list).';
+};
+
+/**
  * WHERE the `{"$since": true}` bindings sit — the top-level keys carrying one,
  * and whether any sits deeper than the top level.
  *
@@ -302,7 +364,14 @@ export type SyncStopReason =
   | "call_cap"
   | "unpaged"
   | "orphan_floor"
-  | "legs_cap";
+  | "legs_cap"
+  /**
+   * A walked `columns` source whose match column is empty everywhere. Nothing
+   * to match against, so the walk is not worth a single call — the common
+   * case being a source declared before the `table` source that fills its key
+   * has ever run.
+   */
+  | "no_match_keys";
 
 /** What one run did. Every counter the run row carries, and the checkpoint's. */
 export interface SyncRunCounts {
@@ -311,8 +380,10 @@ export interface SyncRunCounts {
   unchangedCount: number;
   orphanCount: number;
   failedCount: number;
-  /** `lookup`: rows the app had no answer for. Written so they rest. */
+  /** `columns`: records the app had no answer for. Written so they rest. */
   missingCount: number;
+  /** `columns`, walked: upstream rows that matched no record here. */
+  unmatchedCount: number;
   upstreamCalls: number;
   truncated: boolean;
 }
@@ -350,7 +421,7 @@ export interface TableWalkCheckpoint {
 
 // ── Wire: create / update ─────────────────────────────────────────────
 
-export const syncKindSchema = z.enum(["table", "lookup"]);
+export const syncKindSchema = z.enum(["table", "columns"]);
 export type SyncKind = z.infer<typeof syncKindSchema>;
 export const syncOrphanPolicySchema = z.enum(["keep", "reject", "delete"]);
 
@@ -378,7 +449,12 @@ export const syncOrphanPolicySchema = z.enum(["keep", "reject", "delete"]);
  * still being chosen, so it cannot wait for a round trip.
  */
 export const syncRunCeiling = (input: {
-  kind: SyncKind;
+  /**
+   * WHICH cost model applies. The kind does not decide this — a `columns`
+   * source is walked or read per record depending on its arguments, and the
+   * difference between the two is two orders of magnitude.
+   */
+  read: SyncReadStrategy;
   /** `table` only — the source's own cap on rows per run. */
   rowCap?: number;
   /** Rows the action returns per call, when it declares a page size. */
@@ -386,7 +462,7 @@ export const syncRunCeiling = (input: {
   /** Ids the action takes per call, when it declares batching. */
   batchMaxItems?: number;
 }): { records: number; calls: number } => {
-  if (input.kind === "table") {
+  if (input.read === "walk") {
     const records = input.rowCap ?? SYNC_LIMITS.defaultRowCap;
     // No declared page size means the answer arrives whole: one call.
     const calls =
@@ -395,10 +471,10 @@ export const syncRunCeiling = (input: {
         : Math.ceil(records / input.pageSize);
     return { records, calls };
   }
-  // `candidateLimit` in `run-lookup-sync.ts`, which is what actually bounds the
+  // `candidateLimit` in `run-row-sync.ts`, which is what actually bounds the
   // work list. Without batching the call budget IS the bound, so the two
   // numbers are the same and a person reading "200 rows, 200 requests" has
-  // understood the whole cost model of a lookup in one line.
+  // understood the whole cost model of a per-record read in one line.
   const batch = input.batchMaxItems;
   if (batch === undefined || batch <= 1) {
     return {
@@ -443,6 +519,12 @@ const sourceCoreSchema = z.object({
   args: syncArgsSchema.default({}),
   resultPath: z.string().max(200).optional(),
   externalIdPath: z.string().max(200).optional(),
+  /** `columns`, walked — the column an upstream row is recognised by. */
+  matchFieldKey: z
+    .string()
+    .regex(/^[a-z][a-z0-9_]*$/)
+    .max(60)
+    .optional(),
   schedule: syncScheduleSchema.default({ mode: "manual" }),
   orphanPolicy: syncOrphanPolicySchema.default("keep"),
   rowCap: z.number().int().min(1).max(SYNC_LIMITS.maxRowCap).optional(),
@@ -452,28 +534,64 @@ export const createSyncSourceSchema = sourceCoreSchema
   .extend({
     collectionId: z.uuid(),
     kind: syncKindSchema,
-    /** `table`: the columns to create. `lookup`: the columns to fill. */
+    /** `table`: the columns to create. `columns`: the columns to fill. */
     fields: z
       .array(syncFieldDraftSchema)
       .min(1)
       .max(SYNC_LIMITS.maxMappedFields),
   })
   .superRefine((input, ctx) => {
-    if (input.kind === "table" && !input.externalIdPath) {
-      ctx.addIssue({
-        code: "custom",
-        message:
-          "a table source needs externalIdPath — without a stable upstream id every run would duplicate the collection instead of updating it",
-        path: ["externalIdPath"],
-      });
+    if (input.kind === "table") {
+      if (!input.externalIdPath) {
+        ctx.addIssue({
+          code: "custom",
+          message:
+            "a table source needs externalIdPath — without a stable upstream id every run would duplicate the collection instead of updating it",
+          path: ["externalIdPath"],
+        });
+      }
+      // A table source's rows come FROM the list. A per-record binding would
+      // ask it to resolve each record's arguments before the records exist.
+      if (syncArgFieldKeys(input.args).length > 0) {
+        ctx.addIssue({
+          code: "custom",
+          message:
+            'a table source creates the records, so it cannot read one of their columns: {"$field"} belongs to a columns source',
+          path: ["args"],
+        });
+      }
+      if (input.matchFieldKey !== undefined) {
+        ctx.addIssue({
+          code: "custom",
+          message:
+            "a table source recognises a row by its own upstream id (externalIdPath), never by a column of the collection it owns",
+          path: ["matchFieldKey"],
+        });
+      }
     }
-    if (input.kind === "lookup" && syncArgFieldKeys(input.args).length === 0) {
-      ctx.addIssue({
-        code: "custom",
-        message:
-          'a lookup source needs at least one {"$field": "<key>"} argument — that binding is what ties an upstream answer to a record',
-        path: ["args"],
-      });
+    if (input.kind === "columns") {
+      const issue = columnsShapeIssue(input);
+      if (issue !== undefined) {
+        ctx.addIssue({
+          code: "custom",
+          message: issue,
+          path: ["matchFieldKey"],
+        });
+      }
+      // The match column is READ to decide whose answer this is. A source that
+      // also WROTE it would move the target between runs: the app's own value
+      // would overwrite the key that found it, and the next walk would match
+      // a different record — or none.
+      if (
+        input.matchFieldKey !== undefined &&
+        input.fields.some((field) => field.fieldKey === input.matchFieldKey)
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          message: `"${input.matchFieldKey}" is how rows are matched, so this source cannot also fill it — map a different column, or match on one the app does not send`,
+          path: ["matchFieldKey"],
+        });
+      }
     }
     const paths = new Set<string>();
     for (const field of input.fields) {
@@ -524,10 +642,26 @@ export const previewSyncSourceSchema = z.object({
   args: syncArgsSchema.default({}),
   resultPath: z.string().max(200).optional(),
   /**
-   * Resolve `{"$field"}` bindings against this record so a `lookup` preview
+   * Resolve `{"$field"}` bindings against this record so a per-record preview
    * shows a real answer instead of an empty one.
    */
   sampleRecordId: z.uuid().optional(),
+  /**
+   * Try the match, on these three together: how many of the sampled rows
+   * would land on a record of `collectionId` whose `matchFieldKey` column
+   * equals their `externalIdPath` value.
+   *
+   * The whole point of asking before creating. A walked `columns` source with
+   * the wrong key is not an error — it is a source that runs, succeeds, and
+   * fills nothing, and `matched: 0` is the only moment that is cheap to see.
+   */
+  collectionId: z.uuid().optional(),
+  matchFieldKey: z
+    .string()
+    .regex(/^[a-z][a-z0-9_]*$/)
+    .max(60)
+    .optional(),
+  externalIdPath: z.string().max(200).optional(),
 });
 
 /** One candidate column the preview proposes, ready to be accepted as-is. */
@@ -565,12 +699,21 @@ export const previewSyncSourceResponseSchema = z.object({
    * What the action declares about taking several ids at once.
    *
    * Absent means one call per record, which is the whole cost model of a
-   * `lookup` source and the one thing a person choosing a cadence has to know
-   * before they choose it. It travels on the preview rather than being looked
-   * up separately because the preview is already the moment the form learns
-   * what this action can do.
+   * per-record source and the one thing a person choosing a cadence has to
+   * know before they choose it. It travels on the preview rather than being
+   * looked up separately because the preview is already the moment the form
+   * learns what this action can do.
    */
   batch: z.object({ maxItems: z.number() }).optional(),
+  /**
+   * How the match would go, on the rows just read. Present only when the
+   * request named a collection, a match column and a path.
+   *
+   * `found` is out of `sampled`, not out of the collection: 3 of 20 is not a
+   * bad key, it is 20 rows of an app whose list is wider than the team's
+   * table. `found: 0` is the one that means the key does not line up.
+   */
+  matched: z.object({ sampled: z.number(), found: z.number() }).optional(),
 });
 export type PreviewSyncSourceResponse = z.infer<
   typeof previewSyncSourceResponseSchema
@@ -591,6 +734,7 @@ export const syncRunResponseSchema = z.object({
   orphanCount: z.number(),
   failedCount: z.number(),
   missingCount: z.number(),
+  unmatchedCount: z.number(),
   upstreamCalls: z.number(),
   truncated: z.boolean(),
   /** Continuations this run took. `1` is a run that finished in one go. */
@@ -606,6 +750,7 @@ export const syncRunResponseSchema = z.object({
       "unpaged",
       "orphan_floor",
       "legs_cap",
+      "no_match_keys",
     ])
     .nullable(),
   error: z.string().nullable(),
@@ -635,6 +780,12 @@ export const syncSourceResponseSchema = z.object({
   args: syncArgsSchema,
   resultPath: z.string().nullable(),
   externalIdPath: z.string().nullable(),
+  matchFieldKey: z.string().nullable(),
+  /**
+   * How this source reads its app — derived, never stored, and the number the
+   * cost line is built on.
+   */
+  read: z.enum(["walk", "row"]),
   fieldMapping: z.array(syncFieldMappingSchema),
   schedule: syncScheduleSchema,
   orphanPolicy: syncOrphanPolicySchema,

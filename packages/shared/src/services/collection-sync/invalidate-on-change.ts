@@ -1,6 +1,10 @@
 import { sql } from "drizzle-orm";
 import db from "../../db";
-import { syncArgFieldKeys } from "../../schemas/collection-sync";
+import {
+  syncArgFieldKeys,
+  syncReadStrategy,
+  type SyncReadStrategy,
+} from "../../schemas/collection-sync";
 import { connectorAgentKey } from "./agent-key";
 
 /**
@@ -26,12 +30,28 @@ import { connectorAgentKey } from "./agent-key";
 interface LookupSourceKeys {
   id: string;
   collectionId: string;
-  /** Field keys the arguments read — what a diff is matched against. */
+  /**
+   * Field keys this source READS — what a diff is matched against. The
+   * arguments' `{"$field"}` bindings, plus the match column of a walked
+   * source, because a record whose key just changed belongs to a different
+   * upstream row than it did a second ago.
+   */
   keys: string[];
+  /**
+   * Whether an edit may make this source due IMMEDIATELY.
+   *
+   * Only a per-record source. It answers about the records it is given, so one
+   * edit is one call and asking now is the whole reason the column feels live.
+   * A walked source answers by reading the app's list — one edit would cost
+   * every page of it — so the record is marked `pending` and collected by the
+   * next run that was going to happen anyway, or by a refresh somebody asked
+   * for. The UI says so where the column is chosen.
+   */
+  read: SyncReadStrategy;
 }
 
 /**
- * Teams' lookup sources, cached in process.
+ * Teams' `columns` sources, cached in process.
  *
  * A minute rather than the sweep's fifteen seconds: the worst case of a stale
  * entry is that a source created in the last minute misses one invalidation
@@ -43,7 +63,7 @@ const CACHE_TTL_MS = 60_000;
 const cache = new Map<string, { at: number; sources: LookupSourceKeys[] }>();
 
 /** Test hook, and what an edit to a source calls so it takes effect at once. */
-export const invalidateLookupSourceCache = (teamId?: string): void => {
+export const invalidateColumnSourceCache = (teamId?: string): void => {
   if (teamId === undefined) cache.clear();
   else cache.delete(teamId);
 };
@@ -56,14 +76,23 @@ const lookupSourcesForTeam = async (
     return cached.sources;
   }
   const rows = await db.query.collectionSyncSources.findMany({
-    where: { teamId, kind: "lookup", enabled: true },
-    columns: { id: true, collectionId: true, args: true },
+    where: { teamId, kind: "columns", enabled: true },
+    columns: {
+      id: true,
+      collectionId: true,
+      args: true,
+      matchFieldKey: true,
+    },
   });
   const sources = rows
     .map((row) => ({
       id: row.id,
       collectionId: row.collectionId,
-      keys: syncArgFieldKeys(row.args),
+      keys: [
+        ...syncArgFieldKeys(row.args),
+        ...(row.matchFieldKey === null ? [] : [row.matchFieldKey]),
+      ],
+      read: syncReadStrategy(row.args),
     }))
     .filter((source) => source.keys.length > 0);
   cache.set(teamId, { at: Date.now(), sources });
@@ -83,7 +112,7 @@ export interface RecordChange {
  * Mark every record whose change a lookup source cares about, and make those
  * sources due. Returns how many (record, source) pairs were queued.
  */
-export const invalidateLookupSources = async (
+export const invalidateColumnSources = async (
   changes: readonly RecordChange[],
 ): Promise<number> => {
   if (changes.length === 0) return 0;
@@ -92,7 +121,7 @@ export const invalidateLookupSources = async (
   // Record ids to mark, per source.
   const bySource = new Map<
     string,
-    { collectionId: string; ids: Set<string> }
+    { collectionId: string; read: SyncReadStrategy; ids: Set<string> }
   >();
 
   for (const teamId of teamIds) {
@@ -119,6 +148,7 @@ export const invalidateLookupSources = async (
         }
         const entry = bySource.get(source.id) ?? {
           collectionId: source.collectionId,
+          read: source.read,
           ids: new Set<string>(),
         };
         entry.ids.add(change.recordId);
@@ -146,7 +176,10 @@ export const invalidateLookupSources = async (
       RETURNING record_id`);
     if (result.rows.length === 0) continue;
     queued += result.rows.length;
-    dueSourceIds.push(sourceId);
+    // The `pending` rows are written for BOTH reads — they are what a run of
+    // either shape prioritises. What only a per-record source earns is the
+    // right to run NOW: see `read` on `LookupSourceKeys`.
+    if (entry.read === "row") dueSourceIds.push(sourceId);
   }
 
   if (dueSourceIds.length > 0) {

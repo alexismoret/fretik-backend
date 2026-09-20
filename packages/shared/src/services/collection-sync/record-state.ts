@@ -1,7 +1,12 @@
 import { sql } from "drizzle-orm";
 import db from "../../db";
-import type { RecordSyncStatus } from "../../db/schema";
+import type { FieldDefinition, RecordSyncStatus } from "../../db/schema";
 import { chunkForBulk, chunkSizeForParams } from "../../lib/db-bulk";
+import { columnsForField } from "../collection-schema/columns";
+import {
+  qualifiedCollectionTable,
+  SYS_COL,
+} from "../collection-schema/identifiers";
 
 /**
  * `record_sync_state` — read and written set-based, never row by row.
@@ -149,7 +154,12 @@ export const markRecordsPending = async (
   return result.rows.length;
 };
 
-export interface TableSyncIndexEntry {
+/**
+ * One record a page's key resolved to, with what this source last knew about
+ * it. Whether the key was an upstream id or one of the collection's own
+ * columns is the resolver's business; the diff only needs these three.
+ */
+export interface WalkIndexEntry {
   recordId: string;
   contentHash: string | null;
   status: RecordSyncStatus | null;
@@ -175,8 +185,8 @@ export interface TableSyncIndexEntry {
 export const loadTableSyncIndexFor = async (
   syncSourceId: string,
   externalIds: readonly string[],
-): Promise<Map<string, TableSyncIndexEntry>> => {
-  const byExternalId = new Map<string, TableSyncIndexEntry>();
+): Promise<Map<string, WalkIndexEntry>> => {
+  const byExternalId = new Map<string, WalkIndexEntry>();
   if (externalIds.length === 0) return byExternalId;
 
   for (const chunk of chunkForBulk([...new Set(externalIds)])) {
@@ -235,3 +245,84 @@ export const touchRecordSyncState = async (
          AND record_id = ANY(${sql.param(chunk)}::uuid[])`);
   }
 };
+
+/**
+ * After a COMPLETE FULL walk of a matched `columns` source: every record with
+ * a key that this walk did not match becomes `missing`. Returns how many.
+ *
+ * The mirror of the orphan bracket, and deliberately much smaller, because the
+ * two answer different questions. A `table` source OWNS its records, so a row
+ * that stopped coming back may have to be rejected or deleted — which is why
+ * that path has a floor and a confirmation in front of it. This source owns
+ * nothing: the record is the team's, every stored value stays, and `missing`
+ * is a note beside the column saying the app had no answer this time. The next
+ * walk that matches the row clears it, because the hash short-circuit requires
+ * `status = 'ok'`.
+ *
+ * Two statements, because there are two ways to be unseen and only one of them
+ * has a state row to update:
+ *
+ *  1. TRACKED records the walk did not stamp (`synced_at < walkStartedAt`).
+ *     `pending` rows are included on purpose: a row queued BEFORE the walk
+ *     started was evaluated by it — its key was in no page — while one queued
+ *     during the walk carries `synced_at = now()` and is left for the next run.
+ *  2. Records this source has never answered about, whose key is not null and
+ *     which existed before the walk began. Without this half, a record whose
+ *     key simply does not exist upstream would sit with an empty column and no
+ *     explanation for it, forever: the first walk is exactly when that is worth
+ *     saying, and it is the walk that has the answer.
+ *
+ * Both are set-based and run once per full walk, against a collection the walk
+ * has already scanned end to end.
+ */
+export const markUnseenMissing = async (input: {
+  syncSourceId: string;
+  collectionId: string;
+  teamId: string;
+  field: FieldDefinition;
+  walkStartedAt: Date;
+}): Promise<number> => {
+  const tracked = await db.execute(sql`
+    WITH marked AS (
+      UPDATE record_sync_state
+         SET status = 'missing'::record_sync_status,
+             error = NULL,
+             synced_at = now()
+       WHERE sync_source_id = ${input.syncSourceId}::uuid
+         AND status <> 'missing'::record_sync_status
+         AND synced_at < ${input.walkStartedAt}
+      RETURNING 1
+    )
+    SELECT count(*)::int AS n FROM marked`);
+
+  const [column] = columnsForField(input.field);
+  if (column === undefined) {
+    return numberOf(Reflect.get(tracked.rows[0] ?? {}, "n"));
+  }
+  const table = qualifiedCollectionTable(input.collectionId);
+  const untracked = await db.execute(sql`
+    WITH inserted AS (
+      INSERT INTO record_sync_state (record_id, sync_source_id, status, synced_at)
+      SELECT e.${sql.raw(`"${SYS_COL.id}"`)}, ${input.syncSourceId}::uuid,
+             'missing'::record_sync_status, now()
+        FROM ${sql.raw(table)} e
+       WHERE e.${sql.raw(`"${SYS_COL.team}"`)} = ${input.teamId}::uuid
+         AND e.${sql.raw(`"${column.name}"`)} IS NOT NULL
+         AND e.${sql.raw(`"${SYS_COL.createdAt}"`)} < ${input.walkStartedAt}
+         AND NOT EXISTS (
+           SELECT 1 FROM record_sync_state s
+            WHERE s.record_id = e.${sql.raw(`"${SYS_COL.id}"`)}
+              AND s.sync_source_id = ${input.syncSourceId}::uuid)
+      ON CONFLICT (record_id, sync_source_id) DO NOTHING
+      RETURNING 1
+    )
+    SELECT count(*)::int AS n FROM inserted`);
+
+  return (
+    numberOf(Reflect.get(tracked.rows[0] ?? {}, "n")) +
+    numberOf(Reflect.get(untracked.rows[0] ?? {}, "n"))
+  );
+};
+
+const numberOf = (value: unknown): number =>
+  typeof value === "number" ? value : 0;

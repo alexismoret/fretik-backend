@@ -1,5 +1,8 @@
 import db from "../../db";
-import type { SyncKind, SyncSchedule } from "../../schemas/collection-sync";
+import type {
+  SyncReadStrategy,
+  SyncSchedule,
+} from "../../schemas/collection-sync";
 import { syncRunCeiling } from "../../schemas/collection-sync";
 import { resolveGovernorPolicy } from "../external-apps/exec/governor/policy";
 
@@ -18,9 +21,10 @@ import { resolveGovernorPolicy } from "../external-apps/exec/governor/policy";
 export interface SyncCostEstimate {
   runsPerDay: number;
   /**
-   * Rows one run reaches at most: `rowCap` for a `table`, and for a `lookup`
-   * the records it refreshes per run — which is the number that tells someone
-   * their 5 000-row collection takes a day and a half to come round.
+   * Rows one run reaches at most: `rowCap` for a walked source, and for a
+   * per-record one the records it refreshes per run — which is the number that
+   * tells someone their 5 000-row collection takes a day and a half to come
+   * round.
    */
   recordsPerRun: number;
   callsPerRun: number;
@@ -33,13 +37,18 @@ export interface SyncCostEstimate {
 }
 
 export const estimateSyncCost = (input: {
-  kind: SyncKind;
+  /**
+   * How the app is read. NOT the kind: a `columns` source walked by list costs
+   * what a `table` costs, and the same source read per record costs two orders
+   * of magnitude more.
+   */
+  read: SyncReadStrategy;
   schedule: SyncSchedule;
-  /** `table` only. */
+  /** Walked sources only. */
   rowCap?: number;
   /** Rows the action returns per call, when it declares a page size. */
   pageSize: number | undefined;
-  /** Ids the action takes per call, when it declares batching (`lookup`). */
+  /** Ids the action takes per call, when it declares batching (per-record). */
   batchMaxItems?: number;
   budget: { requests: number; perSeconds: number } | undefined;
 }): SyncCostEstimate => {
@@ -48,7 +57,7 @@ export const estimateSyncCost = (input: {
       ? Math.floor(1440 / input.schedule.everyMinutes)
       : 0;
   const ceiling = syncRunCeiling({
-    kind: input.kind,
+    read: input.read,
     ...(input.rowCap === undefined ? {} : { rowCap: input.rowCap }),
     ...(input.pageSize === undefined ? {} : { pageSize: input.pageSize }),
     ...(input.batchMaxItems === undefined
@@ -69,8 +78,8 @@ export const estimateSyncCost = (input: {
     ...(appLimitPerDay !== undefined && callsPerDay > appLimitPerDay
       ? {
           warning:
-            input.kind === "lookup"
-              ? "At this cadence this source would exceed the app's published budget — a lookup spends one request per record unless the action takes several ids at once. Slow the cadence, or fill these columns from a table source instead."
+            input.read === "row"
+              ? "At this cadence this source would exceed the app's published budget — asking about one record at a time spends one request per row. If the app has a list of these, match on a column instead and it costs one request per page; otherwise slow the cadence."
               : "At this cadence a full collection would exceed the app's published budget. Slow the cadence, cap the rows, or bind an incremental argument.",
         }
       : {}),
@@ -88,7 +97,7 @@ export const estimateSyncCost = (input: {
 export const estimateSyncCostForConnection = async (input: {
   teamId: string;
   connectionId: string;
-  kind: SyncKind;
+  read: SyncReadStrategy;
   schedule: SyncSchedule;
   rowCap?: number;
   pageSize: number | undefined;
@@ -109,7 +118,7 @@ export const estimateSyncCostForConnection = async (input: {
   const policy =
     connection === undefined ? undefined : resolveGovernorPolicy(connection);
   return estimateSyncCost({
-    kind: input.kind,
+    read: input.read,
     schedule: input.schedule,
     ...(input.rowCap === undefined ? {} : { rowCap: input.rowCap }),
     pageSize: input.pageSize,

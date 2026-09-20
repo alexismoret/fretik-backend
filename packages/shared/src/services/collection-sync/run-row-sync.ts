@@ -14,10 +14,6 @@ import { isSingleFlightConnection } from "../external-apps/exec/governor/policy"
 import { UpstreamRateLimitedError } from "../external-apps/exec/governor/upstream-error";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
 import { syncActor } from "./agent-key";
-import {
-  type LookupCandidate,
-  selectLookupCandidates,
-} from "./lookup-candidates";
 import { projectRow, readPath } from "./project-row";
 import {
   type RecordSyncStateWrite,
@@ -25,18 +21,26 @@ import {
 } from "./record-state";
 import type { SyncReadAction } from "./resolve-action";
 import { resolveSyncArgs } from "./resolve-args";
-import { emptyCounts, ownedFields } from "./run-table-sync";
+import { type RowCandidate, selectRowCandidates } from "./row-candidates";
+import { emptyCounts, ownedFields } from "./run-walk-sync";
 import { extractRows } from "./walk-read";
 
 /**
- * One run of a `lookup` source: some COLUMNS of records the source does not
- * own, filled per record from its own key.
+ * One run of a `columns` source read ONE CALL PER RECORD: some columns of
+ * records the source does not own, filled from each record's own key.
  *
- * This is the N+1 the plan calls the real difficulty (§0.5), and the four
- * answers to it are all here:
+ * THE FALLBACK, not the default. When the app has a list of the thing being
+ * asked about, `walk-by-match-field.ts` reads it a page at a time and matches
+ * locally, for a hundredth of the requests. This path is what is left when it
+ * does not: a tracking status by consignment number, an enrichment by
+ * identifier — questions an API answers about one thing at a time because
+ * there is no list to ask for.
+ *
+ * It is therefore an N+1 by construction, and the four things that keep it
+ * affordable are all here:
  *
  *  1. A BOUNDED WORK LIST, picked by five indexed queries rather than a sort of
- *     the collection — see `lookup-candidates.ts`.
+ *     the collection — see `row-candidates.ts`.
  *  2. `batch` WHEN THE API HAS IT. One call for twenty records instead of
  *     twenty calls, which is the only structural fix — everything else is
  *     rationing. And when the API HAS it, the run takes a work list sized to
@@ -63,7 +67,7 @@ import { extractRows } from "./walk-read";
  * memory at once, so the run walks them in groups and each group's rows are
  * released before the next is read.
  */
-const LOOKUP_GROUP = 1_000;
+const ROW_GROUP = 1_000;
 
 /** Concurrent calls on a connection the provider does not declare `serial`. */
 const PARALLEL_CALLS = 4;
@@ -75,10 +79,10 @@ interface BatchBinding {
   answerPath: string;
 }
 
-export interface LookupRunResult {
+export interface RowRunResult {
   counts: SyncRunCounts;
   /**
-   * The third party asked us to wait. A `lookup` run has no position to
+   * The third party asked us to wait. A per-record run has no position to
    * resume from — its work list is rebuilt from `record_sync_state` every time
    * — so instead of suspending it pushes its NEXT run out by this much. Without
    * that the source would come back on its ordinary cadence, be refused by the
@@ -88,14 +92,14 @@ export interface LookupRunResult {
   retryAfterMs?: number;
 }
 
-export const runLookupSync = async (input: {
+export const runRowSync = async (input: {
   source: CollectionSyncSource;
   connection: ExternalAppConnection;
   action: SyncReadAction;
   deadlineAt: number;
   /** Records the caller named — refreshed before anything else. */
   recordIds?: string[];
-}): Promise<LookupRunResult> => {
+}): Promise<RowRunResult> => {
   const { source, action } = input;
   const counts = emptyCounts();
 
@@ -107,14 +111,14 @@ export const runLookupSync = async (input: {
   if (fields.length === 0) return { counts };
 
   const batchPath = batchBinding(source, action);
-  const candidates = await selectLookupCandidates({
+  const candidates = await selectRowCandidates({
     source,
     limit: candidateLimit(batchPath),
     ...(input.recordIds !== undefined ? { requested: input.recordIds } : {}),
   });
   if (candidates.length === 0) return { counts };
 
-  for (const group of chunkForBulk(candidates, LOOKUP_GROUP)) {
+  for (const group of chunkForBulk(candidates, ROW_GROUP)) {
     if (overBudget(counts, input.deadlineAt)) {
       counts.truncated = true;
       break;
@@ -165,7 +169,7 @@ const refreshGroup = async (ctx: {
   deadlineAt: number;
   fieldDefs: Awaited<ReturnType<typeof getFieldDefinitionsForTeam>>;
   fields: ReturnType<typeof ownedFields>;
-  group: LookupCandidate[];
+  group: RowCandidate[];
   counts: SyncRunCounts;
   batchPath?: BatchBinding;
 }): Promise<number | undefined> => {
@@ -178,7 +182,7 @@ const refreshGroup = async (ctx: {
 
   const state: RecordSyncStateWrite[] = [];
   const askable: {
-    candidate: LookupCandidate;
+    candidate: RowCandidate;
     args: Record<string, unknown>;
   }[] = [];
   for (const candidate of ctx.group) {
@@ -193,7 +197,7 @@ const refreshGroup = async (ctx: {
     if (missingFieldKeys.length > 0) {
       // Not an error and not retried: there is nothing to ask. The journal
       // sweep marks this record `pending` the moment somebody fills the key,
-      // which is what makes a lookup column feel live.
+      // which is what makes a per-record column feel live.
       state.push({
         recordId: candidate.recordId,
         status: "missing",
@@ -333,7 +337,7 @@ const batchBinding = (
 const callBatched = async (ctx: {
   source: CollectionSyncSource;
   action: SyncReadAction;
-  askable: { candidate: LookupCandidate; args: Record<string, unknown> }[];
+  askable: { candidate: RowCandidate; args: Record<string, unknown> }[];
   answers: Map<string, unknown>;
   counts: SyncRunCounts;
   deadlineAt: number;
@@ -406,7 +410,7 @@ const callOneByOne = async (ctx: {
   action: SyncReadAction;
   resultPath: string | null;
   connection: ExternalAppConnection;
-  askable: { candidate: LookupCandidate; args: Record<string, unknown> }[];
+  askable: { candidate: RowCandidate; args: Record<string, unknown> }[];
   answers: Map<string, unknown>;
   counts: SyncRunCounts;
   deadlineAt: number;

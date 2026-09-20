@@ -24,25 +24,25 @@ const table = SYNC_LIMITS.defaultRowCap;
 describe("a table source pays per page", () => {
   test("a declared page size divides the row cap", () => {
     expect(
-      syncRunCeiling({ kind: "table", rowCap: 20_000, pageSize: 1_000 }),
+      syncRunCeiling({ read: "walk", rowCap: 20_000, pageSize: 1_000 }),
     ).toEqual({ records: 20_000, calls: 20 });
   });
 
   test("a partial last page still costs a call", () => {
     expect(
-      syncRunCeiling({ kind: "table", rowCap: 20_001, pageSize: 1_000 }),
+      syncRunCeiling({ read: "walk", rowCap: 20_001, pageSize: 1_000 }),
     ).toEqual({ records: 20_001, calls: 21 });
   });
 
   test("no declared page size means the answer arrives whole: one call", () => {
-    expect(syncRunCeiling({ kind: "table", rowCap: 50_000 })).toEqual({
+    expect(syncRunCeiling({ read: "walk", rowCap: 50_000 })).toEqual({
       records: 50_000,
       calls: 1,
     });
   });
 
   test("an absent row cap falls back to the default rather than to zero", () => {
-    expect(syncRunCeiling({ kind: "table", pageSize: 100 })).toEqual({
+    expect(syncRunCeiling({ read: "walk", pageSize: 100 })).toEqual({
       records: table,
       calls: table / 100,
     });
@@ -55,24 +55,24 @@ describe("a lookup source pays per record", () => {
    * action that answers about one record declares no pagination.
    */
   test("an un-batched action costs one call per record, not one per run", () => {
-    expect(syncRunCeiling({ kind: "lookup" })).toEqual({
+    expect(syncRunCeiling({ read: "row" })).toEqual({
       records: SYNC_LIMITS.lookupBatchSize,
       calls: SYNC_LIMITS.lookupBatchSize,
     });
-    expect(syncRunCeiling({ kind: "lookup" }).calls).toBeGreaterThan(
-      syncRunCeiling({ kind: "table", rowCap: 20_000, pageSize: 1_000 }).calls,
+    expect(syncRunCeiling({ read: "row" }).calls).toBeGreaterThan(
+      syncRunCeiling({ read: "walk", rowCap: 20_000, pageSize: 1_000 }).calls,
     );
   });
 
   test("a page size does not make a lookup cheaper — it is not walking", () => {
-    expect(syncRunCeiling({ kind: "lookup", pageSize: 1_000 })).toEqual(
-      syncRunCeiling({ kind: "lookup" }),
+    expect(syncRunCeiling({ read: "row", pageSize: 1_000 })).toEqual(
+      syncRunCeiling({ read: "row" }),
     );
   });
 
   test("batching is the only thing that divides the cost", () => {
     // 400 calls × 50 ids is 20 000, which is exactly the per-run record cap.
-    expect(syncRunCeiling({ kind: "lookup", batchMaxItems: 50 })).toEqual({
+    expect(syncRunCeiling({ read: "row", batchMaxItems: 50 })).toEqual({
       records: SYNC_LIMITS.lookupMaxRecordsPerRun,
       calls: SYNC_LIMITS.maxUpstreamCallsPerRun,
     });
@@ -80,15 +80,15 @@ describe("a lookup source pays per record", () => {
 
   test("a large batch is bounded by the record cap, not the call budget", () => {
     // 400 × 500 = 200 000 ids the budget could carry; the run takes 20 000.
-    expect(syncRunCeiling({ kind: "lookup", batchMaxItems: 500 })).toEqual({
+    expect(syncRunCeiling({ read: "row", batchMaxItems: 500 })).toEqual({
       records: SYNC_LIMITS.lookupMaxRecordsPerRun,
       calls: SYNC_LIMITS.lookupMaxRecordsPerRun / 500,
     });
   });
 
   test("a batch of one is no batch — it must not divide by itself", () => {
-    expect(syncRunCeiling({ kind: "lookup", batchMaxItems: 1 })).toEqual(
-      syncRunCeiling({ kind: "lookup" }),
+    expect(syncRunCeiling({ read: "row", batchMaxItems: 1 })).toEqual(
+      syncRunCeiling({ read: "row" }),
     );
   });
 });
@@ -99,7 +99,7 @@ describe("the cadence is priced against what the app publishes", () => {
 
   test("a manual source spends nothing on a schedule", () => {
     const cost = estimateSyncCost({
-      kind: "table",
+      read: "walk",
       schedule: { mode: "manual" },
       rowCap: 20_000,
       pageSize: 1_000,
@@ -119,7 +119,7 @@ describe("the cadence is priced against what the app publishes", () => {
    */
   test("an un-batched lookup is quoted per record, every run", () => {
     const cost = estimateSyncCost({
-      kind: "lookup",
+      read: "row",
       schedule: { mode: "interval", everyMinutes: 15 },
       pageSize: undefined,
       budget,
@@ -130,21 +130,25 @@ describe("the cadence is priced against what the app publishes", () => {
     expect(cost.callsPerDay).toBe(19_200);
   });
 
-  test("a tight app budget warns, and the lookup warning names the reason", () => {
+  test("a tight budget warns, and the warning names the cost AND the way out", () => {
     const cost = estimateSyncCost({
-      kind: "lookup",
+      read: "row",
       schedule: { mode: "interval", everyMinutes: 15 },
       pageSize: undefined,
       // 5 a minute — 7 200 a day against the 19 200 above.
       budget: { requests: 5, perSeconds: 60 },
     });
     expect(cost.appLimitPerDay).toBe(7_200);
-    expect(cost.warning).toContain("one request per record");
+    // Naming the cost is half an answer: the reader already knows the number
+    // is too big. What they cannot know is that the same data is one request
+    // per PAGE when the app has a list to walk.
+    expect(cost.warning).toContain("one request per row");
+    expect(cost.warning).toContain("match on a column");
   });
 
   test("the same cadence on a table source stays inside the same budget", () => {
     const cost = estimateSyncCost({
-      kind: "table",
+      read: "walk",
       schedule: { mode: "interval", everyMinutes: 15 },
       rowCap: 20_000,
       pageSize: 1_000,
@@ -158,7 +162,7 @@ describe("the cadence is priced against what the app publishes", () => {
 
   test("an app that publishes no budget never warns", () => {
     const cost = estimateSyncCost({
-      kind: "lookup",
+      read: "row",
       schedule: { mode: "interval", everyMinutes: 15 },
       pageSize: undefined,
       budget: undefined,

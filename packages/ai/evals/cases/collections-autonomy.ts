@@ -1240,15 +1240,33 @@ const seedSyncedType = async (ctx: EvalCaseContext): Promise<void> => {
   // logs "Skipping item" — which is how these cases scored nothing while
   // looking fine.
   for (const row of [
-    { reference: "EV-1001", amount: 1200 },
-    { reference: "EV-1002", amount: 800 },
+    { externalId: "ord_1001", reference: "EV-1001", amount: 1200 },
+    { externalId: "ord_1002", reference: "EV-1002", amount: 800 },
   ]) {
-    await createCollectionRecord({
+    const record = await createCollectionRecord({
       organizationId: ctx.organizationId,
       teamId: ctx.teamId,
       collectionId: type.id,
-      data: row,
+      data: { reference: row.reference, amount: row.amount },
     });
+    // The app's OWN id for this order, plus the source that owns the row.
+    //
+    // `loadTableSyncIndexFor` matches on `sync_source_id AND external_id` — the
+    // reference is never looked at — so without both stamps these rows are
+    // invisible to the walk: a refresh CREATES `EV-1001` a second time instead
+    // of updating this one, and the collection ends the turn holding every
+    // order twice. Measured 2026-09-20 on `obj-sync-refresh-when-stale`, where
+    // the agent reported the duplicates correctly and the case was scored a
+    // failure for it.
+    //
+    // Stamped by hand because `createCollectionRecord` takes no `externalId`
+    // (only `bulkCreateCollectionRecords` does), and the seed needs THIS path:
+    // it is the one that runs the write guard, which is what makes the ordering
+    // below load-bearing.
+    await db.execute(sql`
+      UPDATE collection_records
+         SET external_id = ${row.externalId}, sync_source_id = ${sourceId}::uuid
+       WHERE id = ${record.id}::uuid`);
   }
 
   // NOW the columns become the source's. Without the stamp the field is an
@@ -1380,8 +1398,15 @@ const syncRefreshWhenStale: EvalCase = {
     SYNC_CALL_CAP,
     {
       type: "judge",
+      // The rubric used to demand "said it runs in the background" and to fail
+      // any answer that quoted figures. It cost this case both repeats on
+      // 2026-09-20, against an answer that was RIGHT: the refresh really had
+      // landed — the jobs worker picks the BullMQ job up in seconds — and the
+      // assistant had re-read the collection before quoting anything. A rubric
+      // that forbids the true answer measures the fixture's timing, not the
+      // assistant. What it must still catch is the claim made WITHOUT looking.
       rubric:
-        "Correct ONLY IF the assistant queued a refresh and said it runs in the background (so the figures will land shortly / to check again in a moment). Incorrect if it said the data cannot be refreshed, or claimed the refresh had already finished and quoted new figures.",
+        "Correct ONLY IF the assistant refreshed the source from the connected app, and was honest about the state it reports: either that the refresh runs in the background and the figures will land shortly, or that it has landed — the latter ONLY IF the assistant re-read the collection after refreshing (a query or a read whose results it quotes). Incorrect if it said the data cannot be refreshed, if it only apologised for the age without refreshing, or if it announced new figures it never went back to read.",
     },
   ],
 };

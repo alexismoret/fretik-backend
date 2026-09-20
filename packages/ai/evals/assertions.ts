@@ -165,15 +165,25 @@ const runOne = async (
       };
     }
     case "judge": {
-      // A turn that ends on `askUserQuestion` has empty text BY DESIGN —
-      // the user-visible product is the question card, carried in that
-      // call's INPUT (the harness only forwards outputs). Surface it as
-      // the final answer so the judge grades what the user actually saw;
-      // whether clarifying was the right move stays the rubric's call.
+      // A turn that ends on `askUserQuestion` shows the user a question CARD,
+      // carried in that call's INPUT — and the harness only forwards tool
+      // outputs, so without this the judge grades an answer the user never saw
+      // in full.
+      //
+      // It applies whether or not there is prose, and that second half was a
+      // real defect: `obj-sync-workflow-reads-collection` answered "I'll set up
+      // the automation that runs every morning at 8, one question before I
+      // build it:" and then asked it on the card. The judge saw the sentence
+      // stop at the colon and marked the case as never having proposed a plan
+      // (2026-09-20). Half an answer grades worse than none, because it reads
+      // as an answer.
+      //
+      // Whether clarifying was the right move stays the rubric's call.
       const lastCall = result.toolCalls[result.toolCalls.length - 1];
+      const hasProse = result.text.trim().length > 0;
       const askCardAnswer =
-        result.text.trim().length === 0 && lastCall?.name === "askUserQuestion"
-          ? `(no prose — the assistant ended the turn by showing the user this question card): ${JSON.stringify(lastCall.input)}`
+        lastCall?.name === "askUserQuestion"
+          ? `${hasProse ? result.text : "(no prose)"}\n\n(the assistant ended the turn by showing the user this question card): ${JSON.stringify(lastCall.input)}`
           : undefined;
       const judgeToolCalls = await Promise.all(
         result.toolCalls.map(async (c) => ({

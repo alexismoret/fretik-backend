@@ -19,6 +19,7 @@ import {
   invalidateCollectionIdCache,
   resolveCollectionId,
 } from "@fretik/shared/services/collections/resolve";
+import { invalidateFieldDefinitionsCache } from "@fretik/shared/services/field-definitions/cache";
 import { createFieldDefinition } from "@fretik/shared/services/field-definitions/create";
 import { getFieldDefinitionsForTeam } from "@fretik/shared/services/field-definitions/get-for-team";
 import { and, eq, inArray, or, sql } from "drizzle-orm";
@@ -1067,6 +1068,40 @@ const SYNC_KEY = "eval_sync_orders";
 const SYNC_APP = "Eval Orders App";
 const SYNC_AGE_HOURS = 30;
 
+/**
+ * The credential-less connection every sync case hangs off, inserted in ONE
+ * place.
+ *
+ * It was three copies of a raw INSERT, and all three were missing
+ * `created_by_user_id` — a NOT NULL column with an FK to `user`. So every seed
+ * here threw, the harness logged "Skipping item", and SEVEN curated cases had
+ * been scoring nothing at all rather than failing. A seed that throws is
+ * invisible in a way a red case is not, which is exactly why it went unnoticed.
+ *
+ * `EVAL_USER_ID` is the author: it is already required for the run (it is what
+ * `X-Context-User-Id` carries), so demanding it here adds no new precondition —
+ * it just names the one that was silently unmet.
+ */
+const insertEvalConnection = async (
+  ctx: EvalCaseContext,
+  providerKey: string,
+  displayName: string,
+): Promise<string> => {
+  if (ctx.userId === undefined) {
+    throw new Error("EVAL_USER_ID is required to seed a sync connection");
+  }
+  const inserted = await db.execute(sql`
+    INSERT INTO external_app_connections
+      (organization_id, team_id, provider_key, display_name, status,
+       created_by_user_id)
+    VALUES (${ctx.organizationId}::uuid, ${ctx.teamId}::uuid,
+            ${providerKey}, ${displayName}, 'active', ${ctx.userId}::uuid)
+    RETURNING id`);
+  const id = Reflect.get(inserted.rows[0] ?? {}, "id");
+  if (typeof id !== "string") throw new Error("no eval connection");
+  return id;
+};
+
 const seedSyncedType = async (ctx: EvalCaseContext): Promise<void> => {
   await dropType(ctx, SYNC_KEY);
   await db.execute(sql`
@@ -1102,14 +1137,7 @@ const seedSyncedType = async (ctx: EvalCaseContext): Promise<void> => {
   }
   await reconcileCollectionTable({ collectionId: type.id });
 
-  const connection = await db.execute(sql`
-    INSERT INTO external_app_connections
-      (organization_id, team_id, provider_key, display_name, status)
-    VALUES (${ctx.organizationId}::uuid, ${ctx.teamId}::uuid,
-            'eval-orders', ${SYNC_APP}, 'active')
-    RETURNING id`);
-  const connectionId = Reflect.get(connection.rows[0] ?? {}, "id");
-  if (typeof connectionId !== "string") throw new Error("no eval connection");
+  const connectionId = await insertEvalConnection(ctx, "eval-orders", SYNC_APP);
 
   // `last_success_at` is written by hand: a run that really called an app
   // would make the age — the thing three of these cases turn on — depend on
@@ -1130,12 +1158,15 @@ const seedSyncedType = async (ctx: EvalCaseContext): Promise<void> => {
   const sourceId = Reflect.get(source.rows[0] ?? {}, "id");
   if (typeof sourceId !== "string") throw new Error("no eval sync source");
 
-  // The stamp is what makes the columns the source's. Without it the field is
-  // an ordinary local one and every case here measures nothing.
-  await db.execute(sql`
-    UPDATE field_definitions SET sync_source_id = ${sourceId}::uuid
-     WHERE collection_id = ${type.id}::uuid AND key IN ('reference', 'amount')`);
-
+  // The rows go in BEFORE the columns become the source's, and the order is
+  // the whole seed. A synced column refuses every write — that is the rule
+  // `obj-sync-column-refused` exists to check — so stamping first makes
+  // `createCollectionRecord` reject this very seed with the guard's own
+  // sentence. It used to survive on a stale field-definitions cache: the raw
+  // UPDATE below does not invalidate anything, so a warm process still saw
+  // UNSTAMPED definitions and wrote happily. Cold, it throws, and the harness
+  // logs "Skipping item" — which is how these cases scored nothing while
+  // looking fine.
   for (const row of [
     { reference: "EV-1001", amount: 1200 },
     { reference: "EV-1002", amount: 800 },
@@ -1147,6 +1178,21 @@ const seedSyncedType = async (ctx: EvalCaseContext): Promise<void> => {
       data: row,
     });
   }
+
+  // NOW the columns become the source's. Without the stamp the field is an
+  // ordinary local one and every case here measures nothing.
+  await db.execute(sql`
+    UPDATE field_definitions SET sync_source_id = ${sourceId}::uuid
+     WHERE collection_id = ${type.id}::uuid AND key IN ('reference', 'amount')`);
+
+  // A raw UPDATE invalidates no cache, and the AI SERVICE is a separate
+  // process holding its own. The cache is Redis-backed, so this reaches it —
+  // and without it the service answers from definitions written a moment
+  // before the stamp, i.e. a collection nothing is syncing.
+  await invalidateFieldDefinitionsCache({
+    organizationId: ctx.organizationId,
+    teamId: ctx.teamId,
+  });
 };
 
 const dropSyncedType = async (ctx: EvalCaseContext): Promise<void> => {
@@ -1271,11 +1317,7 @@ const syncProposeFromApp: EvalCase = {
 /** The connection alone — for the case that must decide to build the source. */
 const seedConnectionOnly = async (ctx: EvalCaseContext): Promise<void> => {
   await dropSyncedType(ctx);
-  await db.execute(sql`
-    INSERT INTO external_app_connections
-      (organization_id, team_id, provider_key, display_name, status)
-    VALUES (${ctx.organizationId}::uuid, ${ctx.teamId}::uuid,
-            'eval-orders', ${SYNC_APP}, 'active')`);
+  await insertEvalConnection(ctx, "eval-orders", SYNC_APP);
 };
 
 /** The collection already fed by one app, plus a SECOND app to fill a column. */
@@ -1286,11 +1328,7 @@ const seedTwoApps = async (ctx: EvalCaseContext): Promise<void> => {
   await db.execute(sql`
     DELETE FROM external_app_connections
      WHERE team_id = ${ctx.teamId}::uuid AND display_name = ${SYNC_APP_2}`);
-  await db.execute(sql`
-    INSERT INTO external_app_connections
-      (organization_id, team_id, provider_key, display_name, status)
-    VALUES (${ctx.organizationId}::uuid, ${ctx.teamId}::uuid,
-            'eval-billing', ${SYNC_APP_2}, 'active')`);
+  await insertEvalConnection(ctx, "eval-billing", SYNC_APP_2);
 };
 
 const dropTwoApps = async (ctx: EvalCaseContext): Promise<void> => {

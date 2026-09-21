@@ -65,7 +65,6 @@ import {
  */
 const parseChatbotMaxSteps = (): number =>
   parseIntEnv("CHATBOT_MAX_STEPS", { fallback: 30, min: 1, max: 200 });
-
 /**
  * A web tool is suppressed when an operator sets `AI_WEB_TOOLS_ENABLED=false`
  * or its own backend has no key — per tool, not as a block, because the three
@@ -593,6 +592,13 @@ const pageBuilderSystemPrompt = (ctx: AgentRuntimeContext): Promise<string> =>
  * has, it may call on every step. The team policy gate still applies, which is
  * why it shares `subAgentPrepareStep`: a team that disabled `managePage` must
  * not get pages through a delegate.
+ *
+ * DELIBERATELY WITHOUT the per-step output cap the chat and sub-agent sets
+ * carry. It writes several files in one step, so its legitimate generation is
+ * the widest on this path — and the 2026-09-20 sample that fixed 32 000 as a
+ * safe ceiling contains no page build, so applying that number here would be
+ * guessing with a truncation as the failure mode. Measure this agent's own
+ * distribution before capping it.
  */
 const makePageBuilderSet = (
   model: ResolvedModel,

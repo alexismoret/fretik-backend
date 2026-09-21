@@ -5,9 +5,14 @@ import {
   externalAppMcpAuthKindEnum,
 } from "../db/schema/external-apps";
 import {
+  actionBatchSchema,
+  actionIncrementalSchema,
+  actionPaginationSchema,
   connectionOptionsDescriptorSchema,
   credentialsFormDescriptorSchema,
+  paramSpecSchema,
   providerTransportSchema,
+  returnSpecSchema,
 } from "../external-apps/manifest-schema";
 import { toolPolicyLevelSchema } from "./tool-policies";
 
@@ -31,6 +36,37 @@ import { toolPolicyLevelSchema } from "./tool-policies";
 // Provider catalogue (GET /external-apps/providers)
 // ============================================================================
 
+/**
+ * A read action's SIGNATURE, sent only when the caller asks for it
+ * (`?includeSignatures=true`).
+ *
+ * The catalogue deliberately shipped `{name, kind, summary}` and nothing else:
+ * it is fetched to draw a provider picker, and 301 actions' worth of parameter
+ * trees would be paid for by every caller that never renders one. The sync
+ * composer is the caller that does — it generates the argument form from
+ * `params` exactly as `DynamicCredentialsForm` generates the credentials one —
+ * so the signature is opt-in rather than default.
+ *
+ * READS ONLY, on both sides of the flag. A write's parameters belong to an
+ * approval card, which builds itself from the manifest server-side; putting
+ * them on this route would invite a client to compose a write from them.
+ */
+const readSignatureShape = {
+  /** Parameter tree, `ParamSpec` per argument. Absent on a write. */
+  params: z.record(z.string(), paramSpecSchema).optional(),
+  /**
+   * What the action answers: `{ref|list|page}` naming an entry of the
+   * provider's `types`, `{fields}` for an inline shape.
+   */
+  returns: returnSpecSchema.optional(),
+  /** How the action is walked past its first page — the sync's row source. */
+  pagination: actionPaginationSchema.optional(),
+  /** Several ids in one call, when the API takes them. */
+  batch: actionBatchSchema.optional(),
+  /** Bounded to what changed since a timestamp. */
+  incremental: actionIncrementalSchema.optional(),
+};
+
 export const providerActionEntrySchema = z.object({
   name: z.string().openapi({
     example: "send_email",
@@ -45,6 +81,7 @@ export const providerActionEntrySchema = z.object({
     description:
       "One-line description shown in the SDK docstring and SKILL.md.",
   }),
+  ...readSignatureShape,
 });
 export type ProviderActionEntry = z.infer<typeof providerActionEntrySchema>;
 
@@ -101,6 +138,13 @@ export const providerCatalogEntrySchema = z.object({
       "Provider categories. First slug is the root used by the frontend filter (e.g. `communication`, `productivity`, `crm`); subsequent slugs are fine-grained (e.g. `email`, `instant-messaging`, `calendar`).",
   }),
   actions: z.array(providerActionEntrySchema),
+  /**
+   * The named types an action's `returns` refers to (`{ ref: "Shipment" }` →
+   * `types.Shipment`). Sent with the signatures and never without them: on its
+   * own a `ref` is a name pointing at nothing, and a form that cannot resolve
+   * it has to call the action to find out what it answers.
+   */
+  types: z.record(z.string(), z.record(z.string(), paramSpecSchema)).optional(),
 });
 export type ProviderCatalogEntry = z.infer<typeof providerCatalogEntrySchema>;
 
@@ -108,6 +152,21 @@ export const providersListResponseSchema = z.object({
   providers: z.array(providerCatalogEntrySchema),
 });
 export type ProvidersListResponse = z.infer<typeof providersListResponseSchema>;
+
+/**
+ * Shared by every route that can return an action's full signature — the
+ * provider catalogue and the two connection reads. Opt-in because the
+ * signatures multiply the payload of routes most callers fetch only to draw a
+ * picker, and a second spelling of the same opt-in is a route that silently
+ * answers a different question.
+ */
+export const includeSignaturesQuerySchema = z.object({
+  // Query params arrive as strings; only the literal "true" opts in.
+  includeSignatures: z
+    .string()
+    .optional()
+    .transform((value) => value === "true"),
+});
 
 // ============================================================================
 // Connect session + connections (POST/GET/PATCH/DELETE /external-apps/...)
@@ -272,6 +331,12 @@ export const connectionActionEntrySchema = z.object({
   kind: z.enum(["read", "write"]),
   summary: z.string(),
   defaultLevel: toolPolicyLevelSchema,
+  // Same opt-in signature as the provider catalogue, read from the connection's
+  // stored snapshot descriptor instead of a manifest — an MCP server is where a
+  // sync source's action list comes from when there is no hand-written
+  // provider. `tools/list` declares no pagination, so those three are normally
+  // absent here and the sync says "one call" rather than guessing.
+  ...readSignatureShape,
 });
 export type ConnectionActionEntry = z.infer<typeof connectionActionEntrySchema>;
 
@@ -304,6 +369,48 @@ export const externalAppConnectionResponseSchema = z.object({
   actionPolicies: z.record(z.string(), toolPolicyLevelSchema).nullable(),
   /** `null` = follows the provider's manifest (`parallel` unless declared). */
   concurrencyMode: externalAppConcurrencyModeSchema.nullable(),
+  /**
+   * What this connection may ask of its app, and what it has spent today.
+   *
+   * `effective` is the number actually enforced whatever set it — so a screen
+   * can say "600 per minute" without re-deriving a four-layer precedence the
+   * server already resolved. `override` is what THIS account was given, which
+   * is the only part a form may edit; `null` there means "following the app's
+   * own declaration", and the two read differently on purpose.
+   */
+  rateLimit: z.object({
+    effective: z
+      .object({
+        requests: z.number().int(),
+        perSeconds: z.number().int(),
+      })
+      .nullable(),
+    override: z
+      .object({
+        requests: z.number().int(),
+        perSeconds: z.number().int(),
+      })
+      .nullable(),
+    maxConcurrent: z.number().int().nullable(),
+    maxConcurrentOverride: z.number().int().nullable(),
+    /** The shared ceiling, when the provider declares one. Never editable. */
+    perProvider: z
+      .object({
+        requests: z.number().int(),
+        perSeconds: z.number().int(),
+      })
+      .nullable(),
+  }),
+  /**
+   * Today's counters, so the limits screen shows a real number instead of
+   * asking an operator to trust one nobody counts. UTC days; Redis-backed and
+   * therefore best-effort — a flushed cache resets them and costs nothing.
+   */
+  usage: z.object({
+    callsToday: z.number().int(),
+    rateLimitedToday: z.number().int(),
+    providerCallsToday: z.number().int(),
+  }),
   /**
    * MCP connections only — the introspected tools of this connection's current
    * snapshot, so the tool-permissions UI can render a per-tool policy row.
@@ -431,6 +538,26 @@ export const updateConnectionRequestSchema = z
      * one an MCP connection has, since it carries no manifest.
      */
     concurrencyMode: externalAppConcurrencyModeSchema.nullable().optional(),
+    /**
+     * What this ACCOUNT is allowed to ask for, overriding the manifest.
+     *
+     * Whole-object, not three loose fields: a request count without a period
+     * is not a budget, and letting them arrive separately means a PATCH can
+     * leave the pair half-set. `null` clears the override and follows the
+     * manifest again.
+     *
+     * The shared `perProvider` ceiling is deliberately absent — it is every
+     * team's ceiling at once, so no one account's admin may move it.
+     */
+    rateLimit: z
+      .object({
+        requests: z.number().int().min(1).max(100_000),
+        perSeconds: z.number().int().min(1).max(86_400),
+      })
+      .nullable()
+      .optional(),
+    /** How many calls may be in flight on this account. `null` = the manifest. */
+    maxConcurrent: z.number().int().min(1).max(64).nullable().optional(),
   })
   .refine(
     (val) =>
@@ -439,10 +566,12 @@ export const updateConnectionRequestSchema = z
       val.scope !== undefined ||
       val.options !== undefined ||
       val.actionPolicies !== undefined ||
-      val.concurrencyMode !== undefined,
+      val.concurrencyMode !== undefined ||
+      val.rateLimit !== undefined ||
+      val.maxConcurrent !== undefined,
     {
       message:
-        "At least one of displayName, status, scope, options, actionPolicies or concurrencyMode must be provided",
+        "At least one of displayName, status, scope, options, actionPolicies, concurrencyMode, rateLimit or maxConcurrent must be provided",
     },
   );
 export type UpdateConnectionRequest = z.infer<

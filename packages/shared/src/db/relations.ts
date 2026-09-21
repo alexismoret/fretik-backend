@@ -299,6 +299,11 @@ export const relations = defineRelations(schema, (r) => ({
       from: r.fieldDefinitions.collectionId,
       to: r.collections.id,
     }),
+    syncSource: r.one.collectionSyncSources({
+      from: r.fieldDefinitions.syncSourceId,
+      to: r.collectionSyncSources.id,
+      optional: true,
+    }),
   },
 
   // ============================================================================
@@ -318,6 +323,7 @@ export const relations = defineRelations(schema, (r) => ({
     fieldDefinitions: r.many.fieldDefinitions(),
     actionTypes: r.many.actionTypes(),
     collectionRecords: r.many.collectionRecords(),
+    syncSources: r.many.collectionSyncSources(),
   },
 
   linkTypes: {
@@ -376,6 +382,11 @@ export const relations = defineRelations(schema, (r) => ({
     incomingLinks: r.many.links({ alias: "linkTo" }),
     eventLinks: r.many.domainEventLinks(),
     shares: r.many.recordShares(),
+    // Freshness against every source that fills part of this record. No
+    // `syncSource` one-to-one here: `collection_records.sync_source_id` is a
+    // SOFT reference (see the column comment), and a relation over a column
+    // with no FK is a join the schema cannot promise.
+    syncState: r.many.recordSyncState(),
   },
 
   links: {
@@ -891,6 +902,7 @@ export const relations = defineRelations(schema, (r) => ({
       to: r.user.id,
       alias: "externalAppConnectionCreator",
     }),
+    syncSources: r.many.collectionSyncSources(),
   },
 
   toolApprovalRequests: {
@@ -916,6 +928,65 @@ export const relations = defineRelations(schema, (r) => ({
     conversation: r.one.aiConversations({
       from: r.toolApprovalRequests.conversationId,
       to: r.aiConversations.id,
+    }),
+  },
+
+  // ============================================================================
+  // Collection sync — external-app-fed collections and columns
+  // ============================================================================
+
+  collectionSyncSources: {
+    organization: r.one.organization({
+      from: r.collectionSyncSources.organizationId,
+      to: r.organization.id,
+    }),
+    team: r.one.team({
+      from: r.collectionSyncSources.teamId,
+      to: r.team.id,
+    }),
+    collection: r.one.collections({
+      from: r.collectionSyncSources.collectionId,
+      to: r.collections.id,
+    }),
+    connection: r.one.externalAppConnections({
+      from: r.collectionSyncSources.connectionId,
+      to: r.externalAppConnections.id,
+      optional: true,
+    }),
+    createdBy: r.one.user({
+      from: r.collectionSyncSources.createdByUserId,
+      to: r.user.id,
+      optional: true,
+    }),
+    fields: r.many.fieldDefinitions(),
+    runs: r.many.collectionSyncRuns(),
+    recordState: r.many.recordSyncState(),
+  },
+
+  collectionSyncRuns: {
+    source: r.one.collectionSyncSources({
+      from: r.collectionSyncRuns.syncSourceId,
+      to: r.collectionSyncSources.id,
+    }),
+    team: r.one.team({
+      from: r.collectionSyncRuns.teamId,
+      to: r.team.id,
+    }),
+    triggeredBy: r.one.user({
+      from: r.collectionSyncRuns.triggeredByUserId,
+      to: r.user.id,
+      optional: true,
+    }),
+  },
+
+  recordSyncState: {
+    record: r.one.collectionRecords({
+      from: r.recordSyncState.recordId,
+      to: r.collectionRecords.id,
+    }),
+    source: r.one.collectionSyncSources({
+      from: r.recordSyncState.syncSourceId,
+      to: r.collectionSyncSources.id,
     }),
   },
 

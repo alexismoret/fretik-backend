@@ -479,6 +479,17 @@ const toIsoDateTime = (raw: string): string => {
 };
 
 /**
+ * A column a sync source fills, so no other writer may.
+ *
+ * A SECOND axis from `NON_WRITABLE_FIELD_TYPES`, and the reason it could not
+ * join that set: a synced `number` is an ordinary `numeric` column that the
+ * type system says is writable — what makes it read-only is WHO is writing,
+ * not what it holds. The sync runner writes exactly these and nobody else does.
+ */
+export const isSyncedField = (def: FieldDefinition): boolean =>
+  def.syncSourceId !== null;
+
+/**
  * Build the strict runtime Zod object a record's `data` validates
  * against. Generalizes `buildPreExtractCustomShape`: one optional key per
  * ENABLED field definition (filtered by `enabled` only — every enabled field
@@ -486,18 +497,28 @@ const toIsoDateTime = (raw: string): string => {
  * every field `.nullish()`, so partial writes pass while malformed values are
  * rejected. `strict` defaults to true; the document-mirror write passes
  * `strict: false` so AI-extracted values stay as lenient as pre-extraction.
+ *
+ * `allowSyncedFields` is the ACTOR axis: false (the default) drops the columns
+ * a sync source owns, exactly as the derived types are dropped, because they
+ * are not this writer's to fill. The sync runner passes true and gets the same
+ * shape as before. Dropping a key here is not the whole guard — a dropped key
+ * is a silently cleared column on the full-replace write path — so
+ * `buildRecordDataValidator` pins the stored value back and refuses an actual
+ * EDIT by name. See `services/collection-records/validate.ts`.
  */
 export const buildRecordShape = (
   fieldDefs: FieldDefinition[],
-  options?: { strict?: boolean },
+  options?: { strict?: boolean; allowSyncedFields?: boolean },
 ): z.ZodObject<Record<string, z.ZodTypeAny>> => {
   const strict = options?.strict ?? true;
+  const allowSyncedFields = options?.allowSyncedFields ?? false;
   const shape: Record<string, z.ZodTypeAny> = {};
   for (const def of fieldDefs) {
     if (!def.enabled) continue;
     // Derived values are never written through `data` — see the set's docblock
     // for what each one is filled by instead.
     if (NON_WRITABLE_FIELD_TYPES.has(def.type)) continue;
+    if (!allowSyncedFields && isSyncedField(def)) continue;
     shape[def.key] = zodForField(def, { strict });
   }
   return z.object(shape);

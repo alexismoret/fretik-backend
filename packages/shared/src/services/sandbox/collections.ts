@@ -1,7 +1,14 @@
 import { z } from "zod";
-import type { BulkOperation } from "../../db/schema";
+import type { BulkOperation, BulkOperationParams } from "../../db/schema";
 import { MAX_BULK_ITEMS } from "../../lib/db-bulk";
 import { audienceSchema } from "../../schemas/collection-sharing";
+import {
+  SYNC_LIMITS,
+  syncArgsSchema,
+  syncKindSchema,
+  syncOrphanPolicySchema,
+  syncScheduleSchema,
+} from "../../schemas/collection-sync";
 import {
   fieldConfigSchema,
   fieldDefinitionTypeSchema,
@@ -9,7 +16,10 @@ import {
 import { recordRelationInputSchema } from "../../schemas/ontology";
 import type { ToolPolicyLevel } from "../../schemas/tool-policies";
 import type { WorkflowAutonomy } from "../../schemas/workflows";
-import { TOOL_PERMISSIONS_REMEDIATION } from "../ai/remediation";
+import {
+  SYNC_LOCKED_IN_WORKFLOW,
+  TOOL_PERMISSIONS_REMEDIATION,
+} from "../ai/remediation";
 import { gateRecordWriteApproval } from "../approvals/gate-record-write";
 import { recordImportLookupHash } from "../approvals/hash";
 import {
@@ -22,6 +32,7 @@ import {
   claimChunk,
 } from "../bulk-operations/chunk";
 import { commitBulkOperation } from "../bulk-operations/commit";
+import { firstMalformedRow } from "../bulk-operations/executors/rows";
 import { findBulkOperation } from "../bulk-operations/find";
 import { emptyProgress, foldChunkProgress } from "../bulk-operations/progress";
 import { resumeBulkOperation } from "../bulk-operations/resume";
@@ -32,9 +43,19 @@ import {
   recordWriteChunkSize,
 } from "../collection-records/bulk-create";
 import { bulkDeleteCollectionRecords } from "../collection-records/bulk-delete";
-import { bulkUpdateCollectionRecords } from "../collection-records/bulk-update";
+import {
+  bulkUpdateCollectionRecords,
+  recordUpdateChunkSize,
+} from "../collection-records/bulk-update";
 import { queryCollectionRecords } from "../collection-records/query";
 import { getRecordSnapshots } from "../collection-records/snapshot-batch";
+import { confirmFullResync } from "../collection-sync/confirm-full-resync";
+import { createSyncSource } from "../collection-sync/create-source";
+import { deleteSyncSource } from "../collection-sync/delete-source";
+import { listSyncSources } from "../collection-sync/list-sources";
+import { previewSyncSource } from "../collection-sync/preview";
+import { requestSyncRefresh } from "../collection-sync/request-refresh";
+import { updateSyncSource } from "../collection-sync/update-source";
 import { COLLECTION_LIMITS } from "../collections/constants";
 import { createCollection } from "../collections/create";
 import { createCollectionWithFields } from "../collections/create-with-fields";
@@ -104,6 +125,21 @@ export const dispatchCollections = async (
         "SCHEMA_LOCKED_IN_WORKFLOW: a run never changes the team's collection schema. Do schema migrations from chat.",
     };
   }
+  // Declaring a source IS a schema change — it creates columns and commits the
+  // team to calling a third party on a cadence — so a run may not, for the
+  // same reason. Refreshing is a read and stays allowed.
+  if (
+    op.startsWith("sync.") &&
+    op !== "sync.refresh" &&
+    op !== "sync.list" &&
+    op !== "sync.preview" &&
+    autonomy !== null
+  ) {
+    return {
+      status: "error",
+      message: `SYNC_LOCKED_IN_WORKFLOW: ${SYNC_LOCKED_IN_WORKFLOW}`,
+    };
+  }
   // In chat, the config-tool policy governs schema edits — blocked outright, or
   // approval-gated for the destructive actions. Resolve with the action this op
   // carries, so this SDK cannot do what the domain tool would have to ask for.
@@ -164,6 +200,20 @@ export const dispatchCollections = async (
         return await changeField(ctx, rawArgs);
       case "schema.delete_collection":
         return await deleteType(ctx, rawArgs);
+      case "sync.preview":
+        return await syncPreview(ctx, rawArgs);
+      case "sync.create":
+        return await syncCreate(ctx, rawArgs);
+      case "sync.update":
+        return await syncUpdate(ctx, rawArgs);
+      case "sync.delete":
+        return await syncDelete(ctx, rawArgs);
+      case "sync.refresh":
+        return await syncRefresh(ctx, rawArgs);
+      case "sync.confirmFullResync":
+        return await syncConfirmFullResync(ctx, rawArgs);
+      case "sync.list":
+        return await syncList(ctx, rawArgs);
       default:
         return { status: "error", message: `Unknown objects op: ${op}` };
     }
@@ -390,26 +440,41 @@ const bulkDelete = async (
   });
 };
 
-// ── Streamed import (loads too large for one request) ─────────────────
+// ── Streamed loads (writes too large for one request) ─────────────────
 //
-// Three ops that only the SDK's `_import` helper calls, and only past
+// Three ops that only the SDK's `_stream_load` helper calls, and only past
 // `SDK_INLINE_ROW_LIMIT` rows. Everything below that keeps using
-// `records.bulk_create` unchanged — the agent never chooses between the two.
+// `records.bulk_create` / `bulk_update` / `bulk_delete` unchanged — the agent
+// never chooses between the two.
 //
-// The split exists because a 200 000-row load breaks three ceilings at once: a
+// The split exists because a 200 000-row write breaks three ceilings at once: a
 // single HTTP body, the approval payload a browser can render, and the "one
 // pending approval per conversation" rule (40 sequential grants at the old
 // 5 000-row cap). Chunking the upload against a `bulk_operations` row fixes all
 // three, and turns a crash mid-load into a resume instead of a restart.
+//
+// All three ops share this path because none of those three ceilings care what
+// the rows DO. What changes per op is only the executor, the chunk size and the
+// shape of a row — which is why the op is settled here, at begin, and frozen on
+// the operation rather than re-stated per chunk.
+
+/** Which streamed op maps to which ledger kind. */
+const LOAD_KINDS = {
+  create: "record_import",
+  update: "record_update",
+  delete: "record_delete",
+} as const;
 
 const importBeginArgs = z.object({
-  op: z.literal("create"),
+  op: z.enum(["create", "update", "delete"]),
   collectionKey: z.string().min(1).max(60),
   totalRows: z.number().int().min(1).max(MAX_BULK_OPERATION_ITEMS),
   /** Caller-side digest of the canonicalized rows — the replay key's payload. */
   rowsDigest: z.string().min(16).max(128),
   sample: z.array(z.record(z.string(), z.unknown())).max(10),
   columns: z.array(z.string()).max(200).optional(),
+  /** `update` only — patch the provided keys instead of replacing the row. */
+  merge: z.boolean().optional(),
 });
 
 /**
@@ -444,18 +509,39 @@ const importBegin = async (
 
   // Chunk size comes from the TARGET TYPE's real column width, so one uploaded
   // chunk is exactly one database transaction — the property the chunk ledger's
-  // exactly-once guard rests on.
+  // exactly-once guard rests on. The insert and the update bind a different
+  // number of parameters per row, so each op asks its own write service what a
+  // transaction of this collection holds; a delete binds only ids, and sits
+  // under the create's bound whatever the collection's width.
   const fieldDefs = await getFieldDefinitionsForTeam({
     teamId: ctx.teamId,
     collectionId,
   });
+  const chunkSize =
+    args.op === "update"
+      ? recordUpdateChunkSize(fieldDefs)
+      : recordWriteChunkSize(fieldDefs);
 
+  const merge = args.op === "update" ? (args.merge ?? false) : undefined;
   const lookupHash = recordImportLookupHash({
     op: args.op,
     collectionId,
     totalRows: args.totalRows,
     rowsDigest: args.rowsDigest,
+    ...(merge === undefined ? {} : { merge }),
   });
+
+  const params: BulkOperationParams =
+    args.op === "update"
+      ? {
+          op: "update",
+          collectionId,
+          collectionKey: args.collectionKey,
+          merge: merge ?? false,
+        }
+      : args.op === "delete"
+        ? { op: "delete", collectionId, collectionKey: args.collectionKey }
+        : { op: "create", collectionId, collectionKey: args.collectionKey };
 
   const handle = await beginBulkOperation({
     organizationId: ctx.organizationId,
@@ -463,12 +549,12 @@ const importBegin = async (
     userId: ctx.userId,
     conversationId: ctx.conversationId,
     turnId: ctx.turnId,
-    kind: "record_import",
+    kind: LOAD_KINDS[args.op],
     mode: level === "auto" ? "direct" : "staged",
     lookupHash,
     totalItems: args.totalRows,
-    chunkSize: recordWriteChunkSize(fieldDefs),
-    params: { op: args.op, collectionId, collectionKey: args.collectionKey },
+    chunkSize,
+    params,
     sample: args.sample,
     ...(args.columns ? { columns: args.columns } : {}),
   });
@@ -565,6 +651,14 @@ const importChunk = async (
     };
   }
 
+  const malformed = firstMalformedRow(operation.kind, args.rows);
+  if (malformed !== null) {
+    return {
+      status: "error",
+      message: `Row ${(args.chunkIndex * operation.chunkSize + malformed.index).toString()} is not ${malformed.shape}, which is what a ${operation.params.op} load carries. No chunk was stored.`,
+    };
+  }
+
   const chunk = await claimChunk({
     operationId: operation.id,
     chunkIndex: args.chunkIndex,
@@ -629,7 +723,7 @@ const importCommit = async (
   const { operationId } = importCommitArgs.parse(rawArgs);
   const operation = await findTeamOperation(ctx, operationId);
   if (operation === null) return unknownOperation(operationId);
-  return commitBulkOperation({ operation, gateContext: ctx });
+  return commitBulkOperation({ operation });
 };
 
 /**
@@ -977,6 +1071,262 @@ const deleteType = async (
     actor: execActor(ctx),
   });
   return { status: "ok", data: result };
+};
+
+// ── Sync sources (a collection an app fills) ──────────────────────────
+//
+// The Python mirror of the `manageSync` tool, for the same reason the record
+// ops have one: a migration that also wires a source is one script, and a tool
+// round-trip per step would put the whole mapping back in the agent's context.
+//
+// Preview and refresh are reads; create/update/delete are refused in a run by
+// the guard at the top of this file.
+
+const syncPreviewArgs = z.object({
+  connectionId: z.uuid(),
+  operation: z.string().min(1).max(120),
+  args: syncArgsSchema.default({}),
+  resultPath: z.string().max(200).optional(),
+  sampleRecordId: z.uuid().optional(),
+  // Try the match before creating anything: all three together, or none.
+  collectionKey: z.string().min(1).max(60).optional(),
+  matchFieldKey: z
+    .string()
+    .regex(/^[a-z][a-z0-9_]*$/)
+    .max(60)
+    .optional(),
+  externalIdPath: z.string().max(200).optional(),
+});
+
+const syncPreview = async (
+  ctx: ExecContext,
+  rawArgs: Record<string, unknown>,
+): Promise<SandboxExecResponse> => {
+  const args = syncPreviewArgs.parse(rawArgs);
+  const collectionId =
+    args.collectionKey === undefined
+      ? null
+      : await resolveTeamType(ctx, args.collectionKey);
+  if (args.collectionKey !== undefined && collectionId === null) {
+    return unknownType(args.collectionKey);
+  }
+  const preview = await previewSyncSource({
+    teamId: ctx.teamId,
+    userId: ctx.userId,
+    connectionId: args.connectionId,
+    operation: args.operation,
+    args: args.args,
+    ...(args.resultPath === undefined ? {} : { resultPath: args.resultPath }),
+    ...(args.sampleRecordId === undefined
+      ? {}
+      : { sampleRecordId: args.sampleRecordId }),
+    ...(collectionId === null ? {} : { collectionId }),
+    ...(args.matchFieldKey === undefined
+      ? {}
+      : { matchFieldKey: args.matchFieldKey }),
+    ...(args.externalIdPath === undefined
+      ? {}
+      : { externalIdPath: args.externalIdPath }),
+  });
+  return { status: "ok", data: preview };
+};
+
+const syncFieldArgs = z.object({
+  path: z.string().min(1).max(200),
+  label: z.string().min(1).max(120),
+  fieldKey: z
+    .string()
+    .regex(/^[a-z][a-z0-9_]*$/)
+    .max(60)
+    .optional(),
+  type: fieldDefinitionTypeSchema.default("text"),
+  isTitle: z.boolean().optional(),
+});
+
+const syncCreateArgs = z.object({
+  collectionKey: z.string().min(1).max(60),
+  connectionId: z.uuid(),
+  operation: z.string().min(1).max(120),
+  kind: syncKindSchema.default("table"),
+  fields: z.array(syncFieldArgs).min(1).max(SYNC_LIMITS.maxMappedFields),
+  args: syncArgsSchema.default({}),
+  resultPath: z.string().max(200).optional(),
+  externalIdPath: z.string().max(200).optional(),
+  matchFieldKey: z
+    .string()
+    .regex(/^[a-z][a-z0-9_]*$/)
+    .max(60)
+    .optional(),
+  schedule: syncScheduleSchema.default({ mode: "manual" }),
+  orphanPolicy: syncOrphanPolicySchema.default("keep"),
+  rowCap: z.number().int().min(1).max(SYNC_LIMITS.maxRowCap).optional(),
+});
+
+const syncCreate = async (
+  ctx: ExecContext,
+  rawArgs: Record<string, unknown>,
+): Promise<SandboxExecResponse> => {
+  const args = syncCreateArgs.parse(rawArgs);
+  const collectionId = await resolveTeamType(ctx, args.collectionKey);
+  if (collectionId === null) return unknownType(args.collectionKey);
+
+  const source = await createSyncSource({
+    organizationId: ctx.organizationId,
+    teamId: ctx.teamId,
+    userId: ctx.userId,
+    collectionId,
+    kind: args.kind,
+    connectionId: args.connectionId,
+    // Stamped from the connection by the service — see
+    // `assertConnectionUsable`.
+    providerKey: "",
+    operation: args.operation,
+    args: args.args,
+    ...(args.matchFieldKey === undefined
+      ? {}
+      : { matchFieldKey: args.matchFieldKey }),
+    ...(args.resultPath === undefined ? {} : { resultPath: args.resultPath }),
+    ...(args.externalIdPath === undefined
+      ? {}
+      : { externalIdPath: args.externalIdPath }),
+    fields: args.fields,
+    schedule: args.schedule,
+    orphanPolicy: args.orphanPolicy,
+    ...(args.rowCap === undefined ? {} : { rowCap: args.rowCap }),
+  });
+  return { status: "ok", data: { sourceId: source.id, collectionId } };
+};
+
+const syncUpdateArgs = z.object({
+  sourceId: z.uuid(),
+  args: syncArgsSchema.optional(),
+  schedule: syncScheduleSchema.optional(),
+  orphanPolicy: syncOrphanPolicySchema.optional(),
+  rowCap: z.number().int().min(1).max(SYNC_LIMITS.maxRowCap).optional(),
+  fields: z.array(syncFieldArgs).max(SYNC_LIMITS.maxMappedFields).optional(),
+});
+
+const syncUpdate = async (
+  ctx: ExecContext,
+  rawArgs: Record<string, unknown>,
+): Promise<SandboxExecResponse> => {
+  const { sourceId, ...patch } = syncUpdateArgs.parse(rawArgs);
+  const source = await updateSyncSource({
+    id: sourceId,
+    teamId: ctx.teamId,
+    organizationId: ctx.organizationId,
+    userId: ctx.userId,
+    patch,
+  });
+  return { status: "ok", data: { sourceId: source.id } };
+};
+
+const syncDeleteArgs = z.object({ sourceId: z.uuid() });
+
+const syncDelete = async (
+  ctx: ExecContext,
+  rawArgs: Record<string, unknown>,
+): Promise<SandboxExecResponse> => {
+  const { sourceId } = syncDeleteArgs.parse(rawArgs);
+  await deleteSyncSource({
+    id: sourceId,
+    teamId: ctx.teamId,
+    organizationId: ctx.organizationId,
+  });
+  return { status: "ok", data: { sourceId, deleted: true } };
+};
+
+const syncConfirmArgs = z.object({ sourceId: z.uuid() });
+
+const syncConfirmFullResync = async (
+  ctx: ExecContext,
+  rawArgs: Record<string, unknown>,
+): Promise<SandboxExecResponse> => {
+  const { sourceId } = syncConfirmArgs.parse(rawArgs);
+  const { enqueued } = await confirmFullResync({
+    sourceId,
+    teamId: ctx.teamId,
+    ...(ctx.userId == null ? {} : { userId: ctx.userId }),
+  });
+  return { status: "ok", data: { sourceId, enqueued } };
+};
+
+const syncSelectorArgs = z.object({
+  collectionKey: z.string().min(1).max(60).optional(),
+  sourceId: z.uuid().optional(),
+});
+
+/** The sources this call is about: one by id, a collection's, or the team's. */
+const selectSources = async (
+  ctx: ExecContext,
+  selector: z.infer<typeof syncSelectorArgs>,
+) => {
+  if (selector.sourceId !== undefined) {
+    const all = await listSyncSources({ teamId: ctx.teamId });
+    return all.filter((source) => source.id === selector.sourceId);
+  }
+  const collectionId =
+    selector.collectionKey === undefined
+      ? null
+      : await resolveTeamType(ctx, selector.collectionKey);
+  return listSyncSources({
+    teamId: ctx.teamId,
+    ...(collectionId === null ? {} : { collectionId }),
+  });
+};
+
+const syncRefresh = async (
+  ctx: ExecContext,
+  rawArgs: Record<string, unknown>,
+): Promise<SandboxExecResponse> => {
+  const selector = syncSelectorArgs.parse(rawArgs);
+  const runnable = (await selectSources(ctx, selector)).filter(
+    (source) => source.enabled,
+  );
+  if (runnable.length === 0) {
+    return {
+      status: "error",
+      message:
+        "NO_SYNC_SOURCE: nothing here is filled by an app, or its source is turned off. Check collections.sync.list() first.",
+    };
+  }
+  const queued = await Promise.all(
+    runnable.map(async (source) => ({
+      sourceId: source.id,
+      operation: source.operation,
+      ...(await requestSyncRefresh({
+        sourceId: source.id,
+        teamId: ctx.teamId,
+        trigger: "manual",
+        ...(ctx.userId == null ? {} : { userId: ctx.userId }),
+      })),
+    })),
+  );
+  return { status: "ok", data: { queued } };
+};
+
+const syncList = async (
+  ctx: ExecContext,
+  rawArgs: Record<string, unknown>,
+): Promise<SandboxExecResponse> => {
+  const sources = await selectSources(ctx, syncSelectorArgs.parse(rawArgs));
+  return {
+    status: "ok",
+    data: {
+      sources: sources.map((source) => ({
+        id: source.id,
+        kind: source.kind,
+        operation: source.operation,
+        schedule: source.schedule,
+        incremental: source.incremental,
+        lastSuccessAt: source.lastSuccessAt,
+        nextRunAt: source.nextRunAt,
+        health: source.health,
+        orphanPolicy: source.orphanPolicy,
+        enabled: source.enabled,
+      })),
+    },
+  };
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────

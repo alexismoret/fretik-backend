@@ -9,8 +9,8 @@ import { requireNangoRef } from "../connections/nango-ref";
 import { resolveConnection } from "../connections/resolve";
 import { buildRequest } from "./build-request";
 import { callCustomHandler } from "./call-custom-handler";
-import { withConnectionSlot } from "./connection-slot";
 import { extractFrameworkArgs } from "./framework-args";
+import { withUpstreamPermit } from "./governor/permit";
 import { callHttpDirect } from "./http-direct";
 import { executeMcpWriteOp } from "./mcp-plan";
 import { callNangoProxy } from "./nango-proxy";
@@ -89,11 +89,20 @@ export const executePlan = async (params: {
       const { nangoProviderConfigKey, nangoConnectionId } =
         requireNangoRef(connection);
 
-      // The worker pool above runs three ops at once, which on a SERIAL
-      // connection is three requests to an account that tolerates one. The slot
-      // turns that into a queue; on every other provider it costs nothing.
+      // The worker pool above runs three ops at once, which on a connection
+      // that tolerates one is three requests too many. The permit turns that
+      // into a queue, and paces the whole plan against the app's budget —
+      // fifty emails in one grant is exactly the shape that trips a limit.
+      //
+      // `background`: nobody is watching a granted plan drain, so it waits out
+      // its own lease for a permit rather than failing an op in seconds.
       const slot = <T>(work: () => Promise<T>): Promise<T> =>
-        withConnectionSlot(connection, work, { leaseMs: PLAN_LEASE_MS });
+        withUpstreamPermit(
+          connection,
+          { kind: "background", deadlineAt: Date.now() + PLAN_LEASE_MS },
+          { holdMs: PLAN_LEASE_MS },
+          work,
+        );
 
       let data: unknown;
       const transport = resolved.transport;

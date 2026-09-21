@@ -1,7 +1,7 @@
 ---
 name: akanea-wms
 description: Akanea WMS (Xtent) — the warehouse-management system a logistics team runs on the floor. Check stock levels and movements, follow inbound receptions and outbound preparation orders, and push receptions, preparations, items, parties and stock corrections into the warehouse.
-version: 2a19e9ff8f10
+version: ed544cc92071
 ---
 
 # Akanea WMS — 15 actions

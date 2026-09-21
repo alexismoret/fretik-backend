@@ -1,7 +1,8 @@
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, gt, isNull, sql } from "drizzle-orm";
 import db from "../../db";
 import type {
   BulkOperation,
+  BulkOperationChunk,
   BulkOperationKind,
   BulkOperationMode,
   BulkOperationParams,
@@ -9,6 +10,7 @@ import type {
 import { bulkOperationChunks, bulkOperations } from "../../db/schema";
 import { throwHttpError } from "../../lib/errors";
 import { ERROR_CODES } from "../../schemas/errors";
+import { CARD_INDEX_ROW_CEILING } from "../collection-records/card-indexing-policy";
 
 /**
  * Rows one operation may carry.
@@ -53,8 +55,9 @@ export const beginBulkOperation = async (input: {
   organizationId: string;
   teamId: string;
   userId: string;
-  conversationId: string;
-  turnId: string;
+  /** Omitted by an API load — see the column's note on the table. */
+  conversationId?: string;
+  turnId?: string;
   kind: BulkOperationKind;
   mode: BulkOperationMode;
   lookupHash: string;
@@ -71,14 +74,16 @@ export const beginBulkOperation = async (input: {
     });
   }
 
+  const conversationId = input.conversationId ?? null;
+
   const [inserted] = await db
     .insert(bulkOperations)
     .values({
       organizationId: input.organizationId,
       teamId: input.teamId,
       userId: input.userId,
-      conversationId: input.conversationId,
-      turnId: input.turnId,
+      conversationId,
+      turnId: input.turnId ?? null,
       kind: input.kind,
       mode: input.mode,
       lookupHash: input.lookupHash,
@@ -88,20 +93,37 @@ export const beginBulkOperation = async (input: {
       sample: input.sample.slice(0, BULK_OPERATION_SAMPLE_SIZE),
       ...(input.columns ? { columns: input.columns } : {}),
     })
-    .onConflictDoNothing({
-      target: [bulkOperations.conversationId, bulkOperations.lookupHash],
-    })
+    // Two indexes enforce the same rule on two populations, because a NULL
+    // `conversation_id` is distinct from every other one and would dedupe
+    // nothing. The target must name the one that actually covers this row.
+    .onConflictDoNothing(
+      conversationId === null
+        ? {
+            target: [bulkOperations.teamId, bulkOperations.lookupHash],
+            // The partial index's own predicate — `where` here is part of the
+            // conflict TARGET, not a filter on the insert.
+            where: isNull(bulkOperations.conversationId),
+          }
+        : {
+            target: [bulkOperations.conversationId, bulkOperations.lookupHash],
+          },
+    )
     .returning();
 
   if (inserted !== undefined) {
+    await relaxSemanticIndexForLoad(inserted);
     return { operation: inserted, doneChunks: [], created: true };
   }
 
   const existing = await db.query.bulkOperations.findFirst({
-    where: {
-      conversationId: input.conversationId,
-      lookupHash: input.lookupHash,
-    },
+    where:
+      conversationId === null
+        ? {
+            teamId: input.teamId,
+            conversationId: { isNull: true },
+            lookupHash: input.lookupHash,
+          }
+        : { conversationId, lookupHash: input.lookupHash },
   });
   if (existing === undefined) {
     // The conflict fired, so the row exists — unless it was deleted between
@@ -116,6 +138,35 @@ export const beginBulkOperation = async (input: {
     doneChunks: await listDoneChunkIndexes(existing.id),
     created: false,
   };
+};
+
+/**
+ * Take a collection out of the per-record embedding when a load announces more
+ * rows than it is worth embedding.
+ *
+ * The decision already exists — `cardIndexVerdict` takes a collection above
+ * `CARD_INDEX_ROW_CEILING` out on its own — but it reads `reltuples`, which
+ * INSERTs do not maintain. A collection receiving 200 000 rows still measures
+ * as the empty one it was until autoanalyze catches up, so the first ~20 000
+ * records of the import are embedded before the verdict flips: 20 000
+ * embedding calls and 20 000 vector rows, bought for a collection that was
+ * always going to be excluded.
+ *
+ * The caller ANNOUNCED its size, which is the number `reltuples` will not know
+ * for another few minutes, so the rule is applied at the load's birth from
+ * that. `semantic_index IS NULL` only — an explicit `true` is somebody's
+ * choice and stands, exactly as it does for a sync source.
+ */
+const relaxSemanticIndexForLoad = async (
+  operation: BulkOperation,
+): Promise<void> => {
+  // Only a load that ADDS rows changes the count the verdict turns on.
+  if (operation.kind !== "record_import") return;
+  if (operation.totalItems < CARD_INDEX_ROW_CEILING) return;
+  await db.execute(sql`
+    UPDATE collections SET semantic_index = false
+     WHERE id = ${operation.params.collectionId}::uuid
+       AND semantic_index IS NULL`);
 };
 
 /**
@@ -154,15 +205,35 @@ export const countStagedItems = async (
   return row?.total ?? 0;
 };
 
-/** Chunks still to apply, in order — the runner's cursor. */
-export const listPendingChunks = async (operationId: string) =>
-  db
+/**
+ * The next chunk still to apply — the runner's cursor, ONE row at a time.
+ *
+ * Deliberately not "every pending chunk": a chunk carries its rows in `items`,
+ * so a million-row load parked as 500 chunks of 2 000 would arrive as one
+ * result set holding the entire import — the exact thing the chunking exists to
+ * avoid. The drain needs one chunk to work on, and the ledger is already the
+ * cursor.
+ *
+ * `afterIndex` is what keeps the loop finite. Every applied chunk is stamped
+ * (success, or the interruption report), so re-asking without a cursor would
+ * still terminate — but a chunk whose stamp is lost to a crash mid-UPDATE would
+ * be handed back for ever, and the caller has just walked past it.
+ */
+export const nextPendingChunk = async (
+  operationId: string,
+  afterIndex: number,
+): Promise<BulkOperationChunk | undefined> => {
+  const [row] = await db
     .select()
     .from(bulkOperationChunks)
     .where(
       and(
         eq(bulkOperationChunks.operationId, operationId),
         isNull(bulkOperationChunks.appliedAt),
+        gt(bulkOperationChunks.chunkIndex, afterIndex),
       ),
     )
-    .orderBy(bulkOperationChunks.chunkIndex);
+    .orderBy(bulkOperationChunks.chunkIndex)
+    .limit(1);
+  return row;
+};

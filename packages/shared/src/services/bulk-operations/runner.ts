@@ -12,7 +12,7 @@ import { updateToolPartOutputByToolCallId } from "../ai/update-tool-part-output"
 import { markConsumed } from "../approvals/complete";
 import { completeConversationTask } from "../conversation-tasks/complete";
 import { updateConversationTaskProgress } from "../conversation-tasks/progress";
-import { listPendingChunks } from "./begin";
+import { nextPendingChunk } from "./begin";
 import { applyChunk } from "./chunk";
 import { emptyProgress, foldChunkProgress } from "./progress";
 import { BULK_OPERATION_EXECUTORS } from "./registry";
@@ -49,7 +49,14 @@ export const drainBulkOperation = async (
 
   let progress = await rebuildProgress(operationId);
 
-  for (const chunk of await listPendingChunks(operationId)) {
+  // One chunk in memory at a time, never the ledger. A parked chunk carries its
+  // rows, so reading "every pending chunk" would hold the whole import — a
+  // million rows of jsonb — to drain it 2 000 at a time.
+  let afterIndex = -1;
+  for (;;) {
+    const chunk = await nextPendingChunk(operationId, afterIndex);
+    if (chunk === undefined) break;
+    afterIndex = chunk.chunkIndex;
     const outcome = await applyChunk({
       operation,
       chunk,
@@ -232,17 +239,26 @@ export const finishBulkOperation = async (input: {
         .where(eq(bulkOperationChunks.operationId, finished.id));
     }
 
+    // Everything below belongs to a conversation: the approval this load was
+    // granted through, the tool part its result substitutes into, the wait row
+    // that wakes the turn. An API load has none of them — it answered its
+    // caller over HTTP — so there is nothing to consume, substitute or wake.
+    if (finished.conversationId === null) {
+      return { finished, wake: null };
+    }
+    const conversation = finished.conversationId;
+
     if (finished.approvalId !== null) {
       // The grant deferred execution and left the row `executing`; this is
       // what finally consumes it, so a re-run of the agent's code replays.
       await markConsumed(finished.approvalId, [], tx);
       const found = await findToolCallIdForApproval({
-        conversationId: finished.conversationId,
+        conversationId: conversation,
         approvalId: finished.approvalId,
       });
       if (found !== undefined) {
         await updateToolPartOutputByToolCallId({
-          conversationId: finished.conversationId,
+          conversationId: conversation,
           toolCallId: found.toolCallId,
           newOutput: importToolOutput(finished, input.progress),
           tx,

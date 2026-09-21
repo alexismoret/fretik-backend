@@ -86,7 +86,7 @@ export interface PageDataSource {
    * different facts, and only the source knows the second: Akanea WMS leases a
    * licence seat per call, so five widgets over one account is five seats
    * requested at once and the ones past the pool come back looking like bad
-   * credentials. `withConnectionSlot` already makes that CORRECT — this makes
+   * credentials. The governor's permit already makes that CORRECT — this makes
    * it cheap, by never creating the contention in the first place. Same-key
    * datasets run one after another; different keys, and everything without one,
    * still run together.

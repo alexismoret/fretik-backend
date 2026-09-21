@@ -9,7 +9,7 @@ import { getSnapshotForConnection } from "../mcp/snapshot-store";
 import { mcpCallTool } from "../mcp/transport";
 import { buildRequest } from "./build-request";
 import { callCustomHandler } from "./call-custom-handler";
-import { withConnectionSlot } from "./connection-slot";
+import { withUpstreamPermit } from "./governor/permit";
 import { callHttpDirect } from "./http-direct";
 import { callNangoProxy } from "./nango-proxy";
 import { validateActionArgs } from "./validate-args";
@@ -67,20 +67,26 @@ const withTimeout = async <T>(work: Promise<T>): Promise<T> => {
 const WRITE_LEASE_MS = 25_000;
 
 /**
- * Hold the connection's slot for the upstream call, and START the clock only
- * once it is held: time spent queueing behind another request is not the app
- * being slow, and charging it to the timeout would fail calls that never left.
+ * Hold a permit for the upstream call, and START the clock only once it is
+ * held: time spent waiting for the app's budget is not the app being slow, and
+ * charging it to the timeout would fail calls that never left.
  *
- * MCP is absent on purpose — `mcpCallTool` takes the slot itself, and the lock
- * is not reentrant.
+ * `interactive` because a page write is somebody pressing a button — it waits
+ * seconds, not minutes, and says so when it gives up.
+ *
+ * MCP is absent on purpose — `mcpCallTool` takes its own permit, and a second
+ * seat on one connection would queue behind the first.
  */
 const upstream = async <T>(
   connection: ExternalAppConnection,
   work: () => Promise<T>,
 ): Promise<T> =>
-  await withConnectionSlot(connection, () => withTimeout(work()), {
-    leaseMs: WRITE_LEASE_MS,
-  });
+  await withUpstreamPermit(
+    connection,
+    { kind: "interactive" },
+    { holdMs: WRITE_LEASE_MS },
+    () => withTimeout(work()),
+  );
 
 const blockedMessage = (
   actionName: string,

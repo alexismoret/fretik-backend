@@ -122,6 +122,7 @@ export interface TaskOutput {
 export type FailedCheck =
   | "tool-not-called"
   | "unexpected-tool"
+  | "tool-runaway"
   | "latency"
   | "missing-text"
   | "error"

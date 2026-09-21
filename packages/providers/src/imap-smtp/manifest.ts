@@ -284,6 +284,7 @@ export const imapSmtpManifest: ProviderManifest = {
             "Skip the first N messages (paginate the sorted UID list, newest-first)",
         },
       },
+      pagination: { kind: "offset", maxLimit: 100 },
       returns: { list: "Message" },
     },
     {
@@ -328,6 +329,7 @@ export const imapSmtpManifest: ProviderManifest = {
             "Skip the first N matches (paginate the sorted UID list, newest-first)",
         },
       },
+      pagination: { kind: "offset", maxLimit: 100 },
       returns: { list: "Message" },
     },
     {
@@ -352,6 +354,7 @@ export const imapSmtpManifest: ProviderManifest = {
             "Skip the first N messages (paginate the sorted UID list, newest-first)",
         },
       },
+      pagination: { kind: "offset", maxLimit: 100 },
       returns: { list: "Message" },
     },
     {

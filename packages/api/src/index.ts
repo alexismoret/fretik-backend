@@ -39,6 +39,7 @@ import { changelogRoutes } from "./handlers/changelog";
 import { chatbotContextRoutes } from "./handlers/chatbot-context";
 import { collectionRecordRoutes } from "./handlers/collection-records";
 import { collectionSharingRoutes } from "./handlers/collection-sharing";
+import { collectionSyncRoutes } from "./handlers/collection-sync";
 import { collectionRoutes } from "./handlers/collections";
 import { conversationRoutes } from "./handlers/conversations";
 import { dashboardRoutes } from "./handlers/dashboard";
@@ -135,6 +136,9 @@ app.route("/field-definitions", fieldDefinitionRoutes);
 app.route("/collections", collectionRoutes);
 app.route("/collection-records", collectionRecordRoutes);
 app.route("/collection-sharing", collectionSharingRoutes);
+// Declarations that a collection (or some of its columns) is fed by a
+// connected app. The runs themselves happen in @fretik/jobs.
+app.route("/collection-sync", collectionSyncRoutes);
 app.route("/links", linkRoutes);
 app.route("/link-types", linkTypeRoutes);
 app.route("/invitations", invitationRoutes);

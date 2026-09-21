@@ -108,6 +108,24 @@ describe("withLoopGuard", () => {
     expect(next?.messages).toBeUndefined();
   });
 
+  test("withdraws the tools after ONE step that flooded", async () => {
+    // The shape production actually produces, and the one the `failing(n)`
+    // fixtures never had: a single step whose 300 calls were all refused by
+    // `StepCallBudget`. Measured 2026-09-20 — 273 refusals in one step, then
+    // 172 more in the NEXT one, which is the withdrawal failing to bite.
+    const flooded = [
+      {
+        toolResults: Array.from({ length: 300 }, () => ({
+          toolName: "manageSync",
+          input: { action: "preview" },
+          output: { error: "refused", code: "STEP_CALL_CAP" },
+        })),
+      } as unknown as StepResult<ToolSet>,
+    ];
+    const result = await withLoopGuard(base)(options(flooded));
+    expect(result?.activeTools).toEqual([]);
+  });
+
   test("opens the step's tool-call budget with the step number", async () => {
     const budget = new StepCallBudget(2);
     const runtimeContext = wrapRuntimeContext({

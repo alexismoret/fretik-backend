@@ -1,5 +1,9 @@
 import { redis } from "@fretik/shared/lib/redis";
 import {
+  invalidateColumnSources,
+  type RecordChange,
+} from "@fretik/shared/services/collection-sync/invalidate-on-change";
+import {
   advanceWorkerCursor,
   ensureWorkerCursor,
   readEventsAfter,
@@ -20,6 +24,10 @@ import {
  * replaced on every new turn, so a conversation distills once it has been
  * quiet for the debounce window (one LLM call per conversation, on its
  * complete content), not once per turn.
+ *
+ * It also drives the collection-sync `lookup` invalidation: a record whose diff
+ * touches a field a lookup source reads is queued for refresh, which is what
+ * makes an externally-fed column fill within a sweep of somebody typing its key.
  *
  * Polling over enqueue-at-emit is deliberate: the journal IS the
  * transactional outbox — the ~10 emit sites need zero changes and a
@@ -330,6 +338,39 @@ const runSweepPass = async (): Promise<number> => {
         },
       })),
     );
+  }
+
+  // Lookup-source invalidation (plan §3.4, trigger 3). A record whose diff
+  // touches a key some `lookup` source binds is a record whose external columns
+  // are now answerable — mark it and make the source due. This is the whole of
+  // what makes "type the SIRET, watch the columns fill" work: no webhook, no
+  // polling, just the journal the sweep is already reading.
+  //
+  // Cheap by construction: `invalidateColumnSources` caches each team's sources
+  // in process for a minute, so a sweep over a workspace with no lookup source
+  // issues no query at all.
+  const changes: RecordChange[] = [];
+  for (const e of events) {
+    if (e.type !== "record.created" && e.type !== "record.updated") continue;
+    if (!e.subjectRecordId) continue;
+    const diff = e.payload["diff"];
+    changes.push({
+      recordId: e.subjectRecordId,
+      teamId: e.teamId,
+      // The diff is `{ key: { from, to } }` on both event types. An unreadable
+      // payload yields an EMPTY key list, which matches any source rather than
+      // none — missing a refresh is worse than one extra call.
+      changedKeys:
+        typeof diff === "object" && diff !== null && !Array.isArray(diff)
+          ? Object.keys(diff)
+          : [],
+      agentKey: e.agentKey,
+    });
+  }
+  if (changes.length > 0) {
+    // Not caught: a Redis or Postgres failure here must fail the sweep so the
+    // cursor stays put and the batch replays — same rationale as the adds above.
+    await invalidateColumnSources(changes);
   }
 
   const last = events[events.length - 1];

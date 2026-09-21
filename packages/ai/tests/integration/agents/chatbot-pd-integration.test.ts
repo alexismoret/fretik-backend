@@ -60,6 +60,7 @@ const EXPECTED_DOMAIN_TOOL_NAMES: readonly string[] = [
   "manageLink",
   "manageCollection",
   "manageField",
+  "manageSync",
   "manageDocument",
   "searchIcons",
   "webFetch",

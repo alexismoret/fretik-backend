@@ -57,6 +57,8 @@ const classifyFailedCheck = (out: TaskOutput): FailedCheck => {
       return "tool-not-called";
     case "toolNotUsed":
       return "unexpected-tool";
+    case "toolCallsUnder":
+      return "tool-runaway";
     case "latencyUnder":
       return "latency";
     case "contains":

@@ -1,7 +1,7 @@
 ---
 name: exchange
 description: Microsoft Exchange (EWS) — read and send email, and manage calendar and contacts on the user's connected on-premises or hosted Exchange account.
-version: 70099c2efe67
+version: b0a9809780b3
 ---
 
 # Microsoft Exchange — 33 actions

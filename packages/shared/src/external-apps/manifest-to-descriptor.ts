@@ -38,6 +38,16 @@ export const manifestToDescriptor = (
       approvalDefault: action.kind === "read" ? "auto" : "approval",
       params: action.params,
       returns: action.returns,
+      // Spread rather than assigned, because `exactOptionalPropertyTypes` makes
+      // an explicit `undefined` a different thing from an absent key — and the
+      // parity test compares the descriptor to the manifest key by key.
+      ...(action.pagination !== undefined
+        ? { pagination: action.pagination }
+        : {}),
+      ...(action.batch !== undefined ? { batch: action.batch } : {}),
+      ...(action.incremental !== undefined
+        ? { incremental: action.incremental }
+        : {}),
     }),
   );
 

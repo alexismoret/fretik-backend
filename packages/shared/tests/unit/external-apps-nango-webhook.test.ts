@@ -168,19 +168,66 @@ describe("what a verified delivery is taken to mean", () => {
     }
   });
 
-  test("the other webhook types are ignored", () => {
+  test("the webhook types we do not subscribe to are ignored", () => {
     for (const body of [
+      // Nango's hosted syncs and long-running actions — features we do not use.
       {
         from: "nango",
         type: "sync",
         connectionId: "c",
         providerConfigKey: "p",
       },
-      { from: "nango", type: "forward", providerConfigKey: "p" },
       { from: "nango", type: "async_action", connectionId: "c" },
     ]) {
       expect(decideNangoWebhook(body).action).toBe("ignored");
     }
+  });
+
+  test("a relayed provider webhook means the app has something new", () => {
+    const decision = decideNangoWebhook({
+      from: "nango",
+      type: "forward",
+      connectionId: "conn_9f2a",
+      providerConfigKey: "front",
+      provider: "front",
+      payload: { type: "inbound", conversation: { id: "cnv_1" } },
+    });
+    expect(decision).toMatchObject({
+      action: "app-notified",
+      nangoConnectionId: "conn_9f2a",
+      nangoProviderConfigKey: "front",
+    });
+  });
+
+  test("the payload is never carried into the decision", () => {
+    // Its shape is the provider's. Reading it would mean one parser per app,
+    // each guessing which of that app's events touches which of our sources.
+    // The event says the app is not idle; the incremental run says what changed.
+    const decision = decideNangoWebhook({
+      from: "nango",
+      type: "forward",
+      connectionId: "conn_9f2a",
+      providerConfigKey: "front",
+      payload: { anything: "at all" },
+    });
+    expect(Object.keys(decision).sort()).toEqual([
+      "action",
+      "nangoConnectionId",
+      "nangoProviderConfigKey",
+    ]);
+  });
+
+  test("a forward with no connection to name is ignored", () => {
+    // There is nothing to nudge without it, and the alternative — nudging
+    // every source of that provider across every team — is a stranger's
+    // webhook spending our rate limit for all of them.
+    expect(
+      decideNangoWebhook({
+        from: "nango",
+        type: "forward",
+        providerConfigKey: "front",
+      }).action,
+    ).toBe("ignored");
   });
 
   test("junk is ignored rather than rejected", () => {

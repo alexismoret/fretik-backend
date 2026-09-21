@@ -470,7 +470,10 @@ export const buildToolsContext = (
  *     26 tool cards and no words. With no tool to reach for, the model can
  *     only answer, so the turn ends with an explanation instead of a wall.
  *  3. ABORT at 8 — the stop condition, for the model that keeps trying past a
- *     withdrawal or loops on something with no tool left to take away.
+ *     withdrawal or loops on something with no tool left to take away. It holds
+ *     for one step when stages 1 and 2 were never reached because the threshold
+ *     was crossed in a SINGLE step — see `stopOnRepeatedToolErrors`, which is
+ *     where that rule lives and where the measurement is recorded.
  *
  * Ending the turn is not ending the work: a workflow run re-steers on its next
  * turn, a chat hands control back to the user.
@@ -729,6 +732,14 @@ type PrepareCallArgs<CALL_OPTIONS, TTools extends ToolSet> = Parameters<
  * legitimate work — a ~1 200-line file — while 32 000 sits well above anything
  * a single step should produce and still halves the measured runaway.
  *
+ * The chat path's own distribution says the same thing from the other side.
+ * Measured 2026-09-20 over 370 `chat` generations: p50 584 output tokens, p95
+ * 2 432, largest legitimate 3 835 — of which 3 478 was REASONING. Three runaway
+ * generations in that window each ran 588 to 694 seconds and emitted one tool
+ * call over and over, with 159 to 1 038 reasoning tokens between them: the
+ * volume was repetition, not thought, which is why a cap eight times the widest
+ * legitimate generation cannot cut anything worth keeping.
+ *
  * `WORKFLOW_STEP_MAX_OUTPUT_TOKENS` keeps governing the run executor; this one
  * is `AGENT_STEP_MAX_OUTPUT_TOKENS`, so the two can be moved apart without
  * touching code. `omitMaxTokens` still wins over both — a profile whose only
@@ -825,7 +836,7 @@ const buildToolLoopAgent = <CALL_OPTIONS, TTools extends ToolSet>(
   // in-tool resume, or a continuation into the same writer).
   const stopWhen = [
     ...(Array.isArray(configuredStop) ? configuredStop : [configuredStop]),
-    stopOnRepeatedToolErrors<TTools>(LOOP_GUARD_ABORT_AT),
+    stopOnRepeatedToolErrors<TTools>(LOOP_GUARD_ABORT_AT, LOOP_GUARD_DISARM_AT),
     stopOnContextCeiling<TTools>(ceiling, resolved.profile.key),
   ];
   const onStepEnd = withUsageLedger<TTools>(

@@ -40,6 +40,7 @@ const field = (
     description: null,
     type,
     config,
+    syncSourceId: null,
     aiExtractionEnabled: true,
     vectorizeInclude: true,
     displayInPanel: true,

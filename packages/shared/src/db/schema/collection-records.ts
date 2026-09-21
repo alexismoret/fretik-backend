@@ -105,6 +105,23 @@ export const collectionRecords = pgTable(
       onDelete: "set null",
     }),
 
+    // ── External-app provenance (collection sync) ──────────────────────
+    //
+    // Set ONLY on a record a `table` sync source owns — the source created it
+    // from an upstream row and keeps it in step. A `lookup` source fills some
+    // COLUMNS of a record it does not own, and attaches through
+    // `record_sync_state` instead, so it never writes these two.
+    //
+    // Soft reference (no FK), for the same reason `sourceEventId` is one: a
+    // hard FK to `collection_sync_sources` would close a table-creation cycle
+    // (that table references `collection_records` through `record_sync_state`
+    // and is built after this one). Deleting a source nulls these columns
+    // explicitly — see `services/collection-sync/delete-source.ts`.
+    syncSourceId: uuid("sync_source_id"),
+    // The upstream row's own id, verbatim. The upsert key of a `table` sync:
+    // it is what makes a second run an UPDATE instead of a duplicate.
+    externalId: varchar("external_id", { length: 200 }),
+
     // Cross-team sharing mode. TRUE (default) = the record follows its TYPE's
     // audience live (a type grant makes it visible); FALSE = the record carries
     // its OWN audience via `record_shares` (always a subset of the type's), so a
@@ -157,6 +174,13 @@ export const collectionRecords = pgTable(
     uniqueIndex("collection_records_document_uniq")
       .on(table.documentId)
       .where(sql`document_id IS NOT NULL`),
+    // The upsert key of a `table` sync, and the reason a re-run cannot
+    // duplicate: one upstream id maps to at most one record per source.
+    // Partial, so the overwhelming majority of records — which carry no
+    // external id — never enter it.
+    uniqueIndex("collection_records_sync_external_uniq")
+      .on(table.syncSourceId, table.externalId)
+      .where(sql`sync_source_id IS NOT NULL AND external_id IS NOT NULL`),
   ],
 );
 

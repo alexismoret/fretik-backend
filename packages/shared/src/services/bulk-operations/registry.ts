@@ -1,5 +1,7 @@
 import type { BulkOperationKind } from "../../db/schema";
+import { recordDeleteExecutor } from "./executors/record-delete";
 import { recordImportExecutor } from "./executors/record-import";
+import { recordUpdateExecutor } from "./executors/record-update";
 import type { BulkOperationExecutor } from "./types";
 
 /**
@@ -12,4 +14,6 @@ export const BULK_OPERATION_EXECUTORS: Record<
   BulkOperationExecutor
 > = {
   record_import: recordImportExecutor,
+  record_update: recordUpdateExecutor,
+  record_delete: recordDeleteExecutor,
 };

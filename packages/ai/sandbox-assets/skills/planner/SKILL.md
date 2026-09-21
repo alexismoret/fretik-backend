@@ -1,7 +1,7 @@
 ---
 name: planner
 description: Microsoft Planner — read tasks and plans; create, update, and delete tasks; manage buckets and plans
-version: db81e9e961a5
+version: 0d7deb8936da
 ---
 
 # Microsoft Planner — 14 actions

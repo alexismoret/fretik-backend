@@ -1,7 +1,7 @@
 ---
 name: shiptify
 description: Shiptify — manage transport shipments, addresses, and related records on the connected Shiptify TMS account (shipper or carrier).
-version: 52bd00e8e7b3
+version: 33e1d9e25791
 ---
 
 # Shiptify — 50 actions

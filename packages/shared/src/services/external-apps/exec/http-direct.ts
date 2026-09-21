@@ -13,6 +13,7 @@ import {
 import { getNangoClient } from "../../../lib/external-apps/nango-client";
 import { clearConnectionErrorStatus } from "../connections/clear-error-status";
 import { markConnectionAsError } from "../connections/mark-as-error";
+import { UpstreamHttpError } from "./governor/upstream-error";
 
 /**
  * Executor for `http-direct` transport providers — HTTP REST APIs that are
@@ -270,7 +271,17 @@ export const callHttpDirect = async (
   const rawText = await res.text();
 
   if (!res.ok) {
-    const error = new Error(
+    // `UpstreamHttpError`, not a bare `Error`: the status and the headers are
+    // what the governor reads to tell a 429 from a business rule and to learn
+    // how long the app wants to be left alone. They were both here all along
+    // and nothing above this line could see them — a refusal reached the
+    // caller as prose, and the next call went out immediately.
+    //
+    // The message keeps its `EXTERNAL_APP_HTTP_FAILED:` prefix verbatim,
+    // because `isAuthFailure` matches on it two lines down.
+    const error = new UpstreamHttpError(
+      res.status,
+      Object.fromEntries(res.headers.entries()),
       `EXTERNAL_APP_HTTP_FAILED: ${call.method} ${url} → ${res.status.toString()}: ${previewBody(rawText)}`,
     );
     // Two independent classifiers — both must miss for the connection to

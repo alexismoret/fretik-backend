@@ -1,4 +1,7 @@
-import type { TeamSchemaCollection } from "@fretik/shared/services/collections/describe-team-schema";
+import type {
+  TeamSchemaCollection,
+  TeamSchemaSyncOrigin,
+} from "@fretik/shared/services/collections/describe-team-schema";
 
 /**
  * Render the `<team_collections>` dynamic-suffix block: one line per collection the
@@ -16,7 +19,11 @@ import type { TeamSchemaCollection } from "@fretik/shared/services/collections/d
  * field that feeds it is tagged `, title` so the agent never invents a `name`
  * column. A `money` field `k` is shown as its two real columns `k_amount,
  * k_currency`. `source` / `document_id` still live on `collection_records` (join on
- * `id`) — see `<sql_rules>`. Returns "" when the team has no types.
+ * `id`) — see `<sql_rules>`. A column a connected app fills is tagged `, synced`
+ * and the line carries `; synced: <app> <action>, <when>, <cadence>`, so the
+ * agent knows the figures have an age AND what that age should be. What
+ * `synced` obliges it to do is stated once, in `<collections>`.
+ * Returns "" when the team has no types.
  *
  * BOUNDED — this block lives in the dynamic suffix, re-rendered EVERY turn and
  * NOT prefix-cached, so its size is a real per-turn cost. Two guards keep it flat
@@ -47,18 +54,51 @@ const columnsForField = (f: {
   key: string;
   type: string;
   isTitle: boolean;
+  synced?: boolean;
 }): string => {
   // The title field carries the record's display name; its value is mirrored
   // into `_label`. Mark it so the agent filters on `_label` (or this key)
   // instead of guessing a bare `name`/`title` column.
   const title = f.isTitle ? ", title" : "";
+  // A column an app fills. Readable like any other, and the one thing the agent
+  // must know before writing: an UPDATE on it is refused, by name.
+  const synced = f.synced ? ", synced" : "";
   if (f.type === "money")
-    return `${f.key}_amount, ${f.key}_currency (money${title})`;
+    return `${f.key}_amount, ${f.key}_currency (money${title}${synced})`;
   if (f.type === "relation" || f.type === "rollup") return "";
   // A `location` column is a bigint FK into `locations`; the address/point is
   // reached by JOIN (see <sql_rules>).
-  if (f.type === "location") return `${f.key} (location fk→locations)`;
-  return `${f.key} (${f.type}${title})`;
+  if (f.type === "location") return `${f.key} (location fk→locations${synced})`;
+  return `${f.key} (${f.type}${title}${synced})`;
+};
+
+/**
+ * `; synced: Acme list_orders, 2026-09-16 09:12, every 15 min` — the app, the
+ * action, the AGE of every figure in the table, and how often that age resets.
+ *
+ * The age alone was ambiguous and the cadence is what disambiguates it: four
+ * hours old is normal on a daily source and a fault on a quarter-hourly one,
+ * and the agent has no other way to tell those apart. The action is what tells
+ * it a filter it wants may have to move upstream instead; `full walk daily`
+ * warns that an incremental source's deletions lag by up to a day.
+ */
+const cadenceOf = (schedule: TeamSchemaSyncOrigin["schedule"]): string =>
+  schedule.mode === "interval" && schedule.everyMinutes !== undefined
+    ? `every ${schedule.everyMinutes.toString()} min`
+    : "manual";
+
+const syncedSuffix = (t: TeamSchemaCollection): string => {
+  const origin = t.syncedFrom;
+  if (!origin) return "";
+  const when = origin.lastSuccessAt
+    ? origin.lastSuccessAt.toISOString().slice(0, 16).replace("T", " ")
+    : "never run";
+  const incremental = origin.incremental ? ", full walk daily" : "";
+  const others =
+    origin.otherSources > 0
+      ? ` +${origin.otherSources.toString()} more source(s)`
+      : "";
+  return `; synced: ${origin.app} ${origin.operation}, ${when}, ${cadenceOf(origin.schedule)}${incremental}${others}`;
 };
 
 /** Full line: purpose + system columns + capped field columns + relations. */
@@ -78,7 +118,7 @@ const fullLine = (t: TeamSchemaCollection): string => {
           .map((r) => `${r.key} → ${r.toCollectionKey ?? "any"}`)
           .join(", ")
       : "—";
-  return `- **${t.key}**${pluralOf(t)}${purposeOf(t)}. table \`${t.viewName}\`; columns: ${cols}; relations: ${relations}`;
+  return `- **${t.key}**${pluralOf(t)}${purposeOf(t)}. table \`${t.viewName}\`; columns: ${cols}; relations: ${relations}${syncedSuffix(t)}`;
 };
 
 /** Compact line: purpose only, columns deferred to describeCollection. */
@@ -116,5 +156,9 @@ export const formatTeamCollectionsBlock = (
     lines.push(line);
     chars += line.length + 1;
   }
+  // No rule line. What `synced` MEANS is stated once, in `<collections>`, which
+  // is above the cache marker and paid once per conversation; this block is
+  // re-rendered every turn, so a rule restated here is the same sentence bought
+  // again on every message. The tag is the pointer, not the rule.
   return lines.join("\n");
 };

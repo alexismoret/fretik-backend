@@ -117,3 +117,12 @@ export const getModelSyncQueue = (): Queue => {
   });
   return modelSyncQueue;
 };
+
+/**
+ * The sync queue's producer accessor lives in `@fretik/shared` (see
+ * `names.ts`): the API and the agent enqueue through it too, and they cannot
+ * import this package. Re-exported here so the sweep and the worker reach it
+ * where every other queue is reached, and so all four producers share ONE
+ * `Queue` instance per process rather than opening a second connection.
+ */
+export { getExternalSyncQueue } from "@fretik/shared/services/collection-sync/queue";

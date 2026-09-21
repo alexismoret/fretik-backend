@@ -10,6 +10,7 @@ import {
   readRecordData,
 } from "../collection-schema/record-io";
 import { reconcileRecordShares } from "../collection-sharing/reconcile";
+import { loadSyncSourceApps } from "../collections/sync-provenance";
 import {
   type EventActor,
   emitDomainEvent,
@@ -72,6 +73,11 @@ export const setRecordData = async (input: {
   source?: OntologySource;
   strict?: boolean;
   merge?: boolean;
+  /**
+   * Let this write fill the columns a sync source owns. The sync runner's
+   * capability, passed explicitly — see `validate.ts`, where the guard is.
+   */
+  allowSyncedFields?: boolean;
   /** Force the display label instead of deriving it from the title field. */
   labelOverride?: string | null;
   tx?: Transaction;
@@ -151,6 +157,13 @@ export const setRecordData = async (input: {
       fieldDefs,
       data: effectiveData,
       strict: input.strict,
+      allowSyncedFields: input.allowSyncedFields,
+      // `before` is what makes the synced-column guard usable rather than
+      // hostile: it refuses a value that would CHANGE an app-filled column,
+      // lets an unchanged echo through, and pins the stored value back so a
+      // full replace cannot clear it (see `validate.ts`).
+      previous: before,
+      syncSourceApps: await loadSyncSourceApps(fieldDefs),
     });
     // Resolve every location value to a FK into the per-team `locations` table
     // (geocoding a bare address written by an agent/SDK along the way); a no-op

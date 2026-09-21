@@ -1,5 +1,8 @@
 import { z } from "zod";
 import {
+  actionBatchSchema,
+  actionIncrementalSchema,
+  actionPaginationSchema,
   paramSpecSchema,
   returnSpecSchema,
 } from "../external-apps/manifest-schema";
@@ -94,6 +97,16 @@ export const externalAppDescriptorActionSchema = z.object({
   annotations: mcpToolAnnotationsSchema.optional(),
   /** Optional mustache-lite template for a richer approval card (curated). */
   summaryTemplate: z.string().optional(),
+  /**
+   * Read-walking capabilities, carried through from the manifest so the
+   * collection-sync walker reads ONE shape whatever the app's origin. An MCP
+   * server declares none of them — `tools/list` has nowhere to say it — so an
+   * MCP-fed sync falls back to a single call per read, which is correct and
+   * says so in the UI rather than silently truncating.
+   */
+  pagination: actionPaginationSchema.optional(),
+  batch: actionBatchSchema.optional(),
+  incremental: actionIncrementalSchema.optional(),
 });
 export type ExternalAppDescriptorAction = z.infer<
   typeof externalAppDescriptorActionSchema

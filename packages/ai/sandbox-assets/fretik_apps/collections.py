@@ -36,7 +36,7 @@ manageCollection / manageField tools instead; this SDK is the batch path.
 
 from typing import Any
 
-from ._runtime import SDK_INLINE_ROW_LIMIT, _call_collections, _import
+from ._runtime import SDK_INLINE_ROW_LIMIT, _call_collections, _stream_load
 
 # Field dicts use Python snake_case; the backend wants camelCase. Map only the
 # multi-word keys — single-word ones (label, type, description, config) pass
@@ -128,7 +128,9 @@ class _Records:
                     f"{SDK_INLINE_ROW_LIMIT} rows. Create the records first, "
                     "then link them in a second pass."
                 )
-            return _import(collection_key, [_row(r)["data"] for r in rows])
+            return _stream_load(
+                "create", collection_key, [_row(r)["data"] for r in rows]
+            )
         return _call_collections(
             "records.bulk_create",
             {"collectionKey": collection_key, "rows": [_row(r) for r in rows]},
@@ -143,31 +145,67 @@ class _Records:
         collection_key: str | None = None,
     ) -> dict[str, Any]:
         """Update the data of many records. Each item is
-        {"id": "<record id>", "data": {<field map>}}. No collection_key needed —
-        each id routes itself. Records outside your team are skipped.
+        {"id": "<record id>", "data": {<field map>}}. Records outside your team
+        are skipped.
 
         merge=True (default): PATCH — only the keys you pass change, the rest
         are kept; pass a key with value None to clear it. merge=False: full
         replace — omitted keys are cleared.
 
+        Pass the WHOLE list, however long — batches beyond a few thousand rows
+        are streamed automatically, and a streamed load needs `collection_key`
+        (it is one collection at a time). Below that, ids route themselves.
+
         Returns {"updatedIds": [...], "okCount": int, "errors": [{id, error}]}.
+        On a streamed load `updatedIds` is None — read the counts.
         """
-        # Tolerant of the bulk_create call shape: `records=` aliases `updates`,
-        # and a stray `collection_key` is accepted (each id routes itself).
+        # Tolerant of the bulk_create call shape: `records=` aliases `updates`.
         items = updates if updates is not None else records
         if items is None:
             raise TypeError(
                 "bulk_update expects a list of {'id', 'data'} updates"
             )
+        if len(items) > SDK_INLINE_ROW_LIMIT:
+            if not collection_key:
+                raise ValueError(
+                    "bulk_update: pass collection_key= past "
+                    f"{SDK_INLINE_ROW_LIMIT} rows. A streamed load is sized "
+                    "and reviewed against ONE collection; split the updates "
+                    "by collection and call once per collection."
+                )
+            return _stream_load(
+                "update", collection_key, items, merge=merge
+            )
         return _call_collections(
             "records.bulk_update", {"updates": items, "merge": merge}
         )
 
-    def bulk_delete(self, record_ids: list[str]) -> dict[str, Any]:
+    def bulk_delete(
+        self,
+        record_ids: list[str],
+        *,
+        collection_key: str | None = None,
+    ) -> dict[str, Any]:
         """Delete many records by id. Ids outside your team are skipped.
 
+        Pass the WHOLE list, however long — batches beyond a few thousand rows
+        are streamed automatically, and a streamed load needs `collection_key`
+        (it is one collection at a time).
+
         Returns {"deletedIds": [...], "okCount": int, "errors": [{id, error}]}.
+        On a streamed load `deletedIds` is None — read the counts.
         """
+        if len(record_ids) > SDK_INLINE_ROW_LIMIT:
+            if not collection_key:
+                raise ValueError(
+                    "bulk_delete: pass collection_key= past "
+                    f"{SDK_INLINE_ROW_LIMIT} ids. A streamed load is sized "
+                    "and reviewed against ONE collection; split the ids by "
+                    "collection and call once per collection."
+                )
+            return _stream_load(
+                "delete", collection_key, [{"id": i} for i in record_ids]
+            )
         return _call_collections(
             "records.bulk_delete", {"recordIds": record_ids}
         )
@@ -347,5 +385,154 @@ class _Schema:
         return _call_collections("schema.delete_collection", {"collectionKey": collection_key})
 
 
+class _Sync:
+    """Collections a connected app fills, on a cadence.
+
+    preview BEFORE create: the preview is where the stable id, the column
+    types and the pagination promise come from, and none can be guessed from
+    an action's name. A source runs on a connection's credentials, so a
+    personal connection is usable only by its owner.
+    """
+
+    def preview(
+        self,
+        connection_id: str,
+        operation: str,
+        args: dict[str, Any] | None = None,
+        result_path: str | None = None,
+        sample_record_id: str | None = None,
+        collection_key: str | None = None,
+        match_field_key: str | None = None,
+        external_id_path: str | None = None,
+    ) -> dict[str, Any]:
+        """Call the app once and show what would be mapped: rows, proposed
+        columns, candidate stable ids, `read`, and the cost of a cadence.
+
+        Pass `collection_key` + `match_field_key` + `external_id_path` to try
+        the match as well: `matched` comes back `{"sampled", "found"}`, and
+        `found == 0` means the source would run, succeed and fill nothing.
+        """
+        return _call_collections(
+            "sync.preview",
+            _clean(
+                {
+                    "connectionId": connection_id,
+                    "operation": operation,
+                    "args": args,
+                    "resultPath": result_path,
+                    "sampleRecordId": sample_record_id,
+                    "collectionKey": collection_key,
+                    "matchFieldKey": match_field_key,
+                    "externalIdPath": external_id_path,
+                }
+            ),
+        )
+
+    def create(
+        self,
+        collection_key: str,
+        connection_id: str,
+        operation: str,
+        fields: list[dict[str, Any]],
+        kind: str = "table",
+        args: dict[str, Any] | None = None,
+        result_path: str | None = None,
+        external_id_path: str | None = None,
+        match_field_key: str | None = None,
+        schedule: dict[str, Any] | None = None,
+        orphan_policy: str | None = None,
+        row_cap: int | None = None,
+    ) -> dict[str, Any]:
+        """Declare the source. `fields` map upstream paths to columns:
+        [{"path": "customer.name", "label": "Client", "type": "text"}].
+
+        A `table` source needs `external_id_path` — the upstream row's own id.
+        A `columns` source needs whichever key its ACTION allows: a list action
+        is walked, so pass `match_field_key` (the column of the existing
+        records) plus `external_id_path` (the value in the app's row that must
+        equal it); an action answering about one object is called per record,
+        so bind {"$field": "<column key>"} into `args` instead. Not both.
+
+        The first run starts in the background.
+        """
+        return _call_collections(
+            "sync.create",
+            _clean(
+                {
+                    "collectionKey": collection_key,
+                    "connectionId": connection_id,
+                    "operation": operation,
+                    "fields": fields,
+                    "kind": kind,
+                    "args": args,
+                    "resultPath": result_path,
+                    "externalIdPath": external_id_path,
+                    "matchFieldKey": match_field_key,
+                    "schedule": schedule,
+                    "orphanPolicy": orphan_policy,
+                    "rowCap": row_cap,
+                }
+            ),
+        )
+
+    def update(
+        self,
+        source_id: str,
+        args: dict[str, Any] | None = None,
+        schedule: dict[str, Any] | None = None,
+        orphan_policy: str | None = None,
+        row_cap: int | None = None,
+        fields: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Change what a source asks for, how often, or which columns it fills."""
+        return _call_collections(
+            "sync.update",
+            _clean(
+                {
+                    "sourceId": source_id,
+                    "args": args,
+                    "schedule": schedule,
+                    "orphanPolicy": orphan_policy,
+                    "rowCap": row_cap,
+                    "fields": fields,
+                }
+            ),
+        )
+
+    def delete(self, source_id: str) -> dict[str, Any]:
+        """Stop the sync. The columns stay as ordinary local ones; no record
+        is deleted.
+        """
+        return _call_collections("sync.delete", {"sourceId": source_id})
+
+    def refresh(
+        self,
+        collection_key: str | None = None,
+        source_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Queue a run now. Returns immediately — re-read the records after."""
+        return _call_collections(
+            "sync.refresh",
+            _clean({"collectionKey": collection_key, "sourceId": source_id}),
+        )
+
+    def confirm_full_resync(self, source_id: str) -> dict[str, Any]:
+        """Let the next run apply the orphan policy it refused.
+
+        A run that would have orphaned most of a collection stops and asks
+        instead. Only confirm what the user confirmed.
+        """
+        return _call_collections(
+            "sync.confirmFullResync", {"sourceId": source_id}
+        )
+
+    def list(self, collection_key: str | None = None) -> dict[str, Any]:
+        """Every source of a collection, or of the whole team."""
+        return _call_collections(
+            "sync.list", _clean({"collectionKey": collection_key})
+        )
+
+
 records = _Records()
 schema = _Schema()
+sync = _Sync()

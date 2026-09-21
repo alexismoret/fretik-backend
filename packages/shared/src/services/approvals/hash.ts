@@ -85,4 +85,11 @@ export const recordImportLookupHash = (input: {
   collectionId: string;
   totalRows: number;
   rowsDigest: string;
+  /**
+   * `update` only. Patching the provided keys and replacing the row wholesale
+   * are different writes over identical rows, so they must not share a key —
+   * otherwise correcting a full-replace into a merge would replay the
+   * full-replace's outcome and write nothing.
+   */
+  merge?: boolean;
 }): string => canonicalHash({ kind: "record_import", ...input });

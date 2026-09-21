@@ -2,7 +2,9 @@ import { and, asc, eq, isNull, or } from "drizzle-orm";
 import db from "../../db";
 import type { FieldDefinitionType } from "../../db/schema";
 import { collections, fieldDefinitions, linkTypes } from "../../db/schema";
+import type { SyncSchedule } from "../../schemas/collection-sync";
 import { qualifiedCollectionTable } from "../collection-schema/identifiers";
+import { loadSyncProvenance, syncSourceIdsOf } from "./sync-provenance";
 
 /** One outgoing relation a type can be JOINed through (`links` → `link_types`). */
 export interface TeamSchemaRelation {
@@ -10,6 +12,30 @@ export interface TeamSchemaRelation {
   label: string;
   /** Target type key, or null = polymorphic (any type). */
   toCollectionKey: string | null;
+}
+
+/**
+ * The app behind a collection whose rows a sync source fills.
+ *
+ * Two things the SQL-writing agent cannot get anywhere else: these columns are
+ * not ours to UPDATE, and the numbers are as old as `lastSuccessAt` — which is
+ * the difference between "12 late orders" and "12 as of 09:12".
+ */
+export interface TeamSchemaSyncOrigin {
+  app: string;
+  operation: string;
+  lastSuccessAt: Date | null;
+  /** How often it runs — the age above only means something against this. */
+  schedule: SyncSchedule;
+  /** Reads only what changed, so deletions land on the daily full walk. */
+  incremental: boolean;
+  /**
+   * How many OTHER sources fill columns of this collection. A collection has
+   * at most one `table` source but any number of `lookup` ones, and the line
+   * below names the one that explains where the rows came from — this count is
+   * what tells the agent the rest exist and are a `describeCollection` away.
+   */
+  otherSources: number;
 }
 
 /** One collection as the AI query path sees it: a typed view + its columns. */
@@ -32,9 +58,17 @@ export interface TeamSchemaCollection {
    * field flagged `isTitle` is the one whose value feeds the record's `_label`
    * display name.
    */
-  fields: { key: string; type: FieldDefinitionType; isTitle: boolean }[];
+  fields: {
+    key: string;
+    type: FieldDefinitionType;
+    isTitle: boolean;
+    /** Filled by a connected app: readable in SQL, refused on write. */
+    synced?: boolean;
+  }[];
   /** Outgoing relations (this type is the `from` end). */
   relations: TeamSchemaRelation[];
+  /** Present when a sync source fills this collection or some of its columns. */
+  syncedFrom?: TeamSchemaSyncOrigin;
 }
 
 /**
@@ -45,8 +79,9 @@ export interface TeamSchemaCollection {
  *
  * Three reads, joined in memory: the team's visible types (its own +
  * org/system), its enabled field defs (the view columns), and its visible link
- * types (the relations). Direct queries — the per-turn caller wraps this in a
- * soft timeout and may cache.
+ * types (the relations) — plus a fourth ONLY when a column is fed by a
+ * connected app, to say which and how fresh. Direct queries — the per-turn
+ * caller wraps this in a soft timeout and may cache.
  */
 export const describeTeamSchema = async (input: {
   organizationId: string;
@@ -83,6 +118,7 @@ export const describeTeamSchema = async (input: {
       key: fieldDefinitions.key,
       type: fieldDefinitions.type,
       isTitle: fieldDefinitions.isTitle,
+      syncSourceId: fieldDefinitions.syncSourceId,
     })
     .from(fieldDefinitions)
     .where(
@@ -92,14 +128,48 @@ export const describeTeamSchema = async (input: {
       ),
     )
     .orderBy(asc(fieldDefinitions.displayOrder));
-  const fieldsByType = new Map<
-    string,
-    { key: string; type: FieldDefinitionType; isTitle: boolean }[]
-  >();
+  const fieldsByType = new Map<string, TeamSchemaCollection["fields"]>();
   for (const d of defs) {
     const list = fieldsByType.get(d.collectionId) ?? [];
-    list.push({ key: d.key, type: d.type, isTitle: d.isTitle });
+    list.push({
+      key: d.key,
+      type: d.type,
+      isTitle: d.isTitle,
+      // Spread, not `synced: d.syncSourceId !== null`: under
+      // `exactOptionalPropertyTypes` an explicit `false` is a key the renderer
+      // then has to skip, and this object is rendered every turn.
+      ...(d.syncSourceId === null ? {} : { synced: true as const }),
+    });
     fieldsByType.set(d.collectionId, list);
+  }
+
+  // A FOURTH read, and only when something is actually synced — the ids come
+  // from the field defs already in hand, so a workspace with no sync source
+  // pays nothing for this block.
+  const syncSources = await loadSyncProvenance(syncSourceIdsOf(defs));
+  const sourceCounts = new Map<string, number>();
+  for (const source of syncSources.values()) {
+    sourceCounts.set(
+      source.collectionId,
+      (sourceCounts.get(source.collectionId) ?? 0) + 1,
+    );
+  }
+  const syncByCollection = new Map<string, TeamSchemaSyncOrigin>();
+  for (const source of syncSources.values()) {
+    // A collection has at most one `table` source (it owns the rows) and may
+    // have several `lookup` ones. The table source is the one that explains
+    // where the collection came FROM, so it wins; otherwise the first lookup
+    // stands in, and the per-field `synced` flags carry the rest.
+    const current = syncByCollection.get(source.collectionId);
+    if (current !== undefined && source.kind !== "table") continue;
+    syncByCollection.set(source.collectionId, {
+      app: source.app,
+      operation: source.operation,
+      lastSuccessAt: source.lastSuccessAt,
+      schedule: source.schedule,
+      incremental: source.incremental,
+      otherSources: (sourceCounts.get(source.collectionId) ?? 1) - 1,
+    });
   }
 
   // Visible, confirmed link types (the relations), grouped by their `from` type.
@@ -133,17 +203,23 @@ export const describeTeamSchema = async (input: {
     relationsByType.set(r.fromCollectionId, list);
   }
 
-  return types.map((t) => ({
-    id: t.id,
-    key: t.key,
-    label: t.label,
-    labelPlural: t.labelPlural,
-    description: t.description,
-    isSystem: t.isSystem,
-    icon: t.icon,
-    color: t.color,
-    viewName: qualifiedCollectionTable(t.id),
-    fields: fieldsByType.get(t.id) ?? [],
-    relations: relationsByType.get(t.id) ?? [],
-  }));
+  return types.map((t) => {
+    // Spread over assignment: `exactOptionalPropertyTypes` makes an explicit
+    // `syncedFrom: undefined` a different type from an absent key.
+    const syncedFrom = syncByCollection.get(t.id);
+    return {
+      id: t.id,
+      key: t.key,
+      label: t.label,
+      labelPlural: t.labelPlural,
+      description: t.description,
+      isSystem: t.isSystem,
+      icon: t.icon,
+      color: t.color,
+      viewName: qualifiedCollectionTable(t.id),
+      fields: fieldsByType.get(t.id) ?? [],
+      relations: relationsByType.get(t.id) ?? [],
+      ...(syncedFrom === undefined ? {} : { syncedFrom }),
+    };
+  });
 };

@@ -1,7 +1,7 @@
 ---
 name: ftp-sftp
 description: File transfer over FTP, FTPS and SFTP — browse a remote file server, read its folders and file metadata, download and upload files in bulk, and move, rename or delete what is there.
-version: b6521e288c70
+version: 22043a9c450c
 ---
 
 # File transfer (FTP/SFTP) — 10 actions

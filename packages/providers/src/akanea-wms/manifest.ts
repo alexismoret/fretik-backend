@@ -375,6 +375,7 @@ export const akaneaWmsManifest: ProviderManifest = {
       summary: "List stock on hand per item, batch and pallet",
       handler: "getItemQuantities",
       params: queryParams,
+      pagination: { kind: "none" },
       returns: { list: "ItemQuantity" },
     },
     {
@@ -383,6 +384,7 @@ export const akaneaWmsManifest: ProviderManifest = {
       summary: "List internal stock movements",
       handler: "listStockMovements",
       params: queryParams,
+      pagination: { kind: "none" },
       returns: { list: "StockMovement" },
     },
     {
@@ -391,6 +393,7 @@ export const akaneaWmsManifest: ProviderManifest = {
       summary: "List item master records",
       handler: "listItems",
       params: queryParams,
+      pagination: { kind: "none" },
       returns: { list: "Item" },
     },
     {
@@ -399,6 +402,7 @@ export const akaneaWmsManifest: ProviderManifest = {
       summary: "List inbound receptions",
       handler: "listReceptions",
       params: queryParams,
+      pagination: { kind: "none" },
       returns: { list: "Reception" },
     },
     {
@@ -407,6 +411,7 @@ export const akaneaWmsManifest: ProviderManifest = {
       summary: "List the stock actually put away for receptions",
       handler: "listReceptionsStored",
       params: queryParams,
+      pagination: { kind: "none" },
       returns: { list: "StockLine" },
     },
     {
@@ -415,6 +420,7 @@ export const akaneaWmsManifest: ProviderManifest = {
       summary: "List outbound preparation orders",
       handler: "listPreparations",
       params: queryParams,
+      pagination: { kind: "none" },
       returns: { list: "Preparation" },
     },
     {
@@ -423,6 +429,7 @@ export const akaneaWmsManifest: ProviderManifest = {
       summary: "List the stock actually picked for preparations",
       handler: "listPreparationsPrepared",
       params: queryParams,
+      pagination: { kind: "none" },
       returns: { list: "StockLine" },
     },
     {
@@ -431,6 +438,7 @@ export const akaneaWmsManifest: ProviderManifest = {
       summary: "List SSCC pallet labels of preparations",
       handler: "listPreparationsSscc",
       params: queryParams,
+      pagination: { kind: "none" },
       returns: { list: "SsccLine" },
     },
     {

@@ -9,7 +9,7 @@
  * analysis. `--profile` forces a registry profile for the model bake-off; a
  * `memory-eval` dataset run lands in Langfuse for UI comparison.
  *
- *   bun run evals:memory                              # code defaults (20b), 3 repeats
+ *   bun run evals:memory                              # per-role code defaults, 3 repeats
  *   bun run evals:memory -- --profile gpt-oss-120b    # bake-off: everything on 120b
  *   bun run evals:memory -- --case mem-consolidate-merge
  *   bun run evals:memory -- --repeats 5 --run-name distill-120b
@@ -105,7 +105,7 @@ if (cases.length === 0) {
 await ensureModelRegistryWarm();
 
 console.log(
-  `[memory-eval] profile=${profileKey ?? "(code default: 20b)"} — ensuring fixtures…`,
+  `[memory-eval] profile=${profileKey ?? "(per-role code default)"} — ensuring fixtures…`,
 );
 const fixtures: MemoryFixtures = await ensureMemoryFixtures(scope);
 console.log("[memory-eval] fixtures ready");
@@ -346,7 +346,14 @@ await runAllLangfuse();
 // Human-analysis report — every generated text, per repeat.
 // ---------------------------------------------------------------------------
 console.log("\n================ MEMORY EVAL REPORT ================");
-console.log(`profile: ${profileKey ?? "(code default: gpt-oss-20b)"}\n`);
+// Named per ROLE, never as one model: the bindings moved (`memory-distill` and
+// `memory-extract` to deepseek-v4-flash, `memory-consolidate` alone kept on
+// gpt-oss-120b) and this line went on printing the model it used to be. A score
+// carrying the wrong model's name is worse than one carrying none — it is what
+// a later bake-off compares against.
+console.log(
+  `profile: ${profileKey ?? "(per-role code default — see lib/model-registry/role-bindings.ts)"}\n`,
+);
 let passed = 0;
 for (const out of results) {
   if (out.passed) passed++;

@@ -9,13 +9,14 @@ Calling a write action directly raises — it never executes.
 """
 
 from typing import Any, Literal, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from ._runtime import FretikActionError, Operation, _call_read
 
 
 # ── Types ─────────────────────────────────────────────────────────
 
 class Inbox(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     name: str
     is_private: bool
@@ -24,6 +25,7 @@ class Inbox(BaseModel):
 
 
 class Teammate(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     email: str
     username: str
@@ -34,6 +36,7 @@ class Teammate(BaseModel):
 
 
 class Tag(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     name: str
     is_private: bool
@@ -43,11 +46,13 @@ class Tag(BaseModel):
 
 
 class Handle(BaseModel):
+    model_config = ConfigDict(extra="allow")
     handle: str
     source: str
 
 
 class Contact(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     handles: list[dict[str, Any]]
     name: str | None = None
@@ -57,6 +62,7 @@ class Contact(BaseModel):
 
 
 class Conversation(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     status: str
     tag_ids: list[str]
@@ -71,6 +77,7 @@ class Conversation(BaseModel):
 
 
 class Message(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     type: str
     is_inbound: bool
@@ -85,6 +92,7 @@ class Message(BaseModel):
 
 
 class Comment(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     body: str
     author_id: str | None = None
@@ -92,6 +100,7 @@ class Comment(BaseModel):
 
 
 class ConversationEvent(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     type: str
     emitted_at: str | None = None
@@ -100,6 +109,7 @@ class ConversationEvent(BaseModel):
 
 
 class Rule(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     name: str
     is_private: bool
@@ -107,6 +117,7 @@ class Rule(BaseModel):
 
 
 class WriteResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str | None = None
 
 

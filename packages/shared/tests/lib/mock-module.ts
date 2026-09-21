@@ -34,6 +34,18 @@ import { mock } from "bun:test";
  * never again break a test that does not mention it. Overriding is still
  * explicit, and every fake stays as fake as it was.
  *
+ * It does NOT make the override itself local, and that is the trap left. When
+ * the module you want to fake already has a REGISTRATION API — `setProviders`
+ * on `external-apps/registry`, anything else that takes fixtures and hands
+ * them back through its own reader — use it and do not come here. A fake
+ * `getAction` closing over one file's two actions was served to every file
+ * after it and starved two suites of the providers they had registered for
+ * real (measured 2026-09-17: 0, 1, 4 or 5 failures on the same suite,
+ * depending only on where the `--seed` put `lint-external-args.test.ts`
+ * relative to its two victims). Registering a fixture under its own key costs
+ * the rest of the run nothing, because the registry merges by key; a
+ * `mock.module` costs it the real implementation.
+ *
  * Loading the real module first is safe for `src/` — `tests/preload.ts` stubs
  * the env vars these modules validate at load, and none of them opens a socket
  * to do it.

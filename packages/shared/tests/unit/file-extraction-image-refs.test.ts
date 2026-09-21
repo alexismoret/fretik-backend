@@ -71,24 +71,53 @@ describe("rewriteExtractedImageRefs", () => {
 });
 
 describe("parseExtractedImagePath", () => {
-  test("accepts strictly attachments/<file>/<img-N.ext>", () => {
+  test("accepts <dir>/<file>/<img-N.ext>", () => {
     expect(
       parseExtractedImagePath("attachments/report.pdf/img-3.jpeg"),
-    ).toEqual({ attachmentFilename: "report.pdf", imageId: "img-3.jpeg" });
+    ).toEqual({
+      dir: "attachments",
+      filename: "report.pdf",
+      imageId: "img-3.jpeg",
+    });
     expect(parseExtractedImagePath("attachments/a b.docx/img-0.png")).toEqual({
-      attachmentFilename: "a b.docx",
+      dir: "attachments",
+      filename: "a b.docx",
       imageId: "img-0.png",
     });
   });
 
-  test("rejects everything else", () => {
+  test("accepts a figure of a document the user never attached", () => {
+    // The directory carries PROVENANCE, not readability: a PDF fetched
+    // from SharePoint yields the same figures as the same PDF uploaded,
+    // and `vision` resolves both from one content-addressed cache. This
+    // used to return null, which left `read` printing figure refs that
+    // pointed at nothing.
+    expect(
+      parseExtractedImagePath("downloads/9f2c1a04_contract.pdf/img-0.jpeg"),
+    ).toEqual({
+      dir: "downloads",
+      filename: "9f2c1a04_contract.pdf",
+      imageId: "img-0.jpeg",
+    });
+    expect(parseExtractedImagePath("outputs/report.pdf/img-1.png")).toEqual({
+      dir: "outputs",
+      filename: "report.pdf",
+      imageId: "img-1.png",
+    });
+  });
+
+  test("rejects everything else — the SHAPE is still strict", () => {
     // Plain attachment file (2 segments).
     expect(parseExtractedImagePath("attachments/report.pdf")).toBeNull();
-    // Wrong prefix.
-    expect(parseExtractedImagePath("outputs/report.pdf/img-0.jpeg")).toBeNull();
     // 4 segments.
     expect(parseExtractedImagePath("attachments/a/b/img-0.jpeg")).toBeNull();
-    // Non-Mistral-shaped image id.
+    // Non-Mistral-shaped image id — what keeps a real 3-segment file
+    // (`skills/pptx/SKILL.md`, `outputs/results/call-0.png`) from being
+    // mistaken for a virtual figure now that any directory is allowed.
+    expect(parseExtractedImagePath("skills/pptx/SKILL.md")).toBeNull();
+    expect(
+      parseExtractedImagePath("outputs/results/01a0ab34-0.png"),
+    ).toBeNull();
     expect(
       parseExtractedImagePath("attachments/report.pdf/photo.jpeg"),
     ).toBeNull();

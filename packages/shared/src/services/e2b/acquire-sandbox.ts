@@ -4,12 +4,10 @@ import {
   E2B_ENVIRONMENT,
   E2B_TEMPLATE,
   SANDBOX_TIMEOUT_MS,
+  SYSTEM_CA_BUNDLE,
   assertE2BConfigured,
 } from "./client";
-import {
-  buildSandboxNetworkPolicy,
-  type NetworkPolicyOverrides,
-} from "./network-policy";
+import { buildSandboxNetworkPolicy, detectBackendHost } from "./network-policy";
 import {
   SANDBOX_LOCK_TTL_S,
   acquireSandboxLock,
@@ -19,15 +17,6 @@ import {
   setSandboxIdInRegistry,
 } from "./registry";
 import type { SandboxLease } from "./types";
-
-export interface AcquireSandboxOptions {
-  /**
-   * Extra domains to whitelist on top of the default allowlist. Used by
-   * future workflow nodes that need to reach a specific third-party API
-   * (e.g. `extraAllowOut: ["api.stripe.com"]`).
-   */
-  network?: NetworkPolicyOverrides;
-}
 
 /**
  * Polling parameters for the case where another instance is creating the
@@ -78,7 +67,6 @@ const reconnectExisting = async (
  */
 export const acquireSandbox = async (
   conversationId: string,
-  options?: AcquireSandboxOptions,
 ): Promise<SandboxLease> => {
   assertE2BConfigured();
   // Fast path 1: Redis cache hit.
@@ -145,14 +133,29 @@ export const acquireSandbox = async (
       }
     }
 
-    const policy = buildSandboxNetworkPolicy(options?.network);
+    // Base tiers only: no org policy, no provider hosts, no brokered
+    // credential. The full policy is applied by `applySandboxEgress` on the
+    // first code-running turn, which is also the first moment agent-authored
+    // code can run — everything between (bootstrap, skills push, S3 restore)
+    // is ours.
+    const policy = buildSandboxNetworkPolicy({
+      backendHost: detectBackendHost(),
+    });
     const sbx = await Sandbox.create(E2B_TEMPLATE, {
       // `environment` gates the orphan sweep — see `E2B_ENVIRONMENT`.
       metadata: { conversationId, environment: E2B_ENVIRONMENT },
       timeoutMs: SANDBOX_TIMEOUT_MS,
       lifecycle: { onTimeout: "pause", autoResume: true },
       allowInternetAccess: true,
-      network: { allowOut: policy.allowOut, denyOut: policy.denyOut },
+      network: {
+        allowOut: policy.allowOut,
+        denyOut: policy.denyOut,
+        // The sandbox's public URLs are the Jupyter port and anything the
+        // agent binds. Unauthenticated, they are reachable by anyone who
+        // learns the URL; the SDK keeps working because it holds the token.
+        // Verified on a real sandbox: `runCode` is unaffected.
+        allowPublicTraffic: false,
+      },
       envs: {
         FRETIK_CONVERSATION_ID: conversationId,
         // Where the template pre-installs the Office skills' Node
@@ -161,6 +164,15 @@ export const acquireSandbox = async (
         // /workspace — Node resolves `node_modules` only by walking up
         // from the script's own directory, never the global prefix.
         NODE_PATH: "/opt/fretik/node/lib/node_modules",
+        // E2B terminates TLS for every host carrying a transform rule and
+        // signs it with a per-sandbox CA it installs in the SYSTEM trust
+        // store. urllib and curl read that store; `requests` and Node read
+        // their own bundles and fail with CERTIFICATE_VERIFY_FAILED — which
+        // is what agent code reaching an API through a brokered credential
+        // would hit first. Measured, then fixed by pointing both at the
+        // system store.
+        REQUESTS_CA_BUNDLE: SYSTEM_CA_BUNDLE,
+        NODE_EXTRA_CA_CERTS: SYSTEM_CA_BUNDLE,
       },
     });
     await setSandboxIdInRegistry(conversationId, sbx.sandboxId);

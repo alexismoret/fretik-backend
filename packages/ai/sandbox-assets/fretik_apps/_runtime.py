@@ -9,6 +9,15 @@ until granted).
 The auth file at /workspace/.fretik/auth.json is re-written by the backend
 before every agent turn — so this module re-reads it on every call() and
 the JWT rotates without restarting the Jupyter kernel.
+
+Under the `proxy` transport that file carries an EMPTY jwt: the credential is
+added to outbound requests by the platform's egress proxy and never exists in
+this sandbox at all. No Authorization header is sent in that case.
+
+/workspace/.fretik/egress.json lists the hosts this turn may reach. A host
+outside it is not refused — the firewall accepts the TCP handshake and then
+kills the TLS one — so a download to one would surface as an unexplained
+protocol error. Checking the list first is what turns that into a sentence.
 """
 
 # AUTO-GENERATED via scripts/generate-sdk.ts — do not edit by hand.
@@ -19,6 +28,7 @@ import json
 import os
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass
@@ -43,14 +53,22 @@ def _safe_pattern(pattern: str) -> str | None:
     return pattern
 
 
-# Canonical sandbox directory for downloaded attachments. Same path the
-# rest of the agent's file tools already speak (`vision`, `read`,
-# `presentFiles`, `resolveWorkspacePath`) — see `conversation-storage.ts:
-# WORKSPACE_DIRS.attachments`. Files written here are S3-mirrored so
-# they survive sandbox expiry and can be surfaced to the user with
-# presentFiles. The base64 blob itself NEVER reaches the agent — see
-# `_spill_attachments`.
-_ATTACHMENT_SPILL_DIR = "/workspace/attachments"
+# Canonical sandbox directory for anything the agent DOWNLOADED, whatever
+# fetched it — see `conversation-storage.ts: WORKSPACE_DIRS.downloads`.
+# Files written here are S3-mirrored so they survive sandbox expiry, and
+# every file tool reads them by path (`read`, `vision`, `extract`,
+# `presentFiles`).
+#
+# NOT `attachments/`, which it used to be: that directory means "the user
+# gave me this file" and is the only one backed by `ai_chat_files` rows.
+# Spilling there stated something false about who provided the file — and
+# cost more than a wrong label, because `read` resolves an `attachments/`
+# path through those rows and answered `File not found` for every file a
+# provider downloaded, pointing the agent at a `<file_attachments>` block
+# the file was never in.
+#
+# The base64 blob itself NEVER reaches the agent — see `_spill_attachments`.
+_DOWNLOAD_SPILL_DIR = "/workspace/downloads"
 
 
 def _sanitize_filename(name: str) -> str:
@@ -73,7 +91,8 @@ def _spill_attachments(data: Any) -> Any:
     This is the load-bearing safety net for every provider's download-
     attachment action: the agent NEVER receives the raw base64 in its
     context, only an `Attachment` whose `sandbox_path` it can open with
-    any file-consuming tool (vision, presentFiles, pypdf, pillow, etc.).
+    any file-consuming tool (`read`, `vision`, `extract`, presentFiles,
+    pypdf, pillow, etc.).
 
     Two shapes are covered:
       - `content_base64` — provider returned base64 inline (Outlook,
@@ -84,6 +103,14 @@ def _spill_attachments(data: Any) -> Any:
 
     Walks lists and nested dicts so an action returning `list[Attachment]`
     (or any future shape containing attachments) is covered too.
+
+    A spill that FAILS sets `download_error` on the same dict and leaves the
+    source field in place. It does not raise: `ftp-sftp.download_files` takes
+    up to 20 paths and promises that a file that fails comes back marked while
+    the rest still arrive, so one bad item may not take the other nineteen
+    with it. The caller decides — which is why every action whose whole point
+    is the bytes must check, and why the generated result models allow extra
+    fields (pydantic's default would drop `download_error` on the floor).
     """
     if isinstance(data, dict):
         if not data.get("sandbox_path"):
@@ -103,28 +130,79 @@ def _spill_attachments(data: Any) -> Any:
 
 
 def _write_base64_to_spill(data: dict[str, Any], b64: str) -> None:
-    os.makedirs(_ATTACHMENT_SPILL_DIR, exist_ok=True)
+    os.makedirs(_DOWNLOAD_SPILL_DIR, exist_ok=True)
     safe_name = _sanitize_filename(data.get("name", "file"))
     path = os.path.join(
-        _ATTACHMENT_SPILL_DIR, f"{uuid.uuid4().hex[:8]}_{safe_name}"
+        _DOWNLOAD_SPILL_DIR, f"{uuid.uuid4().hex[:8]}_{safe_name}"
     )
     try:
         with open(path, "wb") as f:
             f.write(base64.b64decode(b64))
         data["sandbox_path"] = path
-    except (ValueError, OSError):
-        # Malformed base64 or write failure — keep the original field so
-        # the failure surfaces upstream rather than silently losing the
-        # payload.
+    except (ValueError, OSError) as exc:
+        # Malformed base64 or write failure. Keep the original field AND say
+        # why on the payload: "surfaces upstream" was only ever true of the
+        # field, never of the reason, and a caller reading `sandbox_path is
+        # None` cannot tell a refusal from a bug.
+        data["download_error"] = f"{type(exc).__name__}: {exc}"
         return
     data["content_base64"] = None
 
 
+_EGRESS_FILE = "/workspace/.fretik/egress.json"
+_egress_cache: dict[str, Any] = {"mtime": None, "allow": None}
+
+
+def _egress_allows(host: str) -> bool | None:
+    """Whether this turn's egress policy admits `host`.
+
+    None when the policy is unknown (file absent or unreadable) — the caller
+    then tries the request rather than refusing on a guess. Cached by mtime:
+    the backend rewrites the file whenever the policy changes.
+    """
+    try:
+        mtime = os.path.getmtime(_EGRESS_FILE)
+        if _egress_cache["mtime"] != mtime:
+            with open(_EGRESS_FILE, "r", encoding="utf-8") as f:
+                _egress_cache["allow"] = json.load(f).get("allow_out") or []
+            _egress_cache["mtime"] = mtime
+    except (OSError, ValueError):
+        return None
+    allow = _egress_cache["allow"]
+    if allow is None:
+        return None
+    host = host.lower()
+    for entry in allow:
+        entry = str(entry).lower()
+        if entry.startswith("*."):
+            # A leading wildcard matches subdomains at any depth, never the
+            # apex — the same rule the platform's firewall applies.
+            if host.endswith(entry[1:]):
+                return True
+        elif host == entry:
+            return True
+    return False
+
+
 def _write_url_to_spill(data: dict[str, Any], url: str) -> None:
-    os.makedirs(_ATTACHMENT_SPILL_DIR, exist_ok=True)
+    host = urllib.parse.urlparse(url).hostname or ""
+    if _egress_allows(host) is False:
+        # Refuse here rather than let the firewall kill the TLS handshake: it
+        # accepts the connection first, so the failure would arrive as
+        # `UNEXPECTED_EOF_WHILE_READING` and read like a broken server.
+        # `download_url` is kept so the caller can hand it to `downloadFile`,
+        # which fetches from the backend and is not bound by this policy.
+        data["download_error"] = (
+            f"EGRESS_BLOCKED: {host} is not on this sandbox's network "
+            "allowlist. Use the assistant's downloadFile tool on the "
+            "download_url instead, or ask an organization admin to allow the "
+            "domain in Settings → Sandbox & internet."
+        )
+        return
+    os.makedirs(_DOWNLOAD_SPILL_DIR, exist_ok=True)
     safe_name = _sanitize_filename(data.get("name", "file"))
     path = os.path.join(
-        _ATTACHMENT_SPILL_DIR, f"{uuid.uuid4().hex[:8]}_{safe_name}"
+        _DOWNLOAD_SPILL_DIR, f"{uuid.uuid4().hex[:8]}_{safe_name}"
     )
     try:
         req = urllib.request.Request(
@@ -139,9 +217,13 @@ def _write_url_to_spill(data: dict[str, Any], url: str) -> None:
                     break
                 f.write(chunk)
         data["sandbox_path"] = path
-    except (urllib.error.URLError, OSError, TimeoutError):
-        # Network failure or write failure — keep `download_url` so the
-        # caller can retry manually or surface the error.
+    except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        # Network or write failure — keep `download_url` so the caller can
+        # retry manually, and record WHY next to it. A sandbox egress refusal
+        # arrives here as a killed TLS handshake with no message of its own
+        # (see `services/e2b/network-policy.ts`), so without this line the
+        # only trace a blocked host leaves is an absent `sandbox_path`.
+        data["download_error"] = f"{type(exc).__name__}: {exc}"
         return
     data["download_url"] = None
 
@@ -193,14 +275,20 @@ def _post(payload: dict[str, Any]) -> Any:
     # URL points at a Cloudflare-fronted tunnel (e.g. tunnl.gg in dev).
     # A descriptive UA bypasses that rule and helps server logs identify
     # SDK traffic.
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "fretik-apps-sdk/1.0",
+    }
+    # Empty under the proxy transport: the egress proxy adds the credential on
+    # the way out, and sending `Bearer ` would be a malformed header the
+    # backend rejects before it ever looks at the injected one.
+    jwt = auth.get("jwt") or ""
+    if jwt:
+        headers["Authorization"] = f"Bearer {jwt}"
     req = urllib.request.Request(
         f"{auth['backend_url']}/sandbox/exec",
         data=body,
-        headers={
-            "Authorization": f"Bearer {auth['jwt']}",
-            "Content-Type": "application/json",
-            "User-Agent": "fretik-apps-sdk/1.0",
-        },
+        headers=headers,
         method="POST",
     )
     try:

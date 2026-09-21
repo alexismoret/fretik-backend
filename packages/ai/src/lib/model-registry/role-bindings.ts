@@ -240,7 +240,10 @@ export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
   "compaction-summarizer": {
     role: "compaction-summarizer",
     profileKey: "deepseek-v4-flash",
-    settingsKind: "bare",
+    // Was `bare` until 2026-09-18, which left the bound model thinking
+    // without a bound — see `COMPACTION_REASONING_MAX_TOKENS` in `resolve.ts`
+    // for the fifteen calls that measured what that cost.
+    settingsKind: "compaction",
     wrapCache: false,
   },
   "cheap-tasks": {

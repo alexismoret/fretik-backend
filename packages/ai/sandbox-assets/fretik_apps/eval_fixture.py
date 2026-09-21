@@ -9,13 +9,14 @@ Calling a write action directly raises — it never executes.
 """
 
 from typing import Any, Literal, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from ._runtime import FretikActionError, Operation, _call_read
 
 
 # ── Types ─────────────────────────────────────────────────────────
 
 class Order(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     reference: str
     amount: float
@@ -25,6 +26,7 @@ class Order(BaseModel):
 
 
 class Invoice(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     order_reference: str
     payment_status: Literal["pending", "paid", "overdue"]
@@ -32,6 +34,7 @@ class Invoice(BaseModel):
 
 
 class Customer(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     code: str
     name: str

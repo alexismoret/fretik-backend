@@ -1,7 +1,8 @@
-import { describe, expect, test } from "bun:test";
-import type { ManifestAction } from "../../src/external-apps/manifest-schema";
+import { beforeAll, describe, expect, test } from "bun:test";
+import type { ProviderManifest } from "../../src/external-apps/manifest-schema";
+import { setProviders } from "../../src/external-apps/registry";
 import type { PageDefinition } from "../../src/schemas/pages";
-import { mockModule } from "../lib/mock-module";
+import { lintExternalDatasetArgs } from "../../src/services/pages/lint/external-args";
 
 /**
  * A dataset whose arguments the app will refuse, caught at BUILD.
@@ -10,40 +11,71 @@ import { mockModule } from "../lib/mock-module";
  * a list. The app rejected every request, the page got no rows, and the only
  * component that could see it was the runtime — hours later, in front of the
  * user. The review then spent four rounds calling the result fabricated data.
+ *
+ * A REGISTERED provider, not a `mock.module` double of `getAction`. The
+ * override this file used to install was process-wide: `--isolate` gives each
+ * file its own registry for the modules it imports but does NOT contain a
+ * `mock.module` registration (see `tests/lib/mock-module.ts`), so a fake
+ * `getAction` closing over THIS file's two actions was served to every file
+ * that ran after it. The two suites that register their own fixture provider
+ * were the ones that paid: `computeLookupHash` stopped seeing
+ * `excludeFromHash` and `purgeExecutedPayloads` stopped recognising its own
+ * action, both falling back to "unknown action, leave it alone". What the run
+ * showed was whichever of the two this file happened to precede — 5 failures
+ * when it preceded both, 4 or 1 when it landed between them, 0 when it ran
+ * last — which is why it read as flakiness rather than as a bug. The registry
+ * merges by provider key, so registering `pbyp` for real costs nobody else in
+ * the run anything.
  */
 
-const actions: Record<string, ManifestAction> = {};
-await mockModule("../../src/external-apps/registry", {
-  getAction: (qualifiedName: string) => {
-    const action = actions[qualifiedName];
-    return action === undefined
-      ? undefined
-      : { providerKey: qualifiedName.split(".")[0], action };
-  },
+const manifest: ProviderManifest = {
+  key: "pbyp",
+  displayName: "Lint fixture",
+  description: "Synthetic provider exercising external-dataset arg linting.",
+  nangoProviderConfigKey: "pbyp",
+  icon: "i-lucide-flask-conical",
+  transport: { kind: "custom-handler" },
+  scopes: [],
+  categories: ["storage"],
+  types: { Row: { id: { type: "string" } } },
+  actions: [
+    {
+      name: "query_items",
+      kind: "read",
+      summary: "Read a collection",
+      handler: "queryItems",
+      returns: { list: "Row" },
+      params: {
+        collection: { type: "string" },
+        sort: { type: "array", items: { type: "string" }, optional: true },
+        limit: { type: "integer", min: -1, max: 200, optional: true },
+      },
+    },
+    {
+      name: "create_items",
+      kind: "write",
+      summary: "Create rows",
+      handler: "createItems",
+      returns: { list: "Row" },
+      params: { collection: { type: "string" } },
+    },
+  ],
+};
+
+beforeAll(() => {
+  setProviders({
+    pbyp: {
+      manifest,
+      handlers: {
+        queryItems: async () => ({}),
+        createItems: async () => ({}),
+      },
+      summaries: {
+        create_items: () => ({ titleKey: "default", fields: [] }),
+      },
+    },
+  });
 });
-
-const { lintExternalDatasetArgs } =
-  await import("../../src/services/pages/lint/external-args");
-
-actions["pbyp.query_items"] = {
-  name: "query_items",
-  kind: "read",
-  summary: "Read a collection",
-  returns: { list: "Row" },
-  params: {
-    collection: { type: "string" },
-    sort: { type: "array", items: { type: "string" }, optional: true },
-    limit: { type: "integer", min: -1, max: 200, optional: true },
-  },
-};
-
-actions["pbyp.create_items"] = {
-  name: "create_items",
-  kind: "write",
-  summary: "Create rows",
-  returns: { list: "Row" },
-  params: { collection: { type: "string" } },
-};
 
 const definition = (
   dataset: Record<string, unknown>,

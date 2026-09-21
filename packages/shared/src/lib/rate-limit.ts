@@ -36,10 +36,16 @@ class RedisRateLimitStore<
 > implements Store<E, P, I> {
   prefix: string;
   localKeys = false;
-  private windowMs = 60_000;
+  private windowMs: number;
 
-  constructor(prefix: string) {
+  /**
+   * `windowMs` is normally set by `init`, which the middleware calls with its
+   * own config. A direct caller (`consumeRateLimit`) has no such config, so
+   * the window can also be given here.
+   */
+  constructor(prefix: string, windowMs = 60_000) {
     this.prefix = prefix;
+    this.windowMs = windowMs;
   }
 
   init(options: InitOptions<E, P, I>): void {
@@ -88,6 +94,25 @@ export const createRedisRateLimitStore = <
 >(
   prefix: string,
 ): Store<E, P, I> => new RedisRateLimitStore<E, P, I>(prefix);
+
+/**
+ * Count one hit against a fixed window, outside Hono's middleware.
+ *
+ * `globalRateLimiter` keys on the client IP, which is the wrong bucket for a
+ * route whose callers are sandboxes: E2B's egress shares addresses across
+ * tenants, so one runaway conversation eats a budget every other tenant is
+ * also drawing from. This lets a handler count on whatever identity its own
+ * auth already proved — a conversation id, say — with the same Redis-backed
+ * window the middleware uses.
+ *
+ * `prefix` must be unique per limiter so counters never collide.
+ */
+export const consumeRateLimit = async (
+  prefix: string,
+  key: string,
+  windowMs = 60_000,
+): Promise<{ totalHits: number; resetTime: Date }> =>
+  new RedisRateLimitStore(prefix, windowMs).increment(key);
 
 const parseGlobalLimit = (): number => {
   const raw = process.env.GLOBAL_RATE_LIMIT_PER_MINUTE;

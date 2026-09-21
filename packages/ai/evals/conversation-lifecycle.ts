@@ -45,6 +45,7 @@ import {
   WORKSPACE_DIRS,
   WORKSPACE_ROOT,
 } from "../src/lib/conversation-storage";
+import type { SeededTurn } from "./types";
 
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 export const FIXTURES_DIR = resolve(MODULE_DIR, "fixtures");
@@ -201,6 +202,53 @@ const pushFixtureIntoSandbox = async (
  * The title is prefixed with `[eval]` so any orphaned rows are easy
  * to spot in the dashboard. Cascade-delete via the FK on cleanup.
  */
+/**
+ * Write a case's `history` into `ai_messages` ahead of its prompt row.
+ *
+ * One multi-row INSERT, not N: `seq` is an identity column, Postgres assigns
+ * it in VALUES order, and every reader orders by `seq` — so a single statement
+ * is both correct and ~40 round trips cheaper on a 300K-token history (the
+ * eval database is remote; a round trip measured ~32 ms, see
+ * `eval_latency_remote_db_rtt`).
+ *
+ * `authorId` is deliberately left null on the seeded user turns. A history
+ * whose rows carry an author would make `buildSpeakerContext` prefix the
+ * transcript with `[Name]:` labels, which is a different measurement from the
+ * one these cases make.
+ */
+const seedHistory = async (
+  conversationId: string,
+  history: readonly SeededTurn[],
+): Promise<void> => {
+  if (history.length === 0) return;
+
+  const rows = history.map((turn) => {
+    const parts: Array<Record<string, unknown>> = [
+      { type: "text", text: turn.text },
+    ];
+    for (const call of turn.toolCalls ?? []) {
+      parts.push({
+        type: `tool-${call.toolName}`,
+        toolCallId: `seeded-${crypto.randomUUID()}`,
+        state: "output-available",
+        input: call.input,
+        output: call.output,
+      });
+    }
+    return {
+      conversationId,
+      role: turn.role,
+      // Drizzle persists this array as JSONB verbatim and every reader
+      // duck-types it back; the SDK's `UIMessage['parts']` union is a
+      // compile-time shape we don't need to satisfy here.
+      parts: parts as unknown as never,
+      metadata: null,
+    };
+  });
+
+  await db.insert(aiMessages).values(rows);
+};
+
 export const createEphemeralConversation = async (args: {
   teamId: string;
   organizationId: string;
@@ -208,6 +256,7 @@ export const createEphemeralConversation = async (args: {
   label: string;
   prompt: string;
   fixtures?: string[];
+  history?: readonly SeededTurn[];
 }): Promise<string> => {
   const [convRow] = await db
     .insert(aiConversations)
@@ -265,6 +314,10 @@ export const createEphemeralConversation = async (args: {
       url: `${WORKSPACE_ROOT}/${WORKSPACE_DIRS.attachments}/${f.filename}`,
     });
   }
+
+  // BEFORE the prompt row, never after: `seq` is the only ordering key the
+  // agent window reads, and it is assigned at insertion.
+  await seedHistory(conversationId, args.history ?? []);
 
   const [userMessageRow] = await db
     .insert(aiMessages)

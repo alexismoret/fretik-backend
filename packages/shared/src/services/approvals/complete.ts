@@ -15,6 +15,10 @@ import {
  *    partial outcome instead of a silent NULL.
  *  - `markConsumed` transitions `executing` → `consumed` once execution has
  *    completed, finalising the row for idempotent re-reads.
+ *
+ * `consumed` is a REPLAY CACHE, so it is only correct for a run that wrote
+ * something. A plan in which every operation failed closes `failed` instead
+ * — see `external-apps/exec/plan-outcome.ts`, which owns that decision.
  */
 export const updatePartialResult = async (
   id: string,

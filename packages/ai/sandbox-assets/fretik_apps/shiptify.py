@@ -9,13 +9,14 @@ Calling a write action directly raises — it never executes.
 """
 
 from typing import Any, Literal, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from ._runtime import FretikActionError, Operation, _call_read
 
 
 # ── Types ─────────────────────────────────────────────────────────
 
 class ShipmentRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: int
     name: str
     status: str
@@ -30,6 +31,7 @@ class ShipmentRequest(BaseModel):
 
 
 class Shipment(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: int
     code: str | None = None
     status: str | None = None
@@ -64,6 +66,7 @@ class Shipment(BaseModel):
 
 
 class TrackingPoint(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: int
     shipment_id: int | None = None
     type: str | None = None
@@ -79,6 +82,7 @@ class TrackingPoint(BaseModel):
 
 
 class Attachment(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: int
     name: str
     type: str | None = None
@@ -86,6 +90,7 @@ class Attachment(BaseModel):
 
 
 class Location(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: int
     name: str
     internal_ref: str | None = None
@@ -100,6 +105,7 @@ class Location(BaseModel):
 
 
 class Carrier(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: int
     name: str
     code: str | None = None
@@ -108,11 +114,13 @@ class Carrier(BaseModel):
 
 
 class ShipmentMode(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: int
     name: str
 
 
 class ContentType(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: int
     name: str
     length: float | None = None
@@ -136,16 +144,19 @@ class ContentType(BaseModel):
 
 
 class WriteResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: int | None = None
     internal_ref: str | None = None
     successful: bool | None = None
 
 
 class AttachmentDownload(BaseModel):
+    model_config = ConfigDict(extra="allow")
     url: str
 
 
 class QuoteRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: int
     sh_request_id: int | None = None
     carrier_id: int | None = None
@@ -162,6 +173,7 @@ class QuoteRequest(BaseModel):
 
 
 class GalaxyShipper(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: int
     name: str
     account_id: int | None = None

@@ -243,20 +243,44 @@ describe("settingsForRole — parity with historical settings objects", () => {
         getProfileForRole("vision-fallback"),
       ),
     ).toEqual(geminiPool);
-    // A throughput-sorted profile with a vetted pool (deepseek-v4-flash)
-    // surfaces both `sort` and `only`.
-    expect(
-      settingsForRole(
-        ROLE_BINDINGS["compaction-summarizer"],
-        getProfileForRole("compaction-summarizer"),
-      ),
-    ).toEqual({
-      provider: {
-        zdr: true,
-        sort: "throughput",
-        only: VETTED_DEEPSEEK_UPSTREAMS,
-      },
+  });
+
+  /**
+   * The compaction summariser was a `bare` role until 2026-09-18, which meant
+   * it sent no reasoning envelope at all — so it ran at the bound profile's
+   * OWN default, and deepseek-v4-flash defaults to `high`. Measured over
+   * fifteen production calls it spent 1 460 to 6 875 reasoning tokens, and one
+   * of them burned 3 988 of them, hit `finish_reason: other` and emitted six
+   * tokens of answer, which was then installed over the conversation.
+   *
+   * What this pins is that the envelope reaches the wire: the profile's
+   * provider policy exactly as `bare` had it, PLUS a bound and cost reporting.
+   * `require_parameters` stays absent for the reason `bare` omits it — the
+   * summariser never tool-calls, and the flag narrows routing to upstreams
+   * advertising every parameter.
+   */
+  test("the compaction summariser is pinned low, not left on the profile default", () => {
+    const settings = settingsForRole(
+      ROLE_BINDINGS["compaction-summarizer"],
+      getProfileForRole("compaction-summarizer"),
+    );
+    expect(settings?.provider).toEqual({
+      zdr: true,
+      sort: "throughput",
+      only: VETTED_DEEPSEEK_UPSTREAMS,
     });
+    expect(settings?.provider).not.toHaveProperty("require_parameters");
+    // The bound has to be the one the FAMILY honours. deepseek-v4-flash is
+    // effort-style and defaults to `high`, so the envelope must say `low`
+    // explicitly — and a `max-tokens` family would need a token budget
+    // instead, since an `{ effort }` string is silently ignored by exactly
+    // the families that need bounding (the July recall-judge result).
+    expect(settings?.reasoning).toEqual({ enabled: true, effort: "low" });
+    expect(
+      getProfileForRole("compaction-summarizer").assessment.reasoning
+        .defaultLevel,
+    ).not.toBe("low");
+    expect(settings?.usage).toEqual({ include: true });
   });
 
   // REGRESSION GUARD, and the reason this test is worth its weight: `order` and

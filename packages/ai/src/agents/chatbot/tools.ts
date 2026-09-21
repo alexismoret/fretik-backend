@@ -6,6 +6,7 @@ import { createCreateSkillTool } from "../../tools/create-skill";
 import { createDescribeCollectionTool } from "../../tools/describe-collection";
 import type { createDispatchAgentTool } from "../../tools/dispatch-agent";
 import { createDownloadDriveDocumentTool } from "../../tools/download-drive-document";
+import { createDownloadFileTool } from "../../tools/download-file";
 import { createExtractTool } from "../../tools/extract";
 import { createGetRecordTool } from "../../tools/get-record";
 import { createInstallSkillTool } from "../../tools/install-skill";
@@ -226,6 +227,11 @@ export const buildCoreTools = (domainTools: SearchableToolRegistry) => ({
  * - **webMap**: lists a site's URLs from its own `sitemap.xml` (no
  *   content, no vendor, no cost) when the site is known but the page
  *   isn't — map, pick, then `webFetch`.
+ * - **downloadFile**: brings the BYTES behind a public URL into
+ *   `downloads/` (PDF, spreadsheet, archive, dataset), fetched
+ *   server-side through the same SSRF guard as the web tools. The
+ *   sandbox's own egress is an allowlist, so this is the supported
+ *   way in — `webFetch` remains the tool for a page's text.
  * - **downloadDriveDocument**: pulls a Drive document's binary bytes
  *   into the conversation sandbox under `/workspace/drive/`. Use
  *   only when `searchKnowledge` (RAG) isn't enough — typically for
@@ -308,6 +314,21 @@ export const buildDomainTools = () => ({
     ...createWebFetchTool(),
     category: "domain",
     searchHint: "fetch extract read content specific url page markdown article",
+  }),
+  downloadFile: buildChatbotTool({
+    ...createDownloadFileTool(),
+    // Domain, like its two siblings above: a URL is named in the user's
+    // message, so the `<tool_routing>` row fires at plan time. The other
+    // caller is the egress hint, which surfaces on a FAILED `requests`/`curl`
+    // — the model is stopped and reading an instruction, which is exactly
+    // what one `searchTools` round-trip is for. (`extract` is core for the
+    // opposite reason: the reflex it replaces SUCCEEDS, so nothing ever makes
+    // the model look for a better tool.)
+    category: "domain",
+    searchHint:
+      "download file url fetch bytes save pdf xlsx csv zip image dataset attachment link into workspace downloads",
+    // Writes into `downloads/`.
+    isReadOnly: false,
   }),
   webMap: buildChatbotTool({
     ...createWebMapTool(),

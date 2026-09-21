@@ -4,6 +4,7 @@ import {
   getSessionFilePresignedUrl,
   readSessionFile,
 } from "@fretik/shared/lib/chatbot-session-storage";
+import { deterministicUuid } from "@fretik/shared/lib/deterministic-uuid";
 import { applyAntiBufferingHeaders } from "@fretik/shared/lib/sse-headers";
 import { workflowAbortChannel } from "@fretik/shared/lib/workflow-abort";
 import {
@@ -22,11 +23,7 @@ import {
   forceSetConversationActiveStream,
 } from "@fretik/shared/services/ai/active-stream";
 import { approvalPendingId } from "@fretik/shared/services/ai/approval-pending";
-import {
-  loadConversationForAgent,
-  saveMessage,
-  saveMessages,
-} from "@fretik/shared/services/ai/messages";
+import { saveMessage, saveMessages } from "@fretik/shared/services/ai/messages";
 import {
   endTurnLog,
   openTurnLog,
@@ -71,6 +68,7 @@ import { streamSSE } from "hono/streaming";
 // `lib/scrub-stream.ts` (the DOM TransformStream doesn't unify with the
 // AI SDK's stream iterator shape).
 import { TransformStream } from "node:stream/web";
+import { compactionCapForCeiling } from "../agents/shared/context-ceiling";
 import {
   assembleContextFragments,
   buildConversationAttachedFilesBlock,
@@ -101,7 +99,14 @@ import { buildSensitiveInputScrubber } from "../lib/scrub-stream";
 import { streamWithRetryThenFallback } from "../lib/stream-errors";
 import { dropNonTerminalErrorFrames } from "../lib/wire-errors";
 import { triggerCallbackMiddleware } from "../middlewares/trigger-callback";
-import { microcompactMessages } from "../services/compaction/microcompact";
+import {
+  loadAgentWindow,
+  persistCheckpoint,
+} from "../services/compaction/checkpoint-window";
+import {
+  compactConversation,
+  type CompactionArtifact,
+} from "../services/compaction/compact";
 import {
   hasNativeFileParts,
   NATIVE_FILE_PARSER_PLUGINS,
@@ -131,15 +136,34 @@ import {
 const logPrefix = "[workflow.turn]";
 
 /** How many history messages feed the agent (same default as the chatbot).
- * Full summarising compaction is not wired for workflow runs — turns are
- * bounded and the playbook re-grounds every turn — but the microcompact pass
- * IS (see `executeTurn`): between turns, old stateless tool results (reads,
- * extracts, RAG dumps) are replaced by markers, in memory only. */
+ *
+ * This used to say that summarising compaction was not wired for runs because
+ * "turns are bounded and the playbook re-grounds every turn". Both halves were
+ * true and the conclusion was wrong: a bounded turn is bounded in STEPS, and 50
+ * steps reached 200 480 tokens on 2026-09-17 while re-grounding the model on a
+ * task it had already (wrongly) closed. `executeTurn` now runs the full
+ * `compactConversation` between turns, capped at the context ceiling. */
 const WORKFLOW_HISTORY_LIMIT = 40;
 
 /** Consecutive turns with zero tool calls AND zero task transitions before
  * the run is failed — the anti-stall guard behind `completeTask`. */
 const WORKFLOW_MAX_NO_PROGRESS_TURNS = 2;
+
+/**
+ * Consecutive turns that call tools but close NO task before the run is failed.
+ *
+ * Distinct from the counter above, which asks "is anything happening". Both
+ * were the same question until 2026-09-17, when a run answered yes 51 times in
+ * 40 minutes — tool calls all the way down, not one task transition — and the
+ * stall guard stayed at zero the whole time. Deliberately looser than two: a
+ * hard task legitimately spans turns, and this is a backstop against a run that
+ * has stopped converging, not a pace requirement.
+ */
+const WORKFLOW_MAX_NO_TASK_TURNS = 6;
+
+/** Share of the token budget that raises a warning while the run is still
+ * stoppable. Below this nothing is said; at 100% the turn is aborted. */
+const BUDGET_WARN_FRACTION = 0.8;
 
 const taskStatusFingerprint = (tasks: WorkflowTaskState[]): string =>
   tasks.map((t) => `${t.key}:${t.status}`).join("|");
@@ -193,33 +217,63 @@ const detectPendingApproval = (
   return null;
 };
 
-const addUsage = (
+/**
+ * Fold a finished turn into the run's usage.
+ *
+ * `turn` is `await result.usage`, which is only assigned when the stream ran to
+ * completion. An ABORTED turn never reaches it — and the abort that matters
+ * most is the token-budget one, so the turn that blew the budget was the one
+ * turn missing from the total. On 2026-09-17 that printed
+ * "Run exceeded its token budget (5589501 > 6000000)", an assertion that is
+ * arithmetically false, while ~530 000 tokens went unbilled to the run.
+ *
+ * `floorTotalTokens` is the mid-turn accumulator from `onStepEnd`, which counts
+ * whatever the turn spent before it was cut. A floor rather than a replacement:
+ * per-step usage is a sum of what each step reported, `result.usage` is the
+ * provider's own total, and where both exist the provider's is authoritative.
+ * It only ever raises the total, never lowers it.
+ */
+export const addUsage = (
   prev: WorkflowRunUsage,
   turn: LanguageModelUsage | undefined,
   turnIndex: number,
+  floorTotalTokens = 0,
 ): WorkflowRunUsage => ({
   inputTokens: prev.inputTokens + (turn?.inputTokens ?? 0),
   outputTokens: prev.outputTokens + (turn?.outputTokens ?? 0),
-  totalTokens: prev.totalTokens + (turn?.totalTokens ?? 0),
+  totalTokens:
+    prev.totalTokens + Math.max(turn?.totalTokens ?? 0, floorTotalTokens),
   cachedInputTokens:
     prev.cachedInputTokens + (turn?.inputTokenDetails.cacheReadTokens ?? 0),
   turns: turnIndex,
 });
 
-/** Read the anti-stall counter persisted alongside the previous turn's
- * result (an extra jsonb key the protocol schema deliberately strips). */
-const previousNoProgressTurns = (run: WorkflowRun): number => {
+/** Read an anti-stall counter persisted alongside the previous turn's
+ * result (extra jsonb keys the protocol schema deliberately strips). */
+const previousCounter = (
+  run: WorkflowRun,
+  key: "noProgressTurns" | "noTaskTurns",
+): number => {
   const raw = run.lastTurnResult;
   if (raw === null || typeof raw !== "object") return 0;
-  const value = raw.noProgressTurns;
+  const value = raw[key];
   return typeof value === "number" ? value : 0;
 };
 
 /**
- * The steering user message is persisted BEFORE the model streams so
- * history replays deterministically. A crash-retry of the same turn must
- * not stack a duplicate — the message carries its turnIndex in metadata and
- * is reused when already present.
+ * The steering user message is persisted BEFORE the model streams so history
+ * replays deterministically. A crash-retry of the same turn must not stack a
+ * duplicate — which is what its **deterministic id** guarantees: one row per
+ * `(conversation, turnIndex)`, and `saveMessage`'s upsert rewrites it in place
+ * on a replay, keeping its `seq` and its `created_at`.
+ *
+ * It used to dedup by reading `history.at(-1)` and looking for a matching
+ * `workflowTurnIndex`, and that check was already unsound before any
+ * checkpoint existed: when compaction fires it REPLACES the history with the
+ * summary (plus the activation replay), neither of which carries a
+ * `workflowTurnIndex` — so a turn replayed after a compaction stacked a second
+ * steering message with a fresh id every time. An id that states the fact is
+ * stronger than a read that tries to infer it.
  */
 const ensureSteeringMessage = async (params: {
   run: WorkflowRun;
@@ -233,14 +287,14 @@ const ensureSteeringMessage = async (params: {
   nudge: boolean;
   wrapUp: boolean;
 }): Promise<UIMessage[]> => {
-  const last = params.history.at(-1);
-  if (
-    last?.role === "user" &&
-    last.metadata !== null &&
-    typeof last.metadata === "object" &&
-    (last.metadata as Record<string, unknown>).workflowTurnIndex ===
-      params.turnIndex
-  ) {
+  const steeringId = deterministicUuid(
+    `workflow-steering:${params.conversationId}:${params.turnIndex.toString()}`,
+  );
+  // Already in the window? Then this is a replay of a turn whose steering
+  // message is still where it was, and re-writing it would only churn bytes
+  // the provider cache is holding. Matched by ID, so it is found wherever it
+  // sits in the window rather than only at the end.
+  if (params.history.some((m) => m.id === steeringId)) {
     return params.history;
   }
   const text = buildSteeringMessage({
@@ -263,6 +317,7 @@ const ensureSteeringMessage = async (params: {
   // them, so nothing is hidden.
   const parts: UIMessage["parts"] = [{ type: "text", text }];
   const row = await saveMessage({
+    id: steeringId,
     conversationId: params.conversationId,
     role: "user",
     parts,
@@ -272,7 +327,7 @@ const ensureSteeringMessage = async (params: {
   return [
     ...params.history,
     {
-      id: row?.id ?? randomUUIDv7(),
+      id: row?.id ?? steeringId,
       role: "user",
       parts,
       metadata: { workflowTurnIndex: params.turnIndex },
@@ -292,6 +347,7 @@ const unionToolHints = (tasks: WorkflowTaskState[]): string[] => {
 interface TurnExecution {
   result: WorkflowTurnResult;
   noProgressTurns: number;
+  noTaskTurns: number;
 }
 
 /**
@@ -306,6 +362,8 @@ const executeTurn = async (params: {
   turnIndex: number;
   wrapUp: boolean;
   emitTaskUpdate: (taskStates: WorkflowTaskState[]) => void;
+  /** Live odometer: the run total after each model step, mid-turn. */
+  emitUsage: (usage: WorkflowRunUsage) => void;
 }): Promise<TurnExecution> => {
   const { run, workflow, turnIndex } = params;
   const conversationId = run.conversationId;
@@ -315,18 +373,71 @@ const executeTurn = async (params: {
   const actingUserId = run.actingUserId ?? undefined;
   const traceId = randomUUIDv7();
 
+  // Which model serves this run: the workflow's own pin → the team's flagship
+  // pick → the code default. `modelProfileKey` is persisted as a free
+  // `z.string().max(64)` (the agent's `manage_workflow` tool can write any
+  // string) and used to be handed straight to `resolveChatModelForProfile`,
+  // whose `getProfile` THROWS on an unknown key — so a workflow pinned to a
+  // profile we later renamed or retired died mid-run instead of degrading.
+  // Resolved FIRST because the between-turn compaction below is budgeted
+  // against the profile that will actually serve the turn.
+  const {
+    profileKey: servingProfileKey,
+    fellBack,
+    storedReasoningLevel,
+  } = await resolveTeamFlagship(workflow.teamId, workflow.modelProfileKey);
+  if (fellBack) {
+    console.warn(
+      `${logPrefix} workflow ${workflow.id} pins unknown/unselectable model "${workflow.modelProfileKey ?? ""}" — falling back to ${servingProfileKey}`,
+    );
+  }
+  // Same resolved key as `agentSet` below, so the profile driving
+  // `prepareModelMessages` can never diverge from the one actually serving.
+  const modelProfile = resolveChatModelForProfile(servingProfileKey).profile;
+
   // ---- Context assembly (fragments shared with the chatbot) ----
-  // Microcompact BETWEEN turns, same pass the chatbot runs: a prior turn's
-  // stale tool results (whole-file reads, extract payloads) otherwise replay
-  // verbatim on every step of every later turn. In-memory only — persisted
-  // messages stay intact, and the current turn's own steps are untouched so
-  // the intra-turn prompt-cache prefix survives. (The inter-turn prefix was
-  // already broken each turn by the steering message.)
-  const historyRaw = microcompactMessages(
-    await loadConversationForAgent(conversationId, WORKFLOW_HISTORY_LIMIT),
+  // Compact BETWEEN turns — the boundary the context ceiling creates, and the
+  // only place a run may edit its own history (nothing signed survives a turn,
+  // so no provider's prefix check can reject it). Microcompaction alone, which
+  // is what ran here until 2026-09-17, returned 13% on the incident run's 200K:
+  // it replaces stale tool results and leaves the loop's replayed reasoning and
+  // its own narration, which were 41% of that turn's input.
+  //
+  // The threshold is capped at the SAME absolute ceiling the turn is cut at.
+  // Derived from the window alone it lands near 960K on a 1M-context model —
+  // five times what the incident run ever reached, so it never fired once in
+  // 42 minutes. In-memory only: persisted messages stay intact.
+  //
+  // It therefore re-summarises on every turn, and that is affordable HERE and
+  // nowhere else. `WORKFLOW_HISTORY_LIMIT` bounds the input to 40 messages, so
+  // the cost is flat in the length of the run rather than quadratic; and a
+  // ~15-second summary between two multi-minute turns has nobody waiting on
+  // it. A chat turn does — see `CHATBOT_COMPACTION_CAP` for what that changes.
+  const agentWindow = await loadAgentWindow(
+    conversationId,
+    WORKFLOW_HISTORY_LIMIT,
   );
+  // Captured rather than awaited: the artefact is persisted after the turn
+  // commits. The turn that crossed the threshold already holds its context, so
+  // making it wait on a write buys it nothing — the NEXT turn is the one that
+  // starts small.
+  let compactionArtifact: CompactionArtifact | null = null;
+  const historyRaw = await compactConversation(agentWindow.messages, {
+    profile: modelProfile,
+    teamId: run.teamId,
+    // One prefix below the ceiling, never equal to it: the ceiling counts the
+    // request and this counts the history. See `compactionCapForCeiling`.
+    maxThresholdTokens: compactionCapForCeiling(undefined, "workflow"),
+    // Same reason as the chat path: a run re-summarises on every turn, so this
+    // is the one place where the summariser's share of a run's bill is a
+    // question somebody will actually ask.
+    traceSessionId: conversationId,
+    onCompacted: (artifact) => {
+      compactionArtifact = artifact;
+    },
+  });
   const isFirstTurn = turnIndex === 1;
-  const nudge = previousNoProgressTurns(run) > 0;
+  const nudge = previousCounter(run, "noProgressTurns") > 0;
 
   // Harness-owned cursor stamp: the current task flips to `in_progress`
   // BEFORE the model runs — the timeline's "started" edge never depends on
@@ -450,59 +561,69 @@ const executeTurn = async (params: {
   await openTurnLog(streamId);
   let turnLogEnded = false;
 
-  // Which model serves this run: the workflow's own pin → the team's flagship
-  // pick → the code default. `modelProfileKey` is persisted as a free
-  // `z.string().max(64)` (the agent's `manage_workflow` tool can write any
-  // string) and used to be handed straight to `resolveChatModelForProfile`,
-  // whose `getProfile` THROWS on an unknown key — so a workflow pinned to a
-  // profile we later renamed or retired died mid-run instead of degrading.
-  const {
-    profileKey: servingProfileKey,
-    fellBack,
-    storedReasoningLevel,
-  } = await resolveTeamFlagship(workflow.teamId, workflow.modelProfileKey);
-  if (fellBack) {
-    console.warn(
-      `${logPrefix} workflow ${workflow.id} pins unknown/unselectable model "${workflow.modelProfileKey ?? ""}" — falling back to ${servingProfileKey}`,
-    );
-  }
-
   const agentSet = getWorkflowAgentSet(servingProfileKey);
 
   let turnUsage: LanguageModelUsage | undefined;
   let finalMessages: UIMessage[] = [];
   let toolCallCount = 0;
 
-  // ---- Mid-turn token-budget enforcement ----
+  // ---- Mid-turn token-budget enforcement, odometer and warning ----
   // `stopWhen` can't read the per-run budget (it gets only `{ steps }`, and the
   // agent is a singleton), so enforce via abort in `onStepEnd`: accumulate
   // per-step usage and stop the turn the moment the run total crosses the
   // ceiling — not only at the turn boundary. Some providers under-report
   // per-step `totalTokens` (MiniMax); the end-of-turn check below is the
   // authoritative fallback for those.
+  //
+  // This callback is also the ONLY place that knows what a run has spent while
+  // it is spending it. `workflow_runs.usage` is written at turn boundaries, so
+  // through the 40-minute turn of 2026-09-17 every counter on the run page read
+  // the same figure it had read at minute zero, and the first signal of trouble
+  // was the run dying. Now each step publishes the running total, and crossing
+  // 80% of the budget says so once, in the logs, while the run can still be
+  // stopped by hand.
   const tokenBudget =
     workflow.limits.maxTotalTokens ?? WORKFLOW_DEFAULT_MAX_TOTAL_TOKENS;
-  let turnAccumTokens = 0;
+  const turnAccum: WorkflowRunUsage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    cachedInputTokens: 0,
+    turns: turnIndex,
+  };
   let budgetAborted = false;
+  let budgetWarned = false;
   const onWorkflowStepEnd = (step: {
     toolCalls: readonly unknown[];
-    usage?: { totalTokens?: number };
+    usage?: LanguageModelUsage;
   }): void => {
     toolCallCount += step.toolCalls.length;
-    turnAccumTokens += step.usage?.totalTokens ?? 0;
-    if (
-      !budgetAborted &&
-      run.usage.totalTokens + turnAccumTokens > tokenBudget
-    ) {
+    turnAccum.inputTokens += step.usage?.inputTokens ?? 0;
+    turnAccum.outputTokens += step.usage?.outputTokens ?? 0;
+    turnAccum.totalTokens += step.usage?.totalTokens ?? 0;
+    turnAccum.cachedInputTokens +=
+      step.usage?.inputTokenDetails?.cacheReadTokens ?? 0;
+    const spent = run.usage.totalTokens + turnAccum.totalTokens;
+    params.emitUsage({
+      inputTokens: run.usage.inputTokens + turnAccum.inputTokens,
+      outputTokens: run.usage.outputTokens + turnAccum.outputTokens,
+      totalTokens: spent,
+      cachedInputTokens:
+        run.usage.cachedInputTokens + turnAccum.cachedInputTokens,
+      turns: turnIndex,
+    });
+    if (!budgetWarned && spent > tokenBudget * BUDGET_WARN_FRACTION) {
+      budgetWarned = true;
+      console.warn(
+        `${logPrefix} run=${run.id} at ${Math.round((spent / tokenBudget) * 100).toString()}% of its token budget (${spent.toString()}/${tokenBudget.toString()}) turn=${turnIndex.toString()}`,
+      );
+    }
+    if (!budgetAborted && spent > tokenBudget) {
       budgetAborted = true;
       console.warn(`${logPrefix} token budget exceeded mid-turn run=${run.id}`);
       abortController.abort();
     }
   };
-
-  // Same resolved key as `agentSet` above, so the profile driving
-  // `prepareModelMessages` can never diverge from the one actually serving.
-  const modelProfile = resolveChatModelForProfile(servingProfileKey).profile;
 
   // No `nativeIngestion` here, deliberately: a run's history carries no file
   // parts, so the plan would be empty and `{{nativeMediaNote}}` renders
@@ -668,14 +789,25 @@ const executeTurn = async (params: {
   // ---- Turn outcome ----
   const fresh = await getWorkflowRunRow({ id: run.id });
   const freshTasks = fresh?.taskStates ?? taskStates;
-  const usage = addUsage(run.usage, turnUsage, turnIndex);
+  const usage = addUsage(
+    run.usage,
+    turnUsage,
+    turnIndex,
+    turnAccum.totalTokens,
+  );
   const approval = abortController.signal.aborted
     ? null
     : detectPendingApproval(finalMessages);
   const progressed =
     taskStatusFingerprint(freshTasks) !== taskStatusFingerprint(run.taskStates);
   const noProgressTurns =
-    progressed || toolCallCount > 0 ? 0 : previousNoProgressTurns(run) + 1;
+    progressed || toolCallCount > 0
+      ? 0
+      : previousCounter(run, "noProgressTurns") + 1;
+  // The second axis: activity is not convergence. A turn that called 51 tools
+  // and closed no task is the shape the 2026-09-17 runaway had, and the counter
+  // above read zero for all of it because tool calls counted as progress.
+  const noTaskTurns = progressed ? 0 : previousCounter(run, "noTaskTurns") + 1;
   const allDone = currentWorkflowTask(freshTasks) === null;
   const anyFailed = freshTasks.some((t) => t.status === "failed");
 
@@ -738,6 +870,17 @@ const executeTurn = async (params: {
         message: `No tool call and no task transition for ${noProgressTurns.toString()} consecutive turns.`,
       },
     };
+  } else if (noTaskTurns >= WORKFLOW_MAX_NO_TASK_TURNS) {
+    result = {
+      status: "failed",
+      turnIndex,
+      taskStates: freshTasks,
+      usage,
+      error: {
+        code: "NO_CONVERGENCE",
+        message: `Worked for ${noTaskTurns.toString()} consecutive turns without closing a task. Last open task: ${currentWorkflowTask(freshTasks)?.key ?? "unknown"}.`,
+      },
+    };
   } else if (usage.totalTokens > tokenBudget) {
     // Authoritative end-of-turn check — catches providers that under-report
     // per-step usage, where the mid-turn abort never fired.
@@ -786,7 +929,7 @@ const executeTurn = async (params: {
     await recordTurnResult({
       tx,
       runId: run.id,
-      result: { ...result, noProgressTurns } as WorkflowTurnResult,
+      result: { ...result, noProgressTurns, noTaskTurns } as WorkflowTurnResult,
     });
     if (
       result.status === "completed" ||
@@ -819,6 +962,25 @@ const executeTurn = async (params: {
       );
     });
   }
+  // Persist the resume point, unless the run is over — a checkpoint nothing
+  // will ever read is a summariser call spent for nobody. A run has no
+  // participants (`participantIds: []`), so no cast to freeze.
+  if (!terminal && compactionArtifact !== null) {
+    const artifact: CompactionArtifact = compactionArtifact;
+    void persistCheckpoint({
+      conversationId,
+      window: agentWindow,
+      summary: artifact.summary,
+      activatedTools: artifact.activatedTools,
+      participantIds: [],
+      kind: "llm",
+      tokensBefore: artifact.tokensBefore,
+      tokensAfter: artifact.tokensAfter,
+      keptTailCount: artifact.keptTailCount,
+      teamId: run.teamId,
+    });
+  }
+
   // Notification email — only from the finalize that actually performed the
   // terminal transition (exactly-once), after the commit, fire-and-forget.
   if (runTransitioned) {
@@ -832,7 +994,7 @@ const executeTurn = async (params: {
     );
   }
 
-  return { result, noProgressTurns };
+  return { result, noProgressTurns, noTaskTurns };
 };
 
 // ==================== //
@@ -936,6 +1098,12 @@ workflowTriggerRoutes.post("/runs/:runId/turn", async (c) => {
         const emitTaskUpdate = (taskStates: WorkflowTaskState[]): void => {
           void send("task-update", { taskStates });
         };
+        // Mid-turn odometer. Best-effort like `task-update`: the authoritative
+        // figure is still the one committed with the turn result, and a dropped
+        // frame costs a stale gauge, never a wrong total.
+        const emitUsage = (usage: WorkflowRunUsage): void => {
+          void send("usage", { usage });
+        };
 
         const runTurn = (): Promise<TurnExecution> =>
           executeTurn({
@@ -944,6 +1112,7 @@ workflowTriggerRoutes.post("/runs/:runId/turn", async (c) => {
             turnIndex,
             wrapUp: wrapUp ?? false,
             emitTaskUpdate,
+            emitUsage,
           });
 
         let execution: TurnExecution;

@@ -142,10 +142,21 @@ export const formatRuntimeStateForSummary = (
  */
 export const buildSyntheticActivationReplayMessage = (
   activatedTools: string[],
+  /**
+   * Stable id seed. Omitted, the message and its tool call get fresh uuids —
+   * right for a one-shot in-memory compaction, wrong for a PERSISTED
+   * checkpoint: the resumed window is re-emitted on every later turn, and
+   * fresh ids each time would rewrite the prompt prefix and miss the provider
+   * cache on every turn of a long conversation. `microcompact.ts` states the
+   * same rule for the same reason — byte-for-byte stability IS the cache
+   * strategy.
+   */
+  idSeed?: string,
 ): UIMessage | null => {
   if (activatedTools.length === 0) return null;
 
-  const toolCallId = `compaction-replay-${crypto.randomUUID()}`;
+  const suffix = idSeed ?? crypto.randomUUID();
+  const toolCallId = `compaction-replay-${suffix}`;
   const query = `select:${activatedTools.join(",")}`;
 
   // Cast through `unknown` to satisfy the AI SDK's discriminated-union
@@ -167,7 +178,7 @@ export const buildSyntheticActivationReplayMessage = (
   };
 
   const message: UIMessage = {
-    id: `compaction-replay-${crypto.randomUUID()}`,
+    id: `compaction-replay-msg-${suffix}`,
     role: "assistant",
     parts: [part] as UIMessage["parts"],
   };

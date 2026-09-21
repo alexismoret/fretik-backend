@@ -1,3 +1,4 @@
+import { CHARS_PER_TOKEN } from "@fretik/shared/lib/token-estimate";
 import type { ModelMessage } from "ai";
 
 /**
@@ -90,11 +91,12 @@ const CACHE_PAYS_BELOW = 0.5;
 const PRUNE_AT_CONTEXT_FRACTION = 0.6;
 
 /**
- * Deliberately conservative — a page's history is code, which tokenizes nearer
- * 3.7 chars per token, so this UNDER-counts and the valve opens slightly late.
- * Late is the safe direction: opening early is the behaviour being undone.
+ * The shared heuristic, and here it runs against its bias: a page's history is
+ * code, which tokenizes nearer 3.7 chars per token, so 4 UNDER-counts and the
+ * valve opens slightly late. Late is the safe direction — opening early is the
+ * behaviour being undone. See `@fretik/shared/lib/token-estimate` for why the
+ * number is 4 and why this file reads it rather than keeping its own.
  */
-const CHARS_PER_TOKEN = 4;
 
 /**
  * Whether this history is big enough that shortening it beats keeping it

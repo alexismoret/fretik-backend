@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { parseFileTransferConfig } from "../../src/ftp-sftp/config";
-import { decodeBase64, freeNameIn } from "../../src/ftp-sftp/handlers";
+import {
+  decodeBase64,
+  freeNameIn,
+  prepareUploads,
+} from "../../src/ftp-sftp/handlers";
 import {
   matchesPattern,
   normalizePath,
@@ -25,6 +29,11 @@ import { ftpSftpSummaries } from "../../src/ftp-sftp/summaries";
  * `summaries.ts` writes the approval card. The recursive-delete card is the
  * only place a user is told that the operation they are approving has no
  * undo.
+ *
+ * `prepareUploads` decides what a batch does with an entry it cannot read.
+ * One bad payload used to abort the whole call, so a five-file upload put
+ * nothing on the server — a failure that is invisible here and surfaces as
+ * a partner's folder still empty.
  */
 
 describe("normalizePath", () => {
@@ -305,6 +314,95 @@ describe("upload payload decoding", () => {
   });
 
   test("names the file in the error", () => {
-    expect(() => decodeBase64("", "orders.csv")).toThrow(/orders\.csv/);
+    // The guarantee lives on the input that still throws: an agent holding
+    // twenty rows needs to know WHICH payload it has to re-encode.
+    expect(() => decodeBase64("aGVsbG8", "orders.csv")).toThrow(/orders\.csv/);
+  });
+
+  test("an empty payload is a zero-byte file, not an error", () => {
+    // `base64.b64encode(b"").decode()` is `""`. Refusing it made a
+    // deliberately empty file \u2014 a mandatory-but-empty EDI member, a `.done`
+    // flag \u2014 impossible to upload, and took the rest of its batch with it.
+    expect(decodeBase64("", "flag.done")).toHaveLength(0);
+    // Whitespace-only compacts to empty and means the same thing.
+    expect(decodeBase64("  \n ", "flag.done")).toHaveLength(0);
+  });
+});
+
+describe("prepareUploads", () => {
+  const b64 = (text: string): string => Buffer.from(text).toString("base64");
+
+  test("one unreadable payload does not take the batch down", () => {
+    // The production regression: five files offered, two of them rejected
+    // before the connection opened, and NOTHING uploaded \u2014 including the
+    // three that were perfectly fine.
+    const prepared = prepareUploads([
+      { remote_path: "out/a.csv", content_base64: b64("a") },
+      { remote_path: "out/b.csv", content_base64: "aGVsbG8" },
+      { remote_path: "out/c.csv", content_base64: b64("c") },
+    ]);
+
+    expect(prepared).toHaveLength(3);
+    expect(prepared[0]?.bytes).toBeDefined();
+    expect(prepared[2]?.bytes).toBeDefined();
+    expect(prepared[1]?.bytes).toBeUndefined();
+    expect(prepared[1]?.error).toMatch(/not valid base64/);
+  });
+
+  test("keeps the caller's order so row N answers input N", () => {
+    const prepared = prepareUploads([
+      { remote_path: "out/a.csv", content_base64: "***" },
+      { remote_path: "out/b.csv", content_base64: b64("b") },
+      { remote_path: "out/c.csv", content_base64: "***" },
+    ]);
+
+    expect(prepared.map((file) => file.path)).toEqual([
+      "out/a.csv",
+      "out/b.csv",
+      "out/c.csv",
+    ]);
+  });
+
+  test("an empty payload prepares a zero-byte write", () => {
+    const prepared = prepareUploads([
+      { remote_path: "out/26270019.SIR", content_base64: "" },
+    ]);
+
+    expect(prepared[0]?.error).toBeUndefined();
+    expect(prepared[0]?.bytes?.byteLength).toBe(0);
+  });
+
+  test("a missing content_base64 is not the same as an empty one", () => {
+    const prepared = prepareUploads([
+      { remote_path: "out/forgotten.csv" },
+      { remote_path: "out/empty.csv", content_base64: "" },
+    ]);
+
+    expect(prepared[0]?.bytes).toBeUndefined();
+    expect(prepared[0]?.error).toMatch(/content_base64/);
+    expect(prepared[1]?.bytes?.byteLength).toBe(0);
+  });
+
+  test("a missing remote_path becomes a row, not a throw", () => {
+    const prepared = prepareUploads([
+      { content_base64: b64("orphan") },
+      { remote_path: "out/b.csv", content_base64: b64("b") },
+    ]);
+
+    expect(prepared[0]?.path).toBe("");
+    expect(prepared[0]?.error).toMatch(/remote_path/);
+    expect(prepared[1]?.bytes).toBeDefined();
+  });
+
+  test("the budget stays fatal for the whole call", () => {
+    // A fact about the CALL, not about one file: the answer is to split the
+    // request, not to silently drop whichever entry crossed the line.
+    const oversized = "A".repeat(12 * 1024 * 1024);
+    expect(() =>
+      prepareUploads([
+        { remote_path: "out/a.bin", content_base64: b64(oversized) },
+        { remote_path: "out/b.bin", content_base64: b64(oversized) },
+      ]),
+    ).toThrow(/Upload budget exceeded/);
   });
 });

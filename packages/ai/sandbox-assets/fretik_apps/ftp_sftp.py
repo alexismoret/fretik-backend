@@ -9,13 +9,14 @@ Calling a write action directly raises — it never executes.
 """
 
 from typing import Any, Literal, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from ._runtime import FretikActionError, Operation, _call_read
 
 
 # ── Types ─────────────────────────────────────────────────────────
 
 class RemoteEntry(BaseModel):
+    model_config = ConfigDict(extra="allow")
     name: str
     path: str
     type: Literal["file", "directory", "symlink"]
@@ -27,6 +28,7 @@ class RemoteEntry(BaseModel):
 
 
 class EntryLookup(BaseModel):
+    model_config = ConfigDict(extra="allow")
     path: str
     exists: bool
     type: Literal["file", "directory", "symlink"] | None = None
@@ -37,6 +39,7 @@ class EntryLookup(BaseModel):
 
 
 class RemoteFile(BaseModel):
+    model_config = ConfigDict(extra="allow")
     path: str
     name: str
     size_bytes: int
@@ -47,6 +50,7 @@ class RemoteFile(BaseModel):
 
 
 class ServerInfo(BaseModel):
+    model_config = ConfigDict(extra="allow")
     protocol: Literal["sftp", "ftp", "ftps", "ftps-implicit"]
     host: str
     working_directory: str
@@ -58,6 +62,7 @@ class ServerInfo(BaseModel):
 
 
 class WriteResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
     path: str
     ok: bool
     error: str | None = None

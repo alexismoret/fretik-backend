@@ -17,6 +17,7 @@ import { salvagePageProject } from "../../services/page-project/salvage";
 import { createBuildPageTool } from "../../tools/build-page";
 import { createDispatchAgentTool } from "../../tools/dispatch-agent";
 import {
+  AGENT_STEP_MAX_OUTPUT_TOKENS,
   buildAgentSet,
   buildToolsContext,
   type AgentRuntimeContextBase,
@@ -64,42 +65,6 @@ import {
  */
 const parseChatbotMaxSteps = (): number =>
   parseIntEnv("CHATBOT_MAX_STEPS", { fallback: 30, min: 1, max: 200 });
-
-/**
- * Hard per-step output cap — the bound the chat path did not have.
- *
- * The workflow agent has carried one since its own runaway (64 829 output
- * tokens in one step); this path never did, and `stopWhen` / `prepareStep` run
- * BETWEEN steps, so nothing in the product could see a single generation go
- * wrong, let alone stop it.
- *
- * Measured 2026-09-20 over 370 `chat` generations: p50 584 output tokens, p95
- * 2 432, and the largest legitimate one 3 835 (3 478 of it reasoning). In the
- * same window three runaway generations each emitted about **155 000** — one
- * tool call repeated until the model physically could not continue — taking
- * 588 to 694 seconds and 654 tool calls, of which only the first twelve ran.
- * Reasoning in those three was 159 to 1 038 tokens: the volume was repetition,
- * not thought.
- *
- * 32 000 is eight times the largest generation ever measured here and a fifth
- * of a runaway. Set deliberately above the workflow's 16 000: this path also
- * serves a page build writing several files in one call, and the sample above
- * cannot have seen the widest of those.
- *
- * Safe to truncate, for the reason the workflow cap records: truncated prose
- * ends the loop cleanly and resumes next turn, and a truncated tool call is
- * healed by `llmRepairToolCall`. Profiles carrying `omitMaxTokens` never
- * receive it — `agent-builder.ts` drops it, because their ZDR endpoint would
- * answer 404 to the parameter. Tunable via `CHATBOT_STEP_MAX_OUTPUT_TOKENS`,
- * so a rollback needs no deploy.
- */
-const parseChatbotStepMaxOutputTokens = (): number =>
-  parseIntEnv("CHATBOT_STEP_MAX_OUTPUT_TOKENS", {
-    fallback: 32_000,
-    min: 1000,
-    max: 128_000,
-  });
-
 /**
  * A web tool is suppressed when an operator sets `AI_WEB_TOOLS_ENABLED=false`
  * or its own backend has no key — per tool, not as a block, because the three
@@ -530,16 +495,13 @@ const makeSubAgentPrimarySet = (
     id: "chatbot.sub.primary",
     buildTools: buildSubAgentTools,
     systemPrompt: subAgentSystemPrompt,
+    maxOutputTokens: AGENT_STEP_MAX_OUTPUT_TOKENS,
     model,
     fallbackModel: resolveModel("chat-fallback"),
     stopWhen: [
       isStepCount(parseSubAgentMaxSteps()),
       hasToolCall("askUserQuestion"),
     ],
-    // A sub-agent is the same loop with fewer tools, so it can fail the same
-    // way — and nobody is watching its stream, which makes an unbounded
-    // generation here cheaper to miss than in the parent turn.
-    maxOutputTokens: parseChatbotStepMaxOutputTokens(),
     repairToolCall: llmRepairToolCall<SubAgentTools>(),
     prepareStep: subAgentPrepareStep,
     buildRuntimeContextBase: buildChatbotRuntimeContextBase,
@@ -580,13 +542,13 @@ const makeSubAgentCheapSet = (
     id: "chatbot.sub.cheap",
     buildTools: buildSubAgentTools,
     systemPrompt: subAgentSystemPrompt,
+    maxOutputTokens: AGENT_STEP_MAX_OUTPUT_TOKENS,
     model,
     fallbackModel: resolveModel("chat"),
     stopWhen: [
       isStepCount(parseSubAgentMaxSteps()),
       hasToolCall("askUserQuestion"),
     ],
-    maxOutputTokens: parseChatbotStepMaxOutputTokens(),
     repairToolCall: llmRepairToolCall<SubAgentTools>(),
     prepareStep: subAgentPrepareStep,
     buildRuntimeContextBase: buildChatbotRuntimeContextBase,
@@ -645,6 +607,10 @@ const makePageBuilderSet = (
     id: PAGE_BUILDER_AGENT_ID,
     buildTools: buildPageBuilderTools,
     systemPrompt: pageBuilderSystemPrompt,
+    // The builder writes whole SFCs through `pageWrite`, so its output cap is
+    // also its file-size cap. 32 000 tokens ≈ a 1 200-line component, which is
+    // above anything the review budget lets through in one step.
+    maxOutputTokens: AGENT_STEP_MAX_OUTPUT_TOKENS,
     model,
     // Its OWN fallback role, under the page-build envelope. `chat-fallback`
     // served here until 2026-09-14 — resolved under the chat envelope, so a
@@ -706,6 +672,10 @@ export const dispatchAgentTool = createDispatchAgentTool({
   // registry held while this module was loading.
   primary: () => subAgentPrimarySet().primary,
   cheap: () => subAgentCheapSet().primary,
+  // The ceiling the delegate's own stop condition uses. Read off the same set,
+  // never re-derived: the boundary loop has to recognise the stop the agent
+  // made, and two derivations drift the moment a model's window moves.
+  contextCeiling: () => subAgentPrimarySet().contextCeiling,
 });
 
 /**
@@ -719,6 +689,10 @@ export const buildPageTool = createBuildPageTool({
   // turn's own options. Passing `pageBuilderSet.primary` here is what pinned
   // every page in the product to one profile for months.
   resolvePageBuilder: (profileKey) => getPageBuilderSet(profileKey).primary,
+  // Same set, same number — see `dispatchAgentTool` above. The page builder is
+  // the biggest single exposure: up to 80 steps behind one tool call.
+  resolvePageBuilderCeiling: (profileKey) =>
+    getPageBuilderSet(profileKey).contextCeiling,
   // The set has carried a fallback model all along; nothing reached for it. A
   // build that comes back having written nothing now gets the one retry the
   // parent turn has had since C4.
@@ -745,6 +719,7 @@ const makeChatbotAgentSet = (
         buildPage: buildPageTool,
       }),
     systemPrompt: chatbotSystemPrompt,
+    maxOutputTokens: AGENT_STEP_MAX_OUTPUT_TOKENS,
     model,
     fallbackModel: resolveModel("chat-fallback"),
     // Stop the agent loop on either of two conditions:
@@ -767,7 +742,6 @@ const makeChatbotAgentSet = (
       // matches the grant by `lookupHash`.
       stopOnPendingApproval<ChatbotTools>(),
     ],
-    maxOutputTokens: parseChatbotStepMaxOutputTokens(),
     repairToolCall: llmRepairToolCall<ChatbotTools>(),
     prepareStep: chatbotPrepareStep,
     buildRuntimeContextBase: buildChatbotRuntimeContextBase,

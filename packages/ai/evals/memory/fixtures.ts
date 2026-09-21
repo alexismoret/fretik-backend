@@ -47,6 +47,8 @@ import { and, eq, inArray, like, or } from "drizzle-orm";
 
 const TYPE_KEY = "memory_eval_supplier";
 const CONVERSATION_TITLE = "[memory_eval] Négociation Meridian Textiles";
+const LONG_REPORT_CONVERSATION_TITLE =
+  "[memory_eval] Rapport final long — conclusion en fin de message";
 const SENSITIVE_CONVERSATION_TITLE =
   "[memory_eval] Configuration intégration paiement";
 /** The secret the sensitivity guard must keep OUT of the summary. */
@@ -69,6 +71,8 @@ export interface MemoryFixtures {
   conversationId: string;
   /** Conversation carrying a secret + a personal aside — the sensitivity guard. */
   sensitiveConversationId: string;
+  /** Conversation whose conclusion sits at the END of a long final message. */
+  longReportConversationId: string;
   /** Busy record for the activity digest. */
   activityRecordId: string;
 }
@@ -265,6 +269,88 @@ const ensureSensitiveConversation = async (scope: Scope): Promise<string> => {
       role: "assistant",
       text: "Pas de souci, on avancera à ton rythme. Pour la suite, il reste à tester un paiement de bout en bout avant la mise en production.",
     },
+  ];
+  const now = Date.now();
+  await db.insert(aiMessages).values(
+    turns.map((t, i) => ({
+      conversationId: conv.id,
+      authorId: t.role === "user" ? scope.userId : null,
+      role: t.role,
+      parts: [{ type: "text" as const, text: t.text }],
+      createdAt: new Date(now - (turns.length - i) * 60_000),
+    })),
+  );
+  return conv.id;
+};
+
+/**
+ * A conversation whose value is in the LAST 500 characters of a long final
+ * message — the shape the distiller used to destroy.
+ *
+ * Production, 2026-09-18: every message was clipped to its first 500
+ * characters, so an assistant's 4 561-character report arrived cut mid-sentence
+ * and the episode recorded a run that had SUCCEEDED as unfinished, listing
+ * tasks it had in fact completed. Measured over 30 days, that clip bit on 95 %
+ * of workflow messages and 51 % of chat ones.
+ *
+ * The existing fixture could not see any of it: its longest message is 160
+ * characters, so it passed identically before and after the defect. A test that
+ * is structurally unable to fail is the thing that let this ship, which is why
+ * this fixture is shaped against the failure rather than against the feature —
+ * the reference and the anomaly below exist ONLY in the report's closing lines.
+ */
+const ensureLongReportConversation = async (scope: Scope): Promise<string> => {
+  const existing = await db.query.aiConversations.findFirst({
+    where: { teamId: scope.teamId, title: LONG_REPORT_CONVERSATION_TITLE },
+    columns: { id: true },
+  });
+  if (existing) return existing.id;
+
+  const [conv] = await db
+    .insert(aiConversations)
+    .values({
+      organizationId: scope.organizationId,
+      teamId: scope.teamId,
+      userId: scope.userId,
+      title: LONG_REPORT_CONVERSATION_TITLE,
+    })
+    .returning({ id: aiConversations.id });
+  if (!conv) throw new Error("long-report conversation insert failed");
+
+  await db.insert(aiConversationMembers).values({
+    conversationId: conv.id,
+    userId: scope.userId,
+    role: "owner",
+  });
+
+  // ~1 900 characters of narration before anything conclusive — the half the
+  // old clip kept.
+  const narration = [
+    "Je commence par inventorier les pièces déposées et repérer leur structure.",
+    "Les en-têtes sont hétérogènes : deux fichiers portent leurs libellés sur la deuxième ligne, les autres sur la première.",
+    "Je normalise les libellés avant de rapprocher les colonnes, sinon l'appariement des montants échoue silencieusement.",
+    "Les montants arrivent dans trois formats de séparateur décimal différents ; je les ramène tous au même format avant contrôle.",
+    "Je contrôle ensuite la cohérence des totaux ligne à ligne contre les totaux annoncés en pied de document.",
+    "Deux écarts apparaissent, tous deux inférieurs au seuil de tolérance convenu, je les reporte sans bloquer le traitement.",
+    "Je poursuis avec la vérification des références croisées entre les pièces, puis avec la consolidation.",
+  ].join("\n\n");
+
+  // The conclusion. Everything a memory should keep is HERE, at the end.
+  const conclusion = [
+    "**Résultat : traitement terminé, les cinq livrables ont été produits et déposés sur le serveur, cinq acquittements reçus sur cinq, aucun échec.**",
+    "Livrables déposés sous la référence de dossier REF-4417 : le récapitulatif consolidé, les trois exports par périmètre, et le journal de contrôle.",
+    "**Anomalie à signaler** : l'étape de production était marquée terminée alors qu'aucun fichier n'existait sur le disque ; j'ai régénéré les cinq livrables avant l'envoi.",
+    "Rien ne reste à faire sur ce dossier.",
+  ].join("\n\n");
+
+  const turns: { role: "user" | "assistant"; text: string }[] = [
+    {
+      role: "user",
+      text: "Traite le lot déposé et produis les livrables, puis dépose-les sur le serveur.",
+    },
+    { role: "assistant", text: "Je prends le lot en charge." },
+    { role: "user", text: "Vas-y, et fais-moi un récapitulatif à la fin." },
+    { role: "assistant", text: `${narration}\n\n${conclusion}` },
   ];
   const now = Date.now();
   await db.insert(aiMessages).values(
@@ -741,6 +827,7 @@ export const ensureMemoryFixtures = async (
   );
   const conversationId = await ensureConversation(scope, meridian);
   const sensitiveConversationId = await ensureSensitiveConversation(scope);
+  const longReportConversationId = await ensureLongReportConversation(scope);
   const activityRecordId = await ensureActivityRecord(scope, typeId);
   // Clear any cluster episodes a prior run left active — each consolidate
   // repeat builds its own fresh pair via `makeConsolidationCluster`.
@@ -754,6 +841,7 @@ export const ensureMemoryFixtures = async (
     records: { meridian, volta, northwind },
     conversationId,
     sensitiveConversationId,
+    longReportConversationId,
     activityRecordId,
   };
 };
@@ -775,7 +863,13 @@ export const cleanupMemoryFixtures = async (scope: Scope): Promise<void> => {
   const convs = await db.query.aiConversations.findMany({
     where: {
       teamId: scope.teamId,
-      title: { in: [CONVERSATION_TITLE, SENSITIVE_CONVERSATION_TITLE] },
+      title: {
+        in: [
+          CONVERSATION_TITLE,
+          SENSITIVE_CONVERSATION_TITLE,
+          LONG_REPORT_CONVERSATION_TITLE,
+        ],
+      },
     },
     columns: { id: true },
   });

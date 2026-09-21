@@ -9,13 +9,14 @@ Calling a write action directly raises — it never executes.
 """
 
 from typing import Any, Literal, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from ._runtime import FretikActionError, Operation, _call_read
 
 
 # ── Types ─────────────────────────────────────────────────────────
 
 class Chat(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     chat_type: Literal["oneOnOne", "group", "meeting", "unknownFutureValue"]
     last_updated_at: str
@@ -24,6 +25,7 @@ class Chat(BaseModel):
 
 
 class ChatMember(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     display_name: str
     roles: list[str]
@@ -32,6 +34,7 @@ class ChatMember(BaseModel):
 
 
 class ChatMessage(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     body_html: str
     from_user: str
@@ -42,6 +45,7 @@ class ChatMessage(BaseModel):
 
 
 class Team(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     display_name: str
     visibility: Literal["private", "public", "hiddenMembership", "unknownFutureValue"]
@@ -50,6 +54,7 @@ class Team(BaseModel):
 
 
 class Channel(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     display_name: str
     membership_type: Literal["standard", "private", "shared", "unknownFutureValue"]
@@ -58,6 +63,7 @@ class Channel(BaseModel):
 
 
 class ChannelFilesFolder(BaseModel):
+    model_config = ConfigDict(extra="allow")
     drive_id: str
     folder_id: str
     name: str
@@ -65,6 +71,7 @@ class ChannelFilesFolder(BaseModel):
 
 
 class ChannelMessage(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     body_html: str
     from_user: str
@@ -76,6 +83,7 @@ class ChannelMessage(BaseModel):
 
 
 class TeamMember(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     display_name: str
     roles: list[str]
@@ -84,12 +92,14 @@ class TeamMember(BaseModel):
 
 
 class Presence(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     availability: str
     activity: str
 
 
 class User(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     display_name: str
     email: str | None = None
@@ -97,6 +107,7 @@ class User(BaseModel):
 
 
 class Attachment(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     name: str
     content_type: str
@@ -108,6 +119,7 @@ class Attachment(BaseModel):
 
 
 class SearchHit(BaseModel):
+    model_config = ConfigDict(extra="allow")
     kind: Literal["chat", "channel"]
     message_id: str
     body_preview: str
@@ -120,6 +132,7 @@ class SearchHit(BaseModel):
 
 
 class WriteResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str | None = None
 
 

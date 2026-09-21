@@ -90,6 +90,7 @@ const buildAttachmentPath = (filename: string): string =>
  */
 const DOWNLOADABLE_DIRS = new Set<string>([
   WORKSPACE_DIRS.attachments,
+  WORKSPACE_DIRS.downloads,
   WORKSPACE_DIRS.outputs,
 ]);
 

@@ -1,4 +1,5 @@
 import { verifySandboxJwt } from "@fretik/shared/lib/external-apps/sandbox-jwt";
+import { consumeRateLimit } from "@fretik/shared/lib/rate-limit";
 import {
   responseBadRequestSchema,
   responseInternalErrorSchema,
@@ -7,8 +8,20 @@ import {
   sandboxExecRequestSchema,
   sandboxExecResponseSchema,
 } from "@fretik/shared/schemas/sandbox";
+import { getSandboxIdFromRegistry } from "@fretik/shared/services/e2b/registry";
 import { dispatchSandboxExec } from "@fretik/shared/services/sandbox/dispatch";
 import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
+
+/**
+ * Ceiling per conversation per minute. Wide enough that a legitimate turn
+ * doing bulk work never notices — the SDK batches record writes — and narrow
+ * enough that a loop, or a stolen credential being mined, stops.
+ */
+const SANDBOX_EXEC_LIMIT_PER_MINUTE = (() => {
+  const raw = Bun.env.SANDBOX_EXEC_RATE_LIMIT_PER_MINUTE;
+  const n = Number.parseInt(raw ?? "", 10);
+  return Number.isFinite(n) && n > 0 ? n : 120;
+})();
 
 /**
  * `POST /sandbox/exec` — the callback the Python SDK (`fretik_apps._runtime`)
@@ -16,17 +29,26 @@ import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
  *
  * Auth is intentionally **NOT** the Better Auth cookie:
  *  - The sandbox runs in E2B with no access to user cookies.
- *  - The chatbot handler mints a per-turn JWT (HS256, 1h) and writes it
- *    to `/workspace/.fretik/auth.json` BEFORE running the python tool.
- *  - `_runtime.py` reads that file on every call and sends the JWT as a
- *    Bearer token here.
+ *  - A per-turn JWT (HS256, 1h) is minted before the python tool runs, and
+ *    reaches the request either through E2B's egress proxy (the credential
+ *    never enters the VM) or, on deployments where injection is unavailable,
+ *    through `/workspace/.fretik/auth.json`.
  *
  * The JWT is the ONLY thing this route trusts: it carries the
- * `conversationId / teamId / userId / organizationId / turnId` that
- * become the `ExecContext` for `dispatchSandboxExec`. The body's
- * `turnId` is double-checked against the JWT claim as defense in depth —
- * an attacker who replays a JWT with a different `turnId` in the body
- * gets a 401, not silent execution.
+ * `conversationId / teamId / userId / organizationId / turnId` that become the
+ * `ExecContext` for `dispatchSandboxExec`. Which makes it the tenancy
+ * boundary, and is why it is checked three ways beyond its signature:
+ *
+ *  - **`sandboxId` against the live registry.** The token names the sandbox it
+ *    was minted for; the registry says which sandbox the conversation is
+ *    actually using. A token copied out of a workspace therefore dies with
+ *    that sandbox instead of staying valid for the rest of its hour from
+ *    anywhere on the internet. This is the one check that bounds a leak.
+ *  - **`turnId` against the body.** Defense in depth against replaying one
+ *    turn's token against another turn's payload.
+ *  - **A per-conversation rate limit.** The global limiter keys on the client
+ *    IP, and E2B's egress shares addresses across tenants, so one runaway
+ *    conversation would otherwise eat a budget every other tenant draws from.
  */
 
 const sandboxRoutes = new OpenAPIHono();
@@ -58,7 +80,16 @@ const execRoute = createRoute({
           schema: sandboxExecResponseSchema,
         },
       },
-      description: "Invalid or missing sandbox JWT",
+      description:
+        "Missing or invalid sandbox JWT, or a token whose sandbox is no longer live",
+    },
+    429: {
+      content: {
+        "application/json": {
+          schema: sandboxExecResponseSchema,
+        },
+      },
+      description: "Too many sandbox calls for this conversation this minute",
     },
     ...responseBadRequestSchema,
     ...responseInternalErrorSchema,
@@ -106,6 +137,44 @@ sandboxRoutes.openapi(execRoute, async (c) => {
     );
   }
 
+  // The token names the sandbox it was minted for; the registry says which
+  // sandbox this conversation is actually running. Without this check a token
+  // copied out of a workspace stays valid for the rest of its hour from
+  // anywhere — killing the sandbox, or letting it expire, did nothing to it.
+  // The registry entry is cleared by `killSandbox` / `releaseSandbox` and
+  // re-populated by every `acquireSandbox` before any code runs, so a live
+  // sandbox is never rejected.
+  const liveSandboxId = await getSandboxIdFromRegistry(claims.conversationId);
+  if (liveSandboxId === null || liveSandboxId !== claims.sandboxId) {
+    console.warn(
+      `[sandbox/exec] 401 sandbox mismatch jti=${claims.jti} token=${claims.sandboxId} live=${liveSandboxId ?? "<none>"}`,
+    );
+    return c.json(
+      { status: "error" as const, message: "Sandbox is no longer live" },
+      401,
+    );
+  }
+
+  // Per conversation, not per IP: E2B's egress shares addresses across
+  // tenants, so the global per-IP limiter would let one runaway conversation
+  // spend a budget every other tenant is also drawing from.
+  const rate = await consumeRateLimit(
+    "rl:sandbox-exec:",
+    claims.conversationId,
+  );
+  if (rate.totalHits > SANDBOX_EXEC_LIMIT_PER_MINUTE) {
+    console.warn(
+      `[sandbox/exec] 429 conversation=${claims.conversationId} hits=${rate.totalHits.toString()}`,
+    );
+    return c.json(
+      {
+        status: "error" as const,
+        message: `RATE_LIMITED: too many sandbox calls this minute (limit ${SANDBOX_EXEC_LIMIT_PER_MINUTE.toString()}). Batch the operations into one call and retry after ${rate.resetTime.toISOString()}.`,
+      },
+      429,
+    );
+  }
+
   const body = c.req.valid("json");
 
   // Defense in depth: the JWT's `turnId` and the body's `turnId` must
@@ -127,8 +196,22 @@ sandboxRoutes.openapi(execRoute, async (c) => {
       : body.kind === "collections"
         ? `op=${body.op}`
         : `ops=${body.operations.length.toString()}`;
+  // One structured line per dispatch, keyed by `jti`. The credential is
+  // per turn and single-use in practice, so the id ties any suspicious call
+  // back to the turn that minted it — an anonymous 401 count cannot.
   console.info(
-    `[sandbox/exec] dispatch kind=${body.kind} conversationId=${claims.conversationId} ${dispatchDetail}`,
+    JSON.stringify({
+      evt: "sandbox_exec",
+      jti: claims.jti,
+      sandboxId: claims.sandboxId,
+      conversationId: claims.conversationId,
+      turnId: claims.turnId,
+      organizationId: claims.organizationId,
+      teamId: claims.teamId,
+      userId: claims.userId,
+      kind: body.kind,
+      detail: dispatchDetail,
+    }),
   );
 
   const ctx = {

@@ -41,6 +41,7 @@ import { listConversationFiles } from "../agents/shared/fragments";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
 import { workflowToolHintNames } from "../agents/workflow/tools";
 import { WORKSPACE_DIRS } from "../lib/conversation-storage";
+import { maybePersistLargeOutput } from "../lib/persisted-output";
 import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
 import { materializeRunOutputs } from "../services/workflow-runs/materialize-run-outputs";
 
@@ -406,567 +407,580 @@ export const createManageWorkflowTool = () =>
           "activate: override the ≥1-successful-test gate. run_test: required from the 3rd test when the previous one succeeded. run: ALWAYS required — the user must have said yes.",
         ),
     }),
+    // One barrier over every branch, rather than one per return.
+    // `manageWorkflow` has ~15 exit points, the widest of them a run
+    // transcript, and it accounted for 487 KB across the 17 largest production
+    // messages on 2026-09-17 — none of it microcompactable, because a workflow
+    // result is not re-retrievable the way a `read` is. A per-branch cap would
+    // be fifteen chances to forget one; the inner closure keeps it at one.
     execute: async (input, options) => {
-      const ctx = getRuntimeContext(options);
-      const { teamId, organizationId, userId } = ctx;
-      // A private workflow is invisible to anyone but its owner (org
-      // admins/owners see everything) — same rule as the API/UI.
-      const requester: WorkflowRequester | undefined = userId
-        ? { userId, isAdmin: await isOrgAdmin(organizationId, userId) }
-        : undefined;
+      const runAction = async () => {
+        const ctx = getRuntimeContext(options);
+        const { teamId, organizationId, userId } = ctx;
+        // A private workflow is invisible to anyone but its owner (org
+        // admins/owners see everything) — same rule as the API/UI.
+        const requester: WorkflowRequester | undefined = userId
+          ? { userId, isAdmin: await isOrgAdmin(organizationId, userId) }
+          : undefined;
 
-      const { icon: safeIcon, warnings: iconWarnings } = sanitizeIcon(
-        input.icon,
-      );
-      const { color: safeColor, warnings: colorWarnings } = sanitizeColor(
-        input.color,
-      );
+        const { icon: safeIcon, warnings: iconWarnings } = sanitizeIcon(
+          input.icon,
+        );
+        const { color: safeColor, warnings: colorWarnings } = sanitizeColor(
+          input.color,
+        );
 
-      try {
-        switch (input.action) {
-          case "create_draft": {
-            if (!input.name || !input.playbook) {
-              return toolError(
-                TOOL_ERROR_CODES.WORKFLOW_ERROR,
-                "create_draft requires name and playbook.",
-              );
-            }
-            if (!userId) {
-              return toolError(
-                TOOL_ERROR_CODES.WORKFLOW_ERROR,
-                "No acting user in context.",
-              );
-            }
-            const { playbook, warnings: hintWarnings } = sanitizeToolHints(
-              input.playbook,
-            );
-            const warnings = [
-              ...iconWarnings,
-              ...colorWarnings,
-              ...hintWarnings,
-            ];
-            const createInput: CreateWorkflowInput = {
-              name: input.name,
-              description: input.description ?? "",
-              playbook,
-              triggerType: input.triggerType ?? "manual",
-              triggerConfig: input.triggerConfig ?? {},
-              autonomy: input.autonomy ?? "approval_required",
-              limits: {},
-              ...(safeIcon ? { icon: safeIcon } : {}),
-              ...(safeColor ? { color: safeColor } : {}),
-              ...(input.modelProfileKey
-                ? { modelProfileKey: input.modelProfileKey }
-                : {}),
-              ...(input.externalAppConnectionIds
-                ? { externalAppConnectionIds: input.externalAppConnectionIds }
-                : {}),
-              ...(input.scope === "private" ? { userId } : {}),
-            };
-            const workflow = await createWorkflow({
-              organizationId,
-              teamId,
-              createdByUserId: userId,
-              input: createInput,
-            });
-            return {
-              ok: true,
-              workflow: {
-                id: workflow.id,
-                name: workflow.name,
-                status: workflow.status,
-                scope: scopeOf(workflow.userId),
-                ...(workflow.formUrl ? { formUrl: workflow.formUrl } : {}),
-              },
-              ...(warnings.length > 0 ? { warnings } : {}),
-              next: "Test it with run_test, then get_run to review, before activate.",
-            };
-          }
-
-          case "update": {
-            if (!input.workflowId) {
-              return toolError(
-                TOOL_ERROR_CODES.WORKFLOW_ERROR,
-                "update requires workflowId.",
-              );
-            }
-            const sanitized =
-              input.playbook !== undefined
-                ? sanitizeToolHints(input.playbook)
-                : undefined;
-            if (input.scope === "private" && !userId) {
-              return toolError(
-                TOOL_ERROR_CODES.WORKFLOW_ERROR,
-                "No acting user in context — can't scope a workflow to private.",
-              );
-            }
-            const patch: UpdateWorkflowInput = {
-              ...(input.name !== undefined ? { name: input.name } : {}),
-              ...(input.description !== undefined
-                ? { description: input.description }
-                : {}),
-              ...(safeIcon !== undefined ? { icon: safeIcon } : {}),
-              ...(safeColor !== undefined ? { color: safeColor } : {}),
-              ...(input.triggerType !== undefined
-                ? { triggerType: input.triggerType }
-                : {}),
-              ...(input.triggerConfig !== undefined
-                ? { triggerConfig: input.triggerConfig }
-                : {}),
-              ...(sanitized ? { playbook: sanitized.playbook } : {}),
-              ...(input.autonomy !== undefined
-                ? { autonomy: input.autonomy }
-                : {}),
-              ...(input.modelProfileKey !== undefined
-                ? { modelProfileKey: input.modelProfileKey }
-                : {}),
-              ...(input.externalAppConnectionIds !== undefined
-                ? { externalAppConnectionIds: input.externalAppConnectionIds }
-                : {}),
-              ...(input.scope === "private"
-                ? { userId }
-                : input.scope === "team"
-                  ? { userId: null }
-                  : {}),
-            };
-            const workflow = await updateWorkflow({
-              id: input.workflowId,
-              teamId,
-              input: patch,
-              requester,
-            });
-            if (!workflow) {
-              return toolError(
-                TOOL_ERROR_CODES.WORKFLOW_NOT_FOUND,
-                "No such workflow for this team.",
-              );
-            }
-            const updateWarnings = [
-              ...iconWarnings,
-              ...colorWarnings,
-              ...(sanitized ? sanitized.warnings : []),
-            ];
-            return {
-              ok: true,
-              workflow: {
-                id: workflow.id,
-                name: workflow.name,
-                status: workflow.status,
-                scope: scopeOf(workflow.userId),
-              },
-              ...(updateWarnings.length > 0
-                ? { warnings: updateWarnings }
-                : {}),
-            };
-          }
-
-          case "list": {
-            const workflows = await listWorkflows({ teamId, requester });
-            return {
-              ok: true,
-              workflows: workflows.map((w) => ({
-                id: w.id,
-                name: w.name,
-                // What it does, so a candidate can be recognised here rather
-                // than by calling `get` on every workflow in the team.
-                description: truncateForListing(
-                  w.description ?? w.playbook.goal,
-                ),
-                status: w.status,
-                triggerType: w.triggerType,
-                autonomy: w.autonomy,
-                taskCount: w.playbook.tasks.length,
-                scope: scopeOf(w.userId),
-              })),
-            };
-          }
-
-          case "get": {
-            if (!input.workflowId) {
-              return toolError(
-                TOOL_ERROR_CODES.WORKFLOW_ERROR,
-                "get requires workflowId.",
-              );
-            }
-            const workflow = await getWorkflow({
-              id: input.workflowId,
-              teamId,
-              requester,
-            });
-            if (!workflow) {
-              return toolError(
-                TOOL_ERROR_CODES.WORKFLOW_NOT_FOUND,
-                "No such workflow for this team.",
-              );
-            }
-            return {
-              ok: true,
-              workflow: {
-                id: workflow.id,
-                name: workflow.name,
-                description: workflow.description,
-                status: workflow.status,
-                triggerType: workflow.triggerType,
-                triggerConfig: workflow.triggerConfig,
-                autonomy: workflow.autonomy,
-                modelProfileKey: workflow.modelProfileKey,
-                limits: workflow.limits,
-                playbook: workflow.playbook,
-                // `update` replaces the declared list wholesale, so the agent
-                // has to be able to read the current one before changing it.
-                externalAppConnectionIds: workflow.externalAppConnectionIds,
-                scope: scopeOf(workflow.userId),
-                mine: workflow.userId === userId,
-                ...(workflow.formUrl ? { formUrl: workflow.formUrl } : {}),
-              },
-            };
-          }
-
-          case "get_trigger_catalog": {
-            return { ok: true, catalog: buildTriggerCatalog() };
-          }
-
-          case "run_test": {
-            if (!input.workflowId) {
-              return toolError(
-                TOOL_ERROR_CODES.WORKFLOW_ERROR,
-                "run_test requires workflowId.",
-              );
-            }
-            const row = await getWorkflowRow({
-              id: input.workflowId,
-              teamId,
-              requester,
-            });
-            if (!row) {
-              return toolError(
-                TOOL_ERROR_CODES.WORKFLOW_NOT_FOUND,
-                "No such workflow for this team.",
-              );
-            }
-            const prepared = await prepareRunLaunch({
-              row,
-              conversationId: ctx.conversationId,
-              files: input.files,
-              payload: input.payload,
-            });
-            if (!isPreparedLaunch(prepared)) return prepared;
-            const { payload, attachments, notHandedOver } = prepared;
-
-            // Iteration budget. Nothing else bounds this: the in-flight guard
-            // is cron-only, the circuit breaker skips `isTest`, and the
-            // finish→resume→update→run_test cycle is deduped per RUN. Prod
-            // 2026-07-27 spent 27 minutes and $2.16 on four rounds of it. The
-            // count rides every result so the model can see itself converging
-            // — or not.
-            const previousTests = ctx.conversationId
-              ? await countTestRuns({
-                  workflowId: row.id,
-                  sourceConversationId: ctx.conversationId,
-                })
-              : 0;
-            if (previousTests >= MAX_TEST_RUNS_PER_CONVERSATION) {
-              return toolError(
-                TOOL_ERROR_CODES.WORKFLOW_ERROR,
-                `${previousTests.toString()} test runs already in this conversation — stop iterating alone.`,
-                "Show the user what the last run produced versus what they asked for, and ask which difference to fix. They can also run the workflow from its page.",
-              );
-            }
-            // Friction, not a wall: from the 3rd test after a SUCCEEDED one,
-            // require an explicit confirm. A succeeded run whose deliverable
-            // was worth re-testing twice usually wasn't — prod 2026-07-29
-            // re-ran a succeeded run twice over number formats and shipped a
-            // near-identical file both times. Failed runs stay frictionless.
-            if (previousTests >= 2 && input.confirm !== true) {
-              const lastTest = ctx.conversationId
-                ? await db.query.workflowRuns.findFirst({
-                    where: {
-                      workflowId: row.id,
-                      sourceConversationId: ctx.conversationId,
-                      isTest: true,
-                    },
-                    orderBy: { createdAt: "desc" },
-                    columns: { status: true },
-                  })
-                : undefined;
-              if (lastTest?.status === "succeeded") {
+        try {
+          switch (input.action) {
+            case "create_draft": {
+              if (!input.name || !input.playbook) {
                 return toolError(
                   TOOL_ERROR_CODES.WORKFLOW_ERROR,
-                  `The last test run SUCCEEDED and ${previousTests.toString()} tests already ran — a #${(previousTests + 1).toString()} needs confirm: true.`,
-                  "A structurally conform deliverable → activate; a spec detail (format, label) → update without retesting. Re-test only for a real playbook defect the update just fixed — then pass confirm: true, or ask the user.",
+                  "create_draft requires name and playbook.",
                 );
               }
-            }
-
-            const run = await createWorkflowRun({
-              workflow: row,
-              // A form workflow tests as a form run — the executor sees the
-              // same trigger shape a real submission produces.
-              triggerType: row.triggerType === "form" ? "form" : "manual",
-              triggerPayload: payload,
-              triggeredByUserId: userId ?? null,
-              // Notify this chat when the test run finishes.
-              sourceConversationId: ctx.conversationId ?? null,
-              isTest: true,
-              ...(attachments.length > 0 ? { attachments } : {}),
-            });
-            const testRunNumber = previousTests + 1;
-            if (run.status === "failed") {
-              // Failed at creation (INPUT_MISSING / TRIGGER_FAILED): the turn
-              // deliberately continues — fixing the input and relaunching in
-              // the same turn is the right move. These runs never started, so
-              // `countTestRuns` excludes them from the iteration budget.
-              return {
-                ok: true,
-                run: { id: run.id, status: run.status },
-                next: "The run failed to start (this does not count as a test run) — read `error` via get_run, fix the cause, and relaunch in this turn.",
-              };
-            }
-            return {
-              ok: true,
-              run: { id: run.id, status: run.status },
-              testRunNumber,
-              testRunsAllowed: MAX_TEST_RUNS_PER_CONVERSATION,
-              ...(notHandedOver.length > 0 ? { notHandedOver } : {}),
-              // Registered as a wait of this conversation — it is resumed once
-              // this run (and any sibling) finishes. Also the marker the UI
-              // reads to show the run live.
-              backgroundRun: true,
-              next: BACKGROUND_RUN_NEXT,
-            };
-          }
-
-          case "run": {
-            if (!input.workflowId) {
-              return toolError(
-                TOOL_ERROR_CODES.WORKFLOW_ERROR,
-                "run requires workflowId.",
-              );
-            }
-            const row = await getWorkflowRow({
-              id: input.workflowId,
-              teamId,
-              requester,
-            });
-            if (!row) {
-              return toolError(
-                TOOL_ERROR_CODES.WORKFLOW_NOT_FOUND,
-                "No such workflow for this team.",
-              );
-            }
-            // A real run does the work for real: it writes, sends, and emails
-            // the workflow's recipients. Only a live workflow may be run, and
-            // only on the user's explicit say-so — a test run is the way to
-            // try something out.
-            if (row.status !== "active") {
-              return toolError(
-                TOOL_ERROR_CODES.WORKFLOW_ERROR,
-                `This workflow is ${row.status}, and only an active workflow can be run for real.`,
-                "Activate it first, or use run_test to try it out.",
-              );
-            }
-            if (input.confirm !== true) {
-              return toolError(
-                TOOL_ERROR_CODES.WORKFLOW_ERROR,
-                "A real run needs the user's explicit go-ahead in this conversation.",
-                "Tell them what it will do, ask, then pass confirm: true. Use run_test to try it out without side effects.",
-              );
-            }
-
-            const prepared = await prepareRunLaunch({
-              row,
-              conversationId: ctx.conversationId,
-              files: input.files,
-              payload: input.payload,
-            });
-            if (!isPreparedLaunch(prepared)) return prepared;
-
-            const run = await createWorkflowRun({
-              workflow: row,
-              triggerType: row.triggerType === "form" ? "form" : "manual",
-              triggerPayload: prepared.payload,
-              triggeredByUserId: userId ?? null,
-              sourceConversationId: ctx.conversationId ?? null,
-              isTest: false,
-              ...(prepared.attachments.length > 0
-                ? { attachments: prepared.attachments }
-                : {}),
-            });
-            if (run.status === "failed") {
-              return {
-                ok: true,
-                run: { id: run.id, status: run.status },
-                next: "The run failed to start — read `error` via get_run, fix the cause, and relaunch in this turn.",
-              };
-            }
-            return {
-              ok: true,
-              run: { id: run.id, status: run.status },
-              ...(prepared.notHandedOver.length > 0
-                ? { notHandedOver: prepared.notHandedOver }
-                : {}),
-              backgroundRun: true,
-              next: BACKGROUND_RUN_NEXT,
-            };
-          }
-
-          case "get_run": {
-            if (!input.runId) {
-              return toolError(
-                TOOL_ERROR_CODES.WORKFLOW_ERROR,
-                "get_run requires runId.",
-              );
-            }
-            const run = await getWorkflowRun({
-              id: input.runId,
-              teamId,
-              requester,
-            });
-            if (!run) {
-              return toolError(
-                TOOL_ERROR_CODES.WORKFLOW_NOT_FOUND,
-                "No such run for this team.",
-              );
-            }
-            // The deliverables are pulled into THIS conversation's workspace
-            // and handed back as paths: a run writes in its own conversation,
-            // so without this the builder can only grade a run on the summary
-            // the run wrote about itself — which is how four consecutive test
-            // runs shipped the same invented CSV column in prod.
-            const outputs = run.outputs ?? [];
-            const materialized =
-              outputs.length > 0 && run.conversationId && ctx.conversationId
-                ? await materializeRunOutputs({
-                    runId: run.id,
-                    runConversationId: run.conversationId,
-                    conversationId: ctx.conversationId,
-                    outputs,
-                  })
-                : new Map<string, string>();
-            return {
-              ok: true,
-              run: {
-                id: run.id,
-                status: run.status,
-                isTest: run.isTest,
-                turns: run.usage.turns,
-                // Tokens with the cache share broken out — the raw total alone
-                // reads as runaway consumption when most of it is cache hits.
-                usage: {
-                  totalTokens: run.usage.totalTokens,
-                  cachedInputTokens: run.usage.cachedInputTokens,
-                  outputTokens: run.usage.outputTokens,
-                },
-                tasks: run.taskStates.map((t) => ({
-                  key: t.key,
-                  title: t.title,
-                  status: t.status,
-                  ...(t.summary ? { summary: t.summary } : {}),
-                })),
-                outputSummary: run.outputSummary,
-                outputs: outputs.map((output) => ({
-                  label: output.label,
-                  ...(output.value !== undefined
-                    ? { value: output.value }
-                    : {}),
-                  ...(output.mimeType !== undefined
-                    ? { mimeType: output.mimeType }
-                    : {}),
-                  ...(output.sizeBytes !== undefined
-                    ? { sizeBytes: output.sizeBytes }
-                    : {}),
-                  ...(output.filePath !== undefined &&
-                  materialized.has(output.filePath)
-                    ? { path: materialized.get(output.filePath) }
-                    : {}),
-                })),
-                error: run.error,
-              },
-            };
-          }
-
-          case "activate": {
-            if (!input.workflowId) {
-              return toolError(
-                TOOL_ERROR_CODES.WORKFLOW_ERROR,
-                "activate requires workflowId.",
-              );
-            }
-            if (input.confirm !== true) {
-              const tested = await hasSuccessfulRun({
-                workflowId: input.workflowId,
-                teamId,
-              });
-              if (!tested) {
+              if (!userId) {
                 return toolError(
-                  TOOL_ERROR_CODES.WORKFLOW_NOT_TESTED,
-                  "No succeeded run yet.",
-                  "Run a test (run_test) and confirm it succeeded, or ask the user to confirm activating untested and pass confirm: true.",
+                  TOOL_ERROR_CODES.WORKFLOW_ERROR,
+                  "No acting user in context.",
                 );
               }
-            }
-            const workflow = await activateWorkflow({
-              id: input.workflowId,
-              teamId,
-              requester,
-            });
-            if (!workflow) {
-              return toolError(
-                TOOL_ERROR_CODES.WORKFLOW_NOT_FOUND,
-                "No such workflow for this team.",
+              const { playbook, warnings: hintWarnings } = sanitizeToolHints(
+                input.playbook,
               );
+              const warnings = [
+                ...iconWarnings,
+                ...colorWarnings,
+                ...hintWarnings,
+              ];
+              const createInput: CreateWorkflowInput = {
+                name: input.name,
+                description: input.description ?? "",
+                playbook,
+                triggerType: input.triggerType ?? "manual",
+                triggerConfig: input.triggerConfig ?? {},
+                autonomy: input.autonomy ?? "approval_required",
+                limits: {},
+                ...(safeIcon ? { icon: safeIcon } : {}),
+                ...(safeColor ? { color: safeColor } : {}),
+                ...(input.modelProfileKey
+                  ? { modelProfileKey: input.modelProfileKey }
+                  : {}),
+                ...(input.externalAppConnectionIds
+                  ? { externalAppConnectionIds: input.externalAppConnectionIds }
+                  : {}),
+                ...(input.scope === "private" ? { userId } : {}),
+              };
+              const workflow = await createWorkflow({
+                organizationId,
+                teamId,
+                createdByUserId: userId,
+                input: createInput,
+              });
+              return {
+                ok: true,
+                workflow: {
+                  id: workflow.id,
+                  name: workflow.name,
+                  status: workflow.status,
+                  scope: scopeOf(workflow.userId),
+                  ...(workflow.formUrl ? { formUrl: workflow.formUrl } : {}),
+                },
+                ...(warnings.length > 0 ? { warnings } : {}),
+                next: "Test it with run_test, then get_run to review, before activate.",
+              };
             }
-            return {
-              ok: true,
-              workflow: {
-                id: workflow.id,
-                name: workflow.name,
-                status: workflow.status,
-              },
-            };
-          }
 
-          case "pause": {
-            if (!input.workflowId) {
+            case "update": {
+              if (!input.workflowId) {
+                return toolError(
+                  TOOL_ERROR_CODES.WORKFLOW_ERROR,
+                  "update requires workflowId.",
+                );
+              }
+              const sanitized =
+                input.playbook !== undefined
+                  ? sanitizeToolHints(input.playbook)
+                  : undefined;
+              if (input.scope === "private" && !userId) {
+                return toolError(
+                  TOOL_ERROR_CODES.WORKFLOW_ERROR,
+                  "No acting user in context — can't scope a workflow to private.",
+                );
+              }
+              const patch: UpdateWorkflowInput = {
+                ...(input.name !== undefined ? { name: input.name } : {}),
+                ...(input.description !== undefined
+                  ? { description: input.description }
+                  : {}),
+                ...(safeIcon !== undefined ? { icon: safeIcon } : {}),
+                ...(safeColor !== undefined ? { color: safeColor } : {}),
+                ...(input.triggerType !== undefined
+                  ? { triggerType: input.triggerType }
+                  : {}),
+                ...(input.triggerConfig !== undefined
+                  ? { triggerConfig: input.triggerConfig }
+                  : {}),
+                ...(sanitized ? { playbook: sanitized.playbook } : {}),
+                ...(input.autonomy !== undefined
+                  ? { autonomy: input.autonomy }
+                  : {}),
+                ...(input.modelProfileKey !== undefined
+                  ? { modelProfileKey: input.modelProfileKey }
+                  : {}),
+                ...(input.externalAppConnectionIds !== undefined
+                  ? { externalAppConnectionIds: input.externalAppConnectionIds }
+                  : {}),
+                ...(input.scope === "private"
+                  ? { userId }
+                  : input.scope === "team"
+                    ? { userId: null }
+                    : {}),
+              };
+              const workflow = await updateWorkflow({
+                id: input.workflowId,
+                teamId,
+                input: patch,
+                requester,
+              });
+              if (!workflow) {
+                return toolError(
+                  TOOL_ERROR_CODES.WORKFLOW_NOT_FOUND,
+                  "No such workflow for this team.",
+                );
+              }
+              const updateWarnings = [
+                ...iconWarnings,
+                ...colorWarnings,
+                ...(sanitized ? sanitized.warnings : []),
+              ];
+              return {
+                ok: true,
+                workflow: {
+                  id: workflow.id,
+                  name: workflow.name,
+                  status: workflow.status,
+                  scope: scopeOf(workflow.userId),
+                },
+                ...(updateWarnings.length > 0
+                  ? { warnings: updateWarnings }
+                  : {}),
+              };
+            }
+
+            case "list": {
+              const workflows = await listWorkflows({ teamId, requester });
+              return {
+                ok: true,
+                workflows: workflows.map((w) => ({
+                  id: w.id,
+                  name: w.name,
+                  // What it does, so a candidate can be recognised here rather
+                  // than by calling `get` on every workflow in the team.
+                  description: truncateForListing(
+                    w.description ?? w.playbook.goal,
+                  ),
+                  status: w.status,
+                  triggerType: w.triggerType,
+                  autonomy: w.autonomy,
+                  taskCount: w.playbook.tasks.length,
+                  scope: scopeOf(w.userId),
+                })),
+              };
+            }
+
+            case "get": {
+              if (!input.workflowId) {
+                return toolError(
+                  TOOL_ERROR_CODES.WORKFLOW_ERROR,
+                  "get requires workflowId.",
+                );
+              }
+              const workflow = await getWorkflow({
+                id: input.workflowId,
+                teamId,
+                requester,
+              });
+              if (!workflow) {
+                return toolError(
+                  TOOL_ERROR_CODES.WORKFLOW_NOT_FOUND,
+                  "No such workflow for this team.",
+                );
+              }
+              return {
+                ok: true,
+                workflow: {
+                  id: workflow.id,
+                  name: workflow.name,
+                  description: workflow.description,
+                  status: workflow.status,
+                  triggerType: workflow.triggerType,
+                  triggerConfig: workflow.triggerConfig,
+                  autonomy: workflow.autonomy,
+                  modelProfileKey: workflow.modelProfileKey,
+                  limits: workflow.limits,
+                  playbook: workflow.playbook,
+                  // `update` replaces the declared list wholesale, so the agent
+                  // has to be able to read the current one before changing it.
+                  externalAppConnectionIds: workflow.externalAppConnectionIds,
+                  scope: scopeOf(workflow.userId),
+                  mine: workflow.userId === userId,
+                  ...(workflow.formUrl ? { formUrl: workflow.formUrl } : {}),
+                },
+              };
+            }
+
+            case "get_trigger_catalog": {
+              return { ok: true, catalog: buildTriggerCatalog() };
+            }
+
+            case "run_test": {
+              if (!input.workflowId) {
+                return toolError(
+                  TOOL_ERROR_CODES.WORKFLOW_ERROR,
+                  "run_test requires workflowId.",
+                );
+              }
+              const row = await getWorkflowRow({
+                id: input.workflowId,
+                teamId,
+                requester,
+              });
+              if (!row) {
+                return toolError(
+                  TOOL_ERROR_CODES.WORKFLOW_NOT_FOUND,
+                  "No such workflow for this team.",
+                );
+              }
+              const prepared = await prepareRunLaunch({
+                row,
+                conversationId: ctx.conversationId,
+                files: input.files,
+                payload: input.payload,
+              });
+              if (!isPreparedLaunch(prepared)) return prepared;
+              const { payload, attachments, notHandedOver } = prepared;
+
+              // Iteration budget. Nothing else bounds this: the in-flight guard
+              // is cron-only, the circuit breaker skips `isTest`, and the
+              // finish→resume→update→run_test cycle is deduped per RUN. Prod
+              // 2026-07-27 spent 27 minutes and $2.16 on four rounds of it. The
+              // count rides every result so the model can see itself converging
+              // — or not.
+              const previousTests = ctx.conversationId
+                ? await countTestRuns({
+                    workflowId: row.id,
+                    sourceConversationId: ctx.conversationId,
+                  })
+                : 0;
+              if (previousTests >= MAX_TEST_RUNS_PER_CONVERSATION) {
+                return toolError(
+                  TOOL_ERROR_CODES.WORKFLOW_ERROR,
+                  `${previousTests.toString()} test runs already in this conversation — stop iterating alone.`,
+                  "Show the user what the last run produced versus what they asked for, and ask which difference to fix. They can also run the workflow from its page.",
+                );
+              }
+              // Friction, not a wall: from the 3rd test after a SUCCEEDED one,
+              // require an explicit confirm. A succeeded run whose deliverable
+              // was worth re-testing twice usually wasn't — prod 2026-07-29
+              // re-ran a succeeded run twice over number formats and shipped a
+              // near-identical file both times. Failed runs stay frictionless.
+              if (previousTests >= 2 && input.confirm !== true) {
+                const lastTest = ctx.conversationId
+                  ? await db.query.workflowRuns.findFirst({
+                      where: {
+                        workflowId: row.id,
+                        sourceConversationId: ctx.conversationId,
+                        isTest: true,
+                      },
+                      orderBy: { createdAt: "desc" },
+                      columns: { status: true },
+                    })
+                  : undefined;
+                if (lastTest?.status === "succeeded") {
+                  return toolError(
+                    TOOL_ERROR_CODES.WORKFLOW_ERROR,
+                    `The last test run SUCCEEDED and ${previousTests.toString()} tests already ran — a #${(previousTests + 1).toString()} needs confirm: true.`,
+                    "A structurally conform deliverable → activate; a spec detail (format, label) → update without retesting. Re-test only for a real playbook defect the update just fixed — then pass confirm: true, or ask the user.",
+                  );
+                }
+              }
+
+              const run = await createWorkflowRun({
+                workflow: row,
+                // A form workflow tests as a form run — the executor sees the
+                // same trigger shape a real submission produces.
+                triggerType: row.triggerType === "form" ? "form" : "manual",
+                triggerPayload: payload,
+                triggeredByUserId: userId ?? null,
+                // Notify this chat when the test run finishes.
+                sourceConversationId: ctx.conversationId ?? null,
+                isTest: true,
+                ...(attachments.length > 0 ? { attachments } : {}),
+              });
+              const testRunNumber = previousTests + 1;
+              if (run.status === "failed") {
+                // Failed at creation (INPUT_MISSING / TRIGGER_FAILED): the turn
+                // deliberately continues — fixing the input and relaunching in
+                // the same turn is the right move. These runs never started, so
+                // `countTestRuns` excludes them from the iteration budget.
+                return {
+                  ok: true,
+                  run: { id: run.id, status: run.status },
+                  next: "The run failed to start (this does not count as a test run) — read `error` via get_run, fix the cause, and relaunch in this turn.",
+                };
+              }
+              return {
+                ok: true,
+                run: { id: run.id, status: run.status },
+                testRunNumber,
+                testRunsAllowed: MAX_TEST_RUNS_PER_CONVERSATION,
+                ...(notHandedOver.length > 0 ? { notHandedOver } : {}),
+                // Registered as a wait of this conversation — it is resumed once
+                // this run (and any sibling) finishes. Also the marker the UI
+                // reads to show the run live.
+                backgroundRun: true,
+                next: BACKGROUND_RUN_NEXT,
+              };
+            }
+
+            case "run": {
+              if (!input.workflowId) {
+                return toolError(
+                  TOOL_ERROR_CODES.WORKFLOW_ERROR,
+                  "run requires workflowId.",
+                );
+              }
+              const row = await getWorkflowRow({
+                id: input.workflowId,
+                teamId,
+                requester,
+              });
+              if (!row) {
+                return toolError(
+                  TOOL_ERROR_CODES.WORKFLOW_NOT_FOUND,
+                  "No such workflow for this team.",
+                );
+              }
+              // A real run does the work for real: it writes, sends, and emails
+              // the workflow's recipients. Only a live workflow may be run, and
+              // only on the user's explicit say-so — a test run is the way to
+              // try something out.
+              if (row.status !== "active") {
+                return toolError(
+                  TOOL_ERROR_CODES.WORKFLOW_ERROR,
+                  `This workflow is ${row.status}, and only an active workflow can be run for real.`,
+                  "Activate it first, or use run_test to try it out.",
+                );
+              }
+              if (input.confirm !== true) {
+                return toolError(
+                  TOOL_ERROR_CODES.WORKFLOW_ERROR,
+                  "A real run needs the user's explicit go-ahead in this conversation.",
+                  "Tell them what it will do, ask, then pass confirm: true. Use run_test to try it out without side effects.",
+                );
+              }
+
+              const prepared = await prepareRunLaunch({
+                row,
+                conversationId: ctx.conversationId,
+                files: input.files,
+                payload: input.payload,
+              });
+              if (!isPreparedLaunch(prepared)) return prepared;
+
+              const run = await createWorkflowRun({
+                workflow: row,
+                triggerType: row.triggerType === "form" ? "form" : "manual",
+                triggerPayload: prepared.payload,
+                triggeredByUserId: userId ?? null,
+                sourceConversationId: ctx.conversationId ?? null,
+                isTest: false,
+                ...(prepared.attachments.length > 0
+                  ? { attachments: prepared.attachments }
+                  : {}),
+              });
+              if (run.status === "failed") {
+                return {
+                  ok: true,
+                  run: { id: run.id, status: run.status },
+                  next: "The run failed to start — read `error` via get_run, fix the cause, and relaunch in this turn.",
+                };
+              }
+              return {
+                ok: true,
+                run: { id: run.id, status: run.status },
+                ...(prepared.notHandedOver.length > 0
+                  ? { notHandedOver: prepared.notHandedOver }
+                  : {}),
+                backgroundRun: true,
+                next: BACKGROUND_RUN_NEXT,
+              };
+            }
+
+            case "get_run": {
+              if (!input.runId) {
+                return toolError(
+                  TOOL_ERROR_CODES.WORKFLOW_ERROR,
+                  "get_run requires runId.",
+                );
+              }
+              const run = await getWorkflowRun({
+                id: input.runId,
+                teamId,
+                requester,
+              });
+              if (!run) {
+                return toolError(
+                  TOOL_ERROR_CODES.WORKFLOW_NOT_FOUND,
+                  "No such run for this team.",
+                );
+              }
+              // The deliverables are pulled into THIS conversation's workspace
+              // and handed back as paths: a run writes in its own conversation,
+              // so without this the builder can only grade a run on the summary
+              // the run wrote about itself — which is how four consecutive test
+              // runs shipped the same invented CSV column in prod.
+              const outputs = run.outputs ?? [];
+              const materialized =
+                outputs.length > 0 && run.conversationId && ctx.conversationId
+                  ? await materializeRunOutputs({
+                      runId: run.id,
+                      runConversationId: run.conversationId,
+                      conversationId: ctx.conversationId,
+                      outputs,
+                    })
+                  : new Map<string, string>();
+              return {
+                ok: true,
+                run: {
+                  id: run.id,
+                  status: run.status,
+                  isTest: run.isTest,
+                  turns: run.usage.turns,
+                  // Tokens with the cache share broken out — the raw total alone
+                  // reads as runaway consumption when most of it is cache hits.
+                  usage: {
+                    totalTokens: run.usage.totalTokens,
+                    cachedInputTokens: run.usage.cachedInputTokens,
+                    outputTokens: run.usage.outputTokens,
+                  },
+                  tasks: run.taskStates.map((t) => ({
+                    key: t.key,
+                    title: t.title,
+                    status: t.status,
+                    ...(t.summary ? { summary: t.summary } : {}),
+                  })),
+                  outputSummary: run.outputSummary,
+                  outputs: outputs.map((output) => ({
+                    label: output.label,
+                    ...(output.value !== undefined
+                      ? { value: output.value }
+                      : {}),
+                    ...(output.mimeType !== undefined
+                      ? { mimeType: output.mimeType }
+                      : {}),
+                    ...(output.sizeBytes !== undefined
+                      ? { sizeBytes: output.sizeBytes }
+                      : {}),
+                    ...(output.filePath !== undefined &&
+                    materialized.has(output.filePath)
+                      ? { path: materialized.get(output.filePath) }
+                      : {}),
+                  })),
+                  error: run.error,
+                },
+              };
+            }
+
+            case "activate": {
+              if (!input.workflowId) {
+                return toolError(
+                  TOOL_ERROR_CODES.WORKFLOW_ERROR,
+                  "activate requires workflowId.",
+                );
+              }
+              if (input.confirm !== true) {
+                const tested = await hasSuccessfulRun({
+                  workflowId: input.workflowId,
+                  teamId,
+                });
+                if (!tested) {
+                  return toolError(
+                    TOOL_ERROR_CODES.WORKFLOW_NOT_TESTED,
+                    "No succeeded run yet.",
+                    "Run a test (run_test) and confirm it succeeded, or ask the user to confirm activating untested and pass confirm: true.",
+                  );
+                }
+              }
+              const workflow = await activateWorkflow({
+                id: input.workflowId,
+                teamId,
+                requester,
+              });
+              if (!workflow) {
+                return toolError(
+                  TOOL_ERROR_CODES.WORKFLOW_NOT_FOUND,
+                  "No such workflow for this team.",
+                );
+              }
+              return {
+                ok: true,
+                workflow: {
+                  id: workflow.id,
+                  name: workflow.name,
+                  status: workflow.status,
+                },
+              };
+            }
+
+            case "pause": {
+              if (!input.workflowId) {
+                return toolError(
+                  TOOL_ERROR_CODES.WORKFLOW_ERROR,
+                  "pause requires workflowId.",
+                );
+              }
+              const workflow = await pauseWorkflow({
+                id: input.workflowId,
+                teamId,
+                requester,
+              });
+              if (!workflow) {
+                return toolError(
+                  TOOL_ERROR_CODES.WORKFLOW_NOT_FOUND,
+                  "No such workflow for this team.",
+                );
+              }
+              return {
+                ok: true,
+                workflow: {
+                  id: workflow.id,
+                  name: workflow.name,
+                  status: workflow.status,
+                },
+              };
+            }
+
+            default: {
+              const exhaustive: never = input.action;
               return toolError(
                 TOOL_ERROR_CODES.WORKFLOW_ERROR,
-                "pause requires workflowId.",
+                `Unknown action ${String(exhaustive)}.`,
               );
             }
-            const workflow = await pauseWorkflow({
-              id: input.workflowId,
-              teamId,
-              requester,
-            });
-            if (!workflow) {
-              return toolError(
-                TOOL_ERROR_CODES.WORKFLOW_NOT_FOUND,
-                "No such workflow for this team.",
-              );
-            }
-            return {
-              ok: true,
-              workflow: {
-                id: workflow.id,
-                name: workflow.name,
-                status: workflow.status,
-              },
-            };
           }
-
-          default: {
-            const exhaustive: never = input.action;
-            return toolError(
-              TOOL_ERROR_CODES.WORKFLOW_ERROR,
-              `Unknown action ${String(exhaustive)}.`,
-            );
-          }
+        } catch (err) {
+          return toolError(
+            TOOL_ERROR_CODES.WORKFLOW_ERROR,
+            `manageWorkflow ${input.action} failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
         }
-      } catch (err) {
-        return toolError(
-          TOOL_ERROR_CODES.WORKFLOW_ERROR,
-          `manageWorkflow ${input.action} failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
+      };
+      return maybePersistLargeOutput(
+        await runAction(),
+        getRuntimeContext(options).conversationId,
+        options.toolCallId,
+      );
     },
   });

@@ -286,6 +286,33 @@ describe("response shapes", () => {
     expect(mapped.content_type).toBe("application/pdf");
   });
 
+  /**
+   * The test above passes even if Graph never sends the annotation — it feeds
+   * the mapper a fixture that already contains one. That is exactly what
+   * happened: `download_file` shipped on 2026-09-10, was called six times in
+   * production, and never once returned a byte. These two pin the halves the
+   * fixture assumed.
+   */
+  test("a download_file request sends NO $select — it is what loses the URL", () => {
+    // Measured against a live tenant 2026-09-17: any `$select` on this route,
+    // including `id,@microsoft.graph.downloadUrl` from Microsoft's own doc,
+    // comes back 200 and WITHOUT the annotation.
+    const req = send("download_file", { drive_id: "b!d", item_id: "01ITEM" });
+    expect(req.query?.$select).toBeUndefined();
+    expect(req.endpoint).toBe("/v1.0/drives/b!d/items/01ITEM");
+  });
+
+  test("a driveItem with no download URL throws instead of answering byteless", () => {
+    expect(() =>
+      respond("download_file", {
+        id: "01ITEM",
+        name: "acme.pdf",
+        size: 1234,
+        file: { mimeType: "application/pdf" },
+      }),
+    ).toThrow(/no download URL/);
+  });
+
   test("a page's cursor is the skiptoken, not the whole nextLink", () => {
     const mapped = respond("list_folder", {
       value: [

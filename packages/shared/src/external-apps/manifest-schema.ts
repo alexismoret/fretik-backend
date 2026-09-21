@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { sandboxHostPatternSchema } from "../schemas/sandbox-policy";
 
 /**
  * Provider manifest format — the single source of truth for one external
@@ -49,8 +50,22 @@ export interface ParamSpec {
   /**
    * Excluded from the plan's `lookupHash` — for volatile free-text fields
    * (message bodies) the agent may regenerate verbatim between runs.
+   *
+   * Only for a field that carries NO decision. A field holding real payload
+   * wants `hashAsDigest` instead: dropping it makes two different writes to
+   * the same target one plan, and the second is replayed from the first's
+   * cached result without executing.
    */
   excludeFromHash?: boolean;
+  /**
+   * Replaced by a hash of its value in the plan's `lookupHash`, rather than
+   * dropped — so a byte-identical re-send still matches its grant (no
+   * pointless re-prompt) while DIFFERENT content is a different plan.
+   *
+   * For payload the approval card cannot show and the hash must not ignore:
+   * an upload's bytes. Wins over `excludeFromHash` if both are set.
+   */
+  hashAsDigest?: boolean;
   /** HTTP location — top-level params only. Defaults: read→query, write→body. */
   in?: ParamLocation;
   /** `enum` only — allowed string values. */
@@ -83,6 +98,7 @@ export const paramSpecSchema: z.ZodType<ParamSpec> = z.lazy(() =>
       optional: z.boolean().optional(),
       default: z.unknown().optional(),
       excludeFromHash: z.boolean().optional(),
+      hashAsDigest: z.boolean().optional(),
       in: paramLocationSchema.optional(),
       values: z.array(z.string()).optional(),
       min: z.number().optional(),
@@ -1043,6 +1059,31 @@ export const providerManifestSchema = z
           .regex(/^[a-z][a-z0-9-]*$/, "category must be a kebab-case slug"),
       )
       .min(1),
+    /**
+     * Hosts the generated SDK must reach FROM INSIDE the sandbox for this
+     * provider's byte transfers, when those bytes are NOT served through the
+     * credentialed proxy.
+     *
+     * Graph is the reference case: it never serves file bytes itself —
+     * `@microsoft.graph.downloadUrl` and an upload session's `uploadUrl` both
+     * point at `<tenant>.sharepoint.com`, so `_runtime.py` streams from there
+     * directly. Without the host on the sandbox's egress allowlist that
+     * stream dies on a killed TLS handshake the agent reports as a bare read
+     * failure.
+     *
+     * Declared here rather than in a list inside the sandbox service so the
+     * requirement lives next to the actions that create it, and so the host is
+     * added ONLY while the team has an active connection to this provider
+     * (`services/e2b/provider-egress.ts`). Disconnecting the app removes the
+     * host.
+     *
+     * A wildcard here covers the whole platform, not just the team's tenant —
+     * `*.sharepoint.com` reaches any tenant, not only theirs. Narrowing it
+     * needs the tenant host, which is only known when the connection carries
+     * an optional `default_site_url`; until that is required, prefer the
+     * narrowest host the provider's URLs actually use.
+     */
+    sandboxEgressHosts: z.array(sandboxHostPatternSchema).max(10).optional(),
     /** Named reusable collections referenced by `returns` / params. */
     types: z.record(z.string(), z.record(z.string(), paramSpecSchema)),
     actions: z.array(actionSchema).min(1),

@@ -65,6 +65,7 @@ const EXPECTED_DOMAIN_TOOL_NAMES: readonly string[] = [
   "searchIcons",
   "webFetch",
   "webMap",
+  "downloadFile",
   "downloadDriveDocument",
   "uploadToDrive",
   "manageDrive",

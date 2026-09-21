@@ -505,14 +505,20 @@ export const ftpSftpManifest: ProviderManifest = {
       summary: "Upload files to the server (creates missing folders)",
       handler: "uploadFiles",
       params: {
-        // NOT `excludeFromHash` on the array: that strips the whole
-        // parameter from the approval's lookup hash, leaving `on_conflict`
-        // and `create_directories` as the only discriminators — so a second
-        // upload in the same turn would match the first grant and replay its
-        // result instead of writing. Only the BYTES are excluded, one level
-        // down: the card shows paths, so paths are what the user approved,
-        // and a regenerated file with a timestamp inside it should not
-        // re-prompt.
+        // Nothing here is dropped from the approval's lookup hash. Stripping
+        // the array would leave `on_conflict` and `create_directories` as the
+        // only discriminators; stripping just the BYTES, one level down, was
+        // the previous shape and was not enough either — two uploads to the
+        // same paths with DIFFERENT content hashed alike, so the second
+        // matched the first's consumed grant and was replayed. Observed in
+        // prod on 2026-09-16: the agent was told `ok`, and the partner kept
+        // the old file.
+        //
+        // `hashAsDigest` keeps what that was protecting — a byte-identical
+        // re-send still matches its grant, so a regenerated file does not
+        // re-prompt — while making different content a different plan. The
+        // cost is a fresh card when the bytes really did change, which is
+        // what approving an upload should mean.
         files: {
           type: "array",
           description: `Files to send. Up to ${MAX_UPLOAD_FILES.toString()} per call, ${MAX_UPLOAD_TOTAL_MB.toString()} MB total.`,
@@ -523,7 +529,12 @@ export const ftpSftpManifest: ProviderManifest = {
                 type: "string",
                 description: "Destination path INCLUDING the file name",
               },
-              content_base64: { type: "string", excludeFromHash: true },
+              content_base64: {
+                type: "string",
+                description:
+                  'The file\'s bytes, base64-encoded. `""` writes a 0-byte file.',
+                hashAsDigest: true,
+              },
               mode: {
                 type: "string",
                 optional: true,

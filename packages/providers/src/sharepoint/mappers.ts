@@ -248,13 +248,26 @@ const search: RequestMapper = (args) => {
   };
 };
 
-const downloadFile: RequestMapper = () => ({
-  // `@microsoft.graph.downloadUrl` is a computed property — it only comes
-  // back when explicitly selected.
-  query: {
-    $select: "id,name,size,file,@microsoft.graph.downloadUrl",
-  },
-});
+/**
+ * NO `$select` — and that is the whole point of this mapper.
+ *
+ * `@microsoft.graph.downloadUrl` is an instance annotation, and on this route
+ * asking for it by name is how you lose it. Measured 2026-09-17 against a live
+ * tenant, on two items (135 B and 123 MB), same answer both times:
+ *
+ *   $select=id,name,size,file,@microsoft.graph.downloadUrl  → keys: id, name, file, size
+ *   $select=id,@microsoft.graph.downloadUrl                 → keys: id
+ *   (no $select)                                            → annotation PRESENT
+ *
+ * The second shape is the one Microsoft's own "Download driveItem content" doc
+ * prints, so the doc is not the authority here — the tenant is. Graph answers
+ * 200 either way, so a `$select` silently drops the single field this action
+ * exists to fetch: the agent got a `FileDownload` with a name, a size and no
+ * bytes (prod conversation 01a0aac8-…, 2026-09-16, six calls, zero downloads).
+ *
+ * `sharepoint-wire-contract.test.ts` pins the absence.
+ */
+const downloadFile: RequestMapper = () => ({});
 
 const resolveShareLink: RequestMapper = (args) => ({
   endpoint: `/v1.0/shares/${shareToken(str(args.share_url))}/driveItem`,
@@ -459,17 +472,26 @@ const normalizeDriveItem = (raw: unknown): Record<string, unknown> => {
  * Surfacing it as `download_url` is what makes the sandbox runtime stream
  * the bytes to `sandbox_path` before the agent ever sees them — the same
  * contract Teams attachments use.
+ *
+ * No URL means no bytes, so this THROWS rather than returning a `FileDownload`
+ * with a name and a size and nothing to open. That object is worse than an
+ * error: it reads like a success, and the agent that got one spent six calls
+ * and two and a half minutes discovering otherwise.
  */
 const fileDownload: ResponseMapper = (raw) => {
-  const out: Record<string, unknown> = {
+  const url = asString(prop(raw, "@microsoft.graph.downloadUrl"));
+  if (url === undefined) {
+    throw new Error(
+      `SharePoint returned no download URL for "${str(path(raw, "name"), "this item")}", so its bytes cannot be fetched. Check it is a file and not a folder; a file under a sensitivity label or a retention policy is also withheld this way. Read it from its web_url instead, or ask the user for another copy.`,
+    );
+  }
+  return {
     id: str(path(raw, "id")),
     name: str(path(raw, "name")),
     content_type: str(path(raw, "file", "mimeType")),
     size_bytes: num(path(raw, "size")),
+    download_url: url,
   };
-  const url = asString(prop(raw, "@microsoft.graph.downloadUrl"));
-  if (url !== undefined) out.download_url = url;
-  return out;
 };
 
 const normalizeVersion = (raw: unknown): Record<string, unknown> => {

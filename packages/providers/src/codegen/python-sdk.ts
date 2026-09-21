@@ -46,16 +46,24 @@ const emitReturnType = (
   return "dict[str, Any]";
 };
 
+/**
+ * `extra="allow"` on the RESULT models (never on the args ones below, where a
+ * rejected surprise is the point): pydantic's default silently DROPS a key the
+ * server sent and the manifest does not declare, so a diagnostic the runtime
+ * attaches to a payload — `download_error` on an attachment whose fetch failed
+ * — would vanish between the wire and the agent. A field we did not anticipate
+ * is information; eating it is how a failure becomes a `None`.
+ */
 const emitTypeModel = (
   name: string,
   fields: Record<string, ParamSpec>,
 ): string => {
-  const lines: string[] = [`class ${name}(BaseModel):`];
+  const lines: string[] = [
+    `class ${name}(BaseModel):`,
+    `    model_config = ConfigDict(extra="allow")`,
+  ];
   const entries = sortedParamEntries(fields);
-  if (entries.length === 0) {
-    lines.push("    pass");
-    return lines.join("\n");
-  }
+  if (entries.length === 0) return lines.join("\n");
   for (const [field, spec] of entries) {
     if (isOptional(spec)) {
       lines.push(`    ${field}: ${pyAnnotation(spec)} = None`);
@@ -267,7 +275,7 @@ export const emitProviderModule = (manifest: CodegenProvider): string => {
   parts.push(`"""`);
   parts.push("");
   parts.push("from typing import Any, Literal, Optional");
-  parts.push("from pydantic import BaseModel");
+  parts.push("from pydantic import BaseModel, ConfigDict");
   parts.push("from ._runtime import FretikActionError, Operation, _call_read");
   parts.push("");
   parts.push("");

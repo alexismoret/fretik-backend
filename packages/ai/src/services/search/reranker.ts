@@ -4,6 +4,7 @@ import {
   updateActiveObservation,
 } from "@langfuse/tracing";
 import { langfuseEnabled } from "../../lib/langfuse";
+import { readByokUpstreamCost } from "../../lib/model-registry/transports/openrouter";
 import type { HybridCandidate } from "./hybrid-search";
 
 /**
@@ -86,8 +87,19 @@ interface CohereRerankResult {
 
 interface CohereRerankResponse {
   results: CohereRerankResult[];
-  /** Present when `usage: { include: true }` is sent — OpenRouter's real USD cost. */
-  usage?: { cost?: number };
+  /**
+   * Present when `usage: { include: true }` is sent — OpenRouter's real USD
+   * cost, plus what it takes to read that cost under BYOK, where `cost` is 0
+   * because the upstream billed our own key instead (see
+   * `readByokUpstreamCost`). This path does not go through
+   * `byokCostCarrierMiddleware` — it is a raw fetch, not an AI SDK model — so
+   * it reads the same raw block itself.
+   */
+  usage?: {
+    cost?: number;
+    is_byok?: boolean;
+    cost_details?: { upstream_inference_cost?: number };
+  };
 }
 
 /**
@@ -101,10 +113,12 @@ const recordRerankObservation = (
   json: CohereRerankResponse,
 ): void => {
   if (!langfuseEnabled) return;
-  const cost =
+  const billed =
     typeof json.usage?.cost === "number" && Number.isFinite(json.usage.cost)
       ? json.usage.cost
       : undefined;
+  const byok = readByokUpstreamCost(json.usage);
+  const cost = byok === undefined ? billed : (billed ?? 0) + byok;
   try {
     updateActiveObservation(
       {

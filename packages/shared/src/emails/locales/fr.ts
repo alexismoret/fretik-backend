@@ -40,6 +40,10 @@ export default {
       "{{inviterName}} vous a invité à rejoindre {{organizationName}} sur Fretik.",
     messageWithTeam:
       "{{inviterName}} vous a invité à rejoindre l'équipe {{teamName}} dans {{organizationName}} sur Fretik.",
+    subjectExistingMember: "Vous avez reçu l'accès à l'équipe {{teamName}}",
+    messageExistingMember:
+      "{{inviterName}} vous a invité dans l'équipe {{teamName}} de {{organizationName}}. En acceptant, elle s'ajoute aux espaces auxquels vous avez déjà accès — vos équipes actuelles et votre rôle restent inchangés.",
+    ctaExistingMember: "Rejoindre l'équipe",
     organizationLabel: "Organisation : {{organizationName}}",
     teamLabel: "Équipe : {{teamName}}",
     roleLabel: "Votre rôle : {{roleName}}",

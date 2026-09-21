@@ -274,6 +274,31 @@ export interface CaseBudget {
   expectedTools?: readonly string[];
 }
 
+/**
+ * One synthetic tool call inside a seeded assistant turn.
+ *
+ * Shaped exactly like the `ToolUIPart` the SDK persists in
+ * `output-available` state — same discriminant (`tool-<name>`), same
+ * `toolCallId` / `input` / `output` slots. That matters: the pipeline a
+ * seeded history exercises (`prepareModelMessages` → `microcompact` →
+ * `convertToModelMessages`) branches on those fields, and a part shaped
+ * "close enough" would be silently skipped by every one of them.
+ */
+export interface SeededToolCall {
+  /** Bare tool name — `python`, not `tool-python`. */
+  toolName: string;
+  input: Record<string, unknown>;
+  output: unknown;
+}
+
+/** One pre-existing turn to write into `ai_messages` before the prompt. */
+export interface SeededTurn {
+  role: "user" | "assistant";
+  text: string;
+  /** Assistant turns only — a user message carries no tool traffic. */
+  toolCalls?: SeededToolCall[];
+}
+
 export interface EvalCase {
   id: string;
   description: string;
@@ -313,6 +338,23 @@ export interface EvalCase {
    * `evals/fixtures/README.md` for the on-disk layout.
    */
   fixtures?: string[];
+  /**
+   * Pre-existing conversation turns, written into `ai_messages` BEFORE the
+   * prompt row so the turn under test starts on a real history instead of an
+   * empty one.
+   *
+   * This is what the harness lacked until 2026-09-17, and it is the reason
+   * `evals/BACKLOG.md` files compaction under "needs a seeded long
+   * conversation history": every case was structurally first-turn, so the
+   * compaction threshold, the context ceiling and the turn boundary were
+   * unreachable from an eval however big the fixtures got.
+   *
+   * The rows go in through the same table the production turn reads back —
+   * `loadConversationForAgent` cannot tell a seeded turn from a lived one.
+   * See `evals/history.ts` for the generator that sizes a history to a token
+   * target.
+   */
+  history?: SeededTurn[];
   /**
    * Optional pre-turn DB seed. Runs AFTER `createEphemeralConversation`
    * has provisioned the disposable conversation but BEFORE the

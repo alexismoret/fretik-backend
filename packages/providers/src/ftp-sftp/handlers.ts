@@ -514,20 +514,102 @@ const downloadFiles = async (
  * string that arrived wrapped at 76 columns (what MIME and several Python
  * helpers still produce) is perfectly valid data.
  *
+ * An empty string is DATA, not an error — see the early return. A caller
+ * that forgot the key entirely is a different mistake, and it is caught one
+ * level up in `prepareUploads`, where `undefined` is still distinguishable.
+ *
  * Exported for its test — a silent truncation is invisible on our side and
  * surfaces as the partner's parser rejecting a file hours later.
  */
 export const decodeBase64 = (value: string, label: string): Uint8Array => {
   const compact = value.replace(/\s+/g, "");
-  if (compact === "") {
-    throw new Error(`"${label}" has no content — content_base64 is empty.`);
-  }
+  // A zero-byte FILE, not a missing one. Both protocols write one, and
+  // partners rely on them — an EDI batch whose empty `.SIR`/`.SIO` members
+  // are mandatory, a `.done` flag beside a drop. Refusing here once cost a
+  // five-file upload every one of its files for two deliberate empties.
+  // Must come first: the shape check below needs at least one character.
+  if (compact === "") return new Uint8Array(0);
   if (compact.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(compact)) {
     throw new Error(
       `"${label}" is not valid base64 — the payload looks truncated or corrupted. Re-encode it with base64.b64encode(...).decode().`,
     );
   }
   return new Uint8Array(Buffer.from(compact, "base64"));
+};
+
+/**
+ * One entry of an upload batch, ready to write or carrying the reason it
+ * never can be.
+ *
+ * Exactly one of `bytes` / `error` is set.
+ */
+interface PreparedUpload {
+  path: string;
+  bytes?: Uint8Array;
+  mode?: string;
+  error?: string;
+}
+
+/**
+ * Decode and measure every entry BEFORE a connection is opened: a payload
+ * over budget should cost nothing, and a corrupted blob should not be
+ * discovered halfway through writing to a partner's server.
+ *
+ * A bad entry becomes a ROW, not a throw. This used to abort the whole call
+ * — five files offered, nothing uploaded, and only the first offender named
+ * — which is the one thing this provider promises never to do. The order of
+ * the returned list is the caller's, so row N still answers input N.
+ *
+ * Exported for its test: one entry taking the batch down with it is
+ * invisible on our side and surfaces as a partner's folder still empty.
+ */
+export const prepareUploads = (files: unknown[]): PreparedUpload[] => {
+  const prepared: PreparedUpload[] = [];
+  let totalBytes = 0;
+  for (const file of files) {
+    const remotePath = str(prop(file, "remote_path"));
+    if (remotePath === "") {
+      prepared.push({
+        path: "",
+        error:
+          "This entry has no `remote_path` — give it a destination path including the file name.",
+      });
+      continue;
+    }
+    const payload = asString(prop(file, "content_base64"));
+    if (payload === undefined) {
+      prepared.push({
+        path: remotePath,
+        // Kept apart from `""` on purpose: an empty string is a zero-byte
+        // file the caller meant, a missing key is one they forgot to read.
+        error:
+          'This entry has no `content_base64` — pass the base64 bytes, or "" for a deliberately empty file.',
+      });
+      continue;
+    }
+    let bytes: Uint8Array;
+    try {
+      bytes = decodeBase64(payload, remotePath);
+    } catch (error) {
+      prepared.push({ path: remotePath, error: errorMessage(error) });
+      continue;
+    }
+    totalBytes += bytes.byteLength;
+    if (totalBytes > MAX_UPLOAD_TOTAL_BYTES) {
+      // Still fatal, and deliberately so: the budget is a fact about the
+      // CALL, not about one file, and the answer is to split the request
+      // rather than to silently drop whichever entry crossed the line.
+      throw new Error(
+        `Upload budget exceeded (${MAX_UPLOAD_TOTAL_MB.toString()} MB per call). Send the files in several calls.`,
+      );
+    }
+    prepared.push({
+      path: remotePath,
+      bytes,
+      mode: asString(prop(file, "mode")),
+    });
+  }
+  return prepared;
 };
 
 /** `report.csv` → `report (1).csv`, preserving the extension. */
@@ -570,31 +652,22 @@ const uploadFiles = async (
   const onConflict = str(args.on_conflict, "replace");
   const createDirectories = bool(args.create_directories, true);
 
-  // Decode and measure everything BEFORE opening a connection: a payload
-  // over budget should cost nothing, and a malformed base64 blob should not
-  // be discovered halfway through writing to a partner's server.
-  const decoded: { path: string; bytes: Uint8Array; mode?: string }[] = [];
-  let totalBytes = 0;
-  for (const file of files) {
-    const remotePath = str(prop(file, "remote_path"));
-    if (remotePath === "") {
-      throw new Error("Every uploaded file needs a `remote_path`.");
-    }
-    const bytes = decodeBase64(str(prop(file, "content_base64")), remotePath);
-    totalBytes += bytes.byteLength;
-    if (totalBytes > MAX_UPLOAD_TOTAL_BYTES) {
-      throw new Error(
-        `Upload budget exceeded (${MAX_UPLOAD_TOTAL_MB.toString()} MB per call). Send the files in several calls.`,
-      );
-    }
-    decoded.push({
-      path: remotePath,
-      bytes,
-      mode: asString(prop(file, "mode")),
-    });
+  const prepared = prepareUploads(files);
+
+  // Nothing decodable: answer with the reasons and skip the handshake. A
+  // connection error here would replace N precise per-file messages with one
+  // about a socket, which is how an agent concludes the server is broken.
+  if (prepared.every((file) => file.bytes === undefined)) {
+    return prepared.map((file) => ({
+      path: file.path,
+      ok: false,
+      error: file.error ?? "This file could not be prepared.",
+    }));
   }
 
-  const wantsPermissions = decoded.some((file) => file.mode !== undefined);
+  // Only entries that will actually be written can be `chmod`ed, so a
+  // failed one must not buy the batch a `describe()` round-trip.
+  const wantsPermissions = prepared.some((file) => file.mode !== undefined);
 
   return withSession(config, async (session) => {
     // Only asked when some file carries a `mode` — on FTP `describe()` costs
@@ -612,7 +685,20 @@ const uploadFiles = async (
     // policy that exists to prevent exactly that.
     const claimed = new Map<string, Set<string>>();
 
-    for (const file of decoded) {
+    for (const file of prepared) {
+      // Destructured rather than read through `file.bytes` below: the
+      // narrowing has to survive several `await`s, and a property's does
+      // not. Rejected before the connection opened — keep its place so row
+      // N still answers input N.
+      const { bytes } = file;
+      if (bytes === undefined) {
+        results.push({
+          path: file.path,
+          ok: false,
+          error: file.error ?? "This file could not be prepared.",
+        });
+        continue;
+      }
       try {
         let target = resolveRemotePath(config.rootPath, file.path);
         const parent = dirname(target);
@@ -669,7 +755,7 @@ const uploadFiles = async (
           claimed.set(parent, claimedHere);
         }
 
-        await session.upload(target, file.bytes);
+        await session.upload(target, bytes);
         if (file.mode !== undefined && supportsPermissions) {
           await session.chmod(target, file.mode);
         }

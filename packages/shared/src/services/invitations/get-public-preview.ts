@@ -1,4 +1,7 @@
+import { and, eq, sql } from "drizzle-orm";
+
 import db from "../../db";
+import { member, user } from "../../db/schema";
 
 /**
  * Public-safe projection of an organization invitation, shown on the
@@ -19,7 +22,55 @@ export interface PublicInvitationPreview {
   inviterImage?: string | null;
   teamName?: string | null;
   expiresAt?: Date;
+  /**
+   * An account already exists for the invited address. Lets the page open on
+   * "sign in" instead of walking the invitee into a sign-up that can only
+   * fail. NOT an enumeration oracle: it answers for the one address the
+   * invitation was mailed to, to whoever holds that mailed link.
+   */
+  hasAccount?: boolean;
+  /**
+   * That account is already a member of the inviting organization, so this
+   * invitation grants one more TEAM rather than entry to the organization.
+   * The page says so instead of welcoming them somewhere they already are.
+   */
+  alreadyMember?: boolean;
 }
+
+/**
+ * The account behind an address, and whether it already belongs to the
+ * inviting organization.
+ *
+ * Read here rather than through the organization plugin's adapter because this
+ * runs on a PUBLIC Hono route, outside any Better Auth endpoint — there is no
+ * `AuthContext` to hand `getOrgAdapter`. The comparison is case-insensitive:
+ * `user.email` is stored as the account entered it.
+ */
+const accountStateForEmail = async (
+  email: string,
+  organizationId: string,
+): Promise<{ hasAccount: boolean; alreadyMember: boolean }> => {
+  const normalized = email.trim().toLowerCase();
+
+  const rows = await db
+    .select({ userId: user.id, memberId: member.id })
+    .from(user)
+    .leftJoin(
+      member,
+      and(
+        eq(member.userId, user.id),
+        eq(member.organizationId, organizationId),
+      ),
+    )
+    .where(eq(sql`lower(${user.email})`, normalized))
+    .limit(1);
+
+  const row = rows[0];
+  return {
+    hasAccount: row !== undefined,
+    alreadyMember: row?.memberId != null,
+  };
+};
 
 export const getPublicInvitationPreview = async (
   invitationId: string,
@@ -30,6 +81,7 @@ export const getPublicInvitationPreview = async (
       email: true,
       role: true,
       status: true,
+      organizationId: true,
       teamId: true,
       expiresAt: true,
     },
@@ -57,6 +109,11 @@ export const getPublicInvitationPreview = async (
     teamName = team?.name ?? null;
   }
 
+  const account = await accountStateForEmail(
+    invitation.email,
+    invitation.organizationId,
+  );
+
   return {
     found: true,
     status: invitation.status,
@@ -68,5 +125,7 @@ export const getPublicInvitationPreview = async (
     inviterImage: inviter.image,
     teamName,
     expiresAt: invitation.expiresAt,
+    hasAccount: account.hasAccount,
+    alreadyMember: account.alreadyMember,
   };
 };

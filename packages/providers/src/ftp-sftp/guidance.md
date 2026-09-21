@@ -104,6 +104,10 @@ Missing parent folders are created for you. `mode` (`0644`) applies on SFTP
 only — on FTP the upload still succeeds and the result says the permissions
 were skipped.
 
+An empty `content_base64` writes a 0-byte file. Send a file the partner
+requires but expects empty exactly as it is — padding it with a newline
+changes the bytes they parse.
+
 ### Moving, renaming, deleting
 
 `move_entries` does both moving and renaming — they are one operation on both
@@ -125,7 +129,14 @@ path the user named.
 
 Every bulk write returns one row per input with `ok` / `error`. Read them:
 a batch can half-succeed, and reporting "done" on twelve rows of which three
-failed is the failure mode that matters here.
+failed is the failure mode that matters here. A failed row names its own file
+and no other — fix that entry and re-send it alone. When every row failed,
+nothing was written and nothing is cached, so the corrected call runs.
+
+Those rows are the receipt: `ok` means the server acknowledged the bytes, so
+do not re-list the folder to confirm. On a drop folder a partner's process may
+already have taken the file, and an empty listing there is not a failed
+upload.
 
 ### Multiple connected file servers
 

@@ -13,6 +13,7 @@ import { z } from "zod";
 import { gateBuiltinWriteTool } from "../agents/shared/policy-tool-gate";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
 import { workflowWriteBackstop } from "../agents/shared/workflow-write-backstop";
+import { maybePersistLargeOutput } from "../lib/persisted-output";
 import {
   TOOL_ERROR_CODES,
   toolError,
@@ -187,13 +188,23 @@ export const createManageDocumentTool = () =>
             documentId,
             teamId: ctx.teamId,
           });
-          return {
-            ok: true,
-            documentId: document.id,
-            title: document.originalFilename,
-            revision: document.fileHash,
-            content,
-          };
+          // `get` hands back a WHOLE document, capped only by
+          // `MAX_CONTENT_CHARS` (512 KB ≈ 128 000 tokens) — more than the
+          // context ceiling, from one call. The tool registry has said this
+          // one is "worth persisting" since it was written; the code never
+          // did it. Persisting keeps the document reachable: the envelope
+          // names a path the model already knows how to `read`.
+          return await maybePersistLargeOutput(
+            {
+              ok: true,
+              documentId: document.id,
+              title: document.originalFilename,
+              revision: document.fileHash,
+              content,
+            },
+            ctx.conversationId,
+            options.toolCallId,
+          );
         }
 
         if (input.action === "history") {

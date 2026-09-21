@@ -1,0 +1,21 @@
+-- One organization membership per person.
+--
+-- Better Auth's accept-invitation endpoint ends in an unconditional
+-- `createMember()`. Nothing in the schema stopped it writing a second row for
+-- somebody who already had one, and every role lookup here is `findFirst`-
+-- shaped, so a duplicate would have made that person's role whichever row
+-- Postgres returned first.
+--
+-- IF THIS FAILS with "could not create unique index", the table already holds
+-- duplicates and they have to be resolved before it can apply:
+--
+--   SELECT organization_id, user_id, count(*), array_agg(role)
+--   FROM member GROUP BY 1, 2 HAVING count(*) > 1;
+--
+-- Keep the row carrying the highest privilege (owner > admin > member > bot)
+-- and delete the rest; nothing references `member.id` by foreign key.
+--
+-- Not CONCURRENTLY on purpose: migrations run inside a transaction, which
+-- forbids it, and `member` is small enough that the brief write lock is
+-- measured in milliseconds.
+CREATE UNIQUE INDEX "member_organizationId_userId_uidx" ON "member" ("organization_id","user_id");

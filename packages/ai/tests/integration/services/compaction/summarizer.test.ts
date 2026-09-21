@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   parseSummariserMaxTokens,
+  parseSummariserStallMs,
   parseSummariserTimeoutMs,
   summariseMessages,
 } from "../../../../src/services/compaction/summarizer";
@@ -43,6 +44,19 @@ describe("summarizer — configuration parsing", () => {
     expect(parseSummariserTimeoutMs("60000")).toBe(60_000);
     expect(parseSummariserTimeoutMs("1")).toBe(10_000);
     expect(parseSummariserTimeoutMs("9999999")).toBe(300_000);
+  });
+
+  test("the stall budget defaults to 45s and leaves room for a second attempt", () => {
+    // At most half the total, and that is the whole point: a dead route has
+    // to be abandoned with enough budget left for a retry to re-route, not
+    // merely abandoned sooner.
+    expect(parseSummariserStallMs(undefined)).toBe(45_000);
+    expect(parseSummariserStallMs(undefined)).toBeLessThanOrEqual(
+      parseSummariserTimeoutMs(undefined) / 2,
+    );
+    expect(parseSummariserStallMs("15000")).toBe(15_000);
+    expect(parseSummariserStallMs("1")).toBe(5_000);
+    expect(parseSummariserStallMs("9999999")).toBe(120_000);
   });
 });
 

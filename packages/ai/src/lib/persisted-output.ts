@@ -1,3 +1,7 @@
+import {
+  buildPersistedOutputEnvelope,
+  PREVIEW_SIZE_CHARS,
+} from "@fretik/shared/lib/persisted-output-envelope";
 import { WORKSPACE_DIRS, writeFile } from "./conversation-storage";
 
 /**
@@ -56,11 +60,12 @@ export const RAG_THRESHOLD_CHARS = 48_000;
  */
 export const SCHEMA_THRESHOLD_CHARS = 48_000;
 
-/** Characters of the full payload included in the preview block. */
-export const PREVIEW_SIZE_CHARS = 2_000;
-
-const PERSISTED_OUTPUT_OPEN_TAG = "<persisted-output>";
-const PERSISTED_OUTPUT_CLOSE_TAG = "</persisted-output>";
+/**
+ * Characters of the full payload included in the preview block. Re-exported
+ * from `@fretik/shared` because the operator repair that fences rows already
+ * written has to produce the byte-identical envelope.
+ */
+export { PREVIEW_SIZE_CHARS };
 
 export interface PersistedToolResult {
   /** Path relative to `/workspace`, e.g. `outputs/persisted/abc.txt`. */
@@ -155,18 +160,7 @@ export const persistSidecar = async (
  */
 export const buildPersistedOutputMessage = (
   result: PersistedToolResult,
-): string => {
-  const sizeKb = (result.sizeBytes / 1024).toFixed(1);
-  return [
-    PERSISTED_OUTPUT_OPEN_TAG,
-    `Output too large (${sizeKb} KB, ${result.totalChars.toLocaleString()} chars). Full output saved to: ${result.path}`,
-    "",
-    `Preview (first ${PREVIEW_SIZE_CHARS.toLocaleString()} chars):`,
-    result.preview,
-    "...",
-    PERSISTED_OUTPUT_CLOSE_TAG,
-  ].join("\n");
-};
+): string => buildPersistedOutputEnvelope(result);
 
 /**
  * Swap `content` for a `<persisted-output>` string only if the
@@ -201,9 +195,77 @@ export const maybePersistLargeOutput = async <T>(
     return content;
   }
   if (!conversationId) {
-    return content;
+    // Nowhere to persist it, so bound it in place. This used to return the
+    // content untouched — "truncating would be worse than a slightly oversized
+    // tool turn" — and that reasoning only held while "oversized" meant a fat
+    // payload. Measured on production rows, it means a 32.5 MB message: the
+    // barrier being OFF is not a smaller version of the barrier being on.
+    // Head and tail both, for the same reason the error path keeps both.
+    return boundedText(serialized, threshold);
   }
 
   const result = await persistToolResult(content, conversationId, toolCallId);
   return buildPersistedOutputMessage(result);
+};
+
+/**
+ * Budget for ONE stream field (`stdout` / `stderr`) inside a tool's ERROR
+ * envelope.
+ *
+ * Two of them plus the error line keeps a failed call at roughly what a
+ * successful one costs (`DEFAULT_THRESHOLD_CHARS`), which is the invariant
+ * that was missing: on 2026-09-17 the 17 largest production messages carried
+ * 6.4 MB of `tool-python` and 1.5 MB of `tool-bash`, none of it
+ * microcompactable — and both tools reached `maybePersistLargeOutput` only on
+ * their SUCCESS path. An error returned whatever the sandbox printed.
+ */
+export const ERROR_STREAM_BUDGET_CHARS = 12_000;
+
+/** Head and tail kept when a text field is cut. */
+export const boundedText = (text: string, budget: number): string => {
+  if (text.length <= budget) return text;
+  // Half and half. A Python traceback puts the exception on its LAST line
+  // (most recent call last) and the entry point on its first, so a head-only
+  // cut throws away the one line the model needs; a shell command that failed
+  // after a long run is the same shape. Keeping both ends is cheap and the
+  // middle of a 6 MB dump is where the least information is.
+  const half = Math.floor(budget / 2);
+  const dropped = text.length - 2 * half;
+  return `${text.slice(0, half)}\n\n[… ${dropped.toLocaleString()} characters dropped …]\n\n${text.slice(-half)}`;
+};
+
+/**
+ * Bound a tool ERROR's stream field, persisting the full text when there is a
+ * conversation to persist it to.
+ *
+ * Deliberately NOT `maybePersistLargeOutput`: that one replaces the whole
+ * value with a `<persisted-output>` string, and an error envelope's SHAPE is
+ * load-bearing — `{ error, code, stdout, stderr, hint? }` is what the model
+ * reads, what `lib/tool-error-codes.ts` documents and what the frontend
+ * renders. So the fields are bounded, the envelope is not.
+ *
+ * Never throws: a failure to persist must degrade to a truncated field, not
+ * turn a tool error into a tool crash.
+ */
+export const boundErrorStream = async (
+  text: string,
+  conversationId: string | undefined,
+  toolCallId: string,
+  label: string,
+  budget: number = ERROR_STREAM_BUDGET_CHARS,
+): Promise<string> => {
+  if (text.length <= budget) return text;
+  const bounded = boundedText(text, budget);
+  if (!conversationId) return bounded;
+  try {
+    const path = await persistSidecar(
+      text,
+      conversationId,
+      `${toolCallId}-${label}`,
+      "txt",
+    );
+    return `${bounded}\n\n[full ${label} saved to ${path} — read() it for the part that was cut]`;
+  } catch {
+    return bounded;
+  }
 };

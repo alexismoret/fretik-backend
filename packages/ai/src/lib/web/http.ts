@@ -56,6 +56,8 @@ export interface SafeFetchResult {
   finalUrl: string;
   status: number;
   contentType: string | null;
+  /** Raw `Content-Disposition`, when the origin named the file itself. */
+  contentDisposition: string | null;
   /**
    * Explicitly backed by an `ArrayBuffer`, not the default `ArrayBufferLike`:
    * `Bun.gunzipSync` refuses a possibly-shared buffer, and the copy below
@@ -79,6 +81,15 @@ export interface SafeFetchOptions {
    * preview, everything after it is bandwidth nobody reads.
    */
   stopAtHead?: boolean;
+  /**
+   * What `maxBytes` means. The default truncates, which is right for a
+   * document being read for its text — half a sitemap still answers the
+   * question. It is wrong for a FILE: a truncated PDF is not a small PDF, it
+   * is a corrupt one, and handing the agent a broken artifact to debug is
+   * worse than telling it the file was too large. `reject` throws instead,
+   * and refuses on `Content-Length` before reading a byte when it can.
+   */
+  overflow?: "truncate" | "reject";
 }
 
 /**
@@ -93,6 +104,7 @@ export const safeFetch = async (
     accept = "text/plain, application/xml, text/xml, */*;q=0.5",
     userAgent,
     stopAtHead = false,
+    overflow = "truncate",
   }: SafeFetchOptions,
 ): Promise<SafeFetchResult> => {
   const controller = new AbortController();
@@ -139,11 +151,28 @@ export const safeFetch = async (
         );
       }
 
+      // Refuse on the declared size before spending the transfer, when the
+      // origin declares one. A missing or lying header is caught below.
+      if (overflow === "reject") {
+        const declared = Number.parseInt(
+          response.headers.get("content-length") ?? "",
+          10,
+        );
+        if (Number.isFinite(declared) && declared > maxBytes) {
+          await response.body?.cancel();
+          throw new WebHttpError(
+            `Body is ${declared.toString()} bytes, over the ${maxBytes.toString()} byte limit`,
+            413,
+          );
+        }
+      }
+
       return {
         finalUrl: current,
         status: response.status,
         contentType: response.headers.get("content-type"),
-        body: await readCapped(response, maxBytes, stopAtHead),
+        contentDisposition: response.headers.get("content-disposition"),
+        body: await readCapped(response, maxBytes, stopAtHead, overflow),
       };
     }
 
@@ -237,6 +266,7 @@ const readCapped = async (
   response: Response,
   maxBytes: number,
   stopAtHead = false,
+  overflow: "truncate" | "reject" = "truncate",
 ): Promise<Uint8Array<ArrayBuffer>> => {
   const reader = response.body?.getReader();
   if (reader === undefined) return new Uint8Array();
@@ -263,6 +293,12 @@ const readCapped = async (
 
     if (total >= maxBytes) {
       await reader.cancel();
+      if (overflow === "reject") {
+        throw new WebHttpError(
+          `Body exceeds the ${maxBytes.toString()} byte limit`,
+          413,
+        );
+      }
       break;
     }
   }

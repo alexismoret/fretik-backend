@@ -19,6 +19,7 @@
  */
 import db from "@fretik/shared/db";
 import { aiChatFiles } from "@fretik/shared/db/schema";
+import { SHA256 } from "bun";
 import {
   afterAll,
   beforeAll,
@@ -483,6 +484,113 @@ describe("read tool — non-attachment workspace paths", () => {
     const out = expectRecord(await execRead("context/grid.xlsx"));
     expect(out["code"]).toBe("BINARY_NOT_READABLE");
     expect(readString(out, "hint")).toBe("python");
+  });
+});
+
+/**
+ * A downloaded file has NO `ai_chat_files` row and never will — the user
+ * did not attach it. Every assertion here would have failed before
+ * `resolveSandboxDocumentContent` existed: `read` resolved anything under
+ * `attachments/` through that table, so the whole family came back as
+ * `File not found` pointing at a `<file_attachments>` block the file was
+ * never listed in.
+ *
+ * The rule these pin: what can be read out of a file is decided by its
+ * BYTES, not by who put it there.
+ */
+describe("read tool — downloads (no DB row anywhere)", () => {
+  /** The hash `read` will compute, so the extraction double answers to it. */
+  const seedDownload = (
+    path: string,
+    bytes: string,
+    markdown: string,
+  ): void => {
+    sandboxFs.write(conv, path, bytes);
+    extractions.set(
+      SHA256.hash(new TextEncoder().encode(bytes), "hex"),
+      markdown,
+    );
+  };
+
+  test("a downloaded PDF reads as text, with no attachment row", async () => {
+    seedDownload(
+      "downloads/9f2c1a04_contract.pdf",
+      "%PDF-1.7 contract bytes",
+      "# Mode OP 24\n\nSlide one",
+    );
+    const out = expectRecord(await execRead("downloads/9f2c1a04_contract.pdf"));
+    expect(out["source"]).toBe("ocr-sidecar");
+    expect(readString(out, "content")).toContain("Mode OP 24");
+    // No row was inserted — state it, since the whole defect was a lookup
+    // in a table this file legitimately has no business being in.
+    const rows = await db.query.aiChatFiles.findMany({
+      where: { conversationId: conv },
+      columns: { id: true },
+    });
+    expect(rows).toHaveLength(0);
+  });
+
+  test("the same bytes hit ONE extraction whether attached or downloaded", async () => {
+    // Cache keyed by (org, fileHash): the double answers by hash, so a
+    // download resolving through the attachment's entry is the proof that
+    // provenance never reaches the cache key.
+    const bytes = "%PDF-1.7 identical bytes";
+    await seedAttachment({
+      filename: "contract.pdf",
+      mimeType: "application/pdf",
+      fileHash: SHA256.hash(new TextEncoder().encode(bytes), "hex"),
+      extractionMarkdown: "# One extraction",
+    });
+    sandboxFs.write(conv, "downloads/abcd1234_contract.pdf", bytes);
+
+    const attached = expectRecord(await execRead("attachments/contract.pdf"));
+    const downloaded = expectRecord(
+      await execRead("downloads/abcd1234_contract.pdf"),
+    );
+    expect(readString(attached, "content")).toContain("One extraction");
+    expect(readString(downloaded, "content")).toContain("One extraction");
+  });
+
+  test("a downloaded spreadsheet still routes to python", async () => {
+    // The guard that matters when extraction becomes reachable by path:
+    // `.xlsx` must not start being dumped as text just because the bytes
+    // are now within reach.
+    sandboxFs.write(conv, "downloads/ab12_data.xlsx", "PK xlsx");
+    const out = expectRecord(await execRead("downloads/ab12_data.xlsx"));
+    expect(out["code"]).toBe("BINARY_NOT_READABLE");
+    expect(readString(out, "hint")).toBe("python");
+  });
+
+  test("a downloaded image with no usable text steers to vision", async () => {
+    seedDownload("downloads/cd34_scan.png", "PNG logo", "");
+    extractions.set(
+      SHA256.hash(new TextEncoder().encode("PNG logo"), "hex"),
+      null,
+    );
+    const out = expectRecord(await execRead("downloads/cd34_scan.png"));
+    expect(out["code"]).toBe("NO_TEXT_CONTENT");
+    expect(readString(out, "hint")).toBe("vision");
+  });
+
+  test("a missing download says so, and does not blame <file_attachments>", async () => {
+    const out = expectRecord(await execRead("downloads/nope.pdf"));
+    expect(out["code"]).toBe("FILE_NOT_FOUND");
+    expect(readString(out, "hint")).not.toContain("attached_files");
+  });
+
+  test("figure refs point under the downloaded file itself", async () => {
+    const bytes = "%PDF-1.7 with figures";
+    const hash = SHA256.hash(new TextEncoder().encode(bytes), "hex");
+    sandboxFs.write(conv, "downloads/ef56_report.pdf", bytes);
+    extractions.set(hash, "Intro\n\n![chart](img-2.jpeg)");
+    extractionImageIds.set(hash, ["img-2.jpeg"]);
+
+    const out = expectRecord(await execRead("downloads/ef56_report.pdf"));
+    // The path `vision` parses back — a ref the model is shown has to be
+    // one it can follow.
+    expect(readString(out, "content")).toContain(
+      "downloads/ef56_report.pdf/img-2.jpeg",
+    );
   });
 });
 

@@ -192,6 +192,35 @@ const MEMORY_REASONING_MAX_TOKENS = 256;
 const PAGE_BUILD_REASONING_MAX_TOKENS = 8_000;
 
 /**
+ * Thinking budget for the compaction summariser on `max-tokens` families.
+ *
+ * The role sent NO reasoning envelope at all until 2026-09-18 — `bare` leaves
+ * that to the call site, and the call site set none — so every summariser call
+ * ran at the bound profile's OWN default, which for deepseek-v4-flash is
+ * `high`. Measured over 15 production calls: reasoning ran 1 460 to 6 875
+ * tokens, latency tracked those tokens rather than the input (578 220 input
+ * tokens against 175 output took 27.7 s; 69 034 input tokens against 9 899
+ * output took 71.5 s), and one call spent 3 988 reasoning tokens, hit
+ * `finish_reason: other`, and emitted SIX tokens of answer — a truncated
+ * non-summary that was then installed over the conversation. After pinning
+ * the role to `low`, the same work reasons 888 to 1 539 tokens in 21 to 31 s.
+ *
+ * Reading 100 000 tokens to write 3 000 is not a task that wants `high`, and
+ * it is not one that wants nothing either: the number here is 2 000 rather
+ * than the memory roles' 256 because the summariser has a transcript to work
+ * through. The `<analysis>` block the prompt asks for is the rest of the
+ * thinking, and it travels in the answer channel where `formatCompactSummary`
+ * can strip it.
+ *
+ * This constant serves the `max-tokens` families only; effort families take
+ * `low` through `reasoningParamForProfile`. Both branches exist for the reason
+ * the memory roles record — a hardcoded `{ effort }` is honoured only by
+ * effort families, so pinning one that way leaves every `max-tokens` profile
+ * exactly as unbounded as before, and silently.
+ */
+const COMPACTION_REASONING_MAX_TOKENS = 2_000;
+
+/**
  * Reasoning envelope for the memory roles. Effort-style families keep the level
  * they always had; `max-tokens` families get the tight budget above instead of
  * the level table's, which they overshoot anyway.
@@ -331,6 +360,45 @@ export const settingsForRole = (
       return {
         provider: memoryUtilityProvider(profile, RECALL_JUDGE_UPSTREAMS),
         ...openrouterReasoning(memoryReasoning(profile, "medium")),
+      };
+    // `bare`'s provider policy plus a bounded thinking budget — see
+    // `COMPACTION_REASONING_MAX_TOKENS`. Split out of `bare` rather than added
+    // to it because the other bare roles (vision, cheap one-shots, tool
+    // repair) are single short generations where unbounded thinking has never
+    // cost anything, while this one reads a whole conversation.
+    //
+    // It forwards the profile's `sort`, which today is `throughput`, and that
+    // is worth knowing rather than assuming: OpenRouter defines throughput as
+    // output tokens over generation time, aggregated across a provider's WHOLE
+    // traffic — which is mostly short prompts. It therefore says nothing about
+    // prefill at 120 000 tokens, which is the only thing this role does.
+    // Measured over 63 production summariser calls (2026-09-18), normalised to
+    // seconds per 100 000 input tokens: baseten 7.2, phala 11.8, makora 15.5,
+    // nextbit 28.2, novita 39.3, fireworks 41.6 — a 5.8× spread that no sort
+    // available here can see, and 5 further calls (7.9 %) where the request
+    // never started at all.
+    //
+    // Not acted on as a pool change, deliberately. Pool membership is decided
+    // by `models:bench`, which measures sustained decode, cache population and
+    // answer integrity — and has no prefill column, so it cannot yet arbitrate
+    // this. Narrowing `only` on an observational snapshot of n=7 per upstream
+    // would be the mistake that file exists to prevent. The prefill column is
+    // the work; this comment is the evidence for doing it.
+    case "compaction":
+      return {
+        provider: {
+          zdr,
+          ...(order ? { order: [...order] } : {}),
+          ...(ignore ? { ignore: [...ignore] } : {}),
+          ...(only ? { only: [...only] } : {}),
+          ...(sort ? { sort } : {}),
+        },
+        ...openrouterReasoning(
+          profile.assessment.reasoning.style === "max-tokens"
+            ? { enabled: true, max_tokens: COMPACTION_REASONING_MAX_TOKENS }
+            : reasoningParamForProfile(profile, "low"),
+        ),
+        usage: { include: true },
       };
     case "bare":
       // Bare roles leave the reasoning/usage envelope to the call site, but

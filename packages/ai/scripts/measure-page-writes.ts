@@ -9,14 +9,21 @@
  *   bun run pages:measure-writes -- --hours 6
  *   bun run pages:measure-writes -- --hours 48 --team <teamId>
  *
- * Everything comes from the DATABASE. The `page-write` events are still
- * emitted and still useful in a trace, but a v4 `events_only` deployment
- * strips `metadata` from the observations API — the nineteen events of the
- * 2026-09-04 build came back carrying their names and nothing else — and
- * `GET /api/public/traces/:id`, which the cost half of this script used to
- * call, is gone from v4 entirely. It failed silently, so the cost line simply
- * never printed. The price now travels in `meta.usage`, counted by the process
- * that spent it (`src/lib/turn-usage.ts`).
+ * Everything comes from the DATABASE, and the reason is narrower than it once
+ * read here. `GET /api/public/traces/:id`, which the cost half of this script
+ * used to call, IS gone on a v4 `events_only` deployment (404, "not available
+ * on deployments running in Langfuse v4 events_only mode"); it failed
+ * silently, so the cost line simply never printed. The price now travels in
+ * `meta.usage`, counted by the process that spent it
+ * (`src/lib/turn-usage.ts`).
+ *
+ * What was NOT true — and was written here for two months — is that v4 strips
+ * `metadata` from the observations API. Verified against langfuse 4.24.0 on
+ * 2026-09-18: `GET /api/public/v2/observations` has an opt-in field selector,
+ * and `metadata`, `usage`, `cost` and `io` are all absent from the DEFAULT
+ * projection. Ask for them (`fields=core,usage,cost,metadata`) and all 28
+ * metadata entries come back, cost included. `scripts/langfuse-metrics.ts` is
+ * the general-purpose door onto that, and explains what else moved.
  *
  * The arithmetic lives in `src/services/page-project/write-report.ts`, where
  * it is typechecked and tested: `scripts/*` is outside the tsconfig include,

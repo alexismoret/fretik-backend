@@ -9,13 +9,14 @@ Calling a write action directly raises — it never executes.
 """
 
 from typing import Any, Literal, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from ._runtime import FretikActionError, Operation, _call_read
 
 
 # ── Types ─────────────────────────────────────────────────────────
 
 class Message(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     subject: str
     from_address: str
@@ -27,6 +28,7 @@ class Message(BaseModel):
 
 
 class MessageFull(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     subject: str
     from_address: str
@@ -39,6 +41,7 @@ class MessageFull(BaseModel):
 
 
 class MailFolder(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     display_name: str
     total_item_count: int
@@ -47,6 +50,7 @@ class MailFolder(BaseModel):
 
 
 class CalendarEvent(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     subject: str
     start: str
@@ -59,6 +63,7 @@ class CalendarEvent(BaseModel):
 
 
 class Contact(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     display_name: str
     email_addresses: list[str]
@@ -68,6 +73,7 @@ class Contact(BaseModel):
 
 
 class InboxRule(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     display_name: str
     sequence: int
@@ -76,10 +82,12 @@ class InboxRule(BaseModel):
 
 
 class WriteResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str | None = None
 
 
 class Attachment(BaseModel):
+    model_config = ConfigDict(extra="allow")
     id: str
     name: str
     content_type: str

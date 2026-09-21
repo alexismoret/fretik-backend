@@ -1,5 +1,8 @@
+import { countCachedTokens } from "@fretik/shared/lib/token-estimate";
+import { getLiveStateSync } from "@fretik/shared/services/model-registry/live";
 import {
   ToolLoopAgent,
+  asSchema,
   isStepCount,
   type FlexibleSchema,
   type GenerateTextOnStepEndCallback,
@@ -17,7 +20,12 @@ import {
   type ResolvedModel,
 } from "../../lib/model-registry/resolve";
 import type { ReasoningLevel } from "../../lib/model-registry/types";
-import { recordStepUsage, summarizeStep } from "../../lib/turn-usage";
+import {
+  readAgentUsage,
+  recordStepUsage,
+  summarizeStep,
+  type StepUsage,
+} from "../../lib/turn-usage";
 import {
   INVALID_INPUT_CODE,
   loopGuardSeverity,
@@ -25,6 +33,13 @@ import {
   stopOnRepeatedToolErrors,
   type LoopGuardVerdict,
 } from "./agent-set";
+import {
+  lastStepInputTokens,
+  recordContextEstimate,
+  resolveContextCeiling,
+  seedAgentPrefix,
+  stopOnContextCeiling,
+} from "./context-ceiling";
 import {
   DynamicToolManager,
   replayActivationFromHistory,
@@ -206,6 +221,29 @@ export interface AgentSet<CALL_OPTIONS, TTools extends ToolSet> {
   primary: ToolLoopAgent<CALL_OPTIONS, TTools>;
   fallback: ToolLoopAgent<CALL_OPTIONS, TTools>;
   toolNames: (keyof TTools)[];
+  /**
+   * The context ceiling this set's PRIMARY agent stops at, after being lowered
+   * to what the model's pool can hold.
+   *
+   * Published because the handler has to ask the same question the stop
+   * condition asked — the loop ends, and the handler then has to know WHY in
+   * order to resume rather than hand back half an answer. Two independent
+   * derivations of the same number would drift the day a model's window moved
+   * or an agent's output reserve changed, and the symptom would be a turn that
+   * stopped for a reason nobody recognised: no boundary, no continuation,
+   * silence.
+   */
+  contextCeiling: number;
+
+  /**
+   * The agent's own id, published for the same reason as `contextCeiling`: the
+   * handler has to name the agent whose prefix it is budgeting against, and a
+   * second place spelling `"chatbot"` by hand would drift silently the day a
+   * set is renamed — into a prefix of `undefined`, which reads as a cap 35 000
+   * tokens too high and compacts late. That failure has already been measured
+   * once; it does not need a second cause.
+   */
+  agentId: string;
 }
 
 /**
@@ -336,6 +374,50 @@ const defaultOnStepEnd = <TTools extends ToolSet>(
  * agent whose cost anybody asks about — came to have no first-party cost at
  * all. Recording is synchronous and in-memory, so it adds nothing to a step.
  */
+/**
+ * Below this a lost prefix is not worth a line: the saving it represents is
+ * smaller than the noise in reading the log.
+ */
+const CACHE_BREAK_MIN_INPUT = 20_000;
+
+/**
+ * Report a step that paid full price for a prefix the previous steps were
+ * getting cached, and say which of the two kinds it is.
+ *
+ * A **break** is subject: routing changed lanes, a TTL expired, something
+ * rewrote the history. Two were measured inside a single chat turn on
+ * 2026-09-17, ~318K tokens re-billed uncached each — the largest single cost
+ * item of that day and nothing recorded it.
+ *
+ * A **rebuild** is chosen: a context boundary replaced the history with a
+ * summary, so the prefix is new ON PURPOSE and the whole point was that it is
+ * smaller. Without the distinction the boundary reads as a cache regression in
+ * its own metrics, which is exactly how a good change gets reverted.
+ *
+ * The discriminator is the prompt size, against the average of what this agent
+ * has been sending. A proxy for the previous step's prompt rather than the
+ * thing itself — the ledger sums, it does not remember — and it is enough,
+ * because the two cases differ by a factor, not by a margin: a boundary cuts a
+ * 200K prefix to ~40K, while a break re-sends the same 318K it just sent.
+ */
+const reportCacheBreak = (
+  agentId: string,
+  traceId: string | undefined,
+  step: StepUsage,
+): void => {
+  const prior = readAgentUsage(traceId, agentId);
+  if (prior === undefined || prior.steps === 0) return;
+  if (step.inputTokens < CACHE_BREAK_MIN_INPUT) return;
+  const wasCached = prior.cacheReadTokens > prior.inputTokens / 2;
+  const isCached = step.cacheReadTokens > step.inputTokens / 2;
+  if (!wasCached || isCached) return;
+  const priorAverage = prior.inputTokens / prior.steps;
+  const kind = step.inputTokens < priorAverage ? "rebuild" : "break";
+  console.warn(
+    `[cache-${kind}] agent=${agentId} step=${(prior.steps + 1).toString()} input=${step.inputTokens.toString()} cacheRead=${step.cacheReadTokens.toString()} priorAvgInput=${Math.round(priorAverage).toString()} hosts=${Object.keys(step.providers).join(",")}`,
+  );
+};
+
 const withUsageLedger = <TTools extends ToolSet>(
   agentId: string,
   inner: GenerateTextOnStepEndCallback<TTools>,
@@ -345,7 +427,11 @@ const withUsageLedger = <TTools extends ToolSet>(
       const traceId = tryGetRuntimeContext({
         runtimeContext: event.runtimeContext,
       })?.traceId;
-      recordStepUsage(traceId, agentId, summarizeStep(event));
+      const step = summarizeStep(event);
+      // Read the ledger BEFORE folding this step in — the comparison is
+      // against what came before, not against a total that already includes it.
+      reportCacheBreak(agentId, traceId, step);
+      recordStepUsage(traceId, agentId, step);
     } catch {
       // Accounting never costs a turn. A lost step makes `costedSteps` say so.
     }
@@ -455,12 +541,25 @@ const GUARD_DISARM_TEXT =
  */
 export const withLoopGuard = <TTools extends ToolSet>(
   base: PrepareStepFunction<TTools> | undefined,
+  agentId?: string,
 ): PrepareStepFunction<TTools> => {
   return async (options) => {
     const result = (await base?.(options)) ?? {};
     tryGetRuntimeContext({
       runtimeContext: options.runtimeContext,
     })?.stepCallBudget?.beginStep(options.stepNumber);
+
+    // Measure what this call will carry, keyed on the `steps` array the SDK
+    // hands to BOTH hooks — `stopWhen` gets `{ steps }` and nothing else, so
+    // this identity is the only channel between the two. Uses the messages
+    // this step will actually send, which is `result.messages` when a wrapper
+    // above injected a steer and `options.messages` otherwise.
+    recordContextEstimate(
+      options.steps,
+      result.instructions ?? options.instructions,
+      result.messages ?? options.messages,
+      agentId,
+    );
 
     const verdict = loopGuardVerdict(options.steps);
     const disarmed = loopGuardSeverity(verdict) >= LOOP_GUARD_DISARM_AT;
@@ -547,6 +646,68 @@ export const withSoftDeadline = <TTools extends ToolSet>(
 };
 
 /**
+ * Fraction of the ceiling at which the model is warned that the cut is coming.
+ *
+ * 0.8 leaves roughly one large tool result plus a reply — enough to act on the
+ * warning, which is the only thing that makes a warning worth its tokens.
+ */
+const CONTEXT_STEER_FRACTION = 0.8;
+
+/**
+ * The one thing the agent can do that no summariser can do for it.
+ *
+ * Anthropic pairs its server-side context editing with exactly this — "Claude
+ * receives an automatic warning to preserve important information" before the
+ * clear — and states the reason plainly: "overly aggressive compaction can
+ * result in the loss of subtle but critical context whose importance only
+ * becomes apparent later". A summary is written by a model reading a
+ * transcript; what was load-bearing and never restated is invisible to it. The
+ * agent knows, and it has `/workspace` and `memory` to write it down.
+ *
+ * Kept to two sentences: it rides one step, once per turn, and a paragraph
+ * here is a paragraph on every subsequent step's cached prefix.
+ */
+const CONTEXT_STEER_TEXT =
+  "[context] This turn is close to its context limit and will be cut and resumed from a summary. Before you continue, write to a file anything you must not lose — exact values, paths, decisions, and what you have already ruled out — then carry on.";
+
+/**
+ * Wrap an agent's `prepareStep` with a CONTEXT steer: past a fraction of the
+ * ceiling, append one transient user message telling the model to externalise
+ * what the summary would drop.
+ *
+ * Same mechanics as `withSoftDeadline` and `withLoopGuard` — transient user
+ * message, dedup by exact text, never persisted — for the same reason: a
+ * sub-agent's generate loop never leaves its tool call, so a steer has to ride
+ * a step.
+ *
+ * It reads the meter, not the raw usage, so it fires on a provider that
+ * reports nothing (the estimate recorded in `recordContextEstimate` above).
+ */
+const withContextSteer = <TTools extends ToolSet>(
+  base: PrepareStepFunction<TTools>,
+  ceiling: number,
+): PrepareStepFunction<TTools> => {
+  const trigger = Math.floor(ceiling * CONTEXT_STEER_FRACTION);
+  return async (options) => {
+    const result = (await base(options)) ?? {};
+    if (lastStepInputTokens(options.steps) < trigger) return result;
+    const messages = result.messages ?? options.messages;
+    const alreadyInjected = messages.some(
+      (message) =>
+        message.role === "user" && message.content === CONTEXT_STEER_TEXT,
+    );
+    if (alreadyInjected) return result;
+    return {
+      ...result,
+      messages: [
+        ...messages,
+        { role: "user" as const, content: CONTEXT_STEER_TEXT },
+      ],
+    };
+  };
+};
+
+/**
  * The argument type the framework hands to `prepareCall` — derived from the
  * SDK settings so the callback body stays fully typed even though the settings
  * object is asserted past the generic `ToolsContextParameter` conditional.
@@ -555,21 +716,128 @@ type PrepareCallArgs<CALL_OPTIONS, TTools extends ToolSet> = Parameters<
   NonNullable<ToolLoopAgentSettings<CALL_OPTIONS, TTools>["prepareCall"]>
 >[0];
 
+/**
+ * Cap on what ONE step may emit, for the agents that had none.
+ *
+ * The workflow executor has carried its own (16 000) since a single step burned
+ * 64 829 output tokens; the chatbot, the delegates and the page builder had
+ * nothing, so a model that decided to keep writing simply kept writing — and
+ * every token it emitted then rode in the prefix of every subsequent step, at
+ * the input rate, for the rest of the turn.
+ *
+ * 32 000 rather than the workflow's 16 000, on purpose. Output tokens here are
+ * not only prose: a document written through `manageDocument`, a page file
+ * written through `pageWrite` and a heredoc through `bash` all travel as
+ * tool-call ARGUMENTS, which count against this cap. 16 000 would refuse
+ * legitimate work — a ~1 200-line file — while 32 000 sits well above anything
+ * a single step should produce and still halves the measured runaway.
+ *
+ * The chat path's own distribution says the same thing from the other side.
+ * Measured 2026-09-20 over 370 `chat` generations: p50 584 output tokens, p95
+ * 2 432, largest legitimate 3 835 — of which 3 478 was REASONING. Three runaway
+ * generations in that window each ran 588 to 694 seconds and emitted one tool
+ * call over and over, with 159 to 1 038 reasoning tokens between them: the
+ * volume was repetition, not thought, which is why a cap eight times the widest
+ * legitimate generation cannot cut anything worth keeping.
+ *
+ * `WORKFLOW_STEP_MAX_OUTPUT_TOKENS` keeps governing the run executor; this one
+ * is `AGENT_STEP_MAX_OUTPUT_TOKENS`, so the two can be moved apart without
+ * touching code. `omitMaxTokens` still wins over both — a profile whose only
+ * ZDR route does not advertise the parameter answers 404 when it is sent.
+ */
+export const AGENT_STEP_MAX_OUTPUT_TOKENS = parseIntEnv(
+  "AGENT_STEP_MAX_OUTPUT_TOKENS",
+  { fallback: 32_000, min: 1_000, max: 128_000 },
+);
+
+/**
+ * The absolute ceiling, lowered to what THIS model's pool can actually hold.
+ *
+ * One function, called from the agent it governs and from the set that
+ * publishes it, so the stop condition and the handler that has to recognise
+ * the stop can never disagree.
+ */
+const agentContextCeiling = <CALL_OPTIONS, TTools extends ToolSet>(
+  config: BuildAgentSetConfig<CALL_OPTIONS, TTools>,
+  resolved: ResolvedModel,
+): number =>
+  resolveContextCeiling({
+    effectiveContextLength:
+      getLiveStateSync(resolved.profile.key)?.effectiveContextLength ??
+      resolved.profile.catalog.contextLength,
+    maxOutputTokens: config.maxOutputTokens,
+  });
+
+/**
+ * What the tool set costs in the request, counted rather than guessed.
+ *
+ * Counted the way it travels: name, description, and the JSON Schema the SDK
+ * derives from `inputSchema` — `asSchema` is the same conversion the request
+ * itself goes through, so this is the wire format and not a proxy for it.
+ *
+ * The two proxies that were tried first are worth naming, because both are the
+ * obvious thing to reach for and both are wrong by more than an order of
+ * magnitude in opposite directions (measured on the 36 chatbot tools,
+ * 2026-09-18): `JSON.stringify(definition)` gives 105 097 tokens, because it
+ * serialises Zod's internal representation, none of which leaves the process;
+ * name-plus-description alone gives 13 726, because the parameter `.describe()`
+ * strings live in the schema. The wire count is 33 784, against a prefix of
+ * 32 996 that the running service then measured for itself — a 2.4 % gap, on a
+ * figure that only has to hold until the first step reports.
+ *
+ * It over-counts on purpose in one respect: every tool is counted, while
+ * progressive disclosure means a given step ships a subset. Over-counting the
+ * prefix compacts early, which is the direction to be wrong in, and it roughly
+ * offsets the instructions this cannot see.
+ */
+const countToolSchemaTokens = (tools: ToolSet): number => {
+  let total = 0;
+  for (const [name, definition] of Object.entries(tools)) {
+    total += countCachedTokens(name);
+    const description = definition.description;
+    if (typeof description === "string")
+      total += countCachedTokens(description);
+    const input: unknown = definition.inputSchema;
+    if (input === undefined || input === null) continue;
+    try {
+      total += countCachedTokens(
+        JSON.stringify(asSchema(definition.inputSchema).jsonSchema),
+      );
+    } catch {
+      // A schema the converter refuses contributes its prose only. The seed is
+      // a floor for one turn; the first reported step replaces it outright.
+    }
+  }
+  return total;
+};
+
 const buildToolLoopAgent = <CALL_OPTIONS, TTools extends ToolSet>(
   config: BuildAgentSetConfig<CALL_OPTIONS, TTools>,
   resolved: ResolvedModel,
 ): ToolLoopAgent<CALL_OPTIONS, TTools> => {
   const model: LanguageModel = resolved.model;
   const tools = config.buildTools();
-  const prepareStep = withSoftDeadline(
-    withLoopGuard(config.prepareStep?.(tools, resolved)),
-    config.softDeadline,
-  );
+  // The half of the prefix that can be known without a request. Deterministic,
+  // so every replica of an image seeds the same figure; replaced by the real
+  // one as soon as a step reports its usage. See `seedAgentPrefix`.
+  seedAgentPrefix(config.id, countToolSchemaTokens(tools));
   const configuredStop = config.stopWhen ?? isStepCount(12);
-  // Compose the loop guard's hard backstop into every agent's stop set.
+  const ceiling = agentContextCeiling(config, resolved);
+  const prepareStep = withContextSteer(
+    withSoftDeadline(
+      withLoopGuard(config.prepareStep?.(tools, resolved), config.id),
+      config.softDeadline,
+    ),
+    ceiling,
+  );
+  // Compose the two universal brakes into every agent's stop set: the loop
+  // guard's hard backstop, and the context ceiling. Neither caps the work —
+  // both end a TURN, which every caller resumes (orchestrator re-entry,
+  // in-tool resume, or a continuation into the same writer).
   const stopWhen = [
     ...(Array.isArray(configuredStop) ? configuredStop : [configuredStop]),
     stopOnRepeatedToolErrors<TTools>(LOOP_GUARD_ABORT_AT, LOOP_GUARD_DISARM_AT),
+    stopOnContextCeiling<TTools>(ceiling, resolved.profile.key),
   ];
   const onStepEnd = withUsageLedger<TTools>(
     config.id,
@@ -737,5 +1005,14 @@ export const buildAgentSet = <CALL_OPTIONS, TTools extends ToolSet>(
   const primary = buildToolLoopAgent(config, config.model);
   const fallback = buildToolLoopAgent(config, config.fallbackModel);
   const toolNames = Object.keys(primary.tools) as (keyof TTools)[];
-  return { primary, fallback, toolNames };
+  // The primary's figure. A failover to a narrower fallback stops EARLIER than
+  // this says, which is the safe direction: the handler recognises a stop it
+  // over-estimated and opens a boundary that was not strictly needed.
+  return {
+    primary,
+    fallback,
+    toolNames,
+    contextCeiling: agentContextCeiling(config, config.model),
+    agentId: config.id,
+  };
 };

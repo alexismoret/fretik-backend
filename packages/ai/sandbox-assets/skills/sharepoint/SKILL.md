@@ -1,7 +1,7 @@
 ---
 name: sharepoint
 description: Microsoft SharePoint — browse and search sites, read and write files in document libraries, query and update SharePoint list rows, and read site pages.
-version: f72f34acca3f
+version: e90c78ae6171
 ---
 
 # Microsoft SharePoint — 32 actions
@@ -121,12 +121,12 @@ Each hit carries the ids the follow-up needs: `drive_id` + `id` for a
 ### Read a document's content
 
 `download_file` streams the bytes into the sandbox and hands back
-`sandbox_path`. The file never enters the conversation — open it with
-whatever suits the format.
+`sandbox_path`. Read it with `read(sandbox_path)` — it lands under
+`downloads/` and behaves like any other workspace file.
 
 ```python
 f = sharepoint.download_file(drive_id="b!x…", item_id="01ABC…")
-# f.sandbox_path → "/workspace/attachments/9f2c1a04_contract.pdf"
+# f.sandbox_path → "/workspace/downloads/9f2c1a04_contract.pdf"
 ```
 
 Bytes only reach the sandbox on a `download_file` call — a `list_folder`

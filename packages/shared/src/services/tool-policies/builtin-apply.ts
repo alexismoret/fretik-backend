@@ -11,6 +11,7 @@ import { deleteCollectionRecord } from "../collection-records/delete";
 import { setRecordStatus } from "../collection-records/set-status";
 import { setRecordData } from "../collection-records/update";
 import { assertCanWriteType } from "../collection-sharing/write-access";
+import { confirmFullResync } from "../collection-sync/confirm-full-resync";
 import { deleteCollection } from "../collections/delete";
 import { saveAuthoredContent } from "../documents/authored/content";
 import { createAuthoredDocument } from "../documents/authored/create";
@@ -36,10 +37,12 @@ import { installSkillFromCatalog } from "../skills/install-from-catalog";
  * `withToolCallGate` call sites in `@fretik/ai`).
  *
  * The config tools are here only for their DESTRUCTIVE actions
- * (`manageCollection.delete`, `manageField.delete` / `changeType`) — the ones
- * that drop a table or a column and take the data with them. Their harmless
- * actions stay `auto` and never reach this map; `manageWorkflow` and
- * `managePage` have no entry at all and remain blockable-only.
+ * (`manageCollection.delete`, `manageField.delete` / `changeType`,
+ * `manageSync.confirmFullResync`) — the ones that drop a table or a column and
+ * take the data with them, or let a run apply an orphan policy to rows the
+ * floor refused to touch. Their harmless actions stay `auto` and never reach
+ * this map; `manageWorkflow` and `managePage` have no entry at all and remain
+ * blockable-only.
  */
 
 /** Tenant context an apply fn needs — sourced from the approval row. */
@@ -509,6 +512,32 @@ const applyManageField: ToolCallApplyFn = async (ctx, args) => {
   throw new Error(`manageField "${action}" is not approval-gated`);
 };
 
+// ---- manageSync ------------------------------------------------------------
+//
+// One gated action: the confirmation that lets a run apply the orphan policy
+// the floor refused. Everything else the tool does is reversible by doing it
+// again and never reaches this map.
+//
+// No `assertCanWriteType` here, unlike its neighbours: `confirmFullResync`
+// scopes by `teamId` itself and answers 404 for another team's source, so the
+// grant cannot reach across a tenancy the proposal did not already hold. The
+// service also re-checks that a resync is still PENDING — a grant that sat
+// while somebody refreshed the source successfully applies nothing rather than
+// arming the next run's floor against a difference nobody has seen.
+
+const applyManageSync: ToolCallApplyFn = async (ctx, args) => {
+  const action = str(args, "action");
+  if (action !== "confirmFullResync") {
+    throw new Error(`manageSync "${action}" is not approval-gated`);
+  }
+  const result = await confirmFullResync({
+    sourceId: str(args, "sourceId"),
+    teamId: ctx.teamId,
+    userId: ctx.userId,
+  });
+  return { ok: true, ...result };
+};
+
 /** The apply registry. A `tool_call` payload's `toolName` MUST have an entry. */
 export const TOOL_CALL_APPLY: Record<string, ToolCallApplyFn> = {
   manageLink: applyManageLink,
@@ -519,4 +548,5 @@ export const TOOL_CALL_APPLY: Record<string, ToolCallApplyFn> = {
   installSkill: applyInstallSkill,
   manageCollection: applyManageCollection,
   manageField: applyManageField,
+  manageSync: applyManageSync,
 };

@@ -180,9 +180,14 @@ const additiveWriteTool = (
  * The tool-level default stays `auto` and tool-level `approval` is NOT
  * selectable: only the actions listed here have a grant executor
  * (`TOOL_CALL_APPLY`), so an approval on the whole tool would strand every
- * other action with nothing to run it. These tools are also FORBIDDEN in
- * workflow runs (`WORKFLOW_FORBIDDEN_DOMAIN_TOOLS`), so this gate is
- * chat-only.
+ * other action with nothing to run it.
+ *
+ * Every gate here is chat-only, because a workflow run never reaches it:
+ * `manageCollection`, `manageField` and `manageWorkflow` are withheld from a
+ * run outright (`WORKFLOW_FORBIDDEN_DOMAIN_TOOLS`), and `manageSync` — which
+ * a run DOES carry, for `refresh` / `list` / `preview` — refuses its gated
+ * action itself (`SYNC_LOCKED_IN_WORKFLOW`). An approval card has no one to
+ * open for in a run, so a tool that could reach one from there would stall it.
  */
 const configWriteTool = (
   name: string,
@@ -239,6 +244,21 @@ export const BUILTIN_TOOL_POLICY_CATALOG: Record<
       delete: "approval",
       changeType: "approval",
     }),
+    // A sync source is a MAPPING, and declaring, re-pointing, refreshing or
+    // detaching one removes no record: `delete` leaves the columns and their
+    // values behind as ordinary local ones, and a refresh that pulled the
+    // wrong thing is answered by refreshing again. So the whole surface is
+    // `auto` — every one of those is reversible by doing it again.
+    //
+    // `confirmFullResync` is the exception, and the only one. It exists to
+    // OVERRIDE the orphan floor: the guard that refused a run because the app
+    // came back with far fewer rows than the collection holds. Saying yes
+    // applies the source's orphan policy to that whole difference — under
+    // `delete` a mass deletion, under `reject` a mass hide — and a refresh
+    // cannot bring back what an app no longer returns. Many rows at once,
+    // irreversibly: the two criteria this catalog asks a human about. The same
+    // act already sits behind a confirm modal in the collection's sync panel.
+    configWriteTool("manageSync", { confirmFullResync: "approval" }),
     readTool("listRecords"),
     readTool("getRecord"),
     readTool("describeCollection"),

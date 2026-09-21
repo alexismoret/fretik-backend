@@ -11,15 +11,18 @@ import { confirmFullResync } from "@fretik/shared/services/collection-sync/confi
 import { createSyncSource } from "@fretik/shared/services/collection-sync/create-source";
 import { deleteSyncSource } from "@fretik/shared/services/collection-sync/delete-source";
 import { estimateSyncCostForConnection } from "@fretik/shared/services/collection-sync/estimate-cost";
+import { getSyncSource } from "@fretik/shared/services/collection-sync/get-source";
 import { listSyncSources } from "@fretik/shared/services/collection-sync/list-sources";
 import { previewSyncSource } from "@fretik/shared/services/collection-sync/preview";
 import { requestSyncRefresh } from "@fretik/shared/services/collection-sync/request-refresh";
 import { updateSyncSource } from "@fretik/shared/services/collection-sync/update-source";
 import { createCollection } from "@fretik/shared/services/collections/create";
 import { resolveCollectionId } from "@fretik/shared/services/collections/resolve";
+import { getCollection } from "@fretik/shared/services/collections/retrieve";
 import { appNameOf } from "@fretik/shared/services/collections/sync-provenance";
 import { tool } from "ai";
 import { z } from "zod";
+import { gateBuiltinWriteTool } from "../agents/shared/policy-tool-gate";
 import {
   agentEventActor,
   getRuntimeContext,
@@ -392,6 +395,60 @@ export const createManageSyncTool = () =>
               "confirmFullResync needs sourceId.",
             );
           }
+          // Read the source BEFORE the gate, for two reasons. It is what makes
+          // the approval card decidable — nobody approves "confirmFullResync
+          // on 3f2a…", and the question is about a named collection, a named
+          // app and what the policy is about to do to rows the floor refused
+          // to touch. And it is what keeps a card from opening for nothing: a
+          // source with no resync pending is refused by the service anyway, so
+          // asking a person first would spend their attention on a 409.
+          const source = await getSyncSource({
+            id: input.sourceId,
+            teamId: ctx.teamId,
+          });
+          if (source === undefined) {
+            return toolError(
+              TOOL_ERROR_CODES.COLLECTION_QUERY_ERROR,
+              "No such sync source for this team.",
+              "List the team's sources and use an id from that answer.",
+            );
+          }
+          if (source.pendingFullResync === null) {
+            return toolError(
+              TOOL_ERROR_CODES.COLLECTION_QUERY_ERROR,
+              "This source has not asked for a full resync.",
+              "Confirming one would apply its orphan policy to a difference nobody has seen. Refresh it, and confirm if it stops again.",
+            );
+          }
+          const collection = await getCollection({
+            id: source.collectionId,
+            teamId: ctx.teamId,
+          });
+          const app = appNameOf(
+            source.providerKey,
+            source.connection?.displayName ?? null,
+          );
+
+          const gate = await gateBuiltinWriteTool(ctx, {
+            toolName: "manageSync",
+            args: {
+              action: "confirmFullResync",
+              sourceId: input.sourceId,
+              // Descriptive, not applied — `applyManageSync` reads the two
+              // above. These are what the card renders, as DATA: the words for
+              // them live in the frontend's locale files.
+              collectionKey: collection.key,
+              app,
+              orphanPolicy: source.orphanPolicy,
+              reason: source.pendingFullResync.reason,
+            },
+            summaryFields: [
+              { labelKey: "collection", value: collection.key },
+              { labelKey: "app", value: app },
+            ],
+          });
+          if (gate !== null) return gate;
+
           await confirmFullResync({
             sourceId: input.sourceId,
             teamId: ctx.teamId,

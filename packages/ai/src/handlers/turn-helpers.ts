@@ -88,3 +88,75 @@ export const buildTurnMessageMetadata = (
     ...(spend === undefined ? {} : { spend }),
   },
 });
+
+/**
+ * How long each tool call of a turn took — the time a step row prints beside
+ * its caption in the transcript.
+ *
+ * Wall-clock, from the moment the model starts writing the call
+ * (`tool-input-start`) to the moment its result, error or refusal comes back:
+ * exactly the span the transcript draws the step as running. A call that
+ * arrives whole (`tool-call` with no input stream before it) starts its clock
+ * there instead. A PRELIMINARY result is progress, not the end, and stops
+ * nothing.
+ *
+ * Fed from a `toUIMessageStream` `messageMetadata` callback, which the SDK calls
+ * for every stream part: each settled call returns
+ * `{ stepDurations: { [toolCallId]: ms } }`, sent as its own
+ * `message-metadata` chunk. The client deep-merges message metadata, so the
+ * map accumulates call by call — live in the transcript, and persisted with
+ * the message like the rest of its metadata, so a reload keeps the times.
+ *
+ * One clock per model stream: a fallback or a continuation stream starts its
+ * own, and their maps merge into the same message all the same.
+ */
+export const createStepClock = (
+  now: () => number = Date.now,
+): ((part: StepClockPart) => Record<string, unknown> | undefined) => {
+  const startedAt = new Map<string, number>();
+
+  const start = (toolCallId: string | undefined): undefined => {
+    if (toolCallId !== undefined && !startedAt.has(toolCallId)) {
+      startedAt.set(toolCallId, now());
+    }
+    return undefined;
+  };
+
+  const settle = (
+    toolCallId: string | undefined,
+  ): Record<string, unknown> | undefined => {
+    const begun =
+      toolCallId === undefined ? undefined : startedAt.get(toolCallId);
+    if (toolCallId === undefined || begun === undefined) return undefined;
+    startedAt.delete(toolCallId);
+    return { stepDurations: { [toolCallId]: Math.max(0, now() - begun) } };
+  };
+
+  return (part) => {
+    switch (part.type) {
+      case "tool-input-start":
+        return start(part.id);
+      case "tool-call":
+        return start(part.toolCallId);
+      case "tool-result":
+        return part.preliminary === true ? undefined : settle(part.toolCallId);
+      case "tool-error":
+      case "tool-output-denied":
+        return settle(part.toolCallId);
+      default:
+        return undefined;
+    }
+  };
+};
+
+/**
+ * The fields of a stream part the step clock reads. Every `TextStreamPart`
+ * fits it, so the clock takes the SDK's parts as they come — and a test can
+ * hand it the three fields that matter instead of a full SDK part.
+ */
+interface StepClockPart {
+  type: string;
+  id?: string;
+  toolCallId?: string;
+  preliminary?: boolean;
+}

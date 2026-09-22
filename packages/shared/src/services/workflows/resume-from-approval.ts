@@ -40,13 +40,11 @@ export const resumeRunFromApproval = async (params: {
   });
   if (!run) return false;
 
-  // Parked, but with nowhere to resume to. Two ways to get here, both
-  // transient: a run parked by the pre-2026-09-22 orchestrator (converted
-  // once by `scripts/convert-legacy-approval-parks.ts`), or the sub-second
-  // window in which the turn's transaction has written `needs_approval` but
-  // the orchestrator's `/park` callback has not landed yet. Neither can be
-  // resumed from here, and starting an orchestrator without a turn index
-  // would replay the run from turn 1.
+  // Parked, but with nowhere to resume to — the sub-second window in which
+  // the turn's transaction has written `needs_approval` but the
+  // orchestrator's `/park` callback has not landed yet. Nothing can be
+  // resumed from here: starting an orchestrator without a turn index would
+  // replay the run from turn 1, i.e. the whole playbook a second time.
   if (run.resumeFromTurnIndex === null) return false;
   const resumeFromTurnIndex = run.resumeFromTurnIndex;
 

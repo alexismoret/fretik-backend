@@ -9,38 +9,16 @@ Importing the database no longer migrates anything: see
 
 ## Script inventory
 
-| Script                                         | Status                   | Purpose                                                                                                                                                                                                                                                       |
-| ---------------------------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `reseed-system-ontology.ts`                    | **keep**                 | Seed system + starter collections for every org, propagate org-scope field defs to every team. Idempotent. The dev **re-seed** primitive.                                                                                                                     |
-| `sync-collection-tables.ts`                    | **keep**                 | Reconcile every team's `data.coll_*` extension tables to their field defs + (re)arm RLS. The existing-tenant **provisioning / backfill / repair** primitive (was `sync-typed-views.ts` — renamed; there are no views anymore).                                |
-| `check-collections-rls.ts`                     | **keep**                 | Deterministic RLS/grant verification (see below). Run after migrate + seed.                                                                                                                                                                                   |
-| `build-icon-catalog.ts` + `icon-essentials.ts` | **keep**                 | Regenerate the curated Lucide icon catalog (backend `lib/icons/catalog.ts` **and** the frontend mirror `app/.../collectionIconCatalog.json`).                                                                                                                 |
-| `grant-super-admin.ts`                         | **keep**                 | Admin utility — unrelated to objects.                                                                                                                                                                                                                         |
-| `recompile-pages.ts`                           | **keep**                 | Re-run the page compiler over every stored page. Pages compile on write and never on read, so a fix to the COMPILER reaches nothing already saved: run this after bumping `PAGE_COMPILER_REVISION`. Dry by default, `--apply` writes.                         |
-| `shoot-page.ts`                                | **keep**                 | Render a stored page to PNGs — the six frames the design critic is shown, plus what the click-pass touched. For reading a generated page's design after an eval run, at the sizes it was judged at.                                                           |
-| `smoke-phase2-fold.ts`                         | **keep (manual smoke)**  | Drives the document→graph fold + domain-events outbox + attribute history against the dev DB and asserts invariants, then cleans up. Still exercises live services (the fold survived the refonte); run it as a manual smoke.                                 |
-| `convert-legacy-approval-parks.ts`             | **one-off (2026-09-22)** | Cancels the orchestrators still sitting in `wait.forToken` and writes their resume point. Dry by default, `--apply` writes. Delete once the query below returns 0 in production. Logic + tests live in `services/workflows/convert-legacy-approval-parks.ts`. |
-
-### `convert-legacy-approval-parks.ts` — when it may be deleted
-
-Self-hosted Trigger.dev has **no checkpoints** (Cloud-only,
-`self-hosting/overview.mdx`), so the pre-2026-09-22 orchestrator's
-`wait.forToken` kept the run `EXECUTING` and held its workflow's concurrency
-slot for the whole human wait — three of them at a limit of three silenced a
-live workflow for six days. The orchestrator now exits at the park; this
-converts the runs that were already parked the old way.
-
-It is dead the moment production has none left. The evidence is the query, not
-a memory of having run it:
-
-```sql
-select count(*) from workflow_runs
-where status = 'needs_approval' and resume_from_turn_index is null;  -- expect 0
-```
-
-Ignore a non-zero count younger than `MIN_PARK_AGE_MINUTES`: a healthy run
-matches this predicate for the fraction of a second between the turn writing
-`needs_approval` and the orchestrator's `/park` callback landing.
+| Script                                         | Status                  | Purpose                                                                                                                                                                                                                               |
+| ---------------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `reseed-system-ontology.ts`                    | **keep**                | Seed system + starter collections for every org, propagate org-scope field defs to every team. Idempotent. The dev **re-seed** primitive.                                                                                             |
+| `sync-collection-tables.ts`                    | **keep**                | Reconcile every team's `data.coll_*` extension tables to their field defs + (re)arm RLS. The existing-tenant **provisioning / backfill / repair** primitive (was `sync-typed-views.ts` — renamed; there are no views anymore).        |
+| `check-collections-rls.ts`                     | **keep**                | Deterministic RLS/grant verification (see below). Run after migrate + seed.                                                                                                                                                           |
+| `build-icon-catalog.ts` + `icon-essentials.ts` | **keep**                | Regenerate the curated Lucide icon catalog (backend `lib/icons/catalog.ts` **and** the frontend mirror `app/.../collectionIconCatalog.json`).                                                                                         |
+| `grant-super-admin.ts`                         | **keep**                | Admin utility — unrelated to objects.                                                                                                                                                                                                 |
+| `recompile-pages.ts`                           | **keep**                | Re-run the page compiler over every stored page. Pages compile on write and never on read, so a fix to the COMPILER reaches nothing already saved: run this after bumping `PAGE_COMPILER_REVISION`. Dry by default, `--apply` writes. |
+| `shoot-page.ts`                                | **keep**                | Render a stored page to PNGs — the six frames the design critic is shown, plus what the click-pass touched. For reading a generated page's design after an eval run, at the sizes it was judged at.                                   |
+| `smoke-phase2-fold.ts`                         | **keep (manual smoke)** | Drives the document→graph fold + domain-events outbox + attribute history against the dev DB and asserts invariants, then cleans up. Still exercises live services (the fold survived the refonte); run it as a manual smoke.         |
 
 Removed one-off dev migrations (moot after dev wipe-and-reseed + empty prod — a
 fresh `CREATE TABLE` already produces the target schema):
@@ -104,6 +82,33 @@ and parts::text like '%think>%'`.
   and offer to redo them, bounded only by a `--before` date nobody would still
   have. A script that cannot answer "am I done?" is the exact shape this list
   exists to remove.
+
+Removed on **2026-09-22**, the same day it shipped — and without ever having
+converted a row:
+
+- `convert-legacy-approval-parks.ts` (+ its service and its integration
+  suite) — it existed to rescue the runs parked by the pre-2026-09-22
+  orchestrator, which sat in `wait.forToken` and so held its workflow's
+  concurrency slot for the whole human wait (self-hosted Trigger.dev has no
+  checkpoints — Cloud-only, `self-hosting/overview.mdx`). Three of them at a
+  limit of three silenced a live workflow for six days. By the time the
+  release reached production the backlog had been cleared by hand, and the
+  new orchestrator (Trigger.dev version `20260922.1`) cannot park that way,
+  so **the condition is unreachable, not merely repaired**. Both halves of
+  that claim are checkable:
+
+  ```sql
+  -- no run is parked without a resume point
+  select count(*) from workflow_runs
+  where status = 'needs_approval' and resume_from_turn_index is null;  -- 0
+  -- and no orchestrator of any kind is live to park the old way
+  select count(*) from workflow_runs
+  where status in ('queued','running','needs_approval');               -- 0
+  ```
+
+  Both returned 0. Note the first query alone is not enough: a HEALTHY run
+  matches it for the fraction of a second between the turn writing
+  `needs_approval` and the orchestrator's `/park` callback landing.
 
 ## The objects data-migration / provisioning model
 

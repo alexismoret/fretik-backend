@@ -47,9 +47,7 @@ interface TriggerCall {
 }
 
 const triggerCalls: TriggerCall[] = [];
-const cancelledTriggerRuns: string[] = [];
 let triggerFails = false;
-let cancelFails = false;
 let nextTriggerRunId = "run_resumed";
 
 await mockModule("../../../src/lib/trigger-client", {
@@ -73,11 +71,7 @@ await mockModule("../../../src/lib/trigger-client", {
       publicAccessToken: "tok",
     });
   },
-  cancelWorkflowTriggerRun: (triggerRunId: string) => {
-    cancelledTriggerRuns.push(triggerRunId);
-    if (cancelFails) return Promise.reject(new Error("trigger API down"));
-    return Promise.resolve();
-  },
+  cancelWorkflowTriggerRun: () => Promise.resolve(),
 });
 
 // Fire-and-forget calls the terminal paths make. Unreachable here by design
@@ -93,8 +87,6 @@ const { resumeRunFromApproval } =
   await import("../../../src/services/workflows/resume-from-approval");
 const { markStalledRuns, WORKFLOW_APPROVAL_TIMEOUT_MINUTES } =
   await import("../../../src/services/workflows/mark-stalled-runs");
-const { convertLegacyApprovalParks, MIN_PARK_AGE_MINUTES } =
-  await import("../../../src/services/workflows/convert-legacy-approval-parks");
 
 const PLAYBOOK: WorkflowPlaybook = {
   goal: "keep the integration suite honest",
@@ -177,9 +169,7 @@ afterAll(async () => {
 
 beforeEach(() => {
   triggerCalls.length = 0;
-  cancelledTriggerRuns.length = 0;
   triggerFails = false;
-  cancelFails = false;
   nextTriggerRunId = "run_resumed";
 });
 
@@ -303,11 +293,10 @@ describe("resumeRunFromApproval", () => {
   });
 
   test("a park with no resume point starts NOTHING", async () => {
-    // Two ways to be here, both transient: a run parked by the old
-    // orchestrator before `convert-legacy-approval-parks.ts` ran, and the
-    // sub-second window where the turn wrote `needs_approval` but the
-    // orchestrator's `/park` has not landed. Launching without a turn index
-    // would replay the run from turn 1 — the playbook a second time.
+    // The sub-second window where the turn's transaction wrote
+    // `needs_approval` but the orchestrator's `/park` callback has not
+    // landed yet. Launching without a turn index would replay the run from
+    // turn 1 — the whole playbook a second time.
     const { conversationId } = await createParkedRun({
       resumeFromTurnIndex: null,
       resumeRemainingMs: null,
@@ -377,132 +366,5 @@ describe("markStalledRuns — the park's only remaining bound", () => {
     await markStalledRuns();
 
     expect((await readRun(runId)).status).toBe("needs_approval");
-  });
-});
-
-describe("convertLegacyApprovalParks", () => {
-  /** A park left by the OLD orchestrator: no resume point, a live Trigger
-   * run still holding the workflow's concurrency slot. */
-  const createLegacyPark = async (
-    overrides: Partial<typeof workflowRuns.$inferInsert> = {},
-  ) =>
-    createParkedRun({
-      resumeFromTurnIndex: null,
-      resumeRemainingMs: null,
-      triggerRunId: "run_legacy",
-      lastTurnIndex: 6,
-      // The shape of the production rows: worked a few minutes, then parked
-      // for a week. `pausedAt - startedAt` is the WORKED time precisely
-      // because the park that is still open has not been banked yet.
-      startedAt: new Date(Date.now() - 7 * 24 * 60 * 60_000 - 6 * 60_000),
-      pausedAt: new Date(Date.now() - 7 * 24 * 60 * 60_000),
-      pausedMs: 0,
-      ...overrides,
-    });
-
-  test("cancels the stuck orchestrator and writes the resume point", async () => {
-    const { runId } = await createLegacyPark();
-
-    const report = await convertLegacyApprovalParks({ apply: true });
-
-    expect(report.map((r) => r.runId)).toContain(runId);
-    // Cancelling is the ONLY thing that frees the slot — the whole point of
-    // the conversion. Completing the token instead would resume the playbook
-    // on the old code.
-    expect(cancelledTriggerRuns).toContain("run_legacy");
-
-    const row = await readRun(runId);
-    expect(row.status).toBe("needs_approval");
-    expect(row.resumeFromTurnIndex).toBe(7);
-    // 60 min of budget minus the 6 worked before the park — NOT minus the
-    // week spent waiting on a human, which is the whole distinction.
-    expect(row.resumeRemainingMs).toBe(54 * 60_000);
-    // The cancelled Trigger run must not stay addressable: the Stop button
-    // would otherwise try to cancel an already-dead run on every parked row.
-    expect(row.triggerRunId).toBeNull();
-  });
-
-  test("a run that had already burned its budget gets zero, never a fresh one", async () => {
-    const { runId } = await createLegacyPark({
-      startedAt: new Date(Date.now() - 7 * 24 * 60 * 60_000 - 90 * 60_000),
-      pausedAt: new Date(Date.now() - 7 * 24 * 60 * 60_000),
-    });
-
-    await convertLegacyApprovalParks({ apply: true });
-
-    // Zero closes the run on TIME_LIMIT at the first turn — loud and finite.
-    // A fresh 60 minutes would let a run be extended forever by answering it.
-    expect((await readRun(runId)).resumeRemainingMs).toBe(0);
-  });
-
-  test("the converted run is then resumable — the two halves joined", async () => {
-    const { runId, conversationId } = await createLegacyPark({
-      lastTurnIndex: 11,
-    });
-
-    await convertLegacyApprovalParks({ apply: true });
-    expect(
-      await resumeRunFromApproval({ conversationId, decision: "approved" }),
-    ).toBe(true);
-
-    expect(triggerCalls).toHaveLength(1);
-    expect(triggerCalls[0]?.startTurnIndex).toBe(12);
-    expect((await readRun(runId)).status).toBe("running");
-  });
-
-  test("a dry run writes nothing", async () => {
-    const { runId } = await createLegacyPark();
-
-    const report = await convertLegacyApprovalParks({ apply: false });
-
-    expect(report.map((r) => r.runId)).toContain(runId);
-    expect(cancelledTriggerRuns).toHaveLength(0);
-    const row = await readRun(runId);
-    expect(row.resumeFromTurnIndex).toBeNull();
-    expect(row.triggerRunId).toBe("run_legacy");
-  });
-
-  test("is idempotent — a second pass finds nothing", async () => {
-    await createLegacyPark();
-
-    await convertLegacyApprovalParks({ apply: true });
-    cancelledTriggerRuns.length = 0;
-    const second = await convertLegacyApprovalParks({ apply: true });
-
-    expect(second).toHaveLength(0);
-    expect(cancelledTriggerRuns).toHaveLength(0);
-  });
-
-  test("converts even when the cancel call fails", async () => {
-    // A Trigger run the API no longer knows about holds no slot, which is
-    // the outcome wanted. Refusing to convert would strand the row forever.
-    cancelFails = true;
-    const { runId } = await createLegacyPark();
-
-    const report = await convertLegacyApprovalParks({ apply: true });
-
-    expect(report.find((r) => r.runId === runId)?.cancelError).toBe(
-      "trigger API down",
-    );
-    expect((await readRun(runId)).resumeFromTurnIndex).toBe(7);
-  });
-
-  test("NEVER touches a run that parked moments ago", async () => {
-    // The candidate predicate also matches, for a fraction of a second, a
-    // healthy run under the new code whose `/park` callback has not landed
-    // yet. Cancelling that would kill a live orchestrator. Delete the age
-    // predicate and this goes red.
-    const { runId } = await createLegacyPark({
-      pausedAt: new Date(Date.now() - (MIN_PARK_AGE_MINUTES - 5) * 60_000),
-      startedAt: new Date(Date.now() - 60 * 60_000),
-    });
-
-    const report = await convertLegacyApprovalParks({ apply: true });
-
-    expect(report.map((r) => r.runId)).not.toContain(runId);
-    expect(cancelledTriggerRuns).toHaveLength(0);
-    const row = await readRun(runId);
-    expect(row.resumeFromTurnIndex).toBeNull();
-    expect(row.triggerRunId).toBe("run_legacy");
   });
 });

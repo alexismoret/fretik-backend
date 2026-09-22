@@ -63,6 +63,23 @@ export interface RecomputeRowInput {
    * would otherwise recompute against a list it has just superseded.
    */
   quarantined: string[];
+  /**
+   * What OUR traffic measured about these hosts, keyed by normalised provider.
+   *
+   * Folded onto the endpoints here rather than in the caller, because the
+   * nightly pass and the operator's price-ceiling path both go through this
+   * function precisely so they cannot disagree — a fold done upstream in one of
+   * them makes the pool an operator is SHOWN differ from the pool the next pass
+   * WRITES, which is the failure this function exists to prevent.
+   *
+   * Optional: an operator preview may legitimately say "we have not looked",
+   * and a telemetry read that failed must cost the pass a better grade, never
+   * the grade itself.
+   */
+  measured?: ReadonlyMap<
+    string,
+    { measuredCacheReadRatio?: number; measuredCacheSamples?: number }
+  >;
 }
 
 export interface RecomputedRow {
@@ -78,7 +95,36 @@ export interface RecomputedRow {
 }
 
 export const recomputeRowPool = (input: RecomputeRowInput): RecomputedRow => {
-  const { row, endpoints, transport, quarantined } = input;
+  const { row, transport, quarantined } = input;
+
+  // Our own cache ratio, written onto the endpoints before anything filters
+  // them, so `cacheEvidenceFor` reads a measurement instead of falling through
+  // to `unknown` — which is what it has done since the field was declared,
+  // because nothing wrote it. The filter it feeds (`requireCache` on every
+  // agent role) was built, wired and never once fired.
+  //
+  // It has to be OUR figure and not the published one: measured 2026-09-22,
+  // `morph` publishes a cache-read price for `glm-5.3-flash` and returned 0 %
+  // over seven days of our traffic, at $0.745 per MTok of input against
+  // $0.025 for the best host in the same pool.
+  const measured = input.measured;
+  const endpoints =
+    measured === undefined || measured.size === 0
+      ? input.endpoints
+      : input.endpoints.map((endpoint) => {
+          const stats = measured.get(endpoint.provider);
+          if (
+            stats?.measuredCacheReadRatio === undefined ||
+            stats.measuredCacheSamples === undefined
+          ) {
+            return endpoint;
+          }
+          return {
+            ...endpoint,
+            measuredCacheReadRatio: stats.measuredCacheReadRatio,
+            measuredCacheSamples: stats.measuredCacheSamples,
+          };
+        });
 
   const policy =
     row.status === "published" ? PUBLISHED_POLICY : DEFAULT_CANDIDATE_POLICY;

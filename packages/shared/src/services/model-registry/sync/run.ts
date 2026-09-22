@@ -660,11 +660,32 @@ const syncOneModel = async (
    * the row does — `reprobeExpiredQuarantines` above may have just released a
    * host, and recomputing off the stored array would keep it out one more day.
    */
+  // What our own traffic measured about these hosts, which outranks what their
+  // vendors publish about themselves wherever we have enough of it. A failure
+  // here costs the pass a better grade, never the grade itself: the catalogue
+  // figures are still there, and they are what the fleet ran on until now.
+  //
+  // Read BEFORE the pool rather than after it: the cache ratio is now one of
+  // the things the pool filters on, and `evaluatePolicy` below reads the same
+  // map for its throughput and TTFT rules.
+  let measured: Awaited<ReturnType<typeof readMeasuredEndpointStats>> =
+    new Map();
+  try {
+    measured = await readMeasuredEndpointStats(row.profileKey, {
+      now: ctx.now,
+    });
+  } catch (err: unknown) {
+    ctx.stats.errors.push(
+      `${row.profileKey}: telemetry read failed: ${message(err)}`,
+    );
+  }
+
   const { policy, pool, vettedPool, context, pricing } = recomputeRowPool({
     row,
     endpoints: merged,
     transport,
     quarantined: quarantinedNames,
+    measured,
   });
 
   // A pool member no endpoint answers to is how a pool quietly changes meaning:
@@ -705,21 +726,6 @@ const syncOneModel = async (
     modelIds: Object.values(row.modelIds),
   });
   const sourcePublishes = sourcePublishesFor(ctx, row.modelIds);
-  // What our own traffic measured about these hosts, which outranks what their
-  // vendors publish about themselves wherever we have enough of it. A failure
-  // here costs the pass a better grade, never the grade itself: the catalogue
-  // figures are still there, and they are what the fleet ran on until now.
-  let measured: Awaited<ReturnType<typeof readMeasuredEndpointStats>> =
-    new Map();
-  try {
-    measured = await readMeasuredEndpointStats(row.profileKey, {
-      now: ctx.now,
-    });
-  } catch (err: unknown) {
-    ctx.stats.errors.push(
-      `${row.profileKey}: telemetry read failed: ${message(err)}`,
-    );
-  }
   const report = evaluatePolicy(
     policy,
     {

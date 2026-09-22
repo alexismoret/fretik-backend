@@ -198,6 +198,9 @@ const makeWorkflowAgentSet = (
 ): AgentSet<WorkflowCallOptions, WorkflowTools> =>
   buildAgentSet<WorkflowCallOptions, WorkflowTools>({
     id: "workflow",
+    // A run, not the conversation around it: the run is the span with a
+    // continuous prefix, and the workflow prompt is byte-stable per run.
+    sessionScope: "conversation",
     buildTools: () => buildWorkflowTools({ dispatchAgent: dispatchAgentTool }),
     systemPrompt: workflowSystemPrompt,
     model,

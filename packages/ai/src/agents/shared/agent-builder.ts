@@ -20,6 +20,11 @@ import {
   type ResolvedModel,
 } from "../../lib/model-registry/resolve";
 import type { ReasoningLevel } from "../../lib/model-registry/types";
+import { mergeProviderOptions } from "../../lib/provider-options";
+import {
+  providerSessionId,
+  type SessionScope,
+} from "../../lib/provider-session";
 import {
   readAgentUsage,
   recordStepUsage,
@@ -105,6 +110,17 @@ export type AgentRuntimeContextBase = Omit<
 export interface BuildAgentSetConfig<CALL_OPTIONS, TTools extends ToolSet> {
   /** Short identifier, used in logs and traces. */
   id: string;
+  /**
+   * Which span of work shares one pinned upstream — `conversation` for an
+   * agent a user or a run drives across many turns, `delegate` for one
+   * dispatched call and its retries. See `lib/provider-session.ts` for why a
+   * delegate must NOT inherit the parent's lane.
+   *
+   * Required rather than defaulted: a new agent set that forgets it would
+   * silently fall back to OpenRouter's message-hash key, which is the exact
+   * behaviour this field exists to replace — and nothing would report it.
+   */
+  sessionScope: SessionScope;
   /**
    * Construct the static tool set. Called once per agent instance at
    * boot. Tools MUST be ctx-less (see `../../tools/README.md`).
@@ -968,23 +984,46 @@ const buildToolLoopAgent = <CALL_OPTIONS, TTools extends ToolSet>(
       // `baseCallArgs`; a sub-agent has no such caller, so before 2026-08-18 it
       // silently ran at its profile's default however deeply the user had asked
       // the turn to think. Applied only when the ctx carries a level AND the
-      // caller set none — `prepareCall` REPLACES call settings wholesale, so
-      // overriding a param the caller chose would be the same bug in reverse.
+      // caller chose no reasoning of its own — overriding a param the caller
+      // set would be the same bug in reverse.
+      //
+      // The condition used to be `baseCallArgs.providerOptions === undefined`,
+      // which was wider than its intent for want of a merge: a caller sending
+      // ANY provider option (the handler's `file-parser` plugin on a native-PDF
+      // turn) silently took the delegate's reasoning level away. Now that
+      // `mergeProviderOptions` can add a key without destroying its
+      // neighbours, the test is the one that was always meant.
       const reasoning =
         ctx.reasoningLevel !== undefined &&
-        baseCallArgs.providerOptions === undefined
+        baseCallArgs.providerOptions?.openrouter?.["reasoning"] === undefined
           ? reasoningParamForProfile(
               resolved.profile,
               ctx.reasoningLevel as ReasoningLevel,
             )
           : undefined;
 
+      // The sticky-routing key. One per conversation / workflow run, or one per
+      // delegate run — see `provider-session.ts` for why a delegate must not
+      // share the parent's. Unknown keys under `openrouter` ride through to the
+      // request body; `bun run probe:cache` is the canary on that.
+      const sessionId = providerSessionId(config.sessionScope, ctx);
+
+      const openrouter = {
+        ...(reasoning === undefined ? {} : { reasoning }),
+        ...(sessionId === undefined ? {} : { session_id: sessionId }),
+      };
+
       return {
         ...baseCallArgs,
         instructions,
         runtimeContext: branded,
-        ...(reasoning !== undefined
-          ? { providerOptions: { openrouter: { reasoning } } }
+        ...(Object.keys(openrouter).length > 0
+          ? {
+              providerOptions: mergeProviderOptions(
+                baseCallArgs.providerOptions,
+                { openrouter },
+              ),
+            }
           : {}),
         // Fallback `activeTools` for agents WITHOUT a `prepareStep`. When a
         // `prepareStep` is set it fires on step 0 and supersedes this.

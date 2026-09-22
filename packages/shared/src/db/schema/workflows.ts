@@ -232,9 +232,26 @@ export const workflowRuns = pgTable(
     ),
 
     // Trigger.dev run id (`run_...`) for runs.cancel + realtime subscribe.
+    // NOT stable across a run's life: a run parked on an approval ends its
+    // orchestrator, and the resume stamps the id of the FRESH one here.
     triggerRunId: text("trigger_run_id"),
-    // Current approval wait token id (set while status = needs_approval).
-    waitTokenId: text("wait_token_id"),
+    // Where a parked run picks up again. Both are set as the run enters
+    // `needs_approval` and cleared by the resume, so together they are also
+    // the exactly-once claim: the resume flips them to NULL under a `WHERE
+    // ... IS NOT NULL`, and a second decision on the same approval matches
+    // zero rows instead of starting a second orchestrator.
+    //
+    // They exist because self-hosted Trigger.dev has NO checkpoints (a Cloud
+    // feature — `self-hosting/overview.mdx`), so an orchestrator parked on
+    // `wait.forToken` stays EXECUTING and holds its per-workflow concurrency
+    // slot for the whole human wait. The orchestrator therefore ENDS at a
+    // park and a new one resumes here; nothing durable may live in its
+    // process memory.
+    resumeFromTurnIndex: integer("resume_from_turn_index"),
+    // Wall-clock budget left at the moment of the park, in ms. Carried
+    // rather than recomputed: the new orchestrator cannot know how much of
+    // the budget the previous one already spent.
+    resumeRemainingMs: integer("resume_remaining_ms"),
 
     // Playbook snapshot + per-task {status, startedAt, finishedAt, summary}.
     taskStates: jsonb("task_states")

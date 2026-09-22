@@ -27,6 +27,7 @@ export const listActiveWorkflowRuns = async (params: {
       status: true,
       isTest: true,
       startedAt: true,
+      pausedAt: true,
       createdAt: true,
     },
   });
@@ -36,6 +37,7 @@ export const listActiveWorkflowRuns = async (params: {
     status: row.status,
     isTest: row.isTest,
     startedAt: row.startedAt,
+    pausedAt: row.pausedAt,
     createdAt: row.createdAt,
   }));
 };

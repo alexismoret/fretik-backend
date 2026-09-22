@@ -9,16 +9,38 @@ Importing the database no longer migrates anything: see
 
 ## Script inventory
 
-| Script                                         | Status                  | Purpose                                                                                                                                                                                                                               |
-| ---------------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `reseed-system-ontology.ts`                    | **keep**                | Seed system + starter collections for every org, propagate org-scope field defs to every team. Idempotent. The dev **re-seed** primitive.                                                                                             |
-| `sync-collection-tables.ts`                    | **keep**                | Reconcile every team's `data.coll_*` extension tables to their field defs + (re)arm RLS. The existing-tenant **provisioning / backfill / repair** primitive (was `sync-typed-views.ts` — renamed; there are no views anymore).        |
-| `check-collections-rls.ts`                     | **keep**                | Deterministic RLS/grant verification (see below). Run after migrate + seed.                                                                                                                                                           |
-| `build-icon-catalog.ts` + `icon-essentials.ts` | **keep**                | Regenerate the curated Lucide icon catalog (backend `lib/icons/catalog.ts` **and** the frontend mirror `app/.../collectionIconCatalog.json`).                                                                                         |
-| `grant-super-admin.ts`                         | **keep**                | Admin utility — unrelated to objects.                                                                                                                                                                                                 |
-| `recompile-pages.ts`                           | **keep**                | Re-run the page compiler over every stored page. Pages compile on write and never on read, so a fix to the COMPILER reaches nothing already saved: run this after bumping `PAGE_COMPILER_REVISION`. Dry by default, `--apply` writes. |
-| `shoot-page.ts`                                | **keep**                | Render a stored page to PNGs — the six frames the design critic is shown, plus what the click-pass touched. For reading a generated page's design after an eval run, at the sizes it was judged at.                                   |
-| `smoke-phase2-fold.ts`                         | **keep (manual smoke)** | Drives the document→graph fold + domain-events outbox + attribute history against the dev DB and asserts invariants, then cleans up. Still exercises live services (the fold survived the refonte); run it as a manual smoke.         |
+| Script                                         | Status                   | Purpose                                                                                                                                                                                                                                                       |
+| ---------------------------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `reseed-system-ontology.ts`                    | **keep**                 | Seed system + starter collections for every org, propagate org-scope field defs to every team. Idempotent. The dev **re-seed** primitive.                                                                                                                     |
+| `sync-collection-tables.ts`                    | **keep**                 | Reconcile every team's `data.coll_*` extension tables to their field defs + (re)arm RLS. The existing-tenant **provisioning / backfill / repair** primitive (was `sync-typed-views.ts` — renamed; there are no views anymore).                                |
+| `check-collections-rls.ts`                     | **keep**                 | Deterministic RLS/grant verification (see below). Run after migrate + seed.                                                                                                                                                                                   |
+| `build-icon-catalog.ts` + `icon-essentials.ts` | **keep**                 | Regenerate the curated Lucide icon catalog (backend `lib/icons/catalog.ts` **and** the frontend mirror `app/.../collectionIconCatalog.json`).                                                                                                                 |
+| `grant-super-admin.ts`                         | **keep**                 | Admin utility — unrelated to objects.                                                                                                                                                                                                                         |
+| `recompile-pages.ts`                           | **keep**                 | Re-run the page compiler over every stored page. Pages compile on write and never on read, so a fix to the COMPILER reaches nothing already saved: run this after bumping `PAGE_COMPILER_REVISION`. Dry by default, `--apply` writes.                         |
+| `shoot-page.ts`                                | **keep**                 | Render a stored page to PNGs — the six frames the design critic is shown, plus what the click-pass touched. For reading a generated page's design after an eval run, at the sizes it was judged at.                                                           |
+| `smoke-phase2-fold.ts`                         | **keep (manual smoke)**  | Drives the document→graph fold + domain-events outbox + attribute history against the dev DB and asserts invariants, then cleans up. Still exercises live services (the fold survived the refonte); run it as a manual smoke.                                 |
+| `convert-legacy-approval-parks.ts`             | **one-off (2026-09-22)** | Cancels the orchestrators still sitting in `wait.forToken` and writes their resume point. Dry by default, `--apply` writes. Delete once the query below returns 0 in production. Logic + tests live in `services/workflows/convert-legacy-approval-parks.ts`. |
+
+### `convert-legacy-approval-parks.ts` — when it may be deleted
+
+Self-hosted Trigger.dev has **no checkpoints** (Cloud-only,
+`self-hosting/overview.mdx`), so the pre-2026-09-22 orchestrator's
+`wait.forToken` kept the run `EXECUTING` and held its workflow's concurrency
+slot for the whole human wait — three of them at a limit of three silenced a
+live workflow for six days. The orchestrator now exits at the park; this
+converts the runs that were already parked the old way.
+
+It is dead the moment production has none left. The evidence is the query, not
+a memory of having run it:
+
+```sql
+select count(*) from workflow_runs
+where status = 'needs_approval' and resume_from_turn_index is null;  -- expect 0
+```
+
+Ignore a non-zero count younger than `MIN_PARK_AGE_MINUTES`: a healthy run
+matches this predicate for the fraction of a second between the turn writing
+`needs_approval` and the orchestrator's `/park` callback landing.
 
 Removed one-off dev migrations (moot after dev wipe-and-reseed + empty prod — a
 fresh `CREATE TABLE` already produces the target schema):
@@ -43,6 +65,45 @@ key = 'person' and team_id is null` → **0**.
   `collection_id`.
 - `drop-legacy-object-index-queue.ts` (was in `@fretik/jobs`) — `bull:*:repeat` in
   production Redis lists `collection-index` and **no** `object-index`.
+
+Removed on **2026-09-21**, same rule, after the operator confirmed every one of
+them had run in production. What makes each one dead is not that it ran — it is
+that **the condition it repaired can no longer occur**, which is the only test
+worth applying: a one-off whose cause is still reachable is a repair tool, not a
+spent migration.
+
+- `repair-oversized-messages.ts` (this folder) — the fence is now closed on both
+  sides it used to leak through: `maybePersistLargeOutput` bounds head-and-tail
+  IN PLACE when there is no `conversationId` (it used to return the content
+  untouched), and `python` / `bash` / `manageDocument` / `manageWorkflow` all
+  route their results — error envelopes included — through it. Verify with
+  `select count(*) from ai_messages where octet_length(parts::text) > 200000`
+  restricted to rows newer than the fence.
+- `repair-workflow-notifications.ts` (this folder) — the "email on, nobody
+  selected" state is unreachable from the panel: `SettingsSlideover.vue` watches
+  the three controls and re-adds a recipient (`ensureRecipient`). Verify with
+  `select count(*) from workflows where (notifications->>'emailOnCompletion')::bool
+and not (notifications->>'notifyTriggeredBy')::bool
+and jsonb_array_length(notifications->'recipientUserIds') = 0`.
+- `drop-legacy-orphan-repeatable.ts` (was in `@fretik/jobs`) — it had to run
+  BEFORE BullMQ 6 or the container could not boot. All three packages are on
+  `bullmq ^6.3.2` and production serves: the fleet running is the proof. What
+  replaces it is `jobs/tests/unit/schedulers.test.ts`, which fails on any
+  `{ repeat }` registration — the cleanup is gone, so the test is now the only
+  thing between a legacy registration and a crash loop.
+- `backfill-orphan-think-tags.ts` (was in `@fretik/ai`) — `orphanTagMiddleware`
+  strips the dangling `</think>` at the source now, so no new row can carry one.
+  Verify with `select count(*) from ai_messages where role = 'assistant'
+and parts::text like '%think>%'`.
+- `redistill-clipped-episodes.ts` (was in `@fretik/ai`, written and run the same
+  week) — it rewrote the 237 of 238 episodes the distiller's old 500-character
+  per-message clip had damaged. Deleted for a second reason on top of the clip
+  being gone: **it could not tell whether it had already run.** Its candidate
+  test compares today's transcript rendering against the legacy one, and that
+  difference is permanent, so a dry run in six months would list the same 237
+  and offer to redo them, bounded only by a `--before` date nobody would still
+  have. A script that cannot answer "am I done?" is the exact shape this list
+  exists to remove.
 
 ## The objects data-migration / provisioning model
 

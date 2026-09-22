@@ -13,15 +13,32 @@ export const WORKFLOW_STALL_MINUTES = 20;
 const QUEUED_EXPIRY_MS = (7 * 24 + 12) * 60 * 60 * 1000;
 
 /**
+ * How long an approval may sit unanswered before its run is closed.
+ *
+ * This used to be the `timeout` on the Trigger.dev wait token the
+ * orchestrator parked in. That park is gone — self-hosted Trigger.dev cannot
+ * checkpoint, so waiting there held the workflow's concurrency slot — and
+ * with it went the only bound on a forgotten approval. Enforcing it here is
+ * not tidying: without it a parked run waits forever.
+ */
+export const WORKFLOW_APPROVAL_TIMEOUT_MINUTES = 7 * 24 * 60;
+
+/**
  * Reclaim zombie runs — ones stuck in `running` whose Trigger.dev
  * orchestrator crashed (no heartbeat for `WORKFLOW_STALL_MINUTES`). Marks
  * them `failed(STALLED)` so the UI stops showing an eternal spinner and the
  * per-workflow concurrency slot frees up.
  *
- * CRUCIAL: only `status = 'running'` rows are considered. Runs in
- * `needs_approval` are deliberately excluded — they are legitimately parked
- * on a wait token (for up to the token's multi-day timeout) with a
- * necessarily stale heartbeat, and must never be killed for waiting.
+ * CRUCIAL: the heartbeat check considers only `status = 'running'` rows.
+ * Runs in `needs_approval` are excluded from IT — they are legitimately
+ * parked with a necessarily stale heartbeat (there is no orchestrator at all
+ * while a run waits on a human) and must never be killed for waiting. They
+ * are bounded instead by their own, far longer clock, below.
+ *
+ * Also closes approvals nobody answered within
+ * `WORKFLOW_APPROVAL_TIMEOUT_MINUTES`. That deadline used to live on the
+ * Trigger.dev wait token and disappeared with it, so this is now the ONLY
+ * thing standing between a forgotten approval and a run parked forever.
  *
  * Also reclaims `queued` zombies: a run older than the Trigger.dev queue TTL
  * that never started (Trigger expired or lost it) is closed
@@ -72,6 +89,24 @@ export const markStalledRuns = async (params?: {
       ),
     );
 
+  // A park nobody answered. `pausedAt` is stamped by the turn that asked
+  // (`recordTurnResult`), so it is the age of the QUESTION, not of the run —
+  // which is what the deadline is about. A row with `pausedAt IS NULL` is
+  // excluded by `lt` on its own, so a `needs_approval` row that somehow
+  // never stamped one is left alone rather than killed on sight.
+  const approvalCutoff = new Date(
+    now.getTime() - WORKFLOW_APPROVAL_TIMEOUT_MINUTES * 60_000,
+  );
+  const unanswered = await db
+    .select({ id: workflowRuns.id })
+    .from(workflowRuns)
+    .where(
+      and(
+        eq(workflowRuns.status, "needs_approval"),
+        lt(workflowRuns.pausedAt, approvalCutoff),
+      ),
+    );
+
   const candidates = [
     ...stalled.map((row) => ({
       id: row.id,
@@ -85,6 +120,13 @@ export const markStalledRuns = async (params?: {
       error: {
         code: "EXPIRED",
         message: "Queued longer than the queue TTL — the run never started.",
+      },
+    })),
+    ...unanswered.map((row) => ({
+      id: row.id,
+      error: {
+        code: "APPROVAL_TIMEOUT",
+        message: "The approval request expired unanswered.",
       },
     })),
   ];

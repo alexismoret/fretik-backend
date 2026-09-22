@@ -11,9 +11,10 @@ import { workflowRuns } from "../../db/schema";
  *
  * A run in `needs_approval` is NOT covered by that check — the sweeper
  * filters on `status = 'running'` — so an approval can sit pending for days
- * (bounded only by the wait-token timeout) without ever being killed. The
- * orchestrator is checkpointed on `wait.forToken` while it waits (zero cost),
- * so a stale heartbeat during approval is expected and harmless.
+ * without ever being killed. A stale heartbeat during a park is expected:
+ * there is no orchestrator at all while a run waits on a human (it exited),
+ * so nothing is there to beat. The park's own bound is `paused_at` against
+ * `WORKFLOW_APPROVAL_TIMEOUT_MINUTES`, enforced by the same sweeper.
  */
 export const heartbeatRun = async (params: {
   runId: string;
@@ -26,35 +27,38 @@ export const heartbeatRun = async (params: {
 };
 
 /**
- * Record the approval wait-token id on a run as it enters `needs_approval`.
- * The approval-decision path reads it back to `wait.completeToken`, resuming
- * the orchestrator loop.
+ * Record where a run parked on a human picks up again, as it enters
+ * `needs_approval` and its orchestrator exits. `resumeRunFromApproval`
+ * reads these back to start a fresh orchestrator at that turn.
+ *
+ * The `resumeFromTurnIndex IS NULL` guard does double duty: it is the
+ * exactly-once signal the approval email keys on (below), AND the write half
+ * of the claim that stops two decisions on the same approval from launching
+ * two orchestrators — the resume clears it under `IS NOT NULL`.
  *
  * The run is ALREADY `needs_approval` by the time this lands: the turn's own
- * transaction (`recordTurnResult`) writes that status before the orchestrator
- * gets the result and mints the token. So the guard admits both non-terminal
- * states — a `status = 'running'` filter matched zero rows, left
- * `waitTokenId` NULL, and stranded every approval (`resumeRunFromApproval`
- * bails without a token, so the run sat until APPROVAL_TIMEOUT and the
- * notification email never fired).
- *
- * `waitTokenId IS NULL` carries the rest of the contract: a terminal or
- * canceled run is never dragged back to `needs_approval`, and a retried/late
- * POST matches nothing — so the returned `parked` stays the exactly-once
- * signal the approval notification email keys on.
+ * transaction (`recordTurnResult`) writes that status — and `pausedAt`,
+ * which is what bounds the park — before the orchestrator gets the result.
+ * So the guard admits both non-terminal states; a `status = 'running'`
+ * filter matched zero rows and stranded every approval.
  */
-export const setRunWaitToken = async (params: {
+export const parkRunForApproval = async (params: {
   runId: string;
-  waitTokenId: string;
+  resumeFromTurnIndex: number;
+  remainingMs: number;
 }): Promise<{ parked: boolean }> => {
   const updated = await db
     .update(workflowRuns)
-    .set({ waitTokenId: params.waitTokenId, status: "needs_approval" })
+    .set({
+      resumeFromTurnIndex: params.resumeFromTurnIndex,
+      resumeRemainingMs: params.remainingMs,
+      status: "needs_approval",
+    })
     .where(
       and(
         eq(workflowRuns.id, params.runId),
         inArray(workflowRuns.status, ["running", "needs_approval"]),
-        isNull(workflowRuns.waitTokenId),
+        isNull(workflowRuns.resumeFromTurnIndex),
       ),
     )
     .returning({ id: workflowRuns.id });

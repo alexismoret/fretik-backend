@@ -32,7 +32,12 @@ import {
 import { getWorkflowRun } from "@fretik/shared/services/workflows/get-run";
 import { hasSuccessfulRun } from "@fretik/shared/services/workflows/has-successful-run";
 import { listWorkflows } from "@fretik/shared/services/workflows/list";
+import { listActiveWorkflowRuns } from "@fretik/shared/services/workflows/list-active-runs";
 import { pauseWorkflow } from "@fretik/shared/services/workflows/pause";
+import {
+  emptyRunPressure,
+  summarizeRunPressure,
+} from "@fretik/shared/services/workflows/run-pressure";
 import { updateWorkflow } from "@fretik/shared/services/workflows/update";
 import type { WorkflowRequester } from "@fretik/shared/services/workflows/visibility";
 import { tool } from "ai";
@@ -297,7 +302,7 @@ export const createManageWorkflowTool = () =>
       "Build and manage workflows — autonomous agents that run a playbook of tasks on a schedule, an event, or on demand, with the same tools you have. Deciding WHETHER a workflow is the right feature (vs a team skill, a collection, or just doing the task now) — and how features compose — is `skills/platform-guide/SKILL.md` territory: read it before proposing.",
       "",
       "- create_draft: name + playbook (one goal + 1-20 ordered tasks; each task = title + instructions, optional expectedOutput + toolHints) + icon + color — set both at creation, best-guess is safe (an off-catalog value is dropped with a warning, never an error). Optional description, triggerType (manual|cron|event|form) + triggerConfig, autonomy (read_only|approval_required|autonomous, default approval_required), modelProfileKey, scope (team|private, default team). Starts as draft. The user sets run time/token limits themselves on the workflow page.",
-      "- update: workflowId + any field, including scope (re-scope anytime). Safe anytime — runs snapshot the playbook, so edits never disturb a running or past run.",
+      "- update: workflowId + any field, including scope (re-scope anytime). Safe anytime — runs snapshot the playbook, so edits never disturb a running or past run. `triggerConfig` is REPLACED, never merged: send the whole config you want, since a partial one narrows what the workflow listens to. The result echoes the resulting trigger — read it back rather than assuming the patch landed as meant.",
       "- list / get: the team's workflows (+ your private ones), each with what it does / one workflow's full playbook. Each result carries `scope`. Before create_draft, ALWAYS check list (and `searchKnowledge` with sourceTypes ['workflows']) for one that already covers the need — run it, extend it, or tell the user it exists, rather than building a second one.",
       "- get_trigger_catalog: the machine-readable catalog of trigger kinds + each event type's editable filter params. Read it before setting triggerType/triggerConfig.",
       "- run_test: workflowId (+ optional payload, + files: attachment filenames to hand to the run) fires a test run in the background. The run sees `files` and nothing else — a source document you leave out comes back as empty cells, not as an error. The result echoes `notHandedOver`: this conversation's other attachments, so check none of them was needed.",
@@ -320,7 +325,7 @@ export const createManageWorkflowTool = () =>
       "- A playbook runs against whatever its trigger delivers, run after run. Decide from the user's request how variable that input is — fixed template / stable format with varying content / open input — and generalize each task to that level; `skills/platform-guide/references/workflows.md` § 'Design for the input space' carries the doctrine. Variability ambiguous? askUserQuestion before baking an example file's structure into a task.",
       "- When the conversation shows what the output must look like (example file, exact columns, required format), capture it in `playbook.deliverable` = { format, description } — a run executes in a FRESH conversation and never sees this chat, so a contract left only here is invisible to the executor. Copy the example's structure line AND two of its data rows as read, never a description of them — the rows are the only place the way a value is written is visible. Details + the diff-vs-example check: workflows.md.",
       "- A run always produces its deliverable. A value it cannot establish leaves that cell empty and names the affected rows in the summary; a playbook that withholds the whole file until every value is confirmed spends the run and returns nothing to read or correct. Only refuse to produce when the user asked for that.",
-      "- Autonomy governs writes: `read_only` = no writes; `approval_required` (default) = object writes go through the Python objects SDK in bulk (`records.bulk_*`) and PAUSE for a human to approve, and an open decision pauses via `askUserQuestion` — say WHAT to write / decide, the platform handles the pause + resume; `autonomous` = writes apply directly. Never merge 'present a list and then create it' into a plan that assumes the user is watching — describe the write, the run pauses for approval on its own.",
+      "- Autonomy governs writes: `read_only` = no writes; `approval_required` (default) = object writes go through the Python objects SDK in bulk (`records.bulk_*`) and PAUSE for a human to approve, and an open decision pauses via `askUserQuestion` — say WHAT to write / decide, the platform handles the pause + resume; `autonomous` = writes apply directly. Never merge 'present a list and then create it' into a plan that assumes the user is watching — describe the write, the run pauses for approval on its own. Moving an EXISTING workflow to `autonomous` removes every pause it had: name, in the same message, what it will now do unattended and to which system, so the choice is made on its blast radius and not only on its speed.",
       "- Name the apps the playbook depends on in `externalAppConnectionIds` (connection ids from a connections listing). It is what makes a workflow's dependencies readable to the team, and it is checked against scope: a personal connection in that list is only accepted on a `private` workflow. Runs then keep it current by themselves — every app a run actually opens is appended — so declaring it matters most BEFORE the first run, when nothing has been observed yet and the scope check has only this list to go on.",
       "- Scope governs identity: `team` (default) runs as the team assistant — sees only team-shared external-app connections, everyone on the team sees and runs it. `private` runs as you — sees your personal connections too (plus team ones), and only you (and org admins) see or run it. A connections listing tags each row `scope: user` (personal) or `scope: team` (shared); if the playbook needs a `scope: user` connection, the workflow MUST be `private` — the team assistant can never see it. Prefer `team` when a team-shared connection covers the need. Unsure which the user wants, or whether the connection is personal? `askUserQuestion`. `run_test` failing `EXTERNAL_APP_NO_CONNECTION` on what looked like a personal connection means wrong scope — set `scope: private` and retest.",
       "- `toolHints` per task: the tool carrying its core operation, core or domain (validated against the registry). Domain tools pre-load so the run doesn't spend a turn searching; a core tool is the per-task cue the executor reads every turn — an extraction task that omits `extract` gets hand-parsed. Keep the list minimal: the operation's tool, not every tool it might touch. A task that turns on judgement (which records go together, which category applies) gets NO hint — hinting `python` there buys a hand-written scorer instead of a decision.",
@@ -561,6 +566,12 @@ export const createManageWorkflowTool = () =>
                   name: workflow.name,
                   status: workflow.status,
                   scope: scopeOf(workflow.userId),
+                  // The RESULTING trigger, not the patch. `triggerConfig` is
+                  // replaced wholesale, so a partial one silently narrows what
+                  // the workflow listens to — echoing it back is the only way
+                  // the caller can see what it actually left behind.
+                  triggerType: workflow.triggerType,
+                  triggerConfig: workflow.triggerConfig,
                 },
                 ...(updateWarnings.length > 0
                   ? { warnings: updateWarnings }
@@ -569,7 +580,11 @@ export const createManageWorkflowTool = () =>
             }
 
             case "list": {
-              const workflows = await listWorkflows({ teamId, requester });
+              const [workflows, activeRuns] = await Promise.all([
+                listWorkflows({ teamId, requester }),
+                listActiveWorkflowRuns({ teamId, requester }),
+              ]);
+              const pressure = summarizeRunPressure(activeRuns);
               return {
                 ok: true,
                 workflows: workflows.map((w) => ({
@@ -585,6 +600,11 @@ export const createManageWorkflowTool = () =>
                   autonomy: w.autonomy,
                   taskCount: w.playbook.tasks.length,
                   scope: scopeOf(w.userId),
+                  // Only when someone is waited on: a zero here on every row
+                  // would cost tokens on every listing to say "nothing wrong".
+                  ...((pressure.get(w.id)?.needsApproval ?? 0) > 0
+                    ? { pendingApprovals: pressure.get(w.id)?.needsApproval }
+                    : {}),
                 })),
               };
             }
@@ -596,19 +616,26 @@ export const createManageWorkflowTool = () =>
                   "get requires workflowId.",
                 );
               }
-              const workflow = await getWorkflow({
-                id: input.workflowId,
-                teamId,
-                requester,
-              });
+              const [workflow, activeRuns] = await Promise.all([
+                getWorkflow({ id: input.workflowId, teamId, requester }),
+                listActiveWorkflowRuns({ teamId, requester }),
+              ]);
               if (!workflow) {
                 return toolError(
                   TOOL_ERROR_CODES.WORKFLOW_NOT_FOUND,
                   "No such workflow for this team.",
                 );
               }
+              const runs =
+                summarizeRunPressure(activeRuns).get(workflow.id) ??
+                emptyRunPressure();
               return {
                 ok: true,
+                // What its runs are doing right now. A workflow can look
+                // healthy here — active, sane trigger — and still not have
+                // run for days because every approval it asked for is
+                // unanswered, and that is only visible in these counts.
+                runs,
                 workflow: {
                   id: workflow.id,
                   name: workflow.name,

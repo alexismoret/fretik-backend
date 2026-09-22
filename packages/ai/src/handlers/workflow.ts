@@ -11,9 +11,9 @@ import {
   currentWorkflowTask,
   WORKFLOW_DEFAULT_MAX_TOTAL_TOKENS,
   WorkflowFinalizeRequestSchema,
+  WorkflowParkRequestSchema,
   WorkflowTurnRequestSchema,
   WorkflowTurnResultSchema,
-  WorkflowWaitTokenRequestSchema,
   type WorkflowRunUsage,
   type WorkflowTaskState,
   type WorkflowTurnResult,
@@ -38,7 +38,7 @@ import { getWorkflowRow } from "@fretik/shared/services/workflows/get";
 import { getWorkflowRunRow } from "@fretik/shared/services/workflows/get-run";
 import {
   heartbeatRun,
-  setRunWaitToken,
+  parkRunForApproval,
 } from "@fretik/shared/services/workflows/heartbeat-run";
 import { onWorkflowRunTerminal } from "@fretik/shared/services/workflows/on-run-terminal";
 import { recordTurnResult } from "@fretik/shared/services/workflows/record-turn-result";
@@ -1220,17 +1220,20 @@ workflowTriggerRoutes.post("/runs/:runId/turn", async (c) => {
   );
 });
 
-/** POST /internal/trigger/runs/:runId/wait-token — record the approval wait
- * token the orchestrator parked on. */
-workflowTriggerRoutes.post("/runs/:runId/wait-token", async (c) => {
+/** POST /internal/trigger/runs/:runId/park — the orchestrator is ending on a
+ * human wait and hands over where to pick up. It does NOT stay alive: on
+ * self-hosted Trigger.dev a parked run would hold its workflow's concurrency
+ * slot for the whole wait. */
+workflowTriggerRoutes.post("/runs/:runId/park", async (c) => {
   const runId = c.req.param("runId");
-  const parsed = WorkflowWaitTokenRequestSchema.safeParse(await c.req.json());
+  const parsed = WorkflowParkRequestSchema.safeParse(await c.req.json());
   if (!parsed.success) {
     return c.json({ code: "VALIDATION_ERROR", message: "Invalid body" }, 400);
   }
-  const { parked } = await setRunWaitToken({
+  const { parked } = await parkRunForApproval({
     runId,
-    waitTokenId: parsed.data.waitTokenId,
+    resumeFromTurnIndex: parsed.data.resumeFromTurnIndex,
+    remainingMs: parsed.data.remainingMs,
   });
   // Approval email — only from the POST that actually parked the run (a
   // retried callback must not double-send). Fire-and-forget.

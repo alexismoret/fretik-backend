@@ -141,11 +141,12 @@ const textOfParts = (parts: UIMessage["parts"]): string => {
  * and where the pathological sizes live (the largest single text message in
  * production is 567 864 characters; the parts around it are larger still).
  *
- * Exported because the repair script has to reproduce EXACTLY this input to
- * decide which episodes the old per-message clip damaged. Two copies of this
- * loop would answer that question against a transcript the service never built.
+ * It was briefly exported, for a repair script that had to reproduce exactly
+ * this input to decide which episodes the old per-message clip had damaged.
+ * That script ran and was deleted; the extraction stays because the loop reads
+ * better with a name than inlined in `distillConversation`.
  */
-export const toTranscriptLines = (
+const toTranscriptLines = (
   rows: {
     role: string;
     parts: UIMessage["parts"];

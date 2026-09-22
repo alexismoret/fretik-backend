@@ -36,6 +36,7 @@
     "seed:heavy-conversation": "bun --env-file=.env run scripts/seed-heavy-conversation.ts",
     "models:check": "bun run scripts/check-model-catalog.ts",
     "models:bench": "bun run scripts/measure-upstreams.ts",
+    "probe:cache": "bun --env-file=.env run scripts/probe-cache.ts",
     "models:admin": "bun run scripts/model-admin.ts",
     "backfill:discovery-vectors": "bun run scripts/backfill-discovery-vectors.ts",
     "models:export": "bun run scripts/export-fleet.ts",

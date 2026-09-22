@@ -20,6 +20,7 @@
 import type { ProviderManifest } from "@fretik/shared/external-apps/manifest-schema";
 import { providerManifestSchema } from "@fretik/shared/external-apps/manifest-schema";
 import { listProviderManifests } from "@fretik/shared/external-apps/registry";
+import { renderAkaneaReadFieldTables } from "../src/akanea-wms/read-fields";
 import {
   emitInit,
   emitManifestSkill,
@@ -58,6 +59,24 @@ const PROVIDERS: ProviderInput[] = listProviderManifests().map((manifest) => ({
 
 /** Same transform the codegen lib uses — kebab manifest key → snake module. */
 const pyModuleName = (key: string): string => key.replace(/-/g, "_");
+
+/**
+ * Guidance a provider DERIVES from its own code rather than hand-writing.
+ *
+ * Only Akanea needs it today: its reads take a filter expression over Xtent's
+ * own property names, and those names are irregular enough that a
+ * hand-maintained copy drifts from the mappers — which is how a caller came
+ * to filter on `OrderReference` against an entity whose column is `Order`.
+ * A provider absent from this map is unaffected.
+ */
+const EXTRA_GUIDANCE: Record<string, () => string> = {
+  "akanea-wms": renderAkaneaReadFieldTables,
+};
+
+const withGeneratedGuidance = (key: string, guidance: string): string => {
+  const extra = EXTRA_GUIDANCE[key];
+  return extra ? `${guidance.trimEnd()}\n\n${extra()}\n` : guidance;
+};
 
 // ── Paths ─────────────────────────────────────────────────────────────
 
@@ -144,7 +163,7 @@ const main = async (): Promise<void> => {
             `${SKILLS_DIR}/${p.manifest.key}/SKILL.md`,
             emitManifestSkill({
               provider: p.manifest,
-              guidance,
+              guidance: withGeneratedGuidance(p.manifest.key, guidance),
               version: manifestVersion(p.manifest),
             }),
           ),

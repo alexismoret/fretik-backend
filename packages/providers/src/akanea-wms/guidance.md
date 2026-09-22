@@ -13,9 +13,9 @@ Two things about calling it. Its **provider key is `akanea-wms`** — that spell
 
 ## Filters and sorts
 
-Every read takes a `filters` string over the entity's PascalCase properties. Always pass one — an unfiltered read scans the whole warehouse.
+Every read takes a `filters` string over the entity's own property names. Always pass one — an unfiltered read scans the whole warehouse. The names are NOT the Python keys and not always their PascalCase: take each one from the "Filterable properties" tables below, which also give its type.
 
-- Comparison: `ItemCode="AAA-01"`, `Id=1`, `SalesUnit>=10`, `StatusId!="BLQ"` — strings take DOUBLE quotes.
+- Comparison: `ItemCode="AAA-01"`, `Id=1`, `SalesUnit>=10`, `StatusId!="BLQ"` — quote by the property's TYPE: `String` takes DOUBLE quotes, `Int64` takes none. A code that looks numeric is still `Int64` in a filter even where a write payload carries it as a string (`ClientCodeId=10024`, never `ClientCodeId="10024"`).
 - Text: `SupplierName.Contains("Dupont")`, `.StartsWith(…)`, `.EndsWith(…)`.
 - Presence: `BatchNumber != null`, `ValidationDate = null`.
 - Dates: `DateTime(2026,1,31)`, `DateTime(2026,1,31,10,23,45)`, `DateTime.Now`, `DateTime.ToDay`, `DateTime.ToDay.AddDays(-7)`, `DateTime.ToDay.FirstDayOfMonth()`.
@@ -47,6 +47,8 @@ akanea_wms.list_preparations(
 `get_item_quantities` returns one row per item / batch / pallet. Quote availability from `su_available` (real stock minus running preparations and pending put-away), never from `su_real_stock`, which counts goods already promised elsewhere.
 
 Header reads — `list_receptions`, `list_preparations` — say what was ANNOUNCED. What the floor actually did lives in `list_receptions_stored` and `list_preparations_prepared` (one row per stock object), plus `list_preparations_sscc` for pallet labels. When a user asks "did it really arrive / really ship", read the second set.
+
+Those three RETURN lines but FILTER on the header: `filters` still runs against `EnReception` / `EnPreparation`, so a line field (`ItemCode`, `BatchNumber`) is not a property there and the call faults. Select the headers you want — by `Id`, `ClientCodeId`, a date — or test the collection: `EdiReceptionDetailsList.Count(ItemCode="AAA-01")>=1`.
 
 Every read caps its answer at `limit` rows (200 by default) because Xtent pages nothing server-side. `limit` truncates what comes BACK to you; it does not shrink the query, so lowering it makes a broad read no faster and no cheaper — only `filters` does. An unfiltered read of a real warehouse takes over a minute and will time out. A truncated answer means the filter was too broad — narrow `filters` instead of raising `limit`.
 

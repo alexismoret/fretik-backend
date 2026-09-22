@@ -60,9 +60,9 @@ Two things about calling it. Its **provider key is `akanea-wms`** — that spell
 
 ## Filters and sorts
 
-Every read takes a `filters` string over the entity's PascalCase properties. Always pass one — an unfiltered read scans the whole warehouse.
+Every read takes a `filters` string over the entity's own property names. Always pass one — an unfiltered read scans the whole warehouse. The names are NOT the Python keys and not always their PascalCase: take each one from the "Filterable properties" tables below, which also give its type.
 
-- Comparison: `ItemCode="AAA-01"`, `Id=1`, `SalesUnit>=10`, `StatusId!="BLQ"` — strings take DOUBLE quotes.
+- Comparison: `ItemCode="AAA-01"`, `Id=1`, `SalesUnit>=10`, `StatusId!="BLQ"` — quote by the property's TYPE: `String` takes DOUBLE quotes, `Int64` takes none. A code that looks numeric is still `Int64` in a filter even where a write payload carries it as a string (`ClientCodeId=10024`, never `ClientCodeId="10024"`).
 - Text: `SupplierName.Contains("Dupont")`, `.StartsWith(…)`, `.EndsWith(…)`.
 - Presence: `BatchNumber != null`, `ValidationDate = null`.
 - Dates: `DateTime(2026,1,31)`, `DateTime(2026,1,31,10,23,45)`, `DateTime.Now`, `DateTime.ToDay`, `DateTime.ToDay.AddDays(-7)`, `DateTime.ToDay.FirstDayOfMonth()`.
@@ -94,6 +94,8 @@ akanea_wms.list_preparations(
 `get_item_quantities` returns one row per item / batch / pallet. Quote availability from `su_available` (real stock minus running preparations and pending put-away), never from `su_real_stock`, which counts goods already promised elsewhere.
 
 Header reads — `list_receptions`, `list_preparations` — say what was ANNOUNCED. What the floor actually did lives in `list_receptions_stored` and `list_preparations_prepared` (one row per stock object), plus `list_preparations_sscc` for pallet labels. When a user asks "did it really arrive / really ship", read the second set.
+
+Those three RETURN lines but FILTER on the header: `filters` still runs against `EnReception` / `EnPreparation`, so a line field (`ItemCode`, `BatchNumber`) is not a property there and the call faults. Select the headers you want — by `Id`, `ClientCodeId`, a date — or test the collection: `EdiReceptionDetailsList.Count(ItemCode="AAA-01")>=1`.
 
 Every read caps its answer at `limit` rows (200 by default) because Xtent pages nothing server-side. `limit` truncates what comes BACK to you; it does not shrink the query, so lowering it makes a broad read no faster and no cheaper — only `filters` does. An unfiltered read of a real warehouse takes over a minute and will time out. A truncated answer means the filter was too broad — narrow `filters` instead of raising `limit`.
 
@@ -151,6 +153,132 @@ Codes are configured per install: `client_code_id`, `movement_code_id`, `status_
 ### Multiple connected warehouses
 
 When several Akanea WMS connections exist, the `<external_apps>` block lists each with its `connection_id`. Pass `connection_id="<uuid>"` to target one; never prompt the user when that block already disambiguates.
+
+## Filterable properties
+
+`filters` and `sorts` name the XTENT property, which is not the Python key and not always its PascalCase — `order_reference` filters as `Order`, `client_name` as the nested `Client.Name`. A name Xtent does not know comes back as a fault in an HTTP 200, after a round trip and a licence-seat lease; there is no partial match and no suggestion, so read the name off this table rather than deriving it.
+
+**Quote by TYPE, not by how the value looks.** `String` takes double quotes, `Int64` takes none — `ClientCodeId=10024`, never `ClientCodeId="10024"`, even though the same code is written as a STRING in every write payload. Quoting an `Int64` fails with "Operator '=' incompatible with operand types 'Int64' and 'String'".
+
+### EnItemQuantities — get_item_quantities
+
+| python | filter on | type | |
+| --- | --- | --- | --- |
+| `item_code` | `ItemCode` | String |  |
+| `client_code_id` | `ClientCodeId` | Int64 |  |
+| `client_name` | `Client.Name` | String | nested — the warehouse customer, not a flat column |
+| `batch_number` | `BatchNumber` | String |  |
+| `pallet` | `Pallet` | String |  |
+| `warehouse_id` | `WarehouseId` | String |  |
+| `status_id` | `Status.Id` | String | nested — this entity has no flat StatusId |
+| `expiry_date` | `ExpiryDate` | DateTime |  |
+| `fifo_date` | `FIFODate` | DateTime |  |
+| `su_available` | `SUAvaillable` | Int64 | double L, spelled that way by Xtent |
+| `su_real_stock` | `SURealStock` | Int64 |  |
+| `su_reserved` | `SUReserved` | Int64 |  |
+| `su_blocked` | `SUBlocked` | Int64 |  |
+| `su_stored` | `SUStored` | Int64 |  |
+| `parcels_available` | `ParcelsAvaillable` | Int64 | double L |
+| `parcels_real_stock` | `ParcelsRealStock` | Int64 |  |
+| `full_pallets_available` | `FullPalletsAvaillable` | Int64 | double L |
+| `full_pallets_real_stock` | `FullPalletsRealStock` | Int64 |  |
+| `gross_weight` | `GrossWeight` | Int64 |  |
+| `net_weight` | `NetWeight` | Int64 |  |
+### EnStockMovements — list_stock_movements
+
+| python | filter on | type | |
+| --- | --- | --- | --- |
+| `id` | `Id` | Int64 |  |
+| `item_code` | `ItemCode` | String |  |
+| `client_code_id` | `ClientCodeId` | Int64 |  |
+| `client_name` | `Client.Name` | String |  |
+| `movement_code` | `MovementCode` | String |  |
+| `movement_type` | `MovementType` | String |  |
+| `movement_date` | `StockDate` | DateTime | the column is StockDate, NOT MovementDate |
+| `creation_date` | `CreationDate` | DateTime |  |
+| `batch_number` | `BatchNumber` | String |  |
+| `pallet_number` | `PalletNumber` | String |  |
+| `location_id` | `LocationId` | String |  |
+| `status_id` | `StatusId` | String |  |
+| `sales_unit` | `SalesUnit` | Int64 |  |
+| `unit_qty` | `UnitQty` | Int64 |  |
+| `parcels` | `Parcels` | Int64 |  |
+| `full_pallets` | `FullPallets` | Int64 |  |
+| `reception_id` | `ReceptionId` | Int64 |  |
+| `preparation_id` | `PreparationId` | Int64 |  |
+### EnReception — list_receptions, list_receptions_stored
+
+`list_receptions_stored` RETURNS one row per stock object, but FILTERS against the reception header below — a line field like `ItemCode` is not a property of `EnReception`. To select headers by their content, test the collection: `EdiReceptionDetailsList.Count(ItemCode="AAA-01")>=1`.
+
+| python | filter on | type | |
+| --- | --- | --- | --- |
+| `id` | `Id` | Int64 |  |
+| `client_code_id` | `ClientCodeId` | Int64 |  |
+| `order_reference` | `Order` | String | the column is Order, NOT OrderReference |
+| `movement_code_id` | `MovementCodeId` | String |  |
+| `order_status` | `OrderStatus` | String |  |
+| `supplier_name` | `SupplierName` | String |  |
+| `supplier_reference` | `SupplierReference` | String |  |
+| `carrier_name` | `CarrierName` | String |  |
+| `planned_receiving_date` | `DateOfPlannedReceiving` | DateTime |  |
+| `actual_receiving_date` | `DateOfActualReceiving` | DateTime |  |
+| `appointment_date` | `AppointmentDate` | DateTime |  |
+| `arrival_date` | `ArrivalDate` | DateTime |  |
+| `reception_warehouse_id` | `ReceptionWarehouseId` | String |  |
+| `truck_number` | `TruckNumber` | String |  |
+| `number_of_pallets` | `NumberOfPallets` | Int64 |  |
+| `number_of_parcels` | `NumberOfParcels` | Int64 |  |
+| `number_of_sale_units` | `NumberOfSU` | Int64 |  |
+| `creation_date` | `CreationDate` | DateTime |  |
+| `validation_date` | `ValidationDate` | DateTime |  |
+### EnPreparation — list_preparations, list_preparations_prepared, list_preparations_sscc
+
+`list_preparations_prepared` and `list_preparations_sscc` RETURN one row per stock object, but FILTER against the preparation header below — `ItemCode`, `BatchNumber` and `PreparationId` are not properties of `EnPreparation`. There is no readable `consignee_code_id`: Xtent publishes the consignee only by name and address, although `consignee_code_id` is REQUIRED when writing one.
+
+| python | filter on | type | |
+| --- | --- | --- | --- |
+| `id` | `Id` | Int64 |  |
+| `client_code_id` | `ClientCodeId` | Int64 |  |
+| `order_reference` | `Order` | String | the column is Order, NOT OrderReference |
+| `client_reference` | `ClientReference` | String |  |
+| `consignee_reference` | `ConsigneeReference` | String |  |
+| `order_status` | `OrderStatus` | String |  |
+| `consignee_name` | `ConsigneeName` | String |  |
+| `consignee_city_name` | `ConsigneeCityName` | String |  |
+| `consignee_country_id` | `ConsigneeCountryId` | String |  |
+| `carrier_name` | `CarrierName` | String |  |
+| `planned_delivery_date` | `PlannedDeliveryDate` | DateTime |  |
+| `imperative_delivery_date` | `ImperativeDeliveryDate` | DateTime |  |
+| `planned_preparation_date` | `PlannedPreparationDate` | DateTime |  |
+| `actual_preparation_date` | `ActualPreparationDate` | DateTime |  |
+| `preparation_warehouse_id` | `PreparationWarehouseId` | String |  |
+| `urgency_code` | `Emergency.Id` | String | nested |
+| `creation_date` | `CreationDate` | DateTime |  |
+| `validation_date` | `ValidationDate` | DateTime |  |
+### EnItem — list_items
+
+There is no party entity to query: `EnParty` does not answer a read, so `Code` / `CodeId` / `ClientName` are not filterable anywhere. An item is how a warehouse customer is resolved — filter an item code, read `client_code_id` and `client_name` off the row.
+
+| python | filter on | type | |
+| --- | --- | --- | --- |
+| `id` | `Id` | Int64 |  |
+| `item_code` | `ItemCode` | String |  |
+| `client_code_id` | `Client.Id` | Int64 | nested here — NOT the flat ClientCodeId the other entities use |
+| `client_name` | `Client.Name` | String | nested — NOT ClientName |
+| `description` | `Description` | String |  |
+| `external_reference` | `ExternalReference` | String |  |
+| `family_code` | `Family.Id` | String | nested |
+| `unit_code` | `Unit.Id` | String | nested |
+| `supplier_code_id` | `Supplier.Id` | Int64 | nested |
+| `supplier_name` | `Supplier.Name` | String | nested |
+| `batch_management` | `BatchManagement` | String |  |
+| `available` | `Available` | Boolean |  |
+| `inner` | `Inner` | Int64 |  |
+| `outer` | `Outer` | Int64 |  |
+| `layers_per_pallet` | `LayersPerPallet` | Int64 |  |
+| `parcels_per_layer` | `ParcelsPerLayer` | Int64 |  |
+| `parcel_gross_weight` | `ParcelGrossWeight` | Int64 |  |
+| `parcel_net_weight` | `ParcelNetWeight` | Int64 |  |
 
 ---
 

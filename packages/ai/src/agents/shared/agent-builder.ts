@@ -20,6 +20,11 @@ import {
   type ResolvedModel,
 } from "../../lib/model-registry/resolve";
 import type { ReasoningLevel } from "../../lib/model-registry/types";
+import { mergeProviderOptions } from "../../lib/provider-options";
+import {
+  providerSessionId,
+  type SessionScope,
+} from "../../lib/provider-session";
 import {
   readAgentUsage,
   recordStepUsage,
@@ -51,6 +56,7 @@ import {
   type AgentRuntimeContext,
 } from "./runtime-context";
 import { StepCallBudget } from "./step-call-budget";
+import { appendTurnContext, type RenderedAgentPrompt } from "./turn-context";
 
 /**
  * Factory for a pair of `ToolLoopAgent` singletons (primary + fallback)
@@ -106,6 +112,17 @@ export interface BuildAgentSetConfig<CALL_OPTIONS, TTools extends ToolSet> {
   /** Short identifier, used in logs and traces. */
   id: string;
   /**
+   * Which span of work shares one pinned upstream — `conversation` for an
+   * agent a user or a run drives across many turns, `delegate` for one
+   * dispatched call and its retries. See `lib/provider-session.ts` for why a
+   * delegate must NOT inherit the parent's lane.
+   *
+   * Required rather than defaulted: a new agent set that forgets it would
+   * silently fall back to OpenRouter's message-hash key, which is the exact
+   * behaviour this field exists to replace — and nothing would report it.
+   */
+  sessionScope: SessionScope;
+  /**
    * Construct the static tool set. Called once per agent instance at
    * boot. Tools MUST be ctx-less (see `../../tools/README.md`).
    */
@@ -114,11 +131,17 @@ export interface BuildAgentSetConfig<CALL_OPTIONS, TTools extends ToolSet> {
    * System prompt renderer. Called on every `.stream()` via `prepareCall`.
    * May be async — managed-prompt renderers fetch from Langfuse (instant on
    * SDK cache hit) and `prepareCall` awaits the result.
+   *
+   * A bare string is a prompt that travels whole in the system message, which
+   * is right for every agent whose prompt is stable over the span it runs:
+   * the workflow executor, the delegates, the page builder. An agent that has
+   * a per-turn half returns `RenderedAgentPrompt` and the builder appends it
+   * to the latest user message instead — see `turn-context.ts`.
    */
   systemPrompt: (
     ctx: AgentRuntimeContext,
     tools: TTools,
-  ) => string | Promise<string>;
+  ) => string | RenderedAgentPrompt | Promise<string | RenderedAgentPrompt>;
   /** Primary model, registry-resolved (instance + profile). */
   model: ResolvedModel;
   /** Fallback model, used when the primary errors out. */
@@ -953,7 +976,26 @@ const buildToolLoopAgent = <CALL_OPTIONS, TTools extends ToolSet>(
         modelProfile: resolved.profile,
       };
       config.onRuntimeContext?.(ctx, options);
-      const instructions = await config.systemPrompt(ctx, tools);
+      const rendered = await config.systemPrompt(ctx, tools);
+      const { instructions, turnContext } =
+        typeof rendered === "string"
+          ? { instructions: rendered, turnContext: undefined }
+          : rendered;
+
+      // The per-turn half of the prompt goes BEHIND the history, on the last
+      // user message, instead of in front of it. Everything upstream of it is
+      // then byte-identical to the previous turn and comes back from the
+      // provider's cache; while it sat in the system message, the whole
+      // conversation sat behind a block that changed every turn and got
+      // re-read at full price. Never persisted — see `turn-context.ts`.
+      //
+      // `messages` is absent when the caller passed a `prompt` instead (every
+      // delegate does), and those agents have no turn context anyway.
+      const turnMessages =
+        turnContext === undefined || messages === undefined
+          ? undefined
+          : appendTurnContext(messages, turnContext);
+
       const branded = wrapRuntimeContext(ctx);
 
       // Hand the per-request branded ctx to the framework as `runtimeContext`
@@ -968,23 +1010,47 @@ const buildToolLoopAgent = <CALL_OPTIONS, TTools extends ToolSet>(
       // `baseCallArgs`; a sub-agent has no such caller, so before 2026-08-18 it
       // silently ran at its profile's default however deeply the user had asked
       // the turn to think. Applied only when the ctx carries a level AND the
-      // caller set none — `prepareCall` REPLACES call settings wholesale, so
-      // overriding a param the caller chose would be the same bug in reverse.
+      // caller chose no reasoning of its own — overriding a param the caller
+      // set would be the same bug in reverse.
+      //
+      // The condition used to be `baseCallArgs.providerOptions === undefined`,
+      // which was wider than its intent for want of a merge: a caller sending
+      // ANY provider option (the handler's `file-parser` plugin on a native-PDF
+      // turn) silently took the delegate's reasoning level away. Now that
+      // `mergeProviderOptions` can add a key without destroying its
+      // neighbours, the test is the one that was always meant.
       const reasoning =
         ctx.reasoningLevel !== undefined &&
-        baseCallArgs.providerOptions === undefined
+        baseCallArgs.providerOptions?.openrouter?.["reasoning"] === undefined
           ? reasoningParamForProfile(
               resolved.profile,
               ctx.reasoningLevel as ReasoningLevel,
             )
           : undefined;
 
+      // The sticky-routing key. One per conversation / workflow run, or one per
+      // delegate run — see `provider-session.ts` for why a delegate must not
+      // share the parent's. Unknown keys under `openrouter` ride through to the
+      // request body; `bun run probe:cache` is the canary on that.
+      const sessionId = providerSessionId(config.sessionScope, ctx);
+
+      const openrouter = {
+        ...(reasoning === undefined ? {} : { reasoning }),
+        ...(sessionId === undefined ? {} : { session_id: sessionId }),
+      };
+
       return {
         ...baseCallArgs,
         instructions,
+        ...(turnMessages === undefined ? {} : { messages: turnMessages }),
         runtimeContext: branded,
-        ...(reasoning !== undefined
-          ? { providerOptions: { openrouter: { reasoning } } }
+        ...(Object.keys(openrouter).length > 0
+          ? {
+              providerOptions: mergeProviderOptions(
+                baseCallArgs.providerOptions,
+                { openrouter },
+              ),
+            }
           : {}),
         // Fallback `activeTools` for agents WITHOUT a `prepareStep`. When a
         // `prepareStep` is set it fires on step 0 and supersedes this.

@@ -135,7 +135,13 @@ import {
 
 const logPrefix = "[workflow.turn]";
 
-/** How many history messages feed the agent (same default as the chatbot).
+/** How many history messages feed the agent.
+ *
+ * Not the chatbot's figure any more: chat moved to `AGENT_WINDOW_ROW_LIMIT`
+ * (2026-09-23) because 30 rows fired before its token cap and slid rows out
+ * unsummarised. Runs never get there — two rows a turn, and over 30 days of
+ * production 104 runs took at most 4 turns — so 40 stays, and the flat
+ * re-summarisation cost below keeps its bound.
  *
  * This used to say that summarising compaction was not wired for runs because
  * "turns are bounded and the playbook re-grounds every turn". Both halves were

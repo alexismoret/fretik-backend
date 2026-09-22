@@ -145,7 +145,7 @@ export const CURATED: Record<string, CuratedCase> = {
     tier: "model-gate",
   },
   "if-json-fenced": { capability: "instruction-following", tier: "model-gate" },
-  // long-context (7 — NEVER smoke: long runs, see session-8 note above)
+  // long-context (8 — NEVER smoke: long runs, see session-8 note above)
   "lc-deep-retrieval": { capability: "long-context", tier: "model-gate" },
   "lc-multidoc-qa": { capability: "long-context", tier: "model-gate" },
   // The three compaction regimes. `lc-recall-40k` is the control and only
@@ -153,6 +153,9 @@ export const CURATED: Record<string, CuratedCase> = {
   "lc-recall-40k": { capability: "long-context", tier: "model-gate" },
   "lc-recall-120k": { capability: "long-context", tier: "model-gate" },
   "lc-recall-340k": { capability: "long-context", tier: "model-gate" },
+  // The ROW axis the three above cannot reach: 80 rows, below the cap. Guards
+  // the agent window against ever again dropping rows it did not summarise.
+  "lc-recall-80rows": { capability: "long-context", tier: "model-gate" },
   // The other half of what a summary has to carry. `lc-recall-*` asks for a
   // VALUE, which every summariser prompt has a section ordering it to keep
   // verbatim; these ask for the objective and the constraint the user stated

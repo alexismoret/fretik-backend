@@ -41,7 +41,12 @@ import {
  *  - moving the cut back by the verbatim tail → `the newest messages stay
  *    verbatim and come back as rows`. Leave the cut where it was and the tail
  *    is summarised AND excluded from the next window, which is the one failure
- *    mode of keep-tail that loses a message outright.
+ *    mode of keep-tail that loses a message outright;
+ *  - the row bound being a guard rather than 30 (`AGENT_WINDOW_ROW_LIMIT`) →
+ *    `compaction folds EVERY uncovered row, not only the newest thirty` and
+ *    `a conversation past 30 rows but under the cap reaches the agent whole`.
+ *    Put it back at 30 (`AGENT_WINDOW_ROW_LIMIT=30`, no edit needed) and both
+ *    fail: the summary misses the oldest row, and the window holds 30 of 80.
  *
  * `does nothing when the history is under the cap` pins the contract rather
  * than a clause, and says so: an early return here would be redundant with
@@ -252,6 +257,42 @@ describe("compactAheadOfNextTurn", () => {
     expect(after.messages.map((m) => m.id)).toEqual([question.id, answer.id]);
   });
 
+  test("compaction folds EVERY uncovered row, not only the newest thirty", async () => {
+    // The window this reads is the one the turn reads. While it was capped at
+    // 30 rows, a conversation that crossed the token cap past row 30 handed the
+    // summariser only its last 30 — so everything older was neither in the
+    // window nor in the summary, and dropped without a trace.
+    const summarised: string[] = [];
+    await mockModule("../../../../src/services/compaction/summarizer", {
+      summariseMessages: (
+        messages: { parts: { type: string; text?: string }[] }[],
+      ) => {
+        for (const m of messages) {
+          for (const p of m.parts) if (p.text) summarised.push(p.text);
+        }
+        return Promise.resolve("<summary>handover</summary>");
+      },
+    });
+    const { compactAheadOfNextTurn } =
+      await import("../../../../src/services/compaction/checkpoint-window");
+    await seed("user", "Le code du lot de référence est QX-7713-MB.");
+    await seed("assistant", "Noté.");
+    for (let i = 0; i < 24; i += 1) {
+      await seed("user", bulk(`q${i.toString()}`));
+      await seed("assistant", bulk(`a${i.toString()}`));
+    }
+
+    await compactAheadOfNextTurn({
+      conversationId,
+      profile,
+      capTokens: 5_000,
+      participantIds: [],
+      logPrefix: "[test]",
+    });
+
+    expect(summarised.join(" ")).toContain("QX-7713-MB");
+  });
+
   test("a summariser that does not answer leaves no checkpoint and never throws", async () => {
     const { compactAheadOfNextTurn } = await loadCompactAhead(null);
     for (let i = 0; i < 6; i += 1) {
@@ -274,5 +315,46 @@ describe("compactAheadOfNextTurn", () => {
     for (const row of await checkpoints()) {
       expect(row.tokensAfter).toBeLessThan(row.tokensBefore);
     }
+  });
+});
+
+/**
+ * The agent window is bounded by TOKENS, through compaction — the row count is
+ * a runaway guard, not the limit.
+ *
+ * It was the limit, silently, from the day the compaction threshold moved.
+ * The 30-row window was sized for a 12 000-token threshold ("compaction
+ * collapses the older portion when the total exceeds 12K tokens", the handler
+ * said); the context ceiling it derives from went to 100 000 and then to
+ * 180 000 — a cap of ~150 000 on the chat model — the row count stayed, and it
+ * became the bound that fired first on any conversation whose rows average
+ * under ~5 000 tokens — which is ordinary chat. Past row 30 the
+ * oldest rows were neither loaded nor summarised. Measured 2026-09-23: a code
+ * stated in the first exchange of an 80-row, 67 000-token conversation was
+ * lost 3 times out of 3, with the agent saying "the beginning of this
+ * conversation is no longer visible to me".
+ *
+ * And it cost the cache on every turn: two new rows in, two old rows out, the
+ * whole history shifted and was re-read at full price — the same failure
+ * `microcompact.ts` had already been rebuilt with hysteresis to avoid.
+ */
+describe("loadAgentWindow — the row bound", () => {
+  test("a conversation past 30 rows but under the cap reaches the agent whole", async () => {
+    const { loadAgentWindow } =
+      await import("../../../../src/services/compaction/checkpoint-window");
+    const first = await seed(
+      "user",
+      "Le code du lot de référence est QX-7713-MB.",
+    );
+    await seed("assistant", "Noté.");
+    for (let i = 0; i < 39; i += 1) {
+      await seed("user", `Question ${i.toString()} sur le rapprochement.`);
+      await seed("assistant", `Réponse ${i.toString()}.`);
+    }
+
+    const window = await loadAgentWindow(conversationId);
+
+    expect(window.messages).toHaveLength(80);
+    expect(window.messages[0]?.id).toBe(first.id);
   });
 });

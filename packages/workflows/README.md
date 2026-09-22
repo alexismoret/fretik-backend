@@ -32,8 +32,19 @@ event-`trigger` system.
 
 ```bash
 bun run dev      # trigger dev — registers tasks, hot-reloads, opens dashboard test page
-bun run deploy   # trigger deploy — ships tasks to the cloud
+bun run deploy   # trigger deploy — ships tasks to the self-hosted instance
 ```
+
+**Pin the CLI to the installed SDK version — `@latest` does not work.** The CLI
+refuses to deploy when its version differs from `@trigger.dev/sdk`, and it
+refuses by aborting, not by warning:
+
+```bash
+npx trigger.dev@4.5.14 deploy     # matches @trigger.dev/sdk in package.json
+npx trigger.dev@latest deploy     # "Version mismatch detected while running in CI. Aborting."
+```
+
+Bump the pin whenever the SDK is bumped; the two must stay in lockstep.
 
 ## Trigger a task from backend code
 

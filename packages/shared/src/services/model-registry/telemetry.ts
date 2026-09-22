@@ -2,6 +2,7 @@ import { and, desc, gte, sql } from "drizzle-orm";
 import db from "../../db";
 import { modelTelemetryRollups } from "../../db/schema/model-registry";
 import { redis } from "../../lib/redis";
+import { CACHE_EVIDENCE_MIN_SAMPLES } from "../../model-registry/measures";
 import { normalizeProviderName } from "../../model-registry/provider-names";
 import type { TransportId } from "../../model-registry/types";
 
@@ -205,6 +206,27 @@ export interface TelemetryWindow {
   tpsP50?: number;
   ttftP50Ms?: number;
   ttftP95Ms?: number;
+  /**
+   * Cached input tokens over total input tokens, across the hours that
+   * reported any — OUR ratio for this host, not the one it advertises.
+   *
+   * The two disagree, which is the whole reason this is read. Measured
+   * 2026-09-22 on `z-ai/glm-5.3-flash`: `morph` publishes a cache-read price
+   * below its prompt price, so every published signal says it caches, and it
+   * returned 0 % over seven days of our own traffic. A sticky session seeded
+   * there never pinned, because OpenRouter activates one on an actual cache.
+   */
+  cacheReadRatio?: number;
+  /**
+   * CALLS behind `cacheReadRatio` — deliberately not `sampleCount`.
+   *
+   * `sampleCount` is the size of the tps/ttft reservoir, capped at
+   * `TELEMETRY_SAMPLE_CAP`, and the column's own docblock says it is not a call
+   * count. `CACHE_EVIDENCE_MIN_SAMPLES` is about calls, so gating the cache
+   * verdict on `sampleCount` would compare two different units and silently
+   * admit a ratio drawn from a handful of requests.
+   */
+  cacheCalls: number;
   sampleCount: number;
   /** Most recent bucket in the window — how current this evidence is. */
   latestBucket: Date;
@@ -244,6 +266,13 @@ export const readTelemetryWindow = async (
         number | null
       >`sum(${modelTelemetryRollups.ttftP50Ms} * ${modelTelemetryRollups.sampleCount}) / nullif(sum(case when ${modelTelemetryRollups.ttftP50Ms} is null then 0 else ${modelTelemetryRollups.sampleCount} end), 0)`,
       ttftP95Ms: sql<number | null>`max(${modelTelemetryRollups.ttftP95Ms})`,
+      // Weighted by CALLS, not by `sampleCount`: the ratio is a property of the
+      // traffic an hour served, and `sampleCount` counts a capped reservoir of
+      // latency observations instead.
+      cacheReadRatio: sql<
+        number | null
+      >`sum(${modelTelemetryRollups.cacheReadRatio} * ${modelTelemetryRollups.calls}) / nullif(sum(case when ${modelTelemetryRollups.cacheReadRatio} is null then 0 else ${modelTelemetryRollups.calls} end), 0)`,
+      cacheCalls: sql<number>`coalesce(sum(case when ${modelTelemetryRollups.cacheReadRatio} is null then 0 else ${modelTelemetryRollups.calls} end), 0)::int`,
       latestBucket: sql<Date>`max(${modelTelemetryRollups.bucketStart})`,
     })
     .from(modelTelemetryRollups)
@@ -265,33 +294,68 @@ export const readTelemetryWindow = async (
     ...(row.tpsP50 === null ? {} : { tpsP50: row.tpsP50 }),
     ...(row.ttftP50Ms === null ? {} : { ttftP50Ms: row.ttftP50Ms }),
     ...(row.ttftP95Ms === null ? {} : { ttftP95Ms: row.ttftP95Ms }),
+    ...(row.cacheReadRatio === null
+      ? {}
+      : { cacheReadRatio: row.cacheReadRatio }),
+    cacheCalls: row.cacheCalls,
     latestBucket: new Date(row.latestBucket),
   }));
 };
 
+/** What our own traffic says about one upstream, for the policy to prefer. */
+export interface MeasuredEndpointStats {
+  throughputP50?: number;
+  latencyP50Ms?: number;
+  measuredCacheReadRatio?: number;
+  measuredCacheSamples?: number;
+}
+
 /**
  * Measured figures keyed by upstream, for the policy to prefer over the
- * catalogue's. Only upstreams with enough observations are returned: below
- * `TELEMETRY_MIN_SAMPLES` the honest answer is "we do not know yet", and the
- * caller falls back to what the vendor published rather than to noise.
+ * catalogue's. Only upstreams with enough observations are returned: below the
+ * threshold the honest answer is "we do not know yet", and the caller falls
+ * back to what the vendor published rather than to noise.
+ *
+ * **Each signal carries its own gate, and they are different units.** Speed is
+ * summarised from a capped reservoir of latency observations (`sampleCount`,
+ * `TELEMETRY_MIN_SAMPLES`); the cache ratio is a property of the CALLS an hour
+ * served (`cacheCalls`, `CACHE_EVIDENCE_MIN_SAMPLES`). Gating both on
+ * `sampleCount` — which the previous single `continue` did — would drop a cache
+ * verdict we have for want of latency samples we do not, on exactly the quiet
+ * hosts a pool most needs to judge.
  */
 export const readMeasuredEndpointStats = async (
   profileKey: string,
   options?: { now?: Date },
-): Promise<Map<string, { throughputP50?: number; latencyP50Ms?: number }>> => {
-  const measured = new Map<
-    string,
-    { throughputP50?: number; latencyP50Ms?: number }
-  >();
+): Promise<Map<string, MeasuredEndpointStats>> => {
+  const measured = new Map<string, MeasuredEndpointStats>();
   const windows = await readTelemetryWindow(profileKey, options);
   for (const window of windows) {
-    if (window.sampleCount < TELEMETRY_MIN_SAMPLES) continue;
-    measured.set(window.provider, {
-      ...(window.tpsP50 === undefined ? {} : { throughputP50: window.tpsP50 }),
-      ...(window.ttftP50Ms === undefined
-        ? {}
-        : { latencyP50Ms: window.ttftP50Ms }),
-    });
+    const speed =
+      window.sampleCount >= TELEMETRY_MIN_SAMPLES
+        ? {
+            ...(window.tpsP50 === undefined
+              ? {}
+              : { throughputP50: window.tpsP50 }),
+            ...(window.ttftP50Ms === undefined
+              ? {}
+              : { latencyP50Ms: window.ttftP50Ms }),
+          }
+        : {};
+    // The sample count travels WITH the ratio rather than being re-derived by
+    // the reader: `cacheEvidenceFor` refuses a ratio whose sample count it
+    // cannot see, so sending one without the other is the same as sending
+    // nothing — and looks like a measurement that quietly never applies.
+    const cache =
+      window.cacheReadRatio !== undefined &&
+      window.cacheCalls >= CACHE_EVIDENCE_MIN_SAMPLES
+        ? {
+            measuredCacheReadRatio: window.cacheReadRatio,
+            measuredCacheSamples: window.cacheCalls,
+          }
+        : {};
+    const entry = { ...speed, ...cache };
+    if (Object.keys(entry).length > 0) measured.set(window.provider, entry);
   }
   return measured;
 };

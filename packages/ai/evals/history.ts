@@ -45,13 +45,14 @@ import { countTokens } from "@fretik/shared/lib/token-estimate";
 import type { SeededToolCall, SeededTurn } from "./types";
 
 /**
- * Exchanges (user + assistant) in a generated history.
+ * Exchanges (user + assistant) in a generated history, by default.
  *
- * 11 exchanges = 22 rows, leaving room for the case's own prompt inside the
- * 30-row agent window with margin for the steering/summary rows a compacted
- * turn adds back.
+ * 11 exchanges = 22 rows. The count was chosen to fit inside the 30-row agent
+ * window that `loadAgentWindow` enforced until 2026-09-23 — which is exactly
+ * why no case built on it could see that window drop a conversation's oldest
+ * rows. `exchanges` overrides it for the case that exists to cross it.
  */
-const EXCHANGES = 11;
+const DEFAULT_EXCHANGES = 11;
 
 /**
  * `read` calls per assistant turn.
@@ -198,19 +199,26 @@ export const buildLongHistory = (args: {
   needle: HistoryNeedle;
   /** Optional objective + constraint, carried in the first user message. */
   intent?: HistoryIntent;
+  /**
+   * Exchanges to generate (default 11). Raising it spreads the SAME token
+   * budget over more rows — the knob for testing a bound counted in rows
+   * rather than in tokens.
+   */
+  exchanges?: number;
 }): GeneratedHistory => {
+  const exchanges = args.exchanges ?? DEFAULT_EXCHANGES;
   // First guess, then two corrections. Scaling is near-linear — the scaffold is
   // fixed and the filler is proportional — so this lands inside a few percent.
   let heavyChars = Math.max(
     2_000,
-    Math.floor((args.targetTokens * CHARS_PER_TOKEN * 0.72) / EXCHANGES),
+    Math.floor((args.targetTokens * CHARS_PER_TOKEN * 0.72) / exchanges),
   );
-  let built = generateHistory(args, heavyChars);
+  let built = generateHistory({ ...args, exchanges }, heavyChars);
   for (let pass = 0; pass < 2; pass++) {
     if (built.estimatedTokens === 0) break;
     const correction = args.targetTokens / built.estimatedTokens;
     heavyChars = Math.max(2_000, Math.floor(heavyChars * correction));
-    built = generateHistory(args, heavyChars);
+    built = generateHistory({ ...args, exchanges }, heavyChars);
   }
   return built;
 };
@@ -221,10 +229,12 @@ const generateHistory = (
     targetTokens: number;
     needle: HistoryNeedle;
     intent?: HistoryIntent;
+    exchanges: number;
   },
   heavyChars: number,
 ): GeneratedHistory => {
   const rng = makeRng(args.seed);
+  const { exchanges } = args;
 
   // The `read` outputs are sized at a fraction of the heavy block — they exist
   // to be cleared, so paying full price for them would put the post-microcompact
@@ -233,7 +243,7 @@ const generateHistory = (
 
   const turns: SeededTurn[] = [];
 
-  for (let i = 0; i < EXCHANGES; i++) {
+  for (let i = 0; i < exchanges; i++) {
     const period = `2025-Q${(i % 4) + 1}`;
     turns.push({
       role: "user",

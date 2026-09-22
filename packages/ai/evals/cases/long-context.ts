@@ -23,6 +23,13 @@
  * |  40 000 | nothing — the control. Proves the needle is recoverable.      |
  * | 120 000 | `AGENT_CONTEXT_CEILING_TOKENS` (100 000) → the TURN BOUNDARY. |
  * | 340 000 | `CHATBOT_COMPACTION_CAP` (300 000) → `compactConversation`.   |
+ * |  60 000 | in 80 ROWS: nothing, since 2026-09-23 — see `lc-recall-80rows`. |
+ *
+ * The last row is a different axis, and the one the other three could not
+ * reach: they are sized in tokens over 22 rows, which `evals/history.ts` chose
+ * precisely to fit inside the 30-row agent window. Until 2026-09-23 that
+ * window was the bound that fired first on ordinary chat — past row 30 the
+ * oldest rows were neither loaded nor summarised — and no case here crossed it.
  *
  * A failure at 40 000 is a broken harness; a failure at 120 000 or 340 000 is
  * the boundary summary losing a fact, which is the one accuracy risk the
@@ -105,6 +112,53 @@ const recallCase = (id: string, targetTokens: number): EvalCase => {
 };
 
 /**
+ * Its own needle, not the suite's. `RCN-8842-QK` has leaked into the eval
+ * team's episodic memory — an `ai_episodes` summary distilled from an earlier
+ * run carries it (found 2026-09-23) — so recall can hand it back without the
+ * history ever arriving. For the one case that tests whether the history
+ * ARRIVES, an answer recall could supply would measure nothing.
+ */
+const ROW_NEEDLE = {
+  statement:
+    "Le lot de rapprochement de référence porte le code QX-7713-MB, validé en revue le 3 du mois.",
+  expected: "QX-7713-MB",
+} as const;
+
+/**
+ * The needle in the oldest of 40 exchanges, 60 000 tokens in all: past the
+ * 30 rows the agent window used to hold, and far below the compaction cap, so
+ * nothing summarises anything. The history must simply arrive whole.
+ *
+ * Measured before the fix with a fresh random code per run: 0/3, the agent
+ * answering that "the beginning of this conversation is no longer visible".
+ */
+const rowCase = (id: string): EvalCase => {
+  const history = buildLongHistory({
+    seed: id,
+    targetTokens: 60_000,
+    exchanges: 40,
+    needle: ROW_NEEDLE,
+  });
+  return {
+    id,
+    description: `Recall of a fact stated in the oldest of ${(history.turns.length / 2).toString()} exchanges (${history.turns.length.toString()} rows, ~${Math.round(history.estimatedTokens / 1000).toString()}K tokens) — below the compaction cap, past the old 30-row window`,
+    // "Mentioned", not "that I told you": the needle is in the ASSISTANT's
+    // narration, and a question crediting it to the user reads to the model as
+    // a claim nobody made — measured, it then distrusts the row and defers to
+    // any recalled episode naming a code.
+    prompt:
+      "Quel est le code du lot de rapprochement de référence mentionné au tout début de cette conversation ? Réponds depuis l'historique, ne relis aucun fichier, et donne uniquement le code.",
+    tags: ["long-context", "agent-window"],
+    history: history.turns,
+    assertions: [
+      { type: "noError" },
+      { type: "contains", value: ROW_NEEDLE.expected },
+      { type: "toolNotUsed", tools: ["read"] },
+    ],
+  };
+};
+
+/**
  * The same three regimes, asking what the USER wanted rather than what a
  * ledger said. Only the two sizes that actually reduce the history are worth
  * running: below the cap nothing is dropped, so a pass would say nothing about
@@ -172,6 +226,7 @@ export const longContextSuite: EvalSuite = {
     recallCase("lc-recall-40k", 40_000),
     recallCase("lc-recall-120k", 120_000),
     recallCase("lc-recall-340k", 340_000),
+    rowCase("lc-recall-80rows"),
     intentCase("lc-intent-120k", 120_000),
     intentCase("lc-intent-340k", 340_000),
   ],

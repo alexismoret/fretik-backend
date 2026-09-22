@@ -241,10 +241,17 @@ export const settingsForRole = (
   // true for every profile except the ones a recorded product decision
   // exempts (first-party-only providers without a ZDR flag).
   const zdr = profile.assessment.provider.zdr;
-  // Per-profile upstream pin (cache stability across tool-loop turns).
-  // Undefined for every profile that doesn't set it → no change to their
-  // routing. `allow_fallbacks` stays default-on, so the pin is a
-  // preference, never a hard constraint. See `ModelAssessment.provider.order`.
+  // Per-profile upstream preference. `allow_fallbacks` stays default-on, so it
+  // is a preference, never a hard constraint. See
+  // `ModelAssessment.provider.order`.
+  //
+  // It is NO LONGER how cache stability is bought, and reaching for it that way
+  // now costs more than it buys: an explicit `order` disables OpenRouter's own
+  // sticky routing AND silently drops `sort`. The pin across tool-loop turns is
+  // `session_id` (`lib/provider-session.ts`), which holds the lane while the
+  // sort keeps choosing the fastest host for the first call of it — measured
+  // 2026-09-22, and rerunnable with `bun run probe:cache`. No published row
+  // declares `order` today; `recompute.ts` never writes one.
   const order = profile.assessment.provider.order;
   // Per-profile upstream exclusions — a HARD filter, unlike `order`, so a
   // fallback can't land on an upstream we've measured as broken. See

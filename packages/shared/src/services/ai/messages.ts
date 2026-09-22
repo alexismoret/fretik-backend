@@ -292,9 +292,10 @@ const usableCheckpoint = async (
  * Load the agent's window: everything after the latest checkpoint, capped at
  * the last N rows.
  *
- * Default 30 since Phase 8: the `services/compaction` pipeline needs a large
- * enough tail to trigger its threshold on real long conversations. The model
- * never sees all 30 verbatim — `compactConversation` collapses what is left.
+ * No default, deliberately: the caller owns the figure (`@fretik/ai`
+ * `AGENT_WINDOW_ROW_LIMIT`). The old default of 30 assumed compaction would
+ * collapse what fell outside; it never could — compaction sees only the rows
+ * loaded here, so a row past the limit is neither sent nor summarised.
  *
  * With a checkpoint the window is bounded twice, by `seq > cut` AND by the
  * limit, and the two answer different questions: the checkpoint bounds what is
@@ -303,7 +304,7 @@ const usableCheckpoint = async (
  */
 export const loadConversationForAgent = async (
   conversationId: string,
-  limit = 30,
+  limit: number,
 ): Promise<AgentWindow> => {
   const checkpoint = await usableCheckpoint(conversationId);
 

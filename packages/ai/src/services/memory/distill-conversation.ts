@@ -28,7 +28,7 @@ const MIN_MESSAGES = 4;
 /** Workflow-run floor: steering + final summary = 2 text lines is already a
  * complete short run — the chat threshold would skip it entirely. */
 const WORKFLOW_MIN_MESSAGES = 2;
-/** Transcript tail — mirrors `loadConversationForAgent`'s window ×2. */
+/** Transcript tail in rows — a loose bound: the token ceiling below decides. */
 const MAX_MESSAGES = 60;
 /**
  * Total transcript ceiling (~15k tokens), and the ONLY size rule that decides

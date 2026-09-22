@@ -7,10 +7,13 @@
  *  - the system prompt, resolved PER AGENT via `resolveAgentBlocks`
  *    (chatbot vs workflow — the raw template contains both variants and
  *    overstates each), HTML comments stripped like the runtime renderer,
- *    then split at the DYNAMIC SUFFIX marker into the cacheable static
- *    prefix and the per-turn dynamic suffix. Suffix numbers are
- *    TEMPLATE-side: `{{placeholders}}` are unexpanded, so the runtime
- *    suffix is larger (attachments, context manifest, memory block...).
+ *    then split into its three zones: the cacheable static prefix, the
+ *    conversation suffix (still in the system message, constant within a
+ *    conversation) and the `<turn_context>` block, which does NOT travel
+ *    in the system message at all — `prepareCall` appends it to the
+ *    latest user message. Suffix numbers are TEMPLATE-side:
+ *    `{{placeholders}}` are unexpanded, so the runtime zones are larger
+ *    (attachments, context manifest, memory block...).
  *  - every tool's `description` field plus its Zod `.describe()` strings
  *    (tracked separately; all of src/tools/, both agents mixed)
  *  - the `description` in each bundled SKILL.md frontmatter (the L1
@@ -71,8 +74,31 @@ interface ZoneSnapshot {
 interface AgentPromptSnapshot {
   resolved_tokens: number;
   static_prefix: ZoneSnapshot;
-  dynamic_suffix_template: ZoneSnapshot;
+  /**
+   * What stays in the SYSTEM message below the marker — constant within one
+   * conversation, so cached from turn 2 on.
+   */
+  conversation_suffix: ZoneSnapshot;
+  /**
+   * What leaves the system message entirely: the `<turn_context>` block, which
+   * `prepareCall` appends to the latest user message. Chatbot only — the
+   * workflow prompt is byte-stable per run and keeps everything. Zeroes here
+   * mean the agent has no such block, not that it was not measured.
+   *
+   * Snapshots before 2026-09-22 report these two zones as one
+   * `dynamic_suffix_template`; don't compare across that boundary.
+   */
+  turn_context_template: ZoneSnapshot;
 }
+
+/**
+ * The line that splits the system message from the turn context at RUNTIME —
+ * must stay in sync with `agents/shared/prompt-renderer.ts`. Matched with its
+ * newlines so prose naming the tag mid-sentence cannot be mistaken for it.
+ */
+const TURN_CONTEXT_OPEN = "\n<turn_context>\n";
+
+const EMPTY_ZONE: ZoneSnapshot = { chars: 0, tokens: 0, sections: {} };
 
 /**
  * Tokens per top-level `<tag>`…`</tag>` block. Only lines that are
@@ -137,11 +163,34 @@ const measureAgentPrompt = (
   // opening so neither half carries an unterminated `<!--`.
   const splitAt = resolved.lastIndexOf("<!--", markerIdx);
   const staticPrefix = measureZone(resolved.slice(0, splitAt));
-  const dynamicSuffix = measureZone(resolved.slice(splitAt));
+
+  // The runtime split is done on the STRIPPED text (comments never reach the
+  // model), so measuring it on the raw half would cut at the documentation
+  // block above the tag rather than at the tag itself.
+  const suffix = stripComments(resolved.slice(splitAt));
+  const turnIdx = suffix.indexOf(TURN_CONTEXT_OPEN);
+  const conversationSuffix = measureZone(
+    turnIdx === -1 ? suffix : suffix.slice(0, turnIdx),
+  );
+  // Sections are measured on the block's CONTENTS: `<turn_context>` is a
+  // wrapper, and letting it open a section would collapse the five registry
+  // entries inside it into one number.
+  const turnContext =
+    turnIdx === -1
+      ? EMPTY_ZONE
+      : measureZone(
+          suffix
+            .slice(turnIdx)
+            .replace(TURN_CONTEXT_OPEN, "")
+            .replace("</turn_context>", ""),
+        );
+
   return {
-    resolved_tokens: staticPrefix.tokens + dynamicSuffix.tokens,
+    resolved_tokens:
+      staticPrefix.tokens + conversationSuffix.tokens + turnContext.tokens,
     static_prefix: staticPrefix,
-    dynamic_suffix_template: dynamicSuffix,
+    conversation_suffix: conversationSuffix,
+    turn_context_template: turnContext,
   };
 };
 

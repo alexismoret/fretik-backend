@@ -276,10 +276,70 @@ const main = async (): Promise<void> => {
       deterministicOnly: opts.deterministicOnly,
     },
   });
+  // The digest goes FIRST, and that placement is the point.
+  //
+  // `format()` emits one enormous string, and this process ends on
+  // `process.exit(0)`. Bun's stdout is asynchronous when it is a pipe or a
+  // file (synchronous only on a TTY), so the exit cuts whatever has not
+  // drained — and what `format()` puts LAST is the averages. Run the suite in
+  // a terminal and you see them; redirect it to a file, which is what any A/B
+  // does, and the run ends mid-item with no error and no totals. Measured
+  // 2026-09-22 on a 160-item run: 140 lines survived, none of them a score.
+  //
+  // Per CASE rather than per run, because the average over a whole suite is
+  // the one number a paired comparison cannot use: ten repeats of sixteen
+  // cases hide a case that collapsed behind fifteen that did not.
+  printCaseDigest(result.itemResults);
   console.log(await result.format({ includeItemResults: true }));
   if (result.datasetRunUrl)
     console.log(`\n[evals] dataset run: ${result.datasetRunUrl}`);
   process.exit(0);
+};
+
+/** The shape this reads off an item result — structural, so no SDK type import. */
+interface DigestItem {
+  output?: unknown;
+  evaluations: readonly { name: string; value?: unknown }[];
+}
+
+/** `caseId` off a task output, without trusting its shape. */
+const caseIdOf = (output: unknown): string => {
+  if (typeof output !== "object" || output === null) return "(unknown)";
+  const fields: Record<string, unknown> = { ...output };
+  const id = fields["caseId"];
+  return typeof id === "string" ? id : "(unknown)";
+};
+
+const printCaseDigest = (items: readonly DigestItem[]): void => {
+  const byCase = new Map<string, number[]>();
+  for (const item of items) {
+    const score = item.evaluations.find((e) => e.name === "correctness")?.value;
+    if (typeof score !== "number") continue;
+    const id = caseIdOf(item.output);
+    byCase.set(id, [...(byCase.get(id) ?? []), score]);
+  }
+  if (byCase.size === 0) return;
+
+  const rows = [...byCase.entries()]
+    .map(([id, scores]) => ({
+      id,
+      n: scores.length,
+      mean: scores.reduce((a, b) => a + b, 0) / scores.length,
+    }))
+    // Worst first: a regression is what this is read for.
+    .sort((a, b) => a.mean - b.mean);
+  const all = rows.flatMap((r) => Array<number>(r.n).fill(r.mean));
+
+  const lines = [
+    "",
+    `[evals] correctness per case (${items.length.toString()} items)`,
+    ...rows.map(
+      (r) => `  ${r.mean.toFixed(3)}  ${r.id.padEnd(32)} n=${r.n.toString()}`,
+    ),
+    `  ${(all.reduce((a, b) => a + b, 0) / all.length).toFixed(3)}  ${"— suite mean —".padEnd(32)} n=${all.length.toString()}`,
+    "",
+  ];
+  process.stdout.write(`${lines.join("\n")}\n`);
 };
 
 main().catch((err) => {

@@ -40,6 +40,7 @@ import {
   getRuntimeContext,
   type AgentRuntimeContext,
 } from "../shared/runtime-context";
+import type { RenderedAgentPrompt } from "../shared/turn-context";
 import { workflowSubAgentHiddenToolNames } from "../shared/workflow-tool-gate";
 import { buildChatbotSystemPrompt } from "./system-prompt";
 import {
@@ -271,7 +272,7 @@ export type ChatbotCallOptions = z.infer<typeof ChatbotCallOptionsSchema>;
 const chatbotSystemPrompt = (
   ctx: AgentRuntimeContext,
   tools: ChatbotTools,
-): Promise<string> => {
+): Promise<RenderedAgentPrompt> => {
   // `pickDomainRegistry` is memoized on the static tool set, so per-team policy
   // filtering happens HERE (downstream) — a `blocked` domain tool must not
   // appear in `{{deferredToolList}}`.
@@ -493,6 +494,10 @@ const makeSubAgentPrimarySet = (
 ): AgentSet<ChatbotCallOptions, SubAgentTools> =>
   buildAgentSet<ChatbotCallOptions, SubAgentTools>({
     id: "chatbot.sub.primary",
+    // Its own lane. This set resolves the SAME model as the parent, so sharing
+    // the conversation's key would put both on one pin — and a provider error
+    // here would then re-pin the parent onto a host its prefix is cold on.
+    sessionScope: "delegate",
     buildTools: buildSubAgentTools,
     systemPrompt: subAgentSystemPrompt,
     maxOutputTokens: AGENT_STEP_MAX_OUTPUT_TOKENS,
@@ -540,6 +545,7 @@ const makeSubAgentCheapSet = (
 ): AgentSet<ChatbotCallOptions, SubAgentTools> =>
   buildAgentSet<ChatbotCallOptions, SubAgentTools>({
     id: "chatbot.sub.cheap",
+    sessionScope: "delegate",
     buildTools: buildSubAgentTools,
     systemPrompt: subAgentSystemPrompt,
     maxOutputTokens: AGENT_STEP_MAX_OUTPUT_TOKENS,
@@ -605,6 +611,10 @@ const makePageBuilderSet = (
 ): AgentSet<ChatbotCallOptions, PageBuilderTools> =>
   buildAgentSet<ChatbotCallOptions, PageBuilderTools>({
     id: PAGE_BUILDER_AGENT_ID,
+    // One build is one lane. Sharing the conversation's would hold its pin for
+    // the whole 25-minute deadline, and hand the parent whichever host a
+    // mid-build re-route landed on.
+    sessionScope: "delegate",
     buildTools: buildPageBuilderTools,
     systemPrompt: pageBuilderSystemPrompt,
     // The builder writes whole SFCs through `pageWrite`, so its output cap is
@@ -713,6 +723,7 @@ const makeChatbotAgentSet = (
 ): AgentSet<ChatbotCallOptions, ChatbotTools> =>
   buildAgentSet<ChatbotCallOptions, ChatbotTools>({
     id: "chatbot",
+    sessionScope: "conversation",
     buildTools: () =>
       buildChatbotTools({
         dispatchAgent: dispatchAgentTool,

@@ -40,6 +40,12 @@
  *       Every generation of one trace: model, tokens in/out (reasoning split
  *       out), cost, latency, serving provider, finish reason.
  *
+ *   bun --env-file=.env run scripts/langfuse-metrics.ts cache [days] [env]
+ *       What the prompt cache is NOT returning, split by cause — a provider
+ *       change (the cache was never there) against a prefix that moved (we
+ *       broke it ourselves). The acceptance query for the sticky-routing and
+ *       prompt-prefix work; see `runCache` for what each figure excludes.
+ *
  *   bun --env-file=.env run scripts/langfuse-metrics.ts query '<json>'
  *       Raw v2 Metrics query passthrough, for anything the two above do not
  *       cover. Shape: { view, dimensions, metrics, filters, timeDimension,
@@ -179,8 +185,197 @@ const runTrace = async (traceId: string): Promise<void> => {
   }
 };
 
+/**
+ * What the prompt cache is NOT returning, and why — the acceptance query for
+ * the sticky-routing and prompt-prefix work.
+ *
+ * Two independent causes, separated because they need different fixes. When a
+ * call lands on a DIFFERENT upstream than the previous call of the same
+ * conversation, the cache was never there to read: a provider's prompt cache is
+ * its own. When it lands on the SAME upstream and still misses, the prefix we
+ * sent changed — a volatile system-prompt suffix, or a tool list that grew
+ * mid-turn.
+ *
+ * Both figures exclude anything the fix cannot reach: a gap past the upstream
+ * TTL (5 min is the shortest in the fleet), and a call whose prompt SHRANK,
+ * which is compaction rebuilding the history on purpose.
+ *
+ * The money column is self-referential on purpose, so it needs no price table
+ * to go stale: it prices the lost tokens at the difference between the bucket's
+ * own observed rate and the rate of the calls that DID hit a warm cache. It
+ * answers "what would this window have cost if every call had been as warm as
+ * the warm ones", which is the question the work is trying to close.
+ *
+ * Baseline, 7 days of production measured 2026-09-22: $19.35 spent, of which
+ * $6.02 (31.1 %) recoverable — $3.14 to provider changes, $2.88 to prefix
+ * churn. `cacheRead_{N+1} / input_N` sat at 0.54 and falling.
+ */
+const CACHE_TTL_GUARD_S = 300;
+
+interface CacheBucket {
+  calls: number;
+  lostTokens: number;
+  input: number;
+  cached: number;
+  cost: number;
+}
+
+const emptyBucket = (): CacheBucket => ({
+  calls: 0,
+  lostTokens: 0,
+  input: 0,
+  cached: 0,
+  cost: 0,
+});
+
+const runCache = async (days: number, environment: string): Promise<void> => {
+  const to = new Date();
+  const from = new Date(to.getTime() - days * 86_400_000);
+  let cursor: string | undefined;
+  const rows: Awaited<ReturnType<typeof api.observations.getMany>>["data"] = [];
+  // `basic` carries `name` and `sessionId`; `core` carries neither. See the
+  // header — asking for the wrong groups returns rows that look empty.
+  for (let page = 0; page < 60; page++) {
+    const result = await api.observations.getMany({
+      type: "GENERATION",
+      fromStartTime: from.toISOString(),
+      toStartTime: to.toISOString(),
+      limit: 1000,
+      fields: "core,basic,usage,cost,metadata",
+      ...(cursor === undefined ? {} : { cursor }),
+    });
+    rows.push(...result.data);
+    cursor = result.meta.cursor;
+    if (cursor === undefined || result.data.length === 0) break;
+  }
+
+  const chat = rows.filter(
+    (o) =>
+      (o.name ?? "").startsWith("chat ") &&
+      o.sessionId !== undefined &&
+      o.sessionId !== null &&
+      o.environment === environment,
+  );
+  const spend = chat.reduce((sum, o) => sum + (o.totalCost ?? 0), 0);
+
+  // One lane per (conversation, model): stickiness is keyed per model, so two
+  // models in one conversation are two independent lanes.
+  const lanes = new Map<string, typeof chat>();
+  for (const o of chat) {
+    const key = `${o.sessionId ?? ""}|${o.name ?? ""}`;
+    const lane = lanes.get(key) ?? [];
+    lane.push(o);
+    lanes.set(key, lane);
+  }
+
+  const switched = emptyBucket();
+  const prefix = emptyBucket();
+  const warm = emptyBucket();
+  let newTurnLost = 0;
+  let inTurnLost = 0;
+  /**
+   * Kept per POSITION, and that separation is the whole value of the number.
+   * Pooled over every consecutive pair it reads ~0.79 — a hair off target —
+   * because the within-turn steps are warm at ~99 % and drown the signal. The
+   * boundary between two TURNS is where the prefix actually breaks, and it sat
+   * at 0.54 when this was written.
+   */
+  const ratio = { turn: { num: 0, den: 0 }, step: { num: 0, den: 0 } };
+
+  for (const lane of lanes.values()) {
+    lane.sort((a, b) => a.startTime.localeCompare(b.startTime));
+    for (let i = 1; i < lane.length; i++) {
+      const prev = lane[i - 1];
+      const cur = lane[i];
+      if (prev === undefined || cur === undefined) continue;
+      const prevIn = asNumber(asRecord(prev.usageDetails)["input"]) ?? 0;
+      const curIn = asNumber(asRecord(cur.usageDetails)["input"]) ?? 0;
+      const cached =
+        asNumber(asRecord(cur.usageDetails)["input_cache_read"]) ?? 0;
+      // A prompt that shrank is a rebuilt history, not a lost cache.
+      if (curIn < prevIn) continue;
+      const gapS =
+        (new Date(cur.startTime).getTime() -
+          new Date(prev.endTime ?? prev.startTime).getTime()) /
+        1000;
+      if (gapS > CACHE_TTL_GUARD_S) continue;
+
+      const sameTurn = prev.traceId === cur.traceId;
+      const slot = sameTurn ? ratio.step : ratio.turn;
+      slot.num += cached;
+      slot.den += prevIn;
+
+      const changed =
+        asRecord(prev.metadata)["servingProvider"] !==
+        asRecord(cur.metadata)["servingProvider"];
+      // Everything the previous call already sent was a prefix of this one, so
+      // it was all cacheable. What was not read back is what was lost.
+      const lost = Math.max(0, prevIn - cached);
+      const bucket = lost === 0 ? warm : changed ? switched : prefix;
+      bucket.calls += 1;
+      bucket.lostTokens += lost;
+      bucket.input += curIn;
+      bucket.cached += cached;
+      bucket.cost += cur.totalCost ?? 0;
+      if (lost > 0) {
+        if (prev.traceId === cur.traceId) inTurnLost += lost;
+        else newTurnLost += lost;
+      }
+    }
+  }
+
+  const rate = (b: CacheBucket): number =>
+    b.input > 0 ? (b.cost / b.input) * 1e6 : 0;
+  const warmRate = rate(warm);
+  const recoverable = (b: CacheBucket): number =>
+    Math.max(0, (rate(b) - warmRate) * (b.input / 1e6));
+
+  console.log(
+    `\ncache decomposition — ${days.toString()} day(s), environment=${environment}`,
+  );
+  console.log(
+    `chat generations: ${count(chat.length)}   spend: $${spend.toFixed(2)}\n`,
+  );
+  console.log(
+    `${"cause".padEnd(38)} ${"calls".padStart(7)} ${"lost tokens".padStart(14)} ${"$/Mtok-in".padStart(10)} ${"recoverable".padStart(12)}`,
+  );
+  for (const [label, bucket] of [
+    ["provider CHANGED (routing)", switched],
+    ["same provider, prefix missed", prefix],
+    ["cache hit in full (reference)", warm],
+  ] as const) {
+    console.log(
+      [
+        label.padEnd(38),
+        count(bucket.calls).padStart(7),
+        count(bucket.lostTokens).padStart(14),
+        rate(bucket).toFixed(3).padStart(10),
+        (bucket === warm ? "-" : `$${recoverable(bucket).toFixed(2)}`).padStart(
+          12,
+        ),
+      ].join(" "),
+    );
+  }
+  const total = recoverable(switched) + recoverable(prefix);
+  console.log(
+    `\nrecoverable total: $${total.toFixed(2)}` +
+      (spend > 0 ? ` (${((total / spend) * 100).toFixed(1)} % of spend)` : ""),
+  );
+  console.log(
+    `  lost at a NEW TURN : ${count(newTurnLost)} tokens\n` +
+      `  lost WITHIN a turn : ${count(inTurnLost)} tokens`,
+  );
+  const asRatio = (r: { num: number; den: number }): string =>
+    (r.den > 0 ? r.num / r.den : 0).toFixed(3);
+  console.log(
+    `\nacceptance ratio cacheRead[N+1] / input[N]` +
+      `\n  across a TURN boundary : ${asRatio(ratio.turn)}   <- the gate, target > 0.8` +
+      `\n  within one turn        : ${asRatio(ratio.step)}`,
+  );
+};
+
 const USAGE =
-  "usage: langfuse-metrics.ts names [days] [limit] | trace <traceId> | query '<json>'";
+  "usage: langfuse-metrics.ts names [days] [limit] | trace <traceId> | cache [days] [environment] | query '<json>'";
 
 const [command, ...rest] = Bun.argv.slice(2);
 
@@ -190,6 +385,8 @@ if (command === "names") {
   const traceId = rest[0];
   if (!traceId) throw new Error(USAGE);
   await runTrace(traceId);
+} else if (command === "cache") {
+  await runCache(Number(rest[0] ?? "7"), rest[1] ?? "production");
 } else if (command === "query") {
   const raw = rest[0];
   if (!raw) throw new Error(USAGE);

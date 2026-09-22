@@ -9,6 +9,7 @@ import type { SearchableToolRegistry } from "./chatbot-tool";
 import { policyHiddenToolNames } from "./policy-tool-gate";
 import { resolveAgentBlocks } from "./prompt-blocks";
 import type { AgentRuntimeContext } from "./runtime-context";
+import type { RenderedAgentPrompt } from "./turn-context";
 
 /**
  * Dynamic-suffix note listing the tools the team disabled via tool-permission
@@ -108,6 +109,49 @@ const PAGE_BUILDER_TEMPLATE_URL = new URL(
  * stripping doesn't leave dangling blank lines.
  */
 const HTML_COMMENT_RE = /<!--[\s\S]*?-->\n?/g;
+
+/**
+ * Where the system message stops and the turn context begins.
+ *
+ * It is a real tag rather than a marker comment, and it has to be: the seed
+ * script STRIPS HTML comments before publishing, so `<!-- DYNAMIC SUFFIX -->`
+ * does not exist in the text Langfuse serves in production. A split on it
+ * would work in dev, where `LANGFUSE_PROMPTS_LOCAL` reads the `.md`, and
+ * silently find nothing in prod — shipping the whole thing in the system
+ * message, which is the bug this exists to fix, with no symptom.
+ *
+ * Matched WITH its newlines so prose naming the tag mid-sentence (the pointer
+ * in `<memory_protocol>` does exactly that) cannot be mistaken for it.
+ */
+const TURN_CONTEXT_OPEN = "\n<turn_context>\n";
+
+/**
+ * Cut the TEMPLATE, not the rendered text.
+ *
+ * Rendering first and cutting after would make the split point injectable
+ * through any variable: a memory whose content happens to contain the tag on
+ * its own line would move the boundary, and everything after it would leave
+ * the system message. The template is ours; the variables are not.
+ *
+ * Both halves are then rendered against the same variable map — a placeholder
+ * that lands on the wrong side is caught at seed time by
+ * `assertPromptZones` and in `tests/unit/agents/prompt-split.test.ts`, which
+ * is a better place to catch it than a half-rendered prompt at runtime.
+ *
+ * No tag means no turn context: a Langfuse `production` version published
+ * before this change renders exactly as it did before, which is the failure
+ * mode a deploy wants.
+ */
+const splitTemplate = (
+  template: string,
+): { prefix: string; turnContext?: string } => {
+  const idx = template.indexOf(TURN_CONTEXT_OPEN);
+  if (idx === -1) return { prefix: template };
+  return {
+    prefix: template.slice(0, idx).trimEnd(),
+    turnContext: template.slice(idx).trim(),
+  };
+};
 
 /**
  * Names of the chatbot prompts managed in Langfuse Prompt Management, each
@@ -333,7 +377,7 @@ const formatDeferredToolList = (
 export const buildChatbotSystemPrompt = async (
   ctx: AgentRuntimeContext,
   deferredTools: SearchableToolRegistry = {},
-): Promise<string> => {
+): Promise<RenderedAgentPrompt> => {
   const { text, promptRef } = await fetchManagedPrompt(
     MANAGED_PROMPTS.system.name,
     SYSTEM_PROMPT_FALLBACK,
@@ -343,7 +387,10 @@ export const buildChatbotSystemPrompt = async (
   // (trimmed) text and the embedded fallback must be byte-identical so the
   // static prefix — and the OpenRouter prompt cache — survives every
   // Langfuse↔fallback transition.
-  return renderPrompt(text.replace(HTML_COMMENT_RE, "").trim(), {
+  const { prefix, turnContext } = splitTemplate(
+    text.replace(HTML_COMMENT_RE, "").trim(),
+  );
+  const variables = {
     currentDate: formatCurrentDate(new Date(), ctx.timeZone),
     userName: ctx.userName ?? "Unknown user",
     userId: ctx.userId ?? "unknown",
@@ -403,7 +450,13 @@ export const buildChatbotSystemPrompt = async (
       ctx.participantsBlock && ctx.participantsBlock.length > 0
         ? `This conversation is shared by several teammates:\n${ctx.participantsBlock}\n\nEach user message is prefixed with its sender in brackets — \`[Name]: …\`. Address people by name when it helps, and suggest @mentioning a teammate when their input is needed.`
         : "",
-  });
+  };
+  return {
+    instructions: renderPrompt(prefix, variables),
+    ...(turnContext === undefined
+      ? {}
+      : { turnContext: renderPrompt(turnContext, variables) }),
+  };
 };
 
 /**
@@ -416,7 +469,7 @@ export const buildChatbotSystemPrompt = async (
 export const buildWorkflowSystemPrompt = async (
   ctx: AgentRuntimeContext,
   deferredTools: SearchableToolRegistry = {},
-): Promise<string> => {
+): Promise<RenderedAgentPrompt> => {
   const { text, promptRef } = await fetchManagedPrompt(
     MANAGED_PROMPTS.workflow.name,
     WORKFLOW_PROMPT_FALLBACK,
@@ -427,7 +480,16 @@ export const buildWorkflowSystemPrompt = async (
   // steering message, NOT here. So `currentDate`, `sessionStateBlock`, and
   // `activeMemoryBlock` are intentionally absent from this map — their
   // placeholders were removed from the `workflow` blocks of the template.
-  return renderPrompt(text.replace(HTML_COMMENT_RE, "").trim(), {
+  //
+  // It still goes through the split, which today finds nothing: the
+  // `<turn_context>` block lives inside an `AGENT:chatbot` block and does not
+  // survive resolution. That is the point — should one ever appear in a
+  // workflow block, it gets MOVED rather than quietly shipped in a prompt
+  // whose whole cache depends on not moving. `prompt-split.test.ts` pins it.
+  const { prefix, turnContext } = splitTemplate(
+    text.replace(HTML_COMMENT_RE, "").trim(),
+  );
+  const variables = {
     teamId: ctx.teamId,
     organizationId: ctx.organizationId,
     conversationId: ctx.conversationId ?? "unknown",
@@ -445,7 +507,6 @@ export const buildWorkflowSystemPrompt = async (
       ctx.attachedFilesBlock && ctx.attachedFilesBlock.length > 0
         ? ctx.attachedFilesBlock
         : "_No files handed to this run._",
-    nativeMediaNote: buildNativeMediaNote(ctx.nativeIngestion),
     blockedToolsNote: buildBlockedToolsNote(ctx),
     chatbotContextManifest:
       ctx.chatbotContextManifest && ctx.chatbotContextManifest.length > 0
@@ -459,5 +520,11 @@ export const buildWorkflowSystemPrompt = async (
       ctx.externalAppsBlock && ctx.externalAppsBlock.length > 0
         ? ctx.externalAppsBlock
         : "_No external apps connected._",
-  });
+  };
+  return {
+    instructions: renderPrompt(prefix, variables),
+    ...(turnContext === undefined
+      ? {}
+      : { turnContext: renderPrompt(turnContext, variables) }),
+  };
 };

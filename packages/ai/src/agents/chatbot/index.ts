@@ -40,6 +40,7 @@ import {
   getRuntimeContext,
   type AgentRuntimeContext,
 } from "../shared/runtime-context";
+import type { RenderedAgentPrompt } from "../shared/turn-context";
 import { workflowSubAgentHiddenToolNames } from "../shared/workflow-tool-gate";
 import { buildChatbotSystemPrompt } from "./system-prompt";
 import {
@@ -271,7 +272,7 @@ export type ChatbotCallOptions = z.infer<typeof ChatbotCallOptionsSchema>;
 const chatbotSystemPrompt = (
   ctx: AgentRuntimeContext,
   tools: ChatbotTools,
-): Promise<string> => {
+): Promise<RenderedAgentPrompt> => {
   // `pickDomainRegistry` is memoized on the static tool set, so per-team policy
   // filtering happens HERE (downstream) — a `blocked` domain tool must not
   // appear in `{{deferredToolList}}`.

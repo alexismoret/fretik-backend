@@ -56,6 +56,7 @@ import {
   type AgentRuntimeContext,
 } from "./runtime-context";
 import { StepCallBudget } from "./step-call-budget";
+import { appendTurnContext, type RenderedAgentPrompt } from "./turn-context";
 
 /**
  * Factory for a pair of `ToolLoopAgent` singletons (primary + fallback)
@@ -130,11 +131,17 @@ export interface BuildAgentSetConfig<CALL_OPTIONS, TTools extends ToolSet> {
    * System prompt renderer. Called on every `.stream()` via `prepareCall`.
    * May be async — managed-prompt renderers fetch from Langfuse (instant on
    * SDK cache hit) and `prepareCall` awaits the result.
+   *
+   * A bare string is a prompt that travels whole in the system message, which
+   * is right for every agent whose prompt is stable over the span it runs:
+   * the workflow executor, the delegates, the page builder. An agent that has
+   * a per-turn half returns `RenderedAgentPrompt` and the builder appends it
+   * to the latest user message instead — see `turn-context.ts`.
    */
   systemPrompt: (
     ctx: AgentRuntimeContext,
     tools: TTools,
-  ) => string | Promise<string>;
+  ) => string | RenderedAgentPrompt | Promise<string | RenderedAgentPrompt>;
   /** Primary model, registry-resolved (instance + profile). */
   model: ResolvedModel;
   /** Fallback model, used when the primary errors out. */
@@ -969,7 +976,26 @@ const buildToolLoopAgent = <CALL_OPTIONS, TTools extends ToolSet>(
         modelProfile: resolved.profile,
       };
       config.onRuntimeContext?.(ctx, options);
-      const instructions = await config.systemPrompt(ctx, tools);
+      const rendered = await config.systemPrompt(ctx, tools);
+      const { instructions, turnContext } =
+        typeof rendered === "string"
+          ? { instructions: rendered, turnContext: undefined }
+          : rendered;
+
+      // The per-turn half of the prompt goes BEHIND the history, on the last
+      // user message, instead of in front of it. Everything upstream of it is
+      // then byte-identical to the previous turn and comes back from the
+      // provider's cache; while it sat in the system message, the whole
+      // conversation sat behind a block that changed every turn and got
+      // re-read at full price. Never persisted — see `turn-context.ts`.
+      //
+      // `messages` is absent when the caller passed a `prompt` instead (every
+      // delegate does), and those agents have no turn context anyway.
+      const turnMessages =
+        turnContext === undefined || messages === undefined
+          ? undefined
+          : appendTurnContext(messages, turnContext);
+
       const branded = wrapRuntimeContext(ctx);
 
       // Hand the per-request branded ctx to the framework as `runtimeContext`
@@ -1016,6 +1042,7 @@ const buildToolLoopAgent = <CALL_OPTIONS, TTools extends ToolSet>(
       return {
         ...baseCallArgs,
         instructions,
+        ...(turnMessages === undefined ? {} : { messages: turnMessages }),
         runtimeContext: branded,
         ...(Object.keys(openrouter).length > 0
           ? {

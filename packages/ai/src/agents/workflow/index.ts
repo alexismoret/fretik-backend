@@ -30,6 +30,7 @@ import {
   getRuntimeContext,
   type AgentRuntimeContext,
 } from "../shared/runtime-context";
+import type { RenderedAgentPrompt } from "../shared/turn-context";
 import { workflowMainHiddenToolNames } from "../shared/workflow-tool-gate";
 import { buildWorkflowTools, type WorkflowTools } from "./tools";
 
@@ -124,7 +125,7 @@ const buildWorkflowRuntimeContextBase = (
 const workflowSystemPrompt = (
   ctx: AgentRuntimeContext,
   tools: WorkflowTools,
-): Promise<string> => {
+): Promise<RenderedAgentPrompt> => {
   const registry = pickDomainRegistry(tools);
   // Don't advertise a gated write tool in `<domain_tools>` — the run can't
   // activate it (searchTools + step-gate withhold it), so listing it as

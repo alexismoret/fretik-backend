@@ -17,6 +17,7 @@
  */
 import type {
   LanguageModelV4Middleware,
+  LanguageModelV4Prompt,
   SharedV4ProviderOptions,
 } from "@ai-sdk/provider";
 import { wrapLanguageModel } from "ai";
@@ -25,6 +26,7 @@ import { z } from "zod";
 import {
   buildAgentSet,
   type AgentRuntimeContextBase,
+  type BuildAgentSetConfig,
 } from "../../../src/agents/shared/agent-builder";
 import {
   clearResolvedModelCache,
@@ -34,11 +36,13 @@ import {
 import { installBoundFleet } from "../../lib/live-fleet";
 
 let captured: SharedV4ProviderOptions | undefined;
+let capturedPrompt: LanguageModelV4Prompt | undefined;
 
 const captureMiddleware: LanguageModelV4Middleware = {
   specificationVersion: "v4",
   wrapGenerate: ({ params }) => {
     captured = params.providerOptions;
+    capturedPrompt = params.prompt;
     return Promise.resolve({
       content: [{ type: "text" as const, text: "ok" }],
       finishReason: { unified: "stop" as const, raw: "stop" },
@@ -72,13 +76,19 @@ const CALL_OPTIONS = z.object({
 });
 type CallOptions = z.infer<typeof CALL_OPTIONS>;
 
-const makeAgent = (sessionScope: "conversation" | "delegate") => {
+const makeAgent = (
+  sessionScope: "conversation" | "delegate",
+  systemPrompt: BuildAgentSetConfig<
+    CallOptions,
+    Record<string, never>
+  >["systemPrompt"] = () => "instructions",
+) => {
   const resolved = capturing(resolveModel("chat"));
   return buildAgentSet<CallOptions, Record<string, never>>({
     id: `session-test-${sessionScope}`,
     sessionScope,
     buildTools: () => ({}),
-    systemPrompt: () => "instructions",
+    systemPrompt,
     model: resolved,
     fallbackModel: resolved,
     callOptionsSchema: CALL_OPTIONS,
@@ -176,5 +186,75 @@ describe("what an agent sends under providerOptions.openrouter", () => {
       teamId: "team-1",
     });
     expect(sent?.["openrouter"]?.["session_id"]).toBeUndefined();
+  });
+});
+
+/**
+ * Where the per-turn block ends up on the wire.
+ *
+ * `prompt-split.test.ts` proves the renderer SEPARATES it and
+ * `turn-context.test.ts` proves the helper PLACES it. Neither can catch the
+ * failure that costs the money: a `prepareCall` that renders both halves and
+ * returns only the first. The prompt is then correct, every eval passes, and
+ * the block is simply gone — which reads as "the change did nothing" a week
+ * later, in a bill.
+ */
+const BLOCK = "<turn_context>\nThe current date is Tuesday.\n</turn_context>";
+
+const lastUserText = (prompt: LanguageModelV4Prompt | undefined): string => {
+  const last = prompt?.[prompt.length - 1];
+  if (last?.role !== "user") return "";
+  return last.content
+    .filter((part) => part.type === "text")
+    .map((part) => part.text)
+    .join("\n");
+};
+
+const systemText = (prompt: LanguageModelV4Prompt | undefined): string => {
+  const system = prompt?.find((message) => message.role === "system");
+  return system?.role === "system" ? system.content : "";
+};
+
+describe("where the turn context lands on the wire", () => {
+  test("it rides the last user message, and the system message is free of it", async () => {
+    capturedPrompt = undefined;
+    await makeAgent("conversation", () => ({
+      instructions: "instructions",
+      turnContext: BLOCK,
+    })).primary.generate({
+      messages: [{ role: "user", content: "hello" }],
+      options: BASE,
+    });
+
+    expect(lastUserText(capturedPrompt)).toContain(BLOCK);
+    expect(lastUserText(capturedPrompt)).toContain("hello");
+    expect(systemText(capturedPrompt)).not.toContain("turn_context");
+  });
+
+  test("the message COUNT is unchanged — breakpoints are picked by index", async () => {
+    capturedPrompt = undefined;
+    await makeAgent("conversation", () => ({
+      instructions: "instructions",
+      turnContext: BLOCK,
+    })).primary.generate({
+      messages: [
+        { role: "user", content: "one" },
+        { role: "assistant", content: "two" },
+        { role: "user", content: "three" },
+      ],
+      options: BASE,
+    });
+    // system + the three we sent. A fourth means the block was pushed as its
+    // own message and every `selectBreakpointIndices` anchor moved with it.
+    expect(capturedPrompt).toHaveLength(4);
+  });
+
+  test("an agent that renders no block sends the messages untouched", async () => {
+    capturedPrompt = undefined;
+    await makeAgent("conversation").primary.generate({
+      messages: [{ role: "user", content: "hello" }],
+      options: BASE,
+    });
+    expect(lastUserText(capturedPrompt)).toBe("hello");
   });
 });

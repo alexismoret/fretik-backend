@@ -2957,8 +2957,8 @@ chatbotRoutes.post("/stream", async (c) => {
   // scope — all three are already in hand — and on nothing produced below.
   // Everything between this line and `runChatbotTurn` is serial I/O: saving the
   // message, binding its files, two conversation events, the read marker,
-  // mentions, the stream claim, the turn log, thirty messages of history, the
-  // model resolution. Ten round trips the three retrieval arms can run
+  // mentions, the stream claim, the turn log, the history since the last
+  // checkpoint, the model resolution. Ten round trips the three retrieval arms can run
   // underneath instead of after.
   //
   // Fire-and-collect, never awaited here: `prefetchRecallGather` swallows its
@@ -3220,13 +3220,13 @@ chatbotRoutes.post("/stream", async (c) => {
     }),
   );
 
-  // Load last N messages from DB for the agent's memory window. 30 is
-  // the Phase 8 default — compaction collapses the older portion when
-  // the total exceeds 12K tokens.
+  // Everything after the last checkpoint. Tokens bound the window — the
+  // compaction cap folds the older portion into the next checkpoint — and
+  // the row limit is only a guard; see `AGENT_WINDOW_ROW_LIMIT`.
   const window = await timeStage(
     preludeTimings,
     "loadHistory",
-    loadAgentWindow(conversationId, 30),
+    loadAgentWindow(conversationId),
   );
   const history = window.messages;
 
@@ -3915,9 +3915,7 @@ chatbotInternalRoutes.post("/invoke", async (c) => {
    * evals, where nobody is watching a spinner and the cost shows up only on
    * the bill.
    */
-  const window = conversationId
-    ? await loadAgentWindow(conversationId, 30)
-    : null;
+  const window = conversationId ? await loadAgentWindow(conversationId) : null;
   const history: UIMessage[] = window ? window.messages : messages;
   // Read rather than defaulted to `[]`: an empty cast is one the reader's
   // `participants_changed` guard can never reject, because it only engages at

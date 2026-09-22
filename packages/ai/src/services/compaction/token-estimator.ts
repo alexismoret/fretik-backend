@@ -64,9 +64,9 @@ const nativeMediaSurcharge = (
  * Counted message by message rather than over one `JSON.stringify` of the
  * array, because the counter is now a real tokeniser and a real tokeniser costs
  * real time — 404 ms on a 1.36 MB window, paid on every turn if nothing is
- * remembered. A message is the right unit: it is immutable once settled, a
- * window holds thirty of them, and a turn adds one or two, so a steady-state
- * turn tokenises what arrived and reads the rest out of the memo.
+ * remembered. A message is the right unit: it is immutable once settled and a
+ * turn adds one or two, so a steady-state turn tokenises what arrived and reads
+ * the rest out of the memo.
  */
 export const estimateMessagesTokens = (
   messages: UIMessage[],

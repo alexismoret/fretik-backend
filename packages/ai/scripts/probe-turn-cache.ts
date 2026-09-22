@@ -48,6 +48,7 @@
  *
  *   bun run probe:turn-cache                     # 4 turns, 65 s apart, 60k history
  *   bun run probe:turn-cache -- --history 100000 --turns 5
+ *   bun run probe:turn-cache -- --exchanges 40   # 80 rows: the ROW-bound regime
  *   bun run probe:turn-cache -- --gap 0          # the quick, clock-blind run
  *   bun run probe:turn-cache -- --keep           # leave the conversation behind
  */
@@ -68,6 +69,11 @@ const flag = (name: string): string | undefined => {
 const turns = Number.parseInt(flag("turns") ?? "4", 10);
 const historyTokens = Number.parseInt(flag("history") ?? "60000", 10);
 const gapSeconds = Number.parseInt(flag("gap") ?? "65", 10);
+// Rows are what the agent window used to bound, not tokens: 40 exchanges put
+// the conversation past 30 rows from the first turn, at the same token size.
+const exchangesFlag = flag("exchanges");
+const exchanges =
+  exchangesFlag === undefined ? undefined : Number.parseInt(exchangesFlag, 10);
 const keep = argv.includes("--keep");
 
 const requireEnv = (name: string): string => {
@@ -160,6 +166,7 @@ const main = async (): Promise<void> => {
   const history = buildLongHistory({
     seed: `turn-cache-${Date.now().toString()}`,
     targetTokens: historyTokens,
+    ...(exchanges === undefined ? {} : { exchanges }),
     needle: {
       statement:
         "Le lot de rapprochement de référence porte le code RCN-8842-QK.",
@@ -178,7 +185,7 @@ const main = async (): Promise<void> => {
     history: history.turns,
   });
   console.log(
-    `conversation ${conversationId} · historique semé ${history.estimatedTokens.toLocaleString()} tokens · ${turns.toString()} tours espacés de ${gapSeconds.toString()} s\n`,
+    `conversation ${conversationId} · historique semé ${history.estimatedTokens.toLocaleString()} tokens en ${history.turns.length.toString()} lignes · ${turns.toString()} tours espacés de ${gapSeconds.toString()} s\n`,
   );
 
   const usages: (TurnUsage | undefined)[] = [];

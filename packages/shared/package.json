@@ -22,8 +22,6 @@
     "e2b:smoke": "bun --env-file=../ai/.env run src/scripts/smoke-sandbox-egress.ts",
     "file-types:sync": "bun run src/scripts/sync-file-types-to-frontend.ts",
     "grant:super-admin": "bun --env-file=.env run src/scripts/grant-super-admin.ts",
-    "repair:oversized-messages": "bun --env-file=.env run src/scripts/repair-oversized-messages.ts",
-    "repair:workflow-notifications": "bun --env-file=../../.env run src/scripts/repair-workflow-notifications.ts",
     "s3:sweep": "bun --env-file=../../.env run src/scripts/sweep-orphan-s3.ts",
     "seed:demo-workspace": "bun --env-file=.env run src/scripts/seed-demo-workspace.ts"
   },

@@ -42,9 +42,10 @@ export const registerOrphanCleanupCron = async (): Promise<void> => {
   const queue = new Queue(QUEUE_NAME, { connection: getProducerConnection() });
 
   // Job Scheduler, not `add(..., { repeat })`: BullMQ 6 removed the legacy
-  // repeatable API outright and throws on encountering its leftover metadata,
-  // so the old key must be dropped from Redis before this deploys — see
-  // scripts/drop-legacy-orphan-repeatable.ts.
+  // repeatable API outright and throws at BOOT on encountering its leftover
+  // metadata. The one-shot that swept this queue's old key out of Redis ran
+  // before the v6 deploy and was deleted with the rest of the spent one-offs
+  // (2026-09-21) — the fleet booting on v6 is the proof it worked.
   await queue.upsertJobScheduler(
     JOB_NAME,
     { pattern: REPEAT_PATTERN },

@@ -139,6 +139,7 @@ import {
   resolveChatModelForProfile,
 } from "../lib/model-registry/resolve";
 import { resolveTeamFlagship } from "../lib/model-registry/team-model";
+import { extractOpenRouterReport } from "../lib/model-registry/transports/openrouter";
 import type { ModelProfile, ReasoningLevel } from "../lib/model-registry/types";
 import { buildSensitiveInputScrubber } from "../lib/scrub-stream";
 import { createSseEventQueue } from "../lib/sse-event-queue";
@@ -1360,12 +1361,23 @@ export const runChatbotTurn = async (
   // differ between the two reads, which would slip a duplicate past
   // `emittedWireErrors`.
   let terminalFrameOnWire = false;
+  // The host that served the last step that COMPLETED. Kept beside the flags
+  // rather than in them because nothing in the turn's logic reads it — it
+  // exists so a `turn-error` can name a provider at all. It is deliberately
+  // not called "the host that failed": a pre-response failure (a 429, an empty
+  // pool) never reaches a serving host, and a mid-stream failure ends its step
+  // without `providerMetadata`, so in both cases this is the PREVIOUS step's
+  // host. Recorded under a key that says so.
+  let lastCompletedStepProvider: string | undefined;
   const onTurnStep: GenerateTextOnStepEndCallback<ChatbotTools> = (step) => {
     const calledTool = step.toolCalls.length > 0 || step.toolResults.length > 0;
     if (calledTool) turnFlags.toolExecuted = true;
     if (step.text.length > 0) turnFlags.visibleText = true;
     turnFlags.lastStepCalledTool = calledTool;
     turnFlags.lastStepVisibleChars = step.text.trim().length;
+    lastCompletedStepProvider =
+      extractOpenRouterReport(step.providerMetadata).servingProvider ??
+      lastCompletedStepProvider;
   };
   // A stream error is "transparently recoverable" only when it is a
   // pre-output provider failure (empty pool / 429 / 5xx / timeout), no
@@ -1477,6 +1489,13 @@ export const runChatbotTurn = async (
             kind: classification.kind,
             transparentFailover: String(transparent),
             terminal: String(terminal),
+            // Which host the turn was last KNOWN to be on. Before this, a
+            // `turn-error` carried no provider at all, so "is this host
+            // failing more than that one" could not be asked of the data —
+            // only of an impression. Absent on a failure that happened before
+            // any step completed, which is itself the answer to "was a host
+            // even reached".
+            lastCompletedStepProvider: lastCompletedStepProvider ?? "none",
           },
         },
         { asType: "event", parentSpanContext: turnTrace.spanContext },

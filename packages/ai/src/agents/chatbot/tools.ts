@@ -512,10 +512,20 @@ export const buildChatbotTools = (extras: {
     buildPage: extras.buildPage,
   };
   const coreTools = buildCoreTools(domainTools);
+  // `dispatchAgent` sits INSIDE the core block, not after the domain set, and
+  // the position is the point. `activeTools` cannot reorder anything: the SDK
+  // filters by the static registry (`filterActiveTools`, ai@7 —
+  // `Object.entries(tools).filter(([name]) => activeTools.includes(name))`),
+  // so the wire order is this object's key order. Registered last, an
+  // always-active core tool sat BEHIND every domain tool Progressive
+  // Disclosure activates, and therefore shifted position on every single
+  // activation — moving the end of the cached prefix with it. Measured
+  // 2026-09-21 on one 31-step turn: five steps served an input cache of zero.
+  // Here it closes a core block that is byte-identical on every step.
   return {
     ...coreTools,
-    ...domainTools,
     dispatchAgent: extras.dispatchAgent,
+    ...domainTools,
   };
 };
 

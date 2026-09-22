@@ -100,7 +100,26 @@ export const llmRepairToolCall = <
           `Validation error: ${error.message}`,
         ].join("\n"),
         abortSignal: AbortSignal.timeout(REPAIR_TIMEOUT_MS),
-        telemetry: telemetryFor("agent-tool-repair"),
+        // A repair was INVISIBLE in Langfuse until this line. `telemetryFor`
+        // sets `functionId`, and v7 files that under an attribute the exporter
+        // does not carry — verified 2026-09-22 over 6 762 `gpt-oss-120b`
+        // observations, not one holds an agent name. So every repair landed as
+        // a `chat openai/gpt-oss-120b` generation indistinguishable from the
+        // turn-continuation judge, which is the same model on the same bare
+        // role inside the same trace: 1 327 such calls in a month, and no way
+        // to say how many were repairs. `includeRuntimeContext` is v7's
+        // replacement for `telemetry.metadata` (same mechanism as
+        // `langfusePrompt` in `agent-builder.ts`) and puts the tool name on the
+        // span, which makes repairs countable.
+        //
+        // The SERVING PROVIDER is deliberately absent: this function never sees
+        // it. `ToolCallRepairFunction` is handed the tool call, the schema and
+        // the error, and nothing about the response that produced them. Attach
+        // the host at read time instead — the repair is nested in the turn, so
+        // the generation immediately before it carries `servingProvider`.
+        // Writing a guess here would be worse than writing nothing.
+        runtimeContext: { repairedTool: toolCall.toolName },
+        telemetry: telemetryFor("agent-tool-repair", { repairedTool: true }),
       });
       // The cheap model often wraps the JSON in prose or code fences — pull
       // the object out defensively (shared helper: first `{`…last `}` + a

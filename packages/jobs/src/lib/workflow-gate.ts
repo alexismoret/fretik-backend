@@ -7,6 +7,11 @@ import type {
 } from "@fretik/shared/schemas/decisions";
 import type { WorkflowGateDecision } from "@fretik/shared/schemas/workflows";
 import type { JournalEntry } from "@fretik/shared/services/decisions/journal";
+import {
+  buildGateQuestion,
+  GATE_POINT,
+  gateQuestionId,
+} from "@fretik/shared/services/workflows/gate-question";
 
 /**
  * The decisions the trigger gate makes, separated from the queries and the
@@ -29,39 +34,14 @@ import type { JournalEntry } from "@fretik/shared/services/decisions/journal";
  * launch through.
  */
 
-export const GATE_POINT = "workflow.gate";
-
-/** The question id for one workflow's criterion, and its inverse. */
-export const gateQuestionId = (workflowId: string): string =>
-  `wf:${workflowId}`;
-export const workflowIdFromQuestionId = (id: string): string =>
-  id.startsWith("wf:") ? id.slice(3) : id;
-
-/**
- * The question asked about one workflow (question version 2).
- *
- * The workflow's NAME and GOAL ride the instructions alongside the criterion,
- * because a criterion is written as a clause ("the document is an invoice")
- * and a clause alone does not say what it is a clause OF.
- *
- * The criteria are NEUTRAL. Version 1 told the model to "prefer true on
- * doubt" AND sat behind a low threshold — asymmetric twice, so P(true) no
- * longer meant anything that could be calibrated. The asymmetry now lives in
- * the threshold alone (the registry's `wf` family), and the model is asked the
- * plain question.
- */
-export const buildGateQuestion = (workflow: Workflow): DecisionQuestion => ({
-  type: "boolean",
-  instructions: [
-    `Workflow: "${workflow.name}". Its goal: ${workflow.playbook.goal}`,
-    `It must run only when: ${workflow.triggerCriterion ?? ""}`,
-    "Does the event described by the state meet that condition?",
-  ].join("\n"),
-  criteria: {
-    true: "The event meets the condition as written.",
-    false: "The event does not meet the condition as written.",
-  },
-});
+// The question itself lives in shared, where the criterion backtest asks it
+// word for word; re-exported so this module stays the gate's one import site.
+export {
+  buildGateQuestion,
+  GATE_POINT,
+  gateQuestionId,
+  workflowIdFromQuestionId,
+} from "@fretik/shared/services/workflows/gate-question";
 
 /**
  * The questions to ask about one event: one per workflow that HAS a criterion.

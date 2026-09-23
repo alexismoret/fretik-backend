@@ -10,10 +10,12 @@ import {
 import {
   dashboardActivityResponseSchema,
   dashboardAttentionResponseSchema,
+  dashboardDecisionsResponseSchema,
   dashboardSummaryResponseSchema,
 } from "@fretik/shared/schemas/dashboard";
 import { getDashboardActivity } from "@fretik/shared/services/dashboard/get-activity";
 import { getDashboardAttention } from "@fretik/shared/services/dashboard/get-attention";
+import { getDashboardDecisions } from "@fretik/shared/services/dashboard/get-decisions";
 import { getDashboardSummary } from "@fretik/shared/services/dashboard/get-summary";
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 
@@ -71,6 +73,25 @@ const activityRoute = createRoute({
   },
 });
 
+const decisionsRoute = createRoute({
+  method: "get",
+  path: "/decisions",
+  summary: "Home dashboard quick decisions",
+  description:
+    "Over the last 30 days: workflow launches the trigger gate filtered out and an estimate of the tokens they would have cost, documents the Drive filer placed and how many were undone.",
+  tags: ["Dashboard"],
+  responses: {
+    200: {
+      content: {
+        "application/json": { schema: dashboardDecisionsResponseSchema },
+      },
+      description: "Decision summary retrieved",
+    },
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
 const attentionRoute = createRoute({
   method: "get",
   path: "/attention",
@@ -101,6 +122,12 @@ dashboardRoutes.openapi(summaryRoute, async (c) => {
   const summary = await getDashboardSummary({ teamId: team.id });
 
   return c.json(summary, 200);
+});
+
+dashboardRoutes.openapi(decisionsRoute, async (c) => {
+  const team = c.get("team");
+  if (!team) return throwHttpError(403, teamRequired());
+  return c.json(await getDashboardDecisions({ teamId: team.id }), 200);
 });
 
 dashboardRoutes.openapi(activityRoute, async (c) => {

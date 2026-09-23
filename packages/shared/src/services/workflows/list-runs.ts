@@ -1,4 +1,4 @@
-import { and, count, eq } from "drizzle-orm";
+import { and, count, eq, ne } from "drizzle-orm";
 import db from "../../db";
 import { workflowRuns } from "../../db/schema";
 import type { ParamsList } from "../../schemas/common/params";
@@ -21,9 +21,13 @@ export const listWorkflowRuns = async (params: {
   teamId: string;
   params: ParamsList;
   requester?: WorkflowRequester;
+  /** Leave out the launches the trigger gate refused. Filtered server-side
+   * so the count, and therefore the pagination, stays exact. */
+  hideFiltered?: boolean;
 }): Promise<{ count: number; data: WorkflowRunResponse[] }> => {
   const { workflowId, teamId } = params;
   const { limit, page } = params.params;
+  const hideFiltered = params.hideFiltered === true;
 
   if (params.requester) {
     const visible = await getWorkflowRow({
@@ -36,7 +40,11 @@ export const listWorkflowRuns = async (params: {
 
   const [rows, [total]] = await Promise.all([
     db.query.workflowRuns.findMany({
-      where: { workflowId, teamId },
+      where: {
+        workflowId,
+        teamId,
+        ...(hideFiltered ? { status: { ne: "filtered" as const } } : {}),
+      },
       orderBy: { createdAt: "desc" },
       limit,
       offset: page * limit,
@@ -48,6 +56,7 @@ export const listWorkflowRuns = async (params: {
         and(
           eq(workflowRuns.workflowId, workflowId),
           eq(workflowRuns.teamId, teamId),
+          hideFiltered ? ne(workflowRuns.status, "filtered") : undefined,
         ),
       ),
   ]);

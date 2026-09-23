@@ -640,6 +640,42 @@ export const WorkflowGateDecisionSchema = z.object({
 });
 export type WorkflowGateDecision = z.infer<typeof WorkflowGateDecisionSchema>;
 
+/** How many recent events a criterion test replays. */
+export const CRITERION_BACKTEST_EVENTS = 20;
+
+/**
+ * "Test the condition": the criterion as typed (saved or not), and optionally
+ * the trigger being edited alongside it, since a person tests the pair.
+ */
+export const CriterionBacktestRequestSchema = z.object({
+  criterion: z.string().max(WORKFLOW_TRIGGER_CRITERION_MAX_CHARS),
+  triggerConfig: WorkflowTriggerConfigSchema.optional(),
+});
+export type CriterionBacktestRequest = z.infer<
+  typeof CriterionBacktestRequestSchema
+>;
+
+export const CriterionBacktestResultSchema = z.object({
+  eventId: z.uuid(),
+  eventType: z.string(),
+  occurredAt: z.date(),
+  /** A human handle on the event (a filename, a record's label), or null. */
+  label: z.string().nullable(),
+  /** `run` / `filtered` as the gate would decide today; `unknown` when no
+   * answer came back, which the real gate would have launched. */
+  outcome: z.enum(["run", "filtered", "unknown"]),
+  probability: z.number().min(0).max(1).nullable(),
+});
+
+export const CriterionBacktestResponseSchema = z.object({
+  /** The bar the verdicts were read against, or null when nothing answered. */
+  threshold: z.number().nullable(),
+  results: z.array(CriterionBacktestResultSchema),
+});
+export type CriterionBacktestResponse = z.infer<
+  typeof CriterionBacktestResponseSchema
+>;
+
 /**
  * Criteria that would gate on the wrong thing, rejected at activation.
  *

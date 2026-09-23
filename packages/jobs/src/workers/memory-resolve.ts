@@ -1,4 +1,5 @@
 import db from "@fretik/shared/db";
+import type { DomainEvent } from "@fretik/shared/db/schema";
 import { callAiService } from "@fretik/shared/lib/ai-service";
 import { createWorkerConnection } from "@fretik/shared/lib/queue/connection";
 import {
@@ -10,9 +11,18 @@ import {
   matchSpansToRecords,
   type RecordAnchor,
 } from "@fretik/shared/services/collection-records/anchor";
+import { recordDecisions } from "@fretik/shared/services/decisions/journal";
+import { remoteEvaluator } from "@fretik/shared/services/decisions/remote";
 import { linkEventToRecords } from "@fretik/shared/services/domain-events/link-records";
 import { type Job, Worker } from "bullmq";
 import { z } from "zod";
+import {
+  anchorJournalEntries,
+  anchorQuestionId,
+  buildAnchorQuestion,
+  readAnchorVerdicts,
+  VERIFY_POINT,
+} from "../lib/memory-resolve-verify";
 import {
   MEMORY_RESOLVE_QUEUE,
   type MemoryResolveJobData,
@@ -90,6 +100,69 @@ const buildEventText = (
   return JSON.stringify(payload).slice(0, FALLBACK_TEXT_MAX_CHARS);
 };
 
+/**
+ * Ask the decision model about the links in the review band. Returns what to
+ * confirm and what to drop; both empty in shadow, on no answer, or when the
+ * band is empty — the resolver's own verdict then stands unchanged.
+ */
+const verifyReviewBand = async (params: {
+  event: DomainEvent;
+  text: string;
+  links: readonly RecordAnchor[];
+}): Promise<{ confirmed: Set<string>; dropped: Set<string> }> => {
+  const none = { confirmed: new Set<string>(), dropped: new Set<string>() };
+  const band = params.links.filter(
+    (anchor) => anchor.confidence < RESOLUTION_AUTO_THRESHOLD,
+  );
+  if (band.length === 0) return none;
+  const { event } = params;
+
+  const collections = await db.query.collections.findMany({
+    where: { id: { in: [...new Set(band.map((a) => a.collectionId))] } },
+    columns: { id: true, label: true },
+  });
+  const collectionLabel = new Map(collections.map((c) => [c.id, c.label]));
+  const response = await remoteEvaluator(
+    {
+      point: VERIFY_POINT,
+      subject: { type: "domain_event", id: event.id },
+      sessionId: `memory-resolve:${event.id}`,
+      state: { eventType: event.type, text: params.text },
+      questions: Object.fromEntries(
+        band.map((anchor) => [
+          anchorQuestionId(anchor.recordId),
+          buildAnchorQuestion(
+            anchor,
+            collectionLabel.get(anchor.collectionId) ?? null,
+          ),
+        ]),
+      ),
+    },
+    { teamId: event.teamId, organizationId: event.organizationId },
+  );
+  const { verdicts, shadow } = readAnchorVerdicts(
+    response,
+    band.map((a) => a.recordId),
+  );
+  await recordDecisions(
+    anchorJournalEntries({
+      organizationId: event.organizationId,
+      teamId: event.teamId,
+      eventId: event.id,
+      response,
+      verdicts,
+      shadow,
+    }),
+  );
+  if (shadow) return none;
+  const applied = { confirmed: new Set<string>(), dropped: new Set<string>() };
+  for (const [recordId, verdict] of verdicts) {
+    if (verdict === "confirm") applied.confirmed.add(recordId);
+    if (verdict === "drop") applied.dropped.add(recordId);
+  }
+  return applied;
+};
+
 const resolveEvent = async (data: MemoryResolveJobData): Promise<void> => {
   // Re-read the fresh row — payloads never go stale in Redis by design.
   const event = await db.query.domainEvents.findFirst({
@@ -165,12 +238,22 @@ const resolveEvent = async (data: MemoryResolveJobData): Promise<void> => {
 
   // Band + write. The funnel already floors at the suggest threshold; the
   // filter is a guard against a future maxAnchors/threshold drift.
-  const links = [...anchors.values()].filter(
+  let links = [...anchors.values()].filter(
     (anchor) => anchor.confidence >= RESOLUTION_SUGGEST_THRESHOLD,
   );
-  const confirmed = links.filter(
-    (anchor) => anchor.confidence >= RESOLUTION_AUTO_THRESHOLD,
-  ).length;
+
+  // Second opinion on the review band: a confident yes confirms, a confident
+  // no drops, the rest stay suggested. A promotion is kept apart from the
+  // match's own confidence, which stays what the funnel measured.
+  const promoted = await verifyReviewBand({ event, text, links });
+  if (promoted.dropped.size > 0) {
+    links = links.filter((anchor) => !promoted.dropped.has(anchor.recordId));
+  }
+  const isConfirmed = (anchor: RecordAnchor): boolean =>
+    anchor.confidence >= RESOLUTION_AUTO_THRESHOLD ||
+    promoted.confirmed.has(anchor.recordId);
+
+  const confirmed = links.filter(isConfirmed).length;
   if (links.length > 0) {
     await linkEventToRecords({
       eventId: event.id,
@@ -178,10 +261,7 @@ const resolveEvent = async (data: MemoryResolveJobData): Promise<void> => {
         recordId: anchor.recordId,
         role: "mentioned",
         confidence: anchor.confidence,
-        status:
-          anchor.confidence >= RESOLUTION_AUTO_THRESHOLD
-            ? "confirmed"
-            : "suggested",
+        status: isConfirmed(anchor) ? "confirmed" : "suggested",
         source: "ai_inference",
       })),
     });
@@ -199,9 +279,7 @@ const resolveEvent = async (data: MemoryResolveJobData): Promise<void> => {
   const relationRecordIds = new Set<string>();
   if (event.subjectRecordId) relationRecordIds.add(event.subjectRecordId);
   for (const anchor of links) {
-    if (anchor.confidence >= RESOLUTION_AUTO_THRESHOLD) {
-      relationRecordIds.add(anchor.recordId);
-    }
+    if (isConfirmed(anchor)) relationRecordIds.add(anchor.recordId);
   }
   for (const link of existingLinks) relationRecordIds.add(link.recordId);
   if (relationRecordIds.size >= 2 && text.length >= LLM_MIN_TEXT_CHARS) {

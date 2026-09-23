@@ -1,7 +1,7 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "94684cae-3b59-491b-8632-a0ce45f85a0d",
+  "id": "de4c7c11-7c41-4494-bce3-39ee51c12356",
   "prevIds": ["c89a8083-f344-4b04-b510-3eba4d3e29bb"],
   "ddl": [
     {
@@ -11859,6 +11859,19 @@
       "generated": null,
       "identity": null,
       "name": "choice",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "decision_log"
+    },
+    {
+      "type": "real",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "score",
       "entityType": "columns",
       "schema": "public",
       "table": "decision_log"

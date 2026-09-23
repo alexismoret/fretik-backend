@@ -79,6 +79,10 @@ export interface DecisionPointSpec {
     /** The admitted keys that reproduce workspace CONTENT rather than
      * describing it. Dropped when content egress is off. */
     content: readonly string[];
+    /** Per-value character ceiling (a list counts as one value). Defaults to
+     * `MAX_VALUE_CHARS`; a point whose state IS long text (a cluster of
+     * episodes, a transcript) raises it and relies on `maxTokens`. */
+    maxValueChars?: number;
   };
   /** `content` = the state IS content (a message, a transcript), so the point
    * is skipped outright when content egress is off. `redactable` = content
@@ -242,6 +246,100 @@ export const DECISION_POINTS: Readonly<
     journal: { policy: "all" },
     defaultMode: "on",
     evalGate: { suites: ["shared unit: folder-filing"] },
+  },
+
+  "memory.consolidate.prescreen": {
+    key: "memory.consolidate.prescreen",
+    purpose:
+      "Whether a cluster of episodes needs the nightly consolidation judge at all. Two questions about the same cluster: do two episodes tell the same story, and does anything contradict or outdate one of them. Both clearly no means the cluster stays as it is without an LLM call.",
+    questionVersion: 1,
+    families: {
+      // Skipping is the only thing a verdict can cause, and a wrong skip
+      // leaves a duplicate or a stale fact standing for another night. So the
+      // bar is LOW on both: only a confident double "no" skips.
+      same: { kind: "boolean", signal: "probability", threshold: 0.1 },
+      conflict: { kind: "boolean", signal: "probability", threshold: 0.1 },
+    },
+    noAnswer: "legacy",
+    state: {
+      maxTokens: 9000,
+      admit: ["today", "episodes", "recentActivity"],
+      content: ["episodes", "recentActivity"],
+      // The state IS the episodes; the token budget bounds it, not a clip.
+      maxValueChars: 24_000,
+    },
+    egress: "content",
+    path: "background",
+    timeoutMs: 4000,
+    fallbackTransport: true,
+    journal: { policy: "all" },
+    // Shadow until the evals say otherwise: the judge still runs every time,
+    // and each verdict is journaled next to what the judge decided.
+    defaultMode: "shadow",
+    evalGate: {
+      suites: [
+        "evals:memory -- --case mem-consolidate-noop,mem-consolidate-merge,mem-consolidate-revise,mem-consolidate-reanchor",
+      ],
+    },
+  },
+
+  "memory.resolve.verify": {
+    key: "memory.resolve.verify",
+    purpose:
+      "Whether a mention the resolver matched in its review band really refers to the record. One question per record in the band, all about the event's text: a confident yes confirms the link, a confident no drops it, anything else leaves it suggested.",
+    questionVersion: 1,
+    families: {
+      // A SYMMETRIC band, one bar for both ends: confirm at or above it,
+      // drop at or below 1 minus it. Both ends move a link out of the review
+      // band a person would otherwise have to look at, so both are held to
+      // the same certainty.
+      anc: { kind: "boolean", signal: "probability", threshold: 0.9 },
+    },
+    noAnswer: "legacy",
+    state: {
+      maxTokens: 2500,
+      admit: ["eventType", "text"],
+      content: ["text"],
+      maxValueChars: 4000,
+    },
+    egress: "content",
+    path: "background",
+    timeoutMs: 2500,
+    fallbackTransport: true,
+    journal: { policy: "all" },
+    defaultMode: "shadow",
+    evalGate: { suites: ["jobs unit: memory-resolve-verify"] },
+  },
+
+  "graph.link-type-match": {
+    key: "graph.link-type-match",
+    purpose:
+      'Whether a relation name no key or spelling matches means the same as a relation type the team already has (`employed_by` for `works_for`). One choice over the relation types of the same source collection, plus an explicit "none of these".',
+    questionVersion: 1,
+    families: {
+      // A wrong reuse files facts under the wrong meaning, which is worse
+      // than one more near-duplicate type a person can merge later. So a
+      // reuse needs the filer's certainty.
+      type: {
+        kind: "choice",
+        signal: "confidence",
+        threshold: 0.8,
+        minChosenProbability: 0.5,
+      },
+    },
+    noAnswer: "legacy",
+    state: {
+      maxTokens: 500,
+      admit: ["relation", "from", "to"],
+      content: [],
+    },
+    egress: "metadata",
+    path: "background",
+    timeoutMs: 2500,
+    fallbackTransport: true,
+    journal: { policy: "all" },
+    defaultMode: "shadow",
+    evalGate: { suites: ["shared unit: link-type-match"] },
   },
 };
 

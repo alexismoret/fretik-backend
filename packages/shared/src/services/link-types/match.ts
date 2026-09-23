@@ -1,8 +1,29 @@
-import { and, desc, eq, gte, isNull, or, sql } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  gte,
+  inArray,
+  isNull,
+  or,
+  sql,
+  type SQL,
+} from "drizzle-orm";
 import db from "../../db";
-import { linkTypes } from "../../db/schema";
+import { collections, linkTypes } from "../../db/schema";
 import { FUZZY_MATCH_THRESHOLD } from "../../lib/resolution";
+import type { DecisionResponse } from "../../schemas/decisions";
+import { recordDecisions } from "../decisions/journal";
+import type { DecisionEvaluator } from "../decisions/remote";
 import { createLinkType } from "./create";
+import {
+  buildLinkTypeQuestion,
+  LINK_TYPE_POINT,
+  linkTypeJournalEntry,
+  linkTypeQuestionId,
+  MAX_LINK_TYPE_CANDIDATES,
+  readLinkTypeVerdict,
+} from "./match-by-meaning";
 
 type ResolveLinkTypeResult = {
   linkTypeId: string;
@@ -37,6 +58,13 @@ export const resolveLinkType = async (data: {
   rawKey: string;
   fromCollectionId: string;
   toCollectionId?: string | null;
+  /**
+   * Opt-in stage 3: ask the decision model whether the name MEANS an
+   * existing type (`match-by-meaning.ts`). Opt-in because it is a network
+   * call, and the record-creation path resolves relations while a caller's
+   * transaction may be open; only callers that hold none pass one.
+   */
+  byMeaning?: DecisionEvaluator;
 }): Promise<ResolveLinkTypeResult> => {
   const { organizationId, teamId, rawKey, fromCollectionId, toCollectionId } =
     data;
@@ -75,6 +103,35 @@ export const resolveLinkType = async (data: {
     return { linkTypeId: trigramMatch.id, isNew: false };
   }
 
+  // Stage 3 (opt-in): by meaning.
+  const meaning = data.byMeaning
+    ? await matchByMeaning({
+        evaluator: data.byMeaning,
+        organizationId,
+        teamId,
+        rawKey,
+        normalizedKey,
+        fromCollectionId,
+        toCollectionId: toCollectionId ?? null,
+        scope,
+      })
+    : null;
+  if (meaning?.reuseId) {
+    await recordDecisions([
+      linkTypeJournalEntry({
+        organizationId,
+        teamId,
+        fromCollectionId,
+        questionId: meaning.questionId,
+        response: meaning.response,
+        chosenId: meaning.chosenId,
+        reusedId: meaning.reuseId,
+        legacyCreated: false,
+      }),
+    ]);
+    return { linkTypeId: meaning.reuseId, isNew: false };
+  }
+
   const created = await createLinkType({
     organizationId,
     teamId,
@@ -85,7 +142,95 @@ export const resolveLinkType = async (data: {
     status: "suggested",
     source: "ai_extraction",
   });
+  // Journaled after the create, so a shadow verdict sits next to what the
+  // legacy path did: made a new type. The new type is the row a reviewer
+  // opens to see which existing one the model would have reused.
+  if (meaning) {
+    await recordDecisions([
+      linkTypeJournalEntry({
+        organizationId,
+        teamId,
+        fromCollectionId,
+        questionId: meaning.questionId,
+        response: meaning.response,
+        chosenId: meaning.chosenId,
+        reusedId: null,
+        legacyCreated: true,
+      }),
+    ]);
+  }
   return { linkTypeId: created.id, isNew: true };
+};
+
+/**
+ * Ask whether `rawKey` means one of the relation types in scope. Null when
+ * there is nothing to compare against.
+ */
+const matchByMeaning = async (params: {
+  evaluator: DecisionEvaluator;
+  organizationId: string;
+  teamId: string;
+  rawKey: string;
+  normalizedKey: string;
+  fromCollectionId: string;
+  toCollectionId: string | null;
+  scope: SQL | undefined;
+}): Promise<{
+  questionId: string;
+  response: DecisionResponse | null;
+  reuseId: string | null;
+  chosenId: string | null;
+} | null> => {
+  const candidates = await db
+    .select({
+      id: linkTypes.id,
+      label: linkTypes.label,
+      inverseLabel: linkTypes.inverseLabel,
+    })
+    .from(linkTypes)
+    .where(params.scope)
+    .orderBy(desc(linkTypes.createdAt))
+    .limit(MAX_LINK_TYPE_CANDIDATES);
+  if (candidates.length === 0) return null;
+
+  const collectionIds = [params.fromCollectionId, params.toCollectionId].filter(
+    (id): id is string => id !== null,
+  );
+  const labels = new Map(
+    (
+      await db
+        .select({ id: collections.id, label: collections.label })
+        .from(collections)
+        .where(inArray(collections.id, collectionIds))
+    ).map((c) => [c.id, c.label]),
+  );
+
+  const questionId = linkTypeQuestionId(params.normalizedKey);
+  const response = await params.evaluator(
+    {
+      point: LINK_TYPE_POINT,
+      subject: { type: "collection", id: params.fromCollectionId },
+      state: {
+        relation: params.rawKey,
+        from: labels.get(params.fromCollectionId) ?? null,
+        to:
+          params.toCollectionId === null
+            ? null
+            : (labels.get(params.toCollectionId) ?? null),
+      },
+      questions: {
+        [questionId]: buildLinkTypeQuestion(params.rawKey, candidates),
+      },
+    },
+    { teamId: params.teamId, organizationId: params.organizationId },
+  );
+  const verdict = readLinkTypeVerdict(response, questionId, candidates);
+  return {
+    questionId,
+    response,
+    reuseId: verdict.reuseId,
+    chosenId: verdict.chosenId,
+  };
 };
 
 /**

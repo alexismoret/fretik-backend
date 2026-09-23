@@ -15,6 +15,7 @@ CREATE TABLE "decision_log" (
 	"probability" real,
 	"confidence" real,
 	"choice" varchar(120),
+	"score" real,
 	"threshold" real,
 	"transport" varchar(20),
 	"model_id" varchar(120),

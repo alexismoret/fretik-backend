@@ -89,6 +89,8 @@ export const decisionLog = pgTable(
     confidence: real("confidence"),
     /** The option a choice picked, verbatim (`__root__` included). */
     choice: varchar("choice", { length: 120 }),
+    /** A score answer's fractional position on its scale. */
+    score: real("score"),
     /** The bar the verdict was read against, as echoed by the service. */
     threshold: real("threshold"),
 

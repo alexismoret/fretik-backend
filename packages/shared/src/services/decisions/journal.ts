@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, lt, sql, type SQL } from "drizzle-orm";
+import { and, eq, inArray, isNull, lt, or, sql, type SQL } from "drizzle-orm";
 import db from "../../db";
 import { decisionLog, type NewDecisionLogRow } from "../../db/schema";
 import { isDecisionPointKey } from "../../decisions/keys";
@@ -15,10 +15,15 @@ import { chunkForBulk } from "../../lib/db-bulk";
  * cannot be written must not fail the move or the run that produced it.
  */
 
+/**
+ * One decision to journal. `label` may ride along only with source `legacy`:
+ * a point in shadow journals its verdict next to what the path it would
+ * replace decided, which is the measurement shadow mode exists for.
+ */
 export type JournalEntry = Omit<
   NewDecisionLogRow,
   "id" | "label" | "labelSource" | "labeledByUserId" | "labeledAt" | "createdAt"
->;
+> & { legacyLabel?: LabelValue };
 
 /** Which of a point's decisions are kept, per its registry `journal`. */
 const shouldJournal = (entry: JournalEntry): boolean => {
@@ -46,7 +51,17 @@ const shouldJournal = (entry: JournalEntry): boolean => {
 export const recordDecisions = async (
   entries: readonly JournalEntry[],
 ): Promise<number> => {
-  const kept = entries.filter(shouldJournal);
+  const now = new Date();
+  const kept = entries.filter(shouldJournal).map(({ legacyLabel, ...entry }) =>
+    legacyLabel === undefined
+      ? entry
+      : {
+          ...entry,
+          label: legacyLabel,
+          labelSource: "legacy" satisfies LabelSource,
+          labeledAt: now,
+        },
+  );
   if (kept.length === 0) return 0;
   try {
     let written = 0;
@@ -80,9 +95,18 @@ export const recordDecisions = async (
  * evidence there is and always replaces what was there. An inference from
  * what happened next (`run_outcome`, `document_moved`) only fills an empty
  * label: it is weaker evidence, and it must not undo what someone said.
+ *
+ * `legacy` is what the path a shadow point would replace decided, written
+ * with the row. It is a reference, not the truth, and any later label
+ * replaces it.
  */
 export type LabelSource =
-  "run_anyway" | "run_outcome" | "document_moved" | "filing_undone" | "manual";
+  | "run_anyway"
+  | "run_outcome"
+  | "document_moved"
+  | "filing_undone"
+  | "manual"
+  | "legacy";
 
 const EXPLICIT_SOURCES: ReadonlySet<LabelSource> = new Set([
   "run_anyway",
@@ -111,7 +135,10 @@ const writeLabel = async (
           where,
           EXPLICIT_SOURCES.has(params.source)
             ? undefined
-            : isNull(decisionLog.label),
+            : or(
+                isNull(decisionLog.label),
+                eq(decisionLog.labelSource, "legacy"),
+              ),
         ),
       )
       .returning({ id: decisionLog.id });

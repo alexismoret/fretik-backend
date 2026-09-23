@@ -9,7 +9,13 @@
  * run?", however many workflows one call asks it for. Adding a point is adding
  * it here AND in `DECISION_POINTS`; the registry test fails on either alone.
  */
-export const DECISION_POINT_KEYS = ["workflow.gate", "drive.file"] as const;
+export const DECISION_POINT_KEYS = [
+  "workflow.gate",
+  "drive.file",
+  "memory.consolidate.prescreen",
+  "memory.resolve.verify",
+  "graph.link-type-match",
+] as const;
 
 export type DecisionPointKey = (typeof DECISION_POINT_KEYS)[number];
 

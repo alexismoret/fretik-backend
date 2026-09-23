@@ -40,16 +40,19 @@ export const estimateTokens = (value: unknown): number =>
 const admits = (entry: string, key: string): boolean =>
   entry.endsWith(".") ? key.startsWith(entry) : key === entry;
 
-const clip = (value: DecisionStateValue): DecisionStateValue => {
-  if (typeof value === "string" && value.length > MAX_VALUE_CHARS) {
-    return `${value.slice(0, MAX_VALUE_CHARS)}…`;
+const clip = (
+  value: DecisionStateValue,
+  maxChars: number,
+): DecisionStateValue => {
+  if (typeof value === "string" && value.length > maxChars) {
+    return `${value.slice(0, maxChars)}…`;
   }
   if (Array.isArray(value)) {
     let total = 0;
     const kept: string[] = [];
     for (const item of value) {
       total += item.length;
-      if (total > MAX_VALUE_CHARS) break;
+      if (total > maxChars) break;
       kept.push(item);
     }
     return kept;
@@ -105,7 +108,7 @@ export const fitState = (
     }
     const value = raw[key];
     if (value === undefined) continue;
-    const clipped = clip(value);
+    const clipped = clip(value, spec.state.maxValueChars ?? MAX_VALUE_CHARS);
     const cost = estimateTokens({ [key]: clipped });
     if (tokens + cost > spec.state.maxTokens) {
       dropped.push({ key, reason: "budget" });

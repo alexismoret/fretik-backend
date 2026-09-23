@@ -1,6 +1,8 @@
 import db from "@fretik/shared/db";
 import type { EpisodeVectorMetadata } from "@fretik/shared/db/schema";
 import { parseLlmJsonObject } from "@fretik/shared/lib/llm-json";
+import { recordDecisions } from "@fretik/shared/services/decisions/journal";
+import type { DecisionEvaluator } from "@fretik/shared/services/decisions/remote";
 import {
   emitDomainEvent,
   SYSTEM_ACTOR,
@@ -15,7 +17,15 @@ import { z } from "zod";
 import { telemetryFor } from "../../lib/langfuse";
 import { resolveMemoryModel } from "../../lib/model-registry/team-model";
 import { withNamedTrace } from "../../lib/trace-tool";
+import { inProcessEvaluator } from "../decisions/in-process";
 import { vectorizeSource } from "../vectorize";
+import {
+  isRiskyCluster,
+  PRESCREEN_POINT,
+  PRESCREEN_QUESTIONS,
+  prescreenJournalEntries,
+  readPrescreen,
+} from "./consolidate-prescreen";
 
 /**
  * Consolidation judge (P6 dreaming). One utility-tier LLM call decides what
@@ -95,6 +105,8 @@ export const consolidateEpisodes = async (input: {
   organizationId: string;
   /** Force a registry profile — EVAL/BENCH ONLY (model bake-off). */
   modelProfileKey?: string;
+  /** The decision engine for the prescreen. Tests inject one. */
+  evaluator?: DecisionEvaluator;
 }): Promise<ConsolidateEpisodesResult> => {
   const { teamId, organizationId } = input;
 
@@ -188,6 +200,53 @@ export const consolidateEpisodes = async (input: {
       ? [`<recent_activity>\n${eventLines.join("\n")}\n</recent_activity>`]
       : []),
   ].join("\n\n");
+
+  // Prescreen: a confident double "no" (not the same story, nothing
+  // contradicted) is a NOOP without the judge. Risky clusters never ask; see
+  // `consolidate-prescreen.ts`. The subject is the cluster's smallest id, so
+  // the same cluster judged again lands on the same journal row.
+  const askPrescreen = !isRiskyCluster({
+    episodes,
+    recentEventCount: recentEvents.length,
+    now: new Date(),
+  });
+  const prescreenSubject = [...episodes.map((e) => e.id)].sort()[0] ?? "";
+  const prescreenResponse = askPrescreen
+    ? await (input.evaluator ?? inProcessEvaluator)(
+        {
+          point: PRESCREEN_POINT,
+          subject: { type: "episode", id: prescreenSubject },
+          sessionId: `memory-dreaming:${teamId}:${dreamDate}`,
+          state: {
+            today: dreamDate,
+            episodes: episodeBlocks,
+            recentActivity: eventLines,
+          },
+          questions: PRESCREEN_QUESTIONS,
+        },
+        { teamId, organizationId },
+      )
+    : null;
+  const prescreen = readPrescreen(prescreenResponse);
+  const journalPrescreen = async (
+    judgeAction: "MERGE" | "REVISE" | "NOOP" | null,
+  ): Promise<void> => {
+    if (!askPrescreen) return;
+    await recordDecisions(
+      prescreenJournalEntries({
+        organizationId,
+        teamId,
+        subjectId: prescreenSubject,
+        response: prescreenResponse,
+        verdict: prescreen,
+        judgeAction,
+      }),
+    );
+  };
+  if (prescreen.skip && !prescreen.shadow) {
+    await journalPrescreen(null);
+    return NOOP;
+  }
   const output = await withNamedTrace(
     "memory-consolidate",
     {
@@ -228,6 +287,9 @@ export const consolidateEpisodes = async (input: {
       return parsed;
     },
   );
+  // The judge's answer is the prescreen's reference label while it runs in
+  // shadow: every night measures how often a skip would have been right.
+  await journalPrescreen(output?.action ?? null);
   if (!output || output.action === "NOOP") return NOOP;
 
   // Expand tags back to uuids — an unknown tag is dropped loudly, and the

@@ -147,12 +147,14 @@ describe("suggestMcpToolKinds", () => {
   test("asks about un-annotated tools once per snapshot", async () => {
     const conn = await createMcpConnection();
     const first = recording();
+    // Both answers are confident, so both are suggestions; only the `read`
+    // one is ever shown, but the count is of what was written.
     expect(
       await suggestMcpToolKinds({
         connectionId: conn.id,
         evaluator: first.evaluator,
       }),
-    ).toBe(1);
+    ).toBe(2);
     expect(toolsAsked(first.requests[0])).toEqual(["items", "list_orders"]);
 
     const second = recording();

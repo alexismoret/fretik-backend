@@ -81,7 +81,10 @@ afterAll(async () => {
 
 describe("preResolveMentions", () => {
   test("only the near-but-unsettled mentions are asked about", async () => {
-    await record("Northwind Traders Limited");
+    // "Northwind" sits at similarity 0.56 to "northwind traders": near, not
+    // settled. (A legal suffix is no test: "… Limited" normalizes away, and
+    // the fold matches it exactly on its own.)
+    await record("Northwind Traders");
     await record("Contoso");
     await record("Fabrikam Industries", { aliases: ["fabrikam"] });
     const { requests, evaluator } = recording();
@@ -91,7 +94,7 @@ describe("preResolveMentions", () => {
       teamId: ws.teamId,
       documentId: crypto.randomUUID(),
       mentions: [
-        { name: "Northwind Traders" },
+        { name: "Northwind" },
         { name: "Contoso" },
         { name: "Fabrikam" },
         { name: "Completely Unrelated Co" },
@@ -105,7 +108,7 @@ describe("preResolveMentions", () => {
       (q) => q.instructions,
     );
     expect(asked).toHaveLength(1);
-    expect(asked[0]).toContain('"Northwind Traders"');
+    expect(asked[0]).toContain('"Northwind"');
   });
 
   test("with nothing to ask, the model is never called", async () => {

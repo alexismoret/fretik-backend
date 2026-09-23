@@ -1,7 +1,7 @@
 import { z } from "@hono/zod-openapi";
+import { documentStatusEnum } from "../db/schema";
 import { paramsListSchema } from "./common/params";
 import { responseListSchema } from "./common/responses";
-import { documentStatusSchema } from "./documents";
 import { recordFilterSchema, type RecordFilter } from "./ontology";
 
 /**
@@ -129,7 +129,9 @@ export const DriveDocumentSchema = z.object({
   fileSize: z.number().int(),
   mimeType: z.string(),
   thumbnailUrl: z.string().nullable(),
-  status: z.lazy(() => documentStatusSchema),
+  // Read from the DB enum, not `./documents`: that module imports this one,
+  // and the cycle broke whichever side a process happened to load first.
+  status: z.enum(documentStatusEnum.enumValues),
   fieldValues: z.record(z.string(), z.unknown()),
   /** Null unless the filer placed it and it has not been moved since. */
   autoFiled: AutoFiledSchema.nullable(),

@@ -155,14 +155,16 @@ const writeLabel = async (
 /**
  * Label the decisions a point made about one subject — optionally only the
  * one aimed at `targetId` (a gate asks one question per workflow about the
- * same event). Team-scoped: a label never crosses a tenant. Returns the ids
- * labelled.
+ * same event), or only the one journaled under `questionId` (a question
+ * about something with no uuid of its own). Team-scoped: a label never
+ * crosses a tenant. Returns the ids labelled.
  */
 export const labelDecisions = async (params: {
   teamId: string;
   point: string;
   subjectId: string;
   targetId?: string;
+  questionId?: string;
   label: LabelValue;
   source: LabelSource;
   userId?: string;
@@ -174,6 +176,9 @@ export const labelDecisions = async (params: {
       eq(decisionLog.subjectId, params.subjectId),
       params.targetId !== undefined
         ? eq(decisionLog.targetId, params.targetId)
+        : undefined,
+      params.questionId !== undefined
+        ? eq(decisionLog.questionId, params.questionId)
         : undefined,
     ),
     params,

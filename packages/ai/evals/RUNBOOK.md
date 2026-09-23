@@ -256,6 +256,19 @@ were, and how they went away:
 
 `judge` is the rollback — one env var, no deploy, previous behaviour exactly.
 
+**`decision` (built 2026-09-24, not measured yet).** `adaptive` with the
+judge's 43 % of turns handed to the decision model first: one yes/no per
+candidate (`chat.recall-select`), the kept ones through the same verbatim
+renderer, the judge on any miss. Its point ships in `shadow`, where it only
+journals and the judge still decides, so an A/B that must ACT sets
+`DECISION_OVERRIDES={"chat.recall-select":{"mode":"on"}}` on the process that
+runs recall: the eval's own for `evals:recall` (it calls `runUnifiedRecall`
+in-process), the AI service's for `evals:langfuse`. The gate before it goes
+`on` by default: `evals:recall -- --mode decision --repeats 10` at parity with
+`adaptive` (23/23) and a lower p50, then
+`evals:langfuse -- --suite memory-recall --recall-mode decision`, with the
+result recorded as `evalGate.evidence` in `points.ts`.
+
 ### `STANDING_MODE` / `X-Standing-Mode` — how to run the standing-layer A/B
 
 Exactly the shape of `RECALL_MODE` above, for exactly the same reason: the

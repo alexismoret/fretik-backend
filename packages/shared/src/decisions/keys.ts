@@ -22,6 +22,7 @@ export const DECISION_POINT_KEYS = [
   "workflow.turn.convergence",
   "chat.recall-select",
   "chat.addressee",
+  "external-apps.mcp.suggest-kind",
 ] as const;
 
 export type DecisionPointKey = (typeof DECISION_POINT_KEYS)[number];

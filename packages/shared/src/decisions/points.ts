@@ -541,6 +541,41 @@ export const DECISION_POINTS: Readonly<
     defaultMode: "shadow",
     evalGate: { suites: ["measurement only"] },
   },
+
+  "external-apps.mcp.suggest-kind": {
+    key: "external-apps.mcp.suggest-kind",
+    purpose:
+      "What an MCP tool does when its server did not say: only reads, writes, deletes, or depends on an argument. One choice per un-annotated tool, asked once per tool snapshot. A suggestion an admin accepts or rejects, never a classification: the tool stays gated until an admin decides.",
+    questionVersion: 1,
+    families: {
+      // HIGH: an admin reads this before lifting an approval gate, and a
+      // wrong "only reads" invites a write onto the ungated path. The
+      // suggestion shows only when the whole distribution is decided.
+      kind: {
+        kind: "choice",
+        signal: "confidence",
+        threshold: 0.8,
+        minChosenProbability: 0.6,
+      },
+    },
+    noAnswer: "skip",
+    state: {
+      maxTokens: 600,
+      admit: ["server", "serverDescription"],
+      content: [],
+    },
+    // A server's own tool list is its configuration, not workspace content.
+    egress: "metadata",
+    path: "background",
+    timeoutMs: 5000,
+    fallbackTransport: true,
+    journal: { policy: "all" },
+    // `on` is safe by construction: the answer is shown, never applied.
+    defaultMode: "on",
+    evalGate: {
+      suites: ["shared unit: mcp-suggest-kinds", "labels: admin accept/reject"],
+    },
+  },
 };
 
 export const decisionPoint = (key: DecisionPointKey): DecisionPointSpec =>

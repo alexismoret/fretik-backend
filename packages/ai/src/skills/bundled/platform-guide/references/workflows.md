@@ -23,6 +23,7 @@ Read `get` before diagnosing — it returns `runs` ({ running, queued, needsAppr
 - **`needsApproval > 0`** — it is not slow, it is waiting on a person, and has been since `waitingSince`. Say that, name the decisions, and get them answered. Redesigning the playbook changes nothing while they sit.
 - **`queued > 0` with `running` at 0** — work arrived and has not started. Report it as a queue, not as a failure.
 - **Never read the cause off the playbook's prose.** `triggerConfig` decides what wakes the workflow and `triggerCriterion` decides which of those wake-ups run; nothing else does. A folder named in the goal restricts nothing unless the subscription carries `filter.folderId`. Check both before blaming either.
+- **`filtered` runs** — the criterion judged those firings not this workflow's. If one should have run, the criterion is too narrow: rewrite it on the kind of input, and the user can start that one with "Run anyway".
 
 ## Design for the input space
 

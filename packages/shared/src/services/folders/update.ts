@@ -17,6 +17,9 @@ export const updateFolder = async (data: {
   teamId: string;
   updates: UpdateFolderInput;
   actor?: EventActor;
+  /** Who is writing `updates.description`: a person (default) or the
+   * assistant. Either way the generator leaves it alone afterwards. */
+  descriptionSource?: "manual" | "agent";
 }) => {
   const { id, teamId, updates } = data;
   const actor = data.actor ?? SYSTEM_ACTOR;
@@ -92,7 +95,7 @@ export const updateFolder = async (data: {
             }
           : {
               description: description.trim(),
-              descriptionSource: "manual" as const,
+              descriptionSource: data.descriptionSource ?? "manual",
               descriptionGeneratedAt: new Date(),
               descriptionDocumentCount: null,
             };

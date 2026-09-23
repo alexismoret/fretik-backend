@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import db from "../../db";
 import { documentProperties, documents, folders } from "../../db/schema";
@@ -140,9 +140,9 @@ export const describeFolder = async (params: {
     .slice(0, FOLDER_DESCRIPTION_MAX_CHARS);
   if (description.length === 0) return false;
 
-  // The `descriptionSource <> 'manual'` guard rides the UPDATE itself: a
-  // person may have written one between the read above and here, and a
-  // read-then-write check would lose that race silently.
+  // The "never written by anyone else" guard rides the UPDATE itself: a
+  // person or the assistant may have written one between the read above and
+  // here, and a read-then-write check would lose that race silently.
   const [updated] = await db
     .update(folders)
     .set({
@@ -157,7 +157,7 @@ export const describeFolder = async (params: {
         eq(folders.teamId, params.teamId),
         or(
           isNull(folders.descriptionSource),
-          ne(folders.descriptionSource, "manual"),
+          eq(folders.descriptionSource, "auto"),
         ),
       ),
     )

@@ -77,8 +77,9 @@ export const FolderResponseSchema = z.object({
   documentCount: z.number().int().min(0),
   /** What this folder is for — what the Drive filer matches against. */
   description: z.string().nullable(),
-  /** `manual` once a person has written it; the generator then leaves it be. */
-  descriptionSource: z.enum(["auto", "manual"]).nullable(),
+  /** `manual` once a person has written it, `agent` when the assistant did;
+   * the generator leaves both be. */
+  descriptionSource: z.enum(["auto", "manual", "agent"]).nullable(),
   createdAt: z.date(),
   updatedAt: z.date(),
 });

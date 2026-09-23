@@ -23,6 +23,7 @@ export const listFolders = async (data: {
       parentFolderId: true,
       subFolderCount: true,
       documentCount: true,
+      description: true,
     },
     where: {
       teamId,

@@ -4,6 +4,10 @@ import { updateDocument } from "@fretik/shared/services/documents/update";
 import { createFolder } from "@fretik/shared/services/folders/create";
 import { deleteFolders } from "@fretik/shared/services/folders/delete";
 import { updateFolder } from "@fretik/shared/services/folders/update";
+// Through the barrel: `schemas/folders` and `schemas/documents` import each
+// other, and entering the pair through `folders` first reads
+// `FolderBreadcrumbSchema` before it exists.
+import { FOLDER_DESCRIPTION_MAX_CHARS } from "@fretik/shared/schemas";
 import { tool } from "ai";
 import { z } from "zod";
 import {
@@ -26,6 +30,7 @@ export const manageDriveInputSchema = z.object({
   action: z.enum([
     "createFolder",
     "renameFolder",
+    "describeFolder",
     "moveFolder",
     "deleteFolder",
     "moveDocument",
@@ -58,6 +63,13 @@ export const manageDriveInputSchema = z.object({
     .nullish()
     .describe(
       "Destination folder id. For createFolder / moveFolder / moveDocument. Omit or null = Drive root.",
+    ),
+  description: z
+    .string()
+    .max(FOLDER_DESCRIPTION_MAX_CHARS)
+    .optional()
+    .describe(
+      "What belongs in the folder, one sentence naming the KIND of document ('Signed client contracts and their amendments'). For createFolder / describeFolder; \"\" on describeFolder clears it.",
     ),
 });
 
@@ -102,6 +114,9 @@ const driveSummaryFields = async (
     }
   }
   if (input.name) fields.push({ labelKey: "name", value: input.name });
+  if (input.description) {
+    fields.push({ labelKey: "description", value: input.description });
+  }
   // Root has no name to show, and `value` is displayed verbatim — a literal
   // "Drive root" here would be English in a French UI. The card's own preview
   // already words the root case.
@@ -123,8 +138,9 @@ export const createManageDriveTool = () =>
     description: [
       "Organise the Drive: folders and where documents live. Journaled and team-scoped.",
       "",
-      "- createFolder: name (+ optional parentFolderId). Creates a folder; omit parentFolderId for the root.",
+      "- createFolder: name (+ optional parentFolderId, description). Creates a folder; omit parentFolderId for the root.",
       "- renameFolder: folderId + name.",
+      "- describeFolder: folderId + description. Documents added with no destination are filed automatically into the folder whose description fits, so write one whenever the user says what a folder is for.",
       "- moveFolder: folderId + parentFolderId (new parent; null = root).",
       "- deleteFolder: folderId. Deletes the folder AND its documents/subfolders — confirm with the user first.",
       "- moveDocument: documentId + parentFolderId (destination; null = root).",
@@ -174,6 +190,7 @@ export const createManageDriveTool = () =>
             folderId: input.folderId,
             documentId: input.documentId,
             parentFolderId: input.parentFolderId ?? null,
+            description: input.description,
           },
           ...(summaryFields === undefined ? {} : { summaryFields }),
         });
@@ -198,6 +215,9 @@ export const createManageDriveTool = () =>
             teamId: ctx.teamId,
             userId: ctx.userId,
             actor,
+            ...(input.description
+              ? { description: { text: input.description, source: "agent" } }
+              : {}),
           });
           return {
             ok: true,
@@ -206,6 +226,34 @@ export const createManageDriveTool = () =>
               id: folder.id,
               name: folder.name,
               parentFolderId: folder.parentFolderId,
+              description: folder.description,
+            },
+          };
+        }
+
+        if (input.action === "describeFolder") {
+          if (!input.folderId || input.description === undefined) {
+            return toolError(
+              TOOL_ERROR_CODES.DRIVE_ERROR,
+              "describeFolder requires folderId and description.",
+            );
+          }
+          // Through the same service as the folder page, so the agent's
+          // sentence obeys the same rules as a person's.
+          const folder = await updateFolder({
+            id: input.folderId,
+            teamId: ctx.teamId,
+            updates: { description: input.description },
+            actor,
+            descriptionSource: "agent",
+          });
+          return {
+            ok: true,
+            action: input.action,
+            folder: {
+              id: folder.id,
+              name: folder.name,
+              description: folder.description,
             },
           };
         }

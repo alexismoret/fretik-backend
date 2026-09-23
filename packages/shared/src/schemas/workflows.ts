@@ -668,8 +668,23 @@ export const workflowCriterionError = (criterion: string): string | null => {
   ) {
     return "A criterion must not name a specific file — describe what makes a document relevant instead.";
   }
+  if (CRITERION_COMPARISON.test(value)) {
+    return "A criterion cannot compare numbers or dates: the gate judges what an input IS, not arithmetic. Put that check in the playbook's first task instead.";
+  }
   return null;
 };
+
+/**
+ * A comparison against a number or a date: a symbol before a digit, or a
+ * comparison word (English or French) with a digit shortly after it.
+ *
+ * The gate's model reads meaning; arithmetic, counting and date ordering are
+ * exactly where it is unreliable, and a criterion like "amount over 1 000"
+ * would be judged by feel. Refused rather than warned, because the failure is
+ * the invisible one: a firing wrongly judged under the bar never runs.
+ */
+const CRITERION_COMPARISON =
+  /[<>≤≥]=?\s*\d|(?:\b(?:over|above|below|under|more than|less than|greater than|fewer than|at least|at most|exceeds?|exceeding|before|after|older than|newer than|plus de|moins de|au moins|au plus|avant|apr[èe]s|d[ée]passe)\b|\b(?:sup|inf)[ée]rieure?s? [àa](?!\w))[^.;\n]{0,25}?\d/i;
 
 export const WorkflowRunErrorSchema = z.object({
   code: z.string().min(1).max(60),

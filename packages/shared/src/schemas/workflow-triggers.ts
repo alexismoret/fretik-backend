@@ -480,10 +480,10 @@ export const describeTriggerForCard = (
  */
 export const describeTriggerCriterionForAgent = (): string =>
   [
-    "One sentence deciding whether a trigger firing deserves a run, judged against the event's facts before anything is launched.",
-    "Write it from the playbook's goal and the fact catalog (`get_trigger_catalog`), describing the KIND of input that concerns this workflow.",
-    "Never name a filename, an id or a value from the example you were shown — activation refuses both, because such a criterion passes its test run and then refuses every real firing.",
-    "Null / omitted = ungated: the workflow runs on every firing its subscriptions match.",
+    "One sentence, judged against the event's facts (`get_trigger_catalog`) before a run launches.",
+    "Describe the KIND of input, stated positively ('the document is a supplier invoice').",
+    "NEVER a filename, an id, or a number or date to compare — activation refuses them; put such a check in the first task.",
+    "Null = every firing runs.",
   ].join(" ");
 
 /** Compact trigger reference for the `manageWorkflow` tool — generated from the

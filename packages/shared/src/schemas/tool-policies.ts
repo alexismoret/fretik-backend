@@ -266,10 +266,12 @@ export const BUILTIN_TOOL_POLICY_CATALOG: Record<
 
   ...inGroup("drive", [
     // Folder moves and renames are undoable and lose nothing; deleting a folder
-    // takes its documents with it.
+    // takes its documents with it. A description is one sentence the team
+    // can read and edit on the folder itself, so writing one is `auto` too.
     writeTool("manageDrive", "tool_call", {
       createFolder: "auto",
       renameFolder: "auto",
+      describeFolder: "auto",
       moveFolder: "auto",
       deleteFolder: "approval",
       moveDocument: "auto",

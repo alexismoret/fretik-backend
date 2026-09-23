@@ -11,10 +11,12 @@ import {
 } from "drizzle-orm/pg-core";
 import { team, user } from "./auth-schema";
 
-/** Who wrote a folder's description. A `varchar` rather than a pgEnum: two
- * values with no behaviour of their own, and an enum would cost a migration
- * to add a third. */
-export type FolderDescriptionSource = "auto" | "manual";
+/** Who wrote a folder's description: the nightly generator (`auto`), a person
+ * (`manual`), or the assistant at someone's request (`agent`). Only `auto` is
+ * ever regenerated — the other two state an intent, which outranks anything
+ * inferred from what the folder already holds. A `varchar` rather than a
+ * pgEnum, so adding a writer costs no migration. */
+export type FolderDescriptionSource = "auto" | "manual" | "agent";
 
 /**
  * Folders for organizing documents hierarchically

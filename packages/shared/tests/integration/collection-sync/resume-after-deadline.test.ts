@@ -54,39 +54,62 @@ const fivePages = (): UpstreamRow[][] => [
   [],
 ];
 
-/** A leg, with the walk-wide identity every leg of one walk shares. */
+/**
+ * The time budget of a leg that has to suspend, and how long its stalled page
+ * takes to answer.
+ *
+ * Every page BEFORE the stall must be read and written to Postgres inside the
+ * budget, and the stall alone must exceed it, so the suspension lands on the
+ * same page whatever the machine. They were 150 ms and 300 ms, with the budget
+ * also paying for the source reload: a slow CI runner spent more than 150 ms
+ * before the second page and suspended one page early (2 rows where 6 were
+ * expected).
+ */
+const BUDGET_MS = 1_000;
+const STALL_MS = 1_500;
+
+/**
+ * A leg, with the walk-wide identity every leg of one walk shares. `budgetMs`
+ * starts counting once the source is reloaded, so the budget is the walk's
+ * alone.
+ */
 const leg = async (
   fixture: TableSourceFixture,
   walk: { runId: string; walkStartedAt: Date },
   action: Parameters<typeof runTableWalk>[0]["action"],
-  extra: Partial<Parameters<typeof runTableWalk>[0]> = {},
-) =>
-  runTableWalk({
-    source: await fixture.reload(),
+  extra: Partial<Parameters<typeof runTableWalk>[0]> & {
+    budgetMs?: number;
+  } = {},
+) => {
+  const { budgetMs = 60_000, ...rest } = extra;
+  const source = await fixture.reload();
+  return runTableWalk({
+    source,
     action,
-    deadlineAt: Date.now() + 60_000,
+    deadlineAt: Date.now() + budgetMs,
     runId: walk.runId,
     walkStartedAt: walk.walkStartedAt,
     configHash: "fixed",
     fullWalk: true,
     ignoreOrphanFloor: false,
-    ...extra,
+    ...rest,
   });
+};
 
 describe("a suspended walk", () => {
   test("stops at the deadline, keeps what it wrote, and resumes from the next page", async () => {
     const fixture = await createTableSource(fx);
     const walk = { runId: crypto.randomUUID(), walkStartedAt: await dbNow() };
 
-    // Page index 1 takes 300 ms; the budget is 150. The walk therefore answers
-    // pages 0 and 1 and is over budget when it checks before page 2.
+    // Page index 1 takes longer than the whole budget. The walk therefore
+    // answers pages 0 and 1 and is over budget when it checks before page 2.
     const first = offsetUpstream(fivePages(), {
       pageSize: 2,
       stallAfterPage: 1,
-      stallMs: 300,
+      stallMs: STALL_MS,
     });
     const suspended = await leg(fixture, walk, first.action, {
-      deadlineAt: Date.now() + 150,
+      budgetMs: BUDGET_MS,
     });
 
     expect(suspended.kind).toBe("suspended");
@@ -171,9 +194,9 @@ describe("a suspended walk", () => {
       offsetUpstream(fivePages(), {
         pageSize: 2,
         stallAfterPage: 2,
-        stallMs: 300,
+        stallMs: STALL_MS,
       }).action,
-      { deadlineAt: Date.now() + 150 },
+      { budgetMs: BUDGET_MS },
     );
     if (suspended.kind !== "suspended") throw new Error("expected suspension");
     expect(suspended.counts.createdCount).toBe(6);
@@ -211,9 +234,9 @@ describe("a suspended walk", () => {
       offsetUpstream(fivePages(), {
         pageSize: 2,
         stallAfterPage: 1,
-        stallMs: 300,
+        stallMs: STALL_MS,
       }).action,
-      { deadlineAt: Date.now() + 150 },
+      { budgetMs: BUDGET_MS },
     );
     if (suspended.kind !== "suspended") throw new Error("expected suspension");
     expect(suspended.counts.orphanCount).toBe(0);

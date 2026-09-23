@@ -1,6 +1,6 @@
 {
   "name": "@fretik/shared",
-  "version": "0.7.54",
+  "version": "0.7.55",
   "private": true,
   "type": "module",
   "scripts": {

@@ -425,6 +425,62 @@ export const DECISION_POINTS: Readonly<
     defaultMode: "shadow",
     evalGate: { suites: ["shared unit: entity-match"] },
   },
+
+  "chat.turn.continuation": {
+    key: "chat.turn.continuation",
+    purpose:
+      'Whether the short last message of a turn that did tool work announces an action it never performed ("let me check…" then nothing), so the turn should continue. Runs beside the classifier it would replace; until measured, the classifier decides.',
+    questionVersion: 1,
+    families: {
+      // A wrong "continue" re-runs work the person already has; a wrong
+      // "stop" leaves a turn that says "let me check" and never does. The
+      // old classifier's rule was "unsure → stop", so the bar is high.
+      announce: { kind: "boolean", signal: "probability", threshold: 0.7 },
+    },
+    noAnswer: "legacy",
+    state: {
+      maxTokens: 800,
+      admit: ["message"],
+      content: ["message"],
+    },
+    egress: "content",
+    // Inside a person's turn: short deadline, never a second transport.
+    path: "hot",
+    timeoutMs: 1500,
+    fallbackTransport: false,
+    journal: { policy: "all" },
+    defaultMode: "shadow",
+    evalGate: {
+      suites: ["evals:langfuse -- --suite doctrine (dead-final-step cases)"],
+    },
+  },
+
+  "workflow.turn.convergence": {
+    key: "workflow.turn.convergence",
+    purpose:
+      "How close a workflow run's current task is to done, after a turn that called tools but closed no task. A four-level score journaled next to the turn counters that stop a run that no longer converges; measurement only, it changes nothing.",
+    questionVersion: 1,
+    families: {
+      // Read as "stuck" below this position on the 0..3 scale. Shadow only:
+      // the counters stay the safety net, and this is what they are compared
+      // against once runs' outcomes label it.
+      conv: { kind: "score", signal: "score", threshold: 0.5 },
+    },
+    noAnswer: "skip",
+    state: {
+      maxTokens: 2500,
+      admit: ["task", "turn", "tools"],
+      content: ["task", "turn"],
+      maxValueChars: 4000,
+    },
+    egress: "content",
+    path: "background",
+    timeoutMs: 2500,
+    fallbackTransport: true,
+    journal: { policy: "all" },
+    defaultMode: "shadow",
+    evalGate: { suites: ["measurement only: joined to workflow_runs.error"] },
+  },
 };
 
 export const decisionPoint = (key: DecisionPointKey): DecisionPointSpec =>

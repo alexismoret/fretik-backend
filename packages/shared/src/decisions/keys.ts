@@ -18,6 +18,8 @@ export const DECISION_POINT_KEYS = [
   "memory.distill.worth",
   "memory.promote.support",
   "graph.entity-match",
+  "chat.turn.continuation",
+  "workflow.turn.convergence",
 ] as const;
 
 export type DecisionPointKey = (typeof DECISION_POINT_KEYS)[number];

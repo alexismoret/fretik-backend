@@ -65,6 +65,11 @@ const fakeModel = (
   },
 });
 
+// The preload switches the engine off for every suite (`test-env.ts`); this
+// one is about the engine, and the transports below are fakes. Read at module
+// load, so it is set before the import.
+process.env.DECISIONS_ENABLED = "true";
+
 await mockModule("../../../src/lib/model-registry/transports/openrouter", {
   openrouterClient: () => ({
     evaluationModel: (id: string, settings: unknown) =>

@@ -114,6 +114,7 @@ import {
   NATIVE_FILE_PARSER_PLUGINS,
   prepareModelMessages,
 } from "../services/native-input";
+import { measureConvergence } from "../services/workflow-runs/convergence";
 import {
   buildTurnMessageMetadata,
   createStepClock,
@@ -821,6 +822,25 @@ const executeTurn = async (params: {
   // above read zero for all of it because tool calls counted as progress.
   const noTaskTurns = progressed ? 0 : previousCounter(run, "noTaskTurns") + 1;
   const allDone = currentWorkflowTask(freshTasks) === null;
+
+  // A turn that worked (tools) but closed nothing is what the NO_CONVERGENCE
+  // counter counts. Score it too, off the turn's path: measurement only.
+  const openTask = currentWorkflowTask(freshTasks);
+  if (
+    !progressed &&
+    toolCallCount > 0 &&
+    openTask !== null &&
+    !abortController.signal.aborted
+  ) {
+    measureConvergence({
+      organizationId: run.organizationId,
+      teamId: run.teamId,
+      runId: run.id,
+      turnIndex,
+      task: openTask,
+      turnText: trailingAssistantText(finalMessages),
+    });
+  }
   const anyFailed = freshTasks.some((t) => t.status === "failed");
 
   let result: WorkflowTurnResult;

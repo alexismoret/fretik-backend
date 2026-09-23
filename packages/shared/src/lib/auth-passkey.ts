@@ -7,6 +7,7 @@ import { eq } from "drizzle-orm";
 
 import db from "../db";
 import { passkey } from "../db/schema";
+import { isAppleDevice } from "./user-agent";
 
 /**
  * Passkey (WebAuthn) configuration for the Better Auth `passkey` plugin.
@@ -104,7 +105,7 @@ export const defaultPasskeyName = (params: {
   const provider = resolvePasskeyProvider(params.aaguid);
   if (provider) return provider;
   const isPlatform = params.transports?.includes("internal") ?? false;
-  if (isPlatform && /Macintosh|iPhone|iPad/i.test(params.userAgent ?? "")) {
+  if (isPlatform && isAppleDevice(params.userAgent)) {
     return "iCloud Keychain";
   }
   return undefined;

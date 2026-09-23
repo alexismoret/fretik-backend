@@ -61,6 +61,7 @@
     "ai": "^7.0.85",
     "aws4fetch": "^1.0.20",
     "better-auth": "^1.7.5",
+    "bowser": "^2.14.1",
     "bullmq": "^6.3.2",
     "chromiumly": "^6.0.0",
     "drizzle-orm": "^1.0.0-rc.4-5d5b77c",

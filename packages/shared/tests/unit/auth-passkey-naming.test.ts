@@ -4,7 +4,7 @@ import {
   defaultPasskeyName,
   resolvePasskeyProvider,
 } from "../../src/lib/auth-passkey";
-import { describeUserAgent } from "../../src/services/auth/send-security-notice";
+import { describeUserAgent, isAppleDevice } from "../../src/lib/user-agent";
 
 const MAC_SAFARI =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15";
@@ -85,8 +85,30 @@ describe("describeUserAgent", () => {
     expect(describeUserAgent(WINDOWS_CHROME)).toBe("Chrome · Windows");
   });
 
+  test("names the browsers that disguise themselves as Chrome", () => {
+    expect(
+      describeUserAgent(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 Edg/128.0.0.0",
+      ),
+    ).toBe("Microsoft Edge · Windows");
+    expect(
+      describeUserAgent(
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 OPR/114.0.0.0",
+      ),
+    ).toBe("Opera · macOS");
+  });
+
   test("nothing to describe without a user agent", () => {
     expect(describeUserAgent(null)).toBeNull();
     expect(describeUserAgent("")).toBeNull();
+  });
+});
+
+describe("isAppleDevice", () => {
+  test("a Mac or an iPhone is, Windows is not", () => {
+    expect(isAppleDevice(MAC_SAFARI)).toBe(true);
+    expect(isAppleDevice(IPHONE_SAFARI)).toBe(true);
+    expect(isAppleDevice(WINDOWS_CHROME)).toBe(false);
+    expect(isAppleDevice(null)).toBe(false);
   });
 });

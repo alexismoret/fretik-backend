@@ -5,38 +5,7 @@ import {
 } from "../../emails/generators";
 import { sendEmail } from "../../lib/email";
 import { normalizeLocale } from "../../lib/locales";
-
-/**
- * A short "Browser · OS" summary of a user agent, for the security notice
- * ("Device: Chrome · macOS"). Mirrors the frontend's session list labels.
- */
-export const describeUserAgent = (
-  ua: string | null | undefined,
-): string | null => {
-  if (!ua) return null;
-  const browser = /edg/i.test(ua)
-    ? "Edge"
-    : /chrome|crios/i.test(ua)
-      ? "Chrome"
-      : /firefox|fxios/i.test(ua)
-        ? "Firefox"
-        : /safari/i.test(ua)
-          ? "Safari"
-          : null;
-  const os = /windows/i.test(ua)
-    ? "Windows"
-    : /iphone|ipad/i.test(ua)
-      ? "iOS"
-      : /mac os|macintosh/i.test(ua)
-        ? "macOS"
-        : /android/i.test(ua)
-          ? "Android"
-          : /linux/i.test(ua)
-            ? "Linux"
-            : null;
-  if (browser && os) return `${browser} · ${os}`;
-  return browser ?? os;
-};
+import { describeUserAgent } from "../../lib/user-agent";
 
 /**
  * Email the account owner that a way to sign in to their account changed.

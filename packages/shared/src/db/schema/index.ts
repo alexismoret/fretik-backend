@@ -59,6 +59,12 @@ export * from "./locations";
 // share one record). Consulted by the collection_records RLS predicate.
 export * from "./collection-sharing";
 
+// Collection sync — external-app-fed collections and columns. The declaration
+// (which app fills which columns, how often), the run history, and the
+// per-record freshness state. Values themselves land in the ordinary typed
+// columns of `data.coll_<id>`; see `docs/EXTERNAL-DATA-COLUMNS.md`.
+export * from "./collection-sync";
+
 // Metrics and logs (usage_metrics, activity_logs, webhooks)
 export * from "./metrics";
 

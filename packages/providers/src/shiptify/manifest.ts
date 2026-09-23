@@ -783,6 +783,7 @@ export const shiptifyManifest: ProviderManifest = {
         limit: { type: "integer", min: 1, max: 100, default: 25 },
         offset: { type: "integer", min: 0, max: 100000, default: 0 },
       },
+      pagination: { kind: "offset", maxLimit: 100 },
       returns: { list: "ShipmentRequest" },
     },
     {
@@ -1055,6 +1056,8 @@ export const shiptifyManifest: ProviderManifest = {
         dest_address_internal_ref: { type: "string", optional: true },
         shipper_id: { type: "integer", optional: true },
       },
+      pagination: { kind: "offset", maxLimit: 100 },
+      incremental: { param: "created_date_from", format: "date" },
       returns: { list: "Shipment" },
     },
     {
@@ -1236,6 +1239,7 @@ export const shiptifyManifest: ProviderManifest = {
           description: "Exact match on third-party reference",
         },
       },
+      pagination: { kind: "offset", maxLimit: 100 },
       returns: { list: "Location" },
     },
     {
@@ -1376,6 +1380,7 @@ export const shiptifyManifest: ProviderManifest = {
         limit: { type: "integer", min: 1, max: 100, default: 25 },
         offset: { type: "integer", min: 0, max: 100000, default: 0 },
       },
+      pagination: { kind: "offset", maxLimit: 100 },
       returns: { list: "QuoteRequest" },
     },
 
@@ -1579,6 +1584,8 @@ export const shiptifyManifest: ProviderManifest = {
         arrival_date_min: { type: "date", optional: true },
         arrival_date_max: { type: "date", optional: true },
       },
+      pagination: { kind: "offset", maxLimit: 100 },
+      incremental: { param: "created_date_from", format: "date" },
       returns: { list: "Shipment" },
       response: "shipmentList",
     },

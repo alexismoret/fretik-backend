@@ -24,15 +24,6 @@ import { importToolOutput } from "./tool-output";
  */
 export const commitBulkOperation = async (input: {
   operation: BulkOperation;
-  /** Tenant context for the approval gate — the operation's own, re-stated by
-   * the caller because the gate takes a structural subset. */
-  gateContext: {
-    organizationId: string;
-    teamId: string;
-    userId: string;
-    conversationId: string;
-    turnId: string;
-  };
 }): Promise<SandboxExecResponse> => {
   const { operation } = input;
 
@@ -97,9 +88,30 @@ export const commitBulkOperation = async (input: {
     return { status: "ok", data: importToolOutput(operation, null) };
   }
 
+  // Past here a human has to be asked, and asking happens in a conversation.
+  // A load opened over HTTP has none — it is `direct` by construction and
+  // returned above — so this is unreachable rather than a case to handle, and
+  // says so instead of inventing a conversation to hang a card on.
+  const { conversationId, turnId } = operation;
+  if (conversationId === null || turnId === null) {
+    return {
+      status: "error",
+      message: `Bulk operation ${operation.id} needs a human grant but was opened outside a conversation, so there is nowhere to ask.`,
+    };
+  }
+
   const executor = BULK_OPERATION_EXECUTORS[operation.kind];
   return runApprovalGate({
-    ctx: input.gateContext,
+    // The operation's own tenancy, not the caller's. They are the same values
+    // — the row was created from that context — and reading them off the row
+    // is the only version that cannot drift from what is about to be granted.
+    ctx: {
+      organizationId: operation.organizationId,
+      teamId: operation.teamId,
+      userId: operation.userId,
+      conversationId,
+      turnId,
+    },
     kind: "record_write",
     // Never auto-granted here. A load only reaches `staged` mode BECAUSE the
     // policy demanded a human; `autoGrant` would contradict the decision that
@@ -123,8 +135,8 @@ export const commitBulkOperation = async (input: {
             organizationId: operation.organizationId,
             teamId: operation.teamId,
             userId: operation.userId,
-            conversationId: operation.conversationId,
-            turnId: operation.turnId,
+            conversationId,
+            turnId,
             kind: "record_write",
             lookupHash: operation.lookupHash,
             payload,

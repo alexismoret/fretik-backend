@@ -139,6 +139,7 @@ import {
   resolveChatModelForProfile,
 } from "../lib/model-registry/resolve";
 import { resolveTeamFlagship } from "../lib/model-registry/team-model";
+import { extractOpenRouterReport } from "../lib/model-registry/transports/openrouter";
 import type { ModelProfile, ReasoningLevel } from "../lib/model-registry/types";
 import { buildSensitiveInputScrubber } from "../lib/scrub-stream";
 import { createSseEventQueue } from "../lib/sse-event-queue";
@@ -203,6 +204,7 @@ import {
 import type { HonoInternalAppType } from "../types/hono";
 import {
   buildTurnMessageMetadata,
+  createStepClock,
   filterNewAssistantMessages,
   narrowMessageMetadata,
 } from "./turn-helpers";
@@ -1360,12 +1362,23 @@ export const runChatbotTurn = async (
   // differ between the two reads, which would slip a duplicate past
   // `emittedWireErrors`.
   let terminalFrameOnWire = false;
+  // The host that served the last step that COMPLETED. Kept beside the flags
+  // rather than in them because nothing in the turn's logic reads it — it
+  // exists so a `turn-error` can name a provider at all. It is deliberately
+  // not called "the host that failed": a pre-response failure (a 429, an empty
+  // pool) never reaches a serving host, and a mid-stream failure ends its step
+  // without `providerMetadata`, so in both cases this is the PREVIOUS step's
+  // host. Recorded under a key that says so.
+  let lastCompletedStepProvider: string | undefined;
   const onTurnStep: GenerateTextOnStepEndCallback<ChatbotTools> = (step) => {
     const calledTool = step.toolCalls.length > 0 || step.toolResults.length > 0;
     if (calledTool) turnFlags.toolExecuted = true;
     if (step.text.length > 0) turnFlags.visibleText = true;
     turnFlags.lastStepCalledTool = calledTool;
     turnFlags.lastStepVisibleChars = step.text.trim().length;
+    lastCompletedStepProvider =
+      extractOpenRouterReport(step.providerMetadata).servingProvider ??
+      lastCompletedStepProvider;
   };
   // A stream error is "transparently recoverable" only when it is a
   // pre-output provider failure (empty pool / 429 / 5xx / timeout), no
@@ -1477,6 +1490,13 @@ export const runChatbotTurn = async (
             kind: classification.kind,
             transparentFailover: String(transparent),
             terminal: String(terminal),
+            // Which host the turn was last KNOWN to be on. Before this, a
+            // `turn-error` carried no provider at all, so "is this host
+            // failing more than that one" could not be asked of the data —
+            // only of an impression. Absent on a failure that happened before
+            // any step completed, which is itself the answer to "was a host
+            // even reached".
+            lastCompletedStepProvider: lastCompletedStepProvider ?? "none",
           },
         },
         { asType: "event", parentSpanContext: turnTrace.spanContext },
@@ -1939,6 +1959,8 @@ export const runChatbotTurn = async (
                 }
               : {}),
           });
+          // Its own clock: the fallback times its own calls (see createStepClock).
+          const fallbackStepClock = createStepClock();
           writer.merge(
             openedOnFirstChunk(
               dropChunksAfterAbort(
@@ -1951,7 +1973,8 @@ export const runChatbotTurn = async (
                     sendStart: false,
                     onError: recordStreamError,
                     messageMetadata: ({ part }) => {
-                      if (part.type !== "finish") return undefined;
+                      if (part.type !== "finish")
+                        return fallbackStepClock(part);
                       // Failover (zombie or transparent) always serves the fallback
                       // agent — flagged for the eval harness.
                       return buildTurnMessageMetadata(
@@ -1994,7 +2017,7 @@ export const runChatbotTurn = async (
               type: "text-delta",
               id: finalId,
               delta:
-                "Both models stopped without producing an answer. Please retry — for large attachments, try opening the file directly in `python` (e.g. `pdfplumber.open(...)`, `pd.read_csv(...)`).",
+                "Both models stopped without producing an answer. Please retry. For large attachments, try opening the file directly in `python` (e.g. `pdfplumber.open(...)`, `pd.read_csv(...)`).",
             });
             writer.write({ type: "text-end", id: finalId });
           }
@@ -2059,6 +2082,7 @@ export const runChatbotTurn = async (
               }
             : {}),
         });
+        const contStepClock = createStepClock();
         writer.merge(
           openedOnFirstChunk(
             dropChunksAfterAbort(
@@ -2070,7 +2094,7 @@ export const runChatbotTurn = async (
                   sendStart: false,
                   onError: recordStreamError,
                   messageMetadata: ({ part }) => {
-                    if (part.type !== "finish") return undefined;
+                    if (part.type !== "finish") return contStepClock(part);
                     return buildTurnMessageMetadata(
                       part,
                       servedBy,
@@ -2352,13 +2376,16 @@ export const runChatbotTurn = async (
         // `messageMetadata` is attached HERE (not on the outer
         // createUIMessageStream — `messageMetadata` is a `toUIMessageStream`
         // option, not a `createUIMessageStream` one). It is invoked on
-        // the inner stream's `start` and `finish` events; we only emit
-        // metadata on `finish` (start would overwrite a prior turn with
-        // `undefined`). The returned blob lands in the assistant message's
-        // `metadata`: `langfuseTraceId` (so the feedback control can score
-        // the right Langfuse trace) plus `finishReason` / `usage` (read by
-        // the eval harness over SSE). Full per-turn observability —
-        // tool calls, RAG hits, latency, cost — lives in Langfuse.
+        // every part of the inner stream. On `finish` the returned blob
+        // lands in the assistant message's `metadata`: `langfuseTraceId`
+        // (so the feedback control can score the right Langfuse trace) plus
+        // `finishReason` / `usage` (read by the eval harness over SSE).
+        // Before it, only the step clock speaks — one `stepDurations` entry
+        // per settled tool call, for the transcript's step timers; nothing
+        // is ever emitted on `start`, which would overwrite a prior turn
+        // with `undefined`. Full per-turn observability — tool calls, RAG
+        // hits, latency, cost — lives in Langfuse.
+        const stepClock = createStepClock();
         writer.merge(
           openedOnFirstChunk(
             dropChunksAfterAbort(
@@ -2374,7 +2401,7 @@ export const runChatbotTurn = async (
                   // the same mapper so both surfaces agree on the wire frame.
                   onError: recordStreamError,
                   messageMetadata: ({ part }) => {
-                    if (part.type !== "finish") return undefined;
+                    if (part.type !== "finish") return stepClock(part);
                     // `servedBy` reports which agent answered under which profile;
                     // the eval harness reads it over SSE so a silent failover to
                     // the fallback model is flagged, not scored as the candidate.
@@ -2938,8 +2965,8 @@ chatbotRoutes.post("/stream", async (c) => {
   // scope — all three are already in hand — and on nothing produced below.
   // Everything between this line and `runChatbotTurn` is serial I/O: saving the
   // message, binding its files, two conversation events, the read marker,
-  // mentions, the stream claim, the turn log, thirty messages of history, the
-  // model resolution. Ten round trips the three retrieval arms can run
+  // mentions, the stream claim, the turn log, the history since the last
+  // checkpoint, the model resolution. Ten round trips the three retrieval arms can run
   // underneath instead of after.
   //
   // Fire-and-collect, never awaited here: `prefetchRecallGather` swallows its
@@ -3201,13 +3228,13 @@ chatbotRoutes.post("/stream", async (c) => {
     }),
   );
 
-  // Load last N messages from DB for the agent's memory window. 30 is
-  // the Phase 8 default — compaction collapses the older portion when
-  // the total exceeds 12K tokens.
+  // Everything after the last checkpoint. Tokens bound the window — the
+  // compaction cap folds the older portion into the next checkpoint — and
+  // the row limit is only a guard; see `AGENT_WINDOW_ROW_LIMIT`.
   const window = await timeStage(
     preludeTimings,
     "loadHistory",
-    loadAgentWindow(conversationId, 30),
+    loadAgentWindow(conversationId),
   );
   const history = window.messages;
 
@@ -3896,9 +3923,7 @@ chatbotInternalRoutes.post("/invoke", async (c) => {
    * evals, where nobody is watching a spinner and the cost shows up only on
    * the bill.
    */
-  const window = conversationId
-    ? await loadAgentWindow(conversationId, 30)
-    : null;
+  const window = conversationId ? await loadAgentWindow(conversationId) : null;
   const history: UIMessage[] = window ? window.messages : messages;
   // Read rather than defaulted to `[]`: an empty cast is one the reader's
   // `participants_changed` guard can never reject, because it only engages at

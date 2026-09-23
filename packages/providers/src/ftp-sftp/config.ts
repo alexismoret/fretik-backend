@@ -75,7 +75,7 @@ export const parseFileTransferConfig = (
   );
   if (!isProtocol(protocolRaw)) {
     throw new Error(
-      `Unsupported protocol "${protocolRaw}" — expected sftp, ftp, ftps or ftps-implicit.`,
+      `Unsupported protocol "${protocolRaw}". Expected sftp, ftp, ftps or ftps-implicit.`,
     );
   }
   const protocol: FileTransferProtocol = protocolRaw;
@@ -87,7 +87,7 @@ export const parseFileTransferConfig = (
 
   if (authMethod === "private_key" && protocol !== "sftp") {
     throw new Error(
-      "FTP and FTPS authenticate with a password only — SSH key authentication exists on SFTP. Switch the protocol to SFTP, or set a password.",
+      "FTP and FTPS authenticate with a password only. SSH key authentication is only available on SFTP. Switch the protocol to SFTP, or set a password.",
     );
   }
   if (authMethod === "private_key" && privateKey === undefined) {

@@ -151,3 +151,114 @@ describe("recomputeRowPool", () => {
     expect(capped.pricing.inputPerMTok).toBe(1);
   });
 });
+
+/**
+ * The cache filter had been wired end to end and never once fired.
+ *
+ * `requireCache: true` sits on every agent role, `filterPool` calls
+ * `cacheEvidenceFor`, and that ladder's first arm reads
+ * `measuredCacheReadRatio` — which no source wrote, so every endpoint fell
+ * through to `unknown`, and `unknown` never excludes. The pool was composed on
+ * published prices alone.
+ *
+ * Published prices are not the same claim. Measured 2026-09-22 on
+ * `z-ai/glm-5.3-flash`, `morph` publishes a cache-read price below its prompt
+ * price — so every advertised signal says it caches — and returned 0 % cache
+ * read over seven days of our own traffic, at $0.745 per MTok of input against
+ * $0.025 for the best host in the same pool. A sticky session seeded there
+ * never pinned either, because OpenRouter activates one on an actual cache.
+ */
+describe("recomputeRowPool — our own cache measurement", () => {
+  const cacheRow = row({ requireCache: true });
+
+  test("with nothing measured, no host is excluded for caching", () => {
+    // The state before this change, pinned so the filter cannot start firing
+    // on absence. A host removed for want of data never gets the traffic that
+    // would measure it.
+    const { vettedPool } = recomputeRowPool({
+      row: cacheRow,
+      endpoints: three,
+      transport: "openrouter",
+      quarantined: [],
+    });
+    expect(vettedPool?.only).toEqual(["deepinfra", "dear", "novita"]);
+  });
+
+  test("a host WE measured as not caching leaves the pool", () => {
+    const { pool, vettedPool } = recomputeRowPool({
+      row: cacheRow,
+      endpoints: three,
+      transport: "openrouter",
+      quarantined: [],
+      measured: new Map([
+        ["dear", { measuredCacheReadRatio: 0.0, measuredCacheSamples: 400 }],
+      ]),
+    });
+    expect(vettedPool?.only).toEqual(["deepinfra", "novita"]);
+    expect(pool.excluded.map((e) => e.provider)).toContain("dear");
+    expect(pool.excluded.find((e) => e.provider === "dear")?.reason).toContain(
+      "no cache",
+    );
+  });
+
+  test("a host we measured as caching stays", () => {
+    const { vettedPool } = recomputeRowPool({
+      row: cacheRow,
+      endpoints: three,
+      transport: "openrouter",
+      quarantined: [],
+      measured: new Map([
+        ["dear", { measuredCacheReadRatio: 0.8, measuredCacheSamples: 400 }],
+      ]),
+    });
+    expect(vettedPool?.only).toContain("dear");
+  });
+
+  test("a ratio drawn from too few calls is an anecdote, not a measurement", () => {
+    // The sample gate is about CALLS. Reading it off `sampleCount` — the capped
+    // tps/ttft reservoir, a different unit — would admit a verdict from a
+    // handful of requests, which is how a busy host gets evicted on a bad hour.
+    const { vettedPool } = recomputeRowPool({
+      row: cacheRow,
+      endpoints: three,
+      transport: "openrouter",
+      quarantined: [],
+      measured: new Map([
+        ["dear", { measuredCacheReadRatio: 0.0, measuredCacheSamples: 3 }],
+      ]),
+    });
+    expect(vettedPool?.only).toContain("dear");
+  });
+
+  test("the filter yields rather than emptying the pool", () => {
+    // Same rule as every other capability floor: `only: []` is a 404 upstream,
+    // so a filter that would leave nothing standing gives way instead.
+    const { vettedPool } = recomputeRowPool({
+      row: cacheRow,
+      endpoints: three,
+      transport: "openrouter",
+      quarantined: [],
+      measured: new Map(
+        three.map((e) => [
+          e.provider,
+          { measuredCacheReadRatio: 0, measuredCacheSamples: 400 },
+        ]),
+      ),
+    });
+    expect(vettedPool?.only?.length).toBeGreaterThan(0);
+  });
+
+  test("a measurement without its sample count is ignored, not half-applied", () => {
+    // `cacheEvidenceFor` refuses a ratio whose sample count it cannot see, so
+    // folding one without the other would look like a measurement that
+    // silently never applies.
+    const { vettedPool } = recomputeRowPool({
+      row: cacheRow,
+      endpoints: three,
+      transport: "openrouter",
+      quarantined: [],
+      measured: new Map([["dear", { measuredCacheReadRatio: 0 }]]),
+    });
+    expect(vettedPool?.only).toContain("dear");
+  });
+});

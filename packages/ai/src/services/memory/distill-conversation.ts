@@ -28,7 +28,7 @@ const MIN_MESSAGES = 4;
 /** Workflow-run floor: steering + final summary = 2 text lines is already a
  * complete short run — the chat threshold would skip it entirely. */
 const WORKFLOW_MIN_MESSAGES = 2;
-/** Transcript tail — mirrors `loadConversationForAgent`'s window ×2. */
+/** Transcript tail in rows — a loose bound: the token ceiling below decides. */
 const MAX_MESSAGES = 60;
 /**
  * Total transcript ceiling (~15k tokens), and the ONLY size rule that decides
@@ -141,11 +141,12 @@ const textOfParts = (parts: UIMessage["parts"]): string => {
  * and where the pathological sizes live (the largest single text message in
  * production is 567 864 characters; the parts around it are larger still).
  *
- * Exported because the repair script has to reproduce EXACTLY this input to
- * decide which episodes the old per-message clip damaged. Two copies of this
- * loop would answer that question against a transcript the service never built.
+ * It was briefly exported, for a repair script that had to reproduce exactly
+ * this input to decide which episodes the old per-message clip had damaged.
+ * That script ran and was deleted; the extraction stays because the loop reads
+ * better with a name than inlined in `distillConversation`.
  */
-export const toTranscriptLines = (
+const toTranscriptLines = (
   rows: {
     role: string;
     parts: UIMessage["parts"];

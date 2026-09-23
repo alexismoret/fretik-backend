@@ -9,10 +9,10 @@ import { redis } from "./redis";
  * the longest the critical section can legitimately take, because an expiry
  * under a live holder is the one way two runners can overlap.
  *
- * Two callers today: the approval gate, which serialises the "is another
- * approval already pending?" check + INSERT across the AI and API processes;
- * and `withConnectionSlot`, which keeps a serial-only third party from being
- * asked two questions at once on the same account.
+ * One caller today: the approval gate, which serialises the "is another
+ * approval already pending?" check + INSERT across the AI and API processes.
+ * Keeping a serial-only third party from being asked two questions at once is
+ * no longer a lock but a seat — see `exec/governor/permit.ts`.
  */
 
 const RELEASE_LUA =

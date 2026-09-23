@@ -11,9 +11,9 @@ import type { WorkflowRequester } from "./visibility";
 
 /**
  * Stop a run (the Stop button). Best-effort cancels the Trigger.dev run
- * (kills the whole orchestrator loop, including a parked approval wait),
- * publishes a mid-turn abort so an in-flight turn truncates now, then closes
- * the run `canceled`. Idempotent — a terminal run is returned unchanged.
+ * when one is actually running, publishes a mid-turn abort so an in-flight
+ * turn truncates now, then closes the run `canceled`. Idempotent — a
+ * terminal run is returned unchanged.
  * Returns `undefined` when the run doesn't exist / isn't visible to the team
  * (or, with `requester`, isn't visible to them — a private workflow's run).
  */
@@ -32,7 +32,12 @@ export const cancelWorkflowRun = async (params: {
     return getWorkflowRun({ id: params.runId, teamId: params.teamId });
   }
 
-  if (run.triggerRunId) {
+  // A parked run has NO live orchestrator — it exited at the park rather
+  // than hold the workflow's concurrency slot — so `triggerRunId` is either
+  // null or points at an already-completed Trigger run. Cancelling that is a
+  // guaranteed error in the log for nothing; the finalize below is what
+  // stops the run.
+  if (run.triggerRunId && run.status !== "needs_approval") {
     // Never let a Trigger API hiccup block the local cancel — the abort
     // publish + finalize below still stop the run from the user's view.
     await cancelWorkflowTriggerRun(run.triggerRunId).catch((error: unknown) => {

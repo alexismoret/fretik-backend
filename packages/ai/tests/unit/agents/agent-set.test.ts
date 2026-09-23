@@ -226,7 +226,7 @@ describe("loopGuardVerdict — identical calls", () => {
 
 describe("stopOnRepeatedToolErrors", () => {
   test("fires only at the configured limit", async () => {
-    const stop = stopOnRepeatedToolErrors<ToolSet>(3);
+    const stop = stopOnRepeatedToolErrors<ToolSet>(3, 2);
     const two = steps([
       [fail("extract", "INVALID_SCHEMA")],
       [fail("extract", "INVALID_SCHEMA")],
@@ -243,11 +243,46 @@ describe("stopOnRepeatedToolErrors", () => {
   test("a repeated call that never fails also reaches the limit", async () => {
     // A runaway need not fail: 725 identical successful calls in one trace
     // (2026-09-09) cost real money and produced nothing.
-    const stop = stopOnRepeatedToolErrors<ToolSet>(3);
+    const stop = stopOnRepeatedToolErrors<ToolSet>(3, 2);
     const repeated = steps(
       Array.from({ length: 3 }, () => [ok("searchKnowledge", { q: "x" })]),
     );
     expect(await stop({ steps: repeated })).toBe(true);
+  });
+
+  test("one step that floods holds the abort so the withdrawal can speak", async () => {
+    // The shape measured 2026-09-20: 298 `manageSync` calls in ONE step. The
+    // severity goes from 0 to the window size at once, so every stage of the
+    // ladder — steer, withdraw, abort — becomes due on the same step. Aborting
+    // there ends the turn on the runaway's own half-sentence; holding once lets
+    // `prepareStep` withdraw the tools and the model answer.
+    const stop = stopOnRepeatedToolErrors<ToolSet>(8, 6);
+    const flood = steps([
+      Array.from({ length: 40 }, () => fail("manageSync", "STEP_CALL_CAP")),
+    ]);
+    expect(await stop({ steps: flood })).toBe(false);
+  });
+
+  test("but aborts when the model floods again past the withdrawal", async () => {
+    const stop = stopOnRepeatedToolErrors<ToolSet>(8, 6);
+    const twice = steps([
+      Array.from({ length: 40 }, () => fail("manageSync", "STEP_CALL_CAP")),
+      Array.from({ length: 40 }, () => fail("manageSync", "STEP_CALL_CAP")),
+    ]);
+    expect(await stop({ steps: twice })).toBe(true);
+  });
+
+  test("a loop that climbs gradually still aborts on the step it reaches the limit", async () => {
+    // The regression this must not cause: every loop the guard has actually
+    // caught grows one call at a time, and those must keep aborting exactly
+    // where they did — the hold is for the single-step case alone.
+    const stop = stopOnRepeatedToolErrors<ToolSet>(8, 6);
+    const climbing = (n: number) =>
+      steps(
+        Array.from({ length: n }, () => [fail("extract", "INVALID_SCHEMA")]),
+      );
+    expect(await stop({ steps: climbing(7) })).toBe(false);
+    expect(await stop({ steps: climbing(8) })).toBe(true);
   });
 });
 

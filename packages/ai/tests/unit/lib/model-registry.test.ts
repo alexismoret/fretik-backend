@@ -290,12 +290,23 @@ describe("settingsForRole — parity with historical settings objects", () => {
   // made its declared throughput sort dead config. Measured on a 4 096-token
   // generation, that pin was the SLOWEST working upstream in the pool: 67 tok/s
   // and 62.0s, against BaseTen's 283 tok/s and 14.9s.
-  test("chat routes on live throughput within the vetted pool — never on a pin", () => {
-    const chat = settingsForRole(ROLE_BINDINGS.chat, getProfileForRole("chat"));
+  test("chat routes on live throughput within its vetted pool — never on a pin", () => {
+    const profile = getProfileForRole("chat");
+    const chat = settingsForRole(ROLE_BINDINGS.chat, profile);
+    // The POOL is read from the profile rather than pinned here. It was the
+    // hand-written DeepSeek list until 2026-09-21; this role now serves GLM 5.3
+    // Flash, whose pool is twenty hosts the nightly sync rebuilds. Pinning a
+    // model's membership in a test of ROUTING would make every sync a red
+    // build and teach nothing — what this test guards is the line below.
+    const pool = [...(profile.assessment.provider.only ?? [])];
+    // A role serving an empty pool routes nowhere; `pool-non-empty` is a hard
+    // policy rule, so this asserts the premise rather than letting the
+    // comparison below pass vacuously.
+    expect(pool.length).toBeGreaterThan(0);
     expect(chat?.provider).toEqual({
       require_parameters: true,
       zdr: true,
-      only: VETTED_DEEPSEEK_UPSTREAMS,
+      only: pool,
       sort: "throughput",
     });
     expect(chat?.provider).not.toHaveProperty("order");
@@ -316,14 +327,19 @@ describe("settingsForRole — parity with historical settings objects", () => {
 
 describe("role bindings — default model ids pinned (chat: gated M3 flip)", () => {
   const expectedIds: Record<ModelRole, string> = {
-    chat: "deepseek/deepseek-v4-flash-0731",
+    // GLM 5.3 Flash since 2026-09-21. DeepSeek V4 Flash lost the role on a
+    // paired measurement over the nine sync cases: it re-emits a byte-identical
+    // tool call hundreds of times inside one generation (4 of 18 turns), which
+    // no between-steps guard can see. See the binding for the full numbers and,
+    // more importantly, for what those nine cases did NOT measure.
+    chat: "z-ai/glm-5.3-flash",
     // Luna since 2026-09-14: a fallback serves the turns that already went
     // wrong once, so it must be at least the primary's equal — and a different
-    // family (OpenAI vs DeepSeek), which is the invariant `ROLE_FALLBACK` is
+    // family (OpenAI vs Z.ai), which is the invariant `ROLE_FALLBACK` is
     // audited on. MiniMax M3 held it from 2026-06-12.
     "chat-fallback": "openai/gpt-5.6-luna",
     // Workflow executor defaults to the chat profile (reliability first).
-    workflow: "deepseek/deepseek-v4-flash-0731",
+    workflow: "z-ai/glm-5.3-flash",
     "dispatch-cheap": "deepseek/deepseek-v4-flash-0731",
     "pre-extract": "deepseek/deepseek-v4-flash-0731",
     "pre-extract-fallback": "openai/gpt-oss-120b",

@@ -86,7 +86,7 @@ describe("countCachedTokens", () => {
     const second = countCachedTokens(text);
     const warmMs = performance.now() - warm;
     expect(second).toBe(first);
-    // The memo is the reason a thirty-message window is affordable per step.
+    // The memo is the reason a whole window is affordable per step.
     expect(warmMs).toBeLessThanOrEqual(coldMs);
   });
 });

@@ -21,7 +21,7 @@ export default {
       intro: "Use the code below to reset your Fretik password.",
     },
     changeEmail: {
-      subject: "Confirm your new email — your Fretik code",
+      subject: "Your Fretik code to confirm your new email",
       intro:
         "Use the code below to confirm this email address for your Fretik account.",
     },
@@ -40,7 +40,7 @@ export default {
       "{{inviterName}} has invited you to join the team {{teamName}} in {{organizationName}} on Fretik.",
     subjectExistingMember: "You've been given access to the team {{teamName}}",
     messageExistingMember:
-      "{{inviterName}} has invited you to the team {{teamName}} in {{organizationName}}. Accept and it joins the workspaces you already have access to — your existing teams and your role are unchanged.",
+      "{{inviterName}} has invited you to the team {{teamName}} in {{organizationName}}. Accept and it joins the workspaces you already have access to. Your existing teams and your role are unchanged.",
     ctaExistingMember: "Join the team",
     organizationLabel: "Organization: {{organizationName}}",
     teamLabel: "Team: {{teamName}}",
@@ -128,10 +128,32 @@ export default {
     greetingNamed: "Hello {{name}},",
     greetingAnonymous: "Hello,",
     intro:
-      'The workflow "{{workflowName}}" paused a run — it needs a review before it can continue.',
+      'The workflow "{{workflowName}}" paused a run. It needs a review before it can continue.',
     cta: "Review and continue the run",
     questionsHeader: "Questions awaiting an answer",
     multiSelectHint: "Multiple answers possible.",
     genericDetail: "Open the run to review the pending action.",
+  },
+
+  securityNotice: {
+    greetingNamed: "Hello {{name}},",
+    greetingAnonymous: "Hello,",
+    passkeyAdded: {
+      subject: "A passkey was added to your Fretik account",
+      intro:
+        "A new passkey was added to your Fretik account. It can now be used to sign in without a password.",
+    },
+    passkeyRemoved: {
+      subject: "A passkey was removed from your Fretik account",
+      intro:
+        "A passkey was removed from your Fretik account. It can no longer be used to sign in.",
+    },
+    passkeyLabel: "Passkey: {{name}}",
+    defaultPasskeyName: "Passkey",
+    dateLabel: "Date: {{date}}",
+    deviceLabel: "Device: {{device}}",
+    cta: "Review your security settings",
+    notYou:
+      "If this wasn't you, change your password right away and remove any passkey you don't recognize.",
   },
 };

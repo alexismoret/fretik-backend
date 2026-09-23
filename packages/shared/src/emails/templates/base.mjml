@@ -1,77 +1,128 @@
+<!--
+  The frame every Fretik e-mail is poured into — La Boucle's identity, cut
+  down to what mail clients render:
+
+  - the header is the app's lockup on its dark canvas (zinc-950): the mark,
+    then the word, sized like `FretikLockup` — the word at the mark's box
+    / 1.14. The logo (logo-icon.png on S3) is the bare mark on a transparent
+    canvas, framed like `<FretikMark>`: the visible square fills 72% of the
+    box, so the box starts 4px left of the content edge for the SQUARE to
+    line up with the text below it;
+  - the body is one white sheet with square corners (2px, the app's
+    radius) and a hairline edge, on a zinc-100 canvas;
+  - one teal, #14b8a6 (teal-500): the fill of the app's solid buttons, and
+    the colour of the mark, the square nodes and the links;
+  - the product faces (Public Sans, Space Grotesk for the wordmark) are asked
+    for and fall back to the system sans — most clients never load a web
+    font, and the stacks are chosen so nothing reflows when they don't.
+-->
 <mjml>
   <mj-head>
     <mj-title>{{ appName }}</mj-title>
+    <mj-font
+      name="Public Sans"
+      href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;600&amp;display=swap"
+    />
+    <mj-font
+      name="Space Grotesk"
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600&amp;display=swap"
+    />
     <mj-attributes>
       <mj-all
-        font-family="'Inter', 'Helvetica Neue', Helvetica, Arial, sans-serif"
+        font-family="'Public Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif"
+        padding="0"
       />
       <mj-text
         font-weight="400"
         font-size="15px"
-        color="#374151"
+        color="#3f3f46"
         line-height="24px"
       />
       <mj-button
-        background-color="#0d9488"
+        background-color="#14b8a6"
         color="#ffffff"
-        font-size="15px"
+        font-size="14px"
         font-weight="600"
-        border-radius="6px"
-        inner-padding="12px 24px"
+        line-height="20px"
+        border-radius="2px"
+        inner-padding="11px 20px"
+        align="left"
       />
     </mj-attributes>
     <mj-style>
       a {
-        color: #0d9488;
-        text-decoration: none;
+        color: #14b8a6;
       }
     </mj-style>
   </mj-head>
-  <mj-body background-color="#f4f5f7" width="600px">
-    <!-- Header -->
-    <mj-section background-color="#0f766e" padding="24px 0">
+  <mj-body background-color="#f4f4f5" width="600px">
+    <mj-section padding="32px 0 0 0">
+      <mj-column width="100%"></mj-column>
+    </mj-section>
+
+    <!-- Header: the mark and the wordmark, on the app's dark canvas -->
+    <mj-section
+      background-color="#09090b"
+      border-radius="2px 2px 0 0"
+      padding="20px 40px 20px 36px"
+    >
       <mj-column width="100%">
-        <mj-image
-          src="{{logoUrl}}"
-          alt="{{appName}}"
-          align="center"
-          width="80px"
-          padding-bottom="8px"
-        />
-        <mj-text
-          align="center"
-          color="#ffffff"
-          font-size="20px"
-          font-weight="700"
-          padding="0"
-        >
-          {{ appName }}
+        <mj-text padding="0">
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+            <tr>
+              <td style="padding-right: 2px; vertical-align: middle">
+                <img
+                  src="{{logoUrl}}"
+                  alt=""
+                  width="28"
+                  height="28"
+                  style="display: block; width: 28px; height: 28px; border: 0"
+                />
+              </td>
+              <td
+                style="
+                  vertical-align: middle;
+                  font-family:
+                    &quot;Space Grotesk&quot;, &quot;Public Sans&quot;,
+                    Helvetica, Arial, sans-serif;
+                  font-size: 24px;
+                  font-weight: 600;
+                  line-height: 28px;
+                  letter-spacing: -0.035em;
+                  color: #ffffff;
+                "
+              >
+                {{ appName }}
+              </td>
+            </tr>
+          </table>
         </mj-text>
       </mj-column>
     </mj-section>
 
-    <!-- Content -->
-    <mj-section background-color="#ffffff" padding="32px 24px">
+    <!-- Content: one sheet -->
+    <mj-section
+      background-color="#ffffff"
+      border-left="1px solid #e4e4e7"
+      border-right="1px solid #e4e4e7"
+      border-bottom="1px solid #e4e4e7"
+      border-radius="0 0 2px 2px"
+      padding="36px 40px 40px 40px"
+    >
       {{{content}}}
     </mj-section>
 
     <!-- Footer -->
-    <mj-section padding="24px 0">
+    <mj-section padding="24px 40px 40px 40px">
       <mj-column width="100%">
-        <mj-text
-          align="center"
-          color="#9ca3af"
-          font-size="12px"
-          line-height="18px"
-        >
+        <mj-text color="#71717a" font-size="12px" line-height="18px">
           {{ footerSentBy }}
         </mj-text>
         <mj-text
-          align="center"
-          color="#9ca3af"
+          color="#a1a1aa"
           font-size="12px"
           line-height="18px"
-          padding-top="4px"
+          padding-top="2px"
         >
           {{ footerCopyright }}
         </mj-text>

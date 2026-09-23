@@ -147,7 +147,7 @@ const runResume = async (params: { conversationId: string }): Promise<void> => {
       byUserId: "",
     });
 
-    const history = (await loadAgentWindow(conversationId, 30)).messages;
+    const history = (await loadAgentWindow(conversationId)).messages;
     const actingUserId = built.actingUserId ?? conversation.userId;
     const callOptions: ChatbotCallOptions = {
       organizationId: conversation.organizationId,

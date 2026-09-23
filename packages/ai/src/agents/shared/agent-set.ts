@@ -262,11 +262,33 @@ export const loopGuardSeverity = (verdict: LoopGuardVerdict): number =>
  * then the withdrawal of every tool, both in `prepareStep` (see
  * `agent-builder.ts`); this is what stops the burn when the model ignores
  * both, or when there is no tool left to withdraw.
+ *
+ * `disarmAt` is what makes the ladder a ladder. The three stages assume
+ * severity CLIMBS — one failure, then a few, then many — and a step that emits
+ * hundreds of calls breaks that assumption: severity goes from 0 to the window
+ * size in ONE step, clearing the steer and the withdrawal along with the abort,
+ * so the turn ends on the very step that ran away. Measured 2026-09-20 on two
+ * eval turns: 298 `manageSync` calls and 753 `querySql` calls, both ending with
+ * a dangling half-sentence ("Je teste le rapprochement des deux avant de vous
+ * proposer quoi que ce soit.") and no answer.
+ *
+ * So the abort holds for one step when the threshold was crossed all at once —
+ * severity over the steps BEFORE the last one had not yet reached the
+ * withdrawal point. `prepareStep` then withdraws every tool and asks the model
+ * to explain itself, and with no tool to reach for it can only answer. The
+ * burn is already over at that point: the withdrawal is what stops it, and this
+ * stage only decides whether the user gets words or a wall. A loop that climbs
+ * gradually — which is every other loop this guard has caught — has a prefix
+ * past `disarmAt` and aborts exactly as before.
  */
 export const stopOnRepeatedToolErrors = <TTools extends ToolSet>(
   limit: number,
+  disarmAt: number,
 ): StopCondition<TTools> => {
-  return ({ steps }) => loopGuardSeverity(loopGuardVerdict(steps)) >= limit;
+  return ({ steps }) => {
+    if (loopGuardSeverity(loopGuardVerdict(steps)) < limit) return false;
+    return loopGuardSeverity(loopGuardVerdict(steps.slice(0, -1))) >= disarmAt;
+  };
 };
 
 /**

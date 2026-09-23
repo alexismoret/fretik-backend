@@ -15,7 +15,14 @@ import {
 } from "./conversation-lifecycle";
 import { raceDeadline } from "./deadline";
 import { invokeChatbot } from "./http-client";
-import type { Assertion, CaseResult, EvalCase, EvalSuite } from "./types";
+import type {
+  Assertion,
+  CaseResult,
+  EvalCase,
+  EvalCaseContext,
+  EvalSuite,
+  InvokeResult,
+} from "./types";
 
 /**
  * The bound this path did not have. `evals:memory`, `evals:chain` and
@@ -71,6 +78,83 @@ const selectAssertions = (
     ? assertions.filter((a) => a.type !== "judge")
     : assertions;
 
+/**
+ * Run a case's seed, turning a THROW into a red result instead of letting it
+ * escape.
+ *
+ * A seed that throws used to propagate out of `runCase` into the Langfuse
+ * dataset-run SDK, which logs "Skipping item" and drops the case from the run.
+ * The run then reports a smaller `items` count and a correctness average over
+ * whatever survived — so a broken fixture reads as a HEALTHY suite, which is
+ * the one failure mode an eval harness must not have.
+ *
+ * It was not hypothetical: three raw INSERTs in `collections-autonomy` were
+ * missing a NOT NULL column, and SEVEN curated cases scored nothing for as long
+ * as that went unnoticed (2026-09-20). The fixture bug was a morning's work;
+ * finding it took three runs, because nothing was red.
+ *
+ * `undefined` means the seed ran. A `CaseResult` means it did not, and the case
+ * fails on one assertion that says so — no turn is invoked, no judge is paid
+ * for grading an empty answer.
+ */
+const seedOrFail = async (
+  suite: EvalSuite,
+  c: EvalCase,
+  ctx: EvalCaseContext,
+): Promise<CaseResult | undefined> => {
+  try {
+    await c.seed?.(ctx);
+    return undefined;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[evals] seed failed for ${c.id}:`, message);
+    return {
+      caseId: c.id,
+      suiteName: suite.name,
+      description: c.description,
+      prompt: c.prompt,
+      passed: false,
+      invoke: {
+        text: "",
+        toolCalls: [],
+        latencyMs: 0,
+        toolLatencyMs: 0,
+        modelLatencyMs: 0,
+        error: `seed failed: ${message}`,
+      },
+      assertions: [
+        {
+          type: "custom",
+          label: "seed",
+          passed: false,
+          score: 0,
+          message: `seed failed: ${message}`,
+        },
+      ],
+    };
+  }
+};
+
+/**
+ * The request never completed — the network, not the model.
+ *
+ * Measured 2026-09-20: two of eighteen turns came back with "The socket
+ * connection was closed unexpectedly", no text and no tool call, and were
+ * scored 0.250 — `noError` red, `toolUsed` red, and the judge grading an empty
+ * answer. A suite that scores a dropped socket as a bad answer reports model
+ * quality it did not measure, and it does it in the direction that hides
+ * improvements.
+ *
+ * Deliberately narrow. An `httpStatus` means the service ANSWERED — a 500 is
+ * ours and belongs in the score — so only a failure with no status at all, and
+ * no frame of any kind, counts as transport.
+ */
+const isTransportFailure = (result: InvokeResult): boolean =>
+  result.error !== undefined &&
+  result.httpStatus === undefined &&
+  result.toolCalls.length === 0 &&
+  result.text.trim().length === 0;
+
 export const runCase = async (
   suite: EvalSuite,
   c: EvalCase,
@@ -107,22 +191,32 @@ export const runCase = async (
   };
   try {
     if (c.seed && conversationId) {
-      await c.seed(ctx);
+      const seedFailure = await seedOrFail(suite, c, ctx);
+      if (seedFailure !== undefined) return seedFailure;
     }
-    const invoke = await raceDeadline(
-      () =>
-        invokeChatbot(c.prompt, conversationId, {
-          modelProfileKey: opts?.modelProfileKey,
-          pageBuildProfileKey: opts?.pageBuildProfileKey,
-          recallMode: opts?.recallMode,
-          standingMode: opts?.standingMode,
-          // Case-level, not run-level: the privacy probe is the only turn that
-          // must arrive as somebody other than the eval user.
-          asOtherUser: c.runAsOtherUser,
-        }),
-      CASE_DEADLINE_MS,
-      `${suite.name}/${c.id}`,
-    );
+    const turn = () =>
+      raceDeadline(
+        () =>
+          invokeChatbot(c.prompt, conversationId, {
+            modelProfileKey: opts?.modelProfileKey,
+            pageBuildProfileKey: opts?.pageBuildProfileKey,
+            recallMode: opts?.recallMode,
+            standingMode: opts?.standingMode,
+            // Case-level, not run-level: the privacy probe is the only turn
+            // that must arrive as somebody other than the eval user.
+            asOtherUser: c.runAsOtherUser,
+          }),
+        CASE_DEADLINE_MS,
+        `${suite.name}/${c.id}`,
+      );
+    let invoke = await turn();
+    if (isTransportFailure(invoke)) {
+      console.warn(
+        `[evals] ${c.id}: transport failure, retrying once —`,
+        invoke.error,
+      );
+      invoke = await turn();
+    }
     const assertions = await runAssertions(
       selectAssertions(c.assertions, opts),
       invoke,

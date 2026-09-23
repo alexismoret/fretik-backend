@@ -16,6 +16,7 @@ import {
   type EventActor,
   SYSTEM_ACTOR,
 } from "../domain-events/emit";
+import { assertFieldNotSynced } from "./assert-not-synced";
 import { invalidateFieldDefinitionsCache } from "./cache";
 import {
   assertNoFormulaDependents,
@@ -96,6 +97,12 @@ export const updateFieldDefinition = async (data: {
             excludeFieldId: existing.id,
           })
         : [];
+
+    // Retyping or re-keying a column an app fills is refused; changing its
+    // label, description or visibility is not. The key is what the source's
+    // mapping names, so renaming it unbinds the column without a word.
+    if (typeChanged) await assertFieldNotSynced(existing, "changeType");
+    if (keyChanged) await assertFieldNotSynced(existing, "renameKey");
 
     // Renaming or retyping a field that a formula READS is refused by name.
     // Postgres would not stop either one: a rename silently rewrites the

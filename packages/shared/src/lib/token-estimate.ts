@@ -61,11 +61,10 @@ import { encode } from "gpt-tokenizer/encoding/o200k_base";
  * ## Cost, and the cache
  *
  * Even sliced, counting is real work: ~11 ms for 200 KB of prose. A turn that
- * recounted its whole window on every step would pay that thirty times over, so
+ * recounted its whole window on every step would pay that on every message, so
  * `countCachedTokens` memoises per unit of content. The natural unit is one
- * message: messages are immutable once settled, a window is 30 of them, and a
- * turn adds one or two — so a steady-state turn tokenises what is new and reads
- * the rest from the map.
+ * message: messages are immutable once settled and a turn adds one or two — so
+ * a steady-state turn tokenises what is new and reads the rest from the map.
  */
 
 /**
@@ -89,8 +88,18 @@ import { encode } from "gpt-tokenizer/encoding/o200k_base";
  */
 export const CHARS_PER_TOKEN = 4;
 
-/** Entries are one number each; the bound is about unbounded growth, not size. */
-const CACHE_MAX_ENTRIES = 4_096;
+/**
+ * Entries are one number each (~3 MB at the bound); the bound is about
+ * unbounded growth, not size.
+ *
+ * Sized against the working set, which is every OPEN conversation's window at
+ * once — each row is counted about twice per step (the UI message and the model
+ * message). It was 4 096 while a window was 30 rows, room for ~130 concurrent
+ * conversations. Since 2026-09-23 a window runs to the compaction cap, a few
+ * hundred rows, and 4 096 held about eight: a ninth evicted rows the others
+ * were still reading and every step re-tokenised them.
+ */
+export const TOKEN_CACHE_MAX_ENTRIES = 32_768;
 
 const cache = new Map<string, number>();
 
@@ -123,11 +132,17 @@ export const countCachedTokens = (text: string): number => {
   if (text.length === 0) return 0;
   const key = Bun.hash(text).toString();
   const hit = cache.get(key);
-  if (hit !== undefined) return hit;
+  if (hit !== undefined) {
+    // Re-inserted so a hit moves it to the back: `Map` iterates in insertion
+    // order, and without this the eviction below is FIFO — it drops the rows an
+    // open conversation reads on every step as readily as a dead one's.
+    cache.delete(key);
+    cache.set(key, hit);
+    return hit;
+  }
   const counted = countTokens(text);
-  if (cache.size >= CACHE_MAX_ENTRIES) {
-    // Oldest first — `Map` iterates in insertion order, and the working set is
-    // one conversation window, far under the bound.
+  if (cache.size >= TOKEN_CACHE_MAX_ENTRIES) {
+    // Least recently used first — see the re-insert above.
     const oldest = cache.keys().next();
     if (!oldest.done) cache.delete(oldest.value);
   }

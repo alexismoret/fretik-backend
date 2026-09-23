@@ -4,7 +4,10 @@ import {
   WORKFLOW_TRIGGERABLE_EVENT_TYPES,
 } from "../services/domain-events/event-types";
 import { reasoningLevelSchema } from "./reasoning";
-import { WorkflowFormConfigSchema } from "./workflow-forms";
+import {
+  workflowFormActivationError,
+  WorkflowFormConfigSchema,
+} from "./workflow-forms";
 
 /**
  * Workflow schemas + shared constants — the SINGLE source of truth for
@@ -311,6 +314,36 @@ export const workflowEventActivationError = (
   eventSubscriptions(config).length === 0
     ? "An event trigger needs at least one event to listen for."
     : null;
+
+/**
+ * Can this trigger still reach its workflow? Null when yes.
+ *
+ * The same completeness the activation gates enforce, expressed once so the
+ * OTHER way into a live workflow — editing the trigger of one already active,
+ * which never calls `activateWorkflow` — cannot bypass it. Only ever applied
+ * to an ACTIVE workflow: a draft autosaves incomplete on purpose.
+ */
+export const liveTriggerCompletenessError = (
+  type: WorkflowTriggerType,
+  config: WorkflowTriggerConfig,
+): string | null => {
+  if (type === "cron" && !config.cron) {
+    return "A cron trigger requires a cron pattern in triggerConfig — a live workflow cannot be left without a schedule.";
+  }
+  if (type === "event") {
+    const eventError = workflowEventActivationError(config);
+    if (eventError) {
+      return `${eventError} Emptying triggerConfig on a live workflow leaves it subscribed to nothing: it stays "active" and never runs again. Send the full event list you want it to listen for.`;
+    }
+  }
+  if (type === "form") {
+    if (!config.form) {
+      return "A form trigger requires a form definition in triggerConfig — a live workflow cannot be left without one.";
+    }
+    return workflowFormActivationError(config.form);
+  }
+  return null;
+};
 
 /**
  * A trigger config sub-object must match the trigger type: a `cron` config under
@@ -685,7 +718,13 @@ export type WorkflowTurnResult = z.infer<typeof WorkflowTurnResultSchema>;
 
 /** Payload of the `workflow-run` Trigger.dev task — ids only (the DB row is
  * the source of truth, re-read by the AI service every turn), plus the one
- * limit the orchestrator itself enforces: the wall-clock deadline. */
+ * limit the orchestrator itself enforces: the wall-clock deadline.
+ *
+ * A run may be driven by SEVERAL orchestrators in sequence, one per stretch
+ * of work between two human waits (see `resumeFromTurnIndex` on the run
+ * row). The last two fields are what a resuming orchestrator needs and
+ * cannot recover on its own; both are absent on a run's first orchestrator.
+ */
 export const WorkflowRunTaskPayloadSchema = z.object({
   runId: z.uuid(),
   workflowId: z.uuid(),
@@ -698,6 +737,15 @@ export const WorkflowRunTaskPayloadSchema = z.object({
     .min(1)
     .max(WORKFLOW_MAX_DURATION_MINUTES)
     .default(WORKFLOW_MAX_DURATION_MINUTES),
+  /** Turn to start at. 1 for a fresh run; the turn after the approved one
+   * for a resume. The AI service anchors idempotency on `lastTurnIndex`, so
+   * starting too low replays a recorded verdict rather than re-running it —
+   * this is a correctness field, not an optimization. */
+  startTurnIndex: z.number().int().min(1).default(1),
+  /** Budget LEFT in ms at the park. Overrides `maxDurationMinutes` when
+   * present, so a run resumed after three days does not silently get a
+   * fresh full budget each time a human answers. */
+  remainingMs: z.number().int().min(0).optional(),
 });
 export type WorkflowRunTaskPayload = z.infer<
   typeof WorkflowRunTaskPayloadSchema
@@ -711,9 +759,12 @@ export const WorkflowTurnRequestSchema = z.object({
   wrapUp: z.boolean().optional(),
 });
 
-/** Body of POST /internal/trigger/runs/:runId/wait-token. */
-export const WorkflowWaitTokenRequestSchema = z.object({
-  waitTokenId: z.string().min(1),
+/** Body of POST /internal/trigger/runs/:runId/park — the orchestrator is
+ * about to END on a human wait and hands over everything the one that
+ * resumes will need. */
+export const WorkflowParkRequestSchema = z.object({
+  resumeFromTurnIndex: z.number().int().min(1),
+  remainingMs: z.number().int().min(0),
 });
 
 /** Body of POST /internal/trigger/runs/:runId/finalize. */
@@ -923,6 +974,28 @@ export const WorkflowActiveRunSchema = z.object({
   status: workflowRunStatusSchema,
   isTest: z.boolean(),
   startedAt: isoDate.nullable(),
+  /** Start of the park currently open — set while the run waits on a human,
+   * NULL while it works. On a `needs_approval` row it is the moment the run
+   * asked, which is what "waiting since" is measured from. */
+  pausedAt: isoDate.nullable(),
   createdAt: isoDate,
 });
 export type WorkflowActiveRun = z.infer<typeof WorkflowActiveRunSchema>;
+
+/**
+ * Why a workflow is or is not moving, derived from its non-terminal runs.
+ *
+ * Exists because "3 runs parked" and "this workflow will not run again until
+ * someone decides" are the same fact, and nothing used to state the second:
+ * a team read three ordinary-looking approval rows on the dashboard while
+ * every new upload queued behind them, and the assistant — which cannot see
+ * runs at all — explained the silence with a cause it invented.
+ */
+export const WorkflowRunPressureSchema = z.object({
+  running: z.number().int(),
+  queued: z.number().int(),
+  needsApproval: z.number().int(),
+  /** When the OLDEST still-unanswered approval asked; NULL when none wait. */
+  waitingSince: isoDate.nullable(),
+});
+export type WorkflowRunPressure = z.infer<typeof WorkflowRunPressureSchema>;

@@ -13,5 +13,6 @@ from . import planner
 from . import sharepoint
 from . import akanea_wms
 from . import pbyp
+from . import eval_fixture
 
-__all__ = ["ApprovalPending", "FretikActionError", "Operation", "run_plan", "collections", "outlook", "imap_smtp", "ftp_sftp", "exchange", "teams", "front", "shiptify", "planner", "sharepoint", "akanea_wms", "pbyp"]
+__all__ = ["ApprovalPending", "FretikActionError", "Operation", "run_plan", "collections", "outlook", "imap_smtp", "ftp_sftp", "exchange", "teams", "front", "shiptify", "planner", "sharepoint", "akanea_wms", "pbyp", "eval_fixture"]

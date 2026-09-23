@@ -44,6 +44,72 @@ key = 'person' and team_id is null` → **0**.
 - `drop-legacy-object-index-queue.ts` (was in `@fretik/jobs`) — `bull:*:repeat` in
   production Redis lists `collection-index` and **no** `object-index`.
 
+Removed on **2026-09-21**, same rule, after the operator confirmed every one of
+them had run in production. What makes each one dead is not that it ran — it is
+that **the condition it repaired can no longer occur**, which is the only test
+worth applying: a one-off whose cause is still reachable is a repair tool, not a
+spent migration.
+
+- `repair-oversized-messages.ts` (this folder) — the fence is now closed on both
+  sides it used to leak through: `maybePersistLargeOutput` bounds head-and-tail
+  IN PLACE when there is no `conversationId` (it used to return the content
+  untouched), and `python` / `bash` / `manageDocument` / `manageWorkflow` all
+  route their results — error envelopes included — through it. Verify with
+  `select count(*) from ai_messages where octet_length(parts::text) > 200000`
+  restricted to rows newer than the fence.
+- `repair-workflow-notifications.ts` (this folder) — the "email on, nobody
+  selected" state is unreachable from the panel: `SettingsSlideover.vue` watches
+  the three controls and re-adds a recipient (`ensureRecipient`). Verify with
+  `select count(*) from workflows where (notifications->>'emailOnCompletion')::bool
+and not (notifications->>'notifyTriggeredBy')::bool
+and jsonb_array_length(notifications->'recipientUserIds') = 0`.
+- `drop-legacy-orphan-repeatable.ts` (was in `@fretik/jobs`) — it had to run
+  BEFORE BullMQ 6 or the container could not boot. All three packages are on
+  `bullmq ^6.3.2` and production serves: the fleet running is the proof. What
+  replaces it is `jobs/tests/unit/schedulers.test.ts`, which fails on any
+  `{ repeat }` registration — the cleanup is gone, so the test is now the only
+  thing between a legacy registration and a crash loop.
+- `backfill-orphan-think-tags.ts` (was in `@fretik/ai`) — `orphanTagMiddleware`
+  strips the dangling `</think>` at the source now, so no new row can carry one.
+  Verify with `select count(*) from ai_messages where role = 'assistant'
+and parts::text like '%think>%'`.
+- `redistill-clipped-episodes.ts` (was in `@fretik/ai`, written and run the same
+  week) — it rewrote the 237 of 238 episodes the distiller's old 500-character
+  per-message clip had damaged. Deleted for a second reason on top of the clip
+  being gone: **it could not tell whether it had already run.** Its candidate
+  test compares today's transcript rendering against the legacy one, and that
+  difference is permanent, so a dry run in six months would list the same 237
+  and offer to redo them, bounded only by a `--before` date nobody would still
+  have. A script that cannot answer "am I done?" is the exact shape this list
+  exists to remove.
+
+Removed on **2026-09-22**, the same day it shipped — and without ever having
+converted a row:
+
+- `convert-legacy-approval-parks.ts` (+ its service and its integration
+  suite) — it existed to rescue the runs parked by the pre-2026-09-22
+  orchestrator, which sat in `wait.forToken` and so held its workflow's
+  concurrency slot for the whole human wait (self-hosted Trigger.dev has no
+  checkpoints — Cloud-only, `self-hosting/overview.mdx`). Three of them at a
+  limit of three silenced a live workflow for six days. By the time the
+  release reached production the backlog had been cleared by hand, and the
+  new orchestrator (Trigger.dev version `20260922.1`) cannot park that way,
+  so **the condition is unreachable, not merely repaired**. Both halves of
+  that claim are checkable:
+
+  ```sql
+  -- no run is parked without a resume point
+  select count(*) from workflow_runs
+  where status = 'needs_approval' and resume_from_turn_index is null;  -- 0
+  -- and no orchestrator of any kind is live to park the old way
+  select count(*) from workflow_runs
+  where status in ('queued','running','needs_approval');               -- 0
+  ```
+
+  Both returned 0. Note the first query alone is not enough: a HEALTHY run
+  matches it for the fraction of a second between the turn writing
+  `needs_approval` and the orchestrator's `/park` callback landing.
+
 ## The objects data-migration / provisioning model
 
 The typed-table refonte replaces the JSONB `collection_records.data` column with one

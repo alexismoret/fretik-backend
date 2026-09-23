@@ -9,6 +9,7 @@
  */
 
 import { beforeEach, describe, expect, test } from "bun:test";
+import { ROLE_BINDINGS } from "../../../src/lib/model-registry/role-bindings";
 import { setTeamAiSettingsDouble } from "../../lib/team-ai-settings-double";
 
 // The settings read is stubbed globally from `tests/preload.ts` (see that
@@ -187,7 +188,12 @@ describe("cheapModelIdForTeam", () => {
  * chosen for.
  */
 describe("resolveTeamFlagship", () => {
-  const codeDefault = "deepseek-v4-flash";
+  // READ from the binding, not spelled out. What these tests pin is the
+  // FALLBACK CHAIN — pin, then the team's `assistant` pick, then the code
+  // default — and a literal here turns every model promotion into three red
+  // tests that say nothing about that chain. It cost exactly that on the
+  // 2026-09-21 flip to GLM 5.3 Flash.
+  const codeDefault = ROLE_BINDINGS.chat.profileKey;
 
   test("no team in scope → code default, nothing stored", async () => {
     expect(await resolveTeamFlagship(undefined, null)).toEqual({

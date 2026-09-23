@@ -63,7 +63,14 @@ const guardToolExecute = <TInput, TOutput, TContext>(
         toolError(
           TOOL_ERROR_CODES.STEP_CALL_CAP,
           `This step already issued its ${budget.limit.toString()} tool calls, so this one was NOT executed — nothing happened.`,
-          "Read the results you have and continue with fewer calls per step.",
+          // "Continue with fewer calls per step" was the hint here, and it told
+          // a model that had already lost the thread to keep calling. Measured
+          // 2026-09-20: one generation emitted 2 446 `searchTools` calls in five
+          // milliseconds, every one of them `{"query": "stop"}` or
+          // `{"query": "done"}` — the model was trying to END its turn, had no
+          // affordance for saying so, and read the refusal as an instruction to
+          // carry on. The hint now points at the one move that ends the loop.
+          "Stop calling tools in this step — further calls in it do nothing. Answer from the results you already have.",
         ),
       );
     }

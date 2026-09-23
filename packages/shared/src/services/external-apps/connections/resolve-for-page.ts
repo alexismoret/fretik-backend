@@ -103,7 +103,7 @@ export const resolvePageConnection = async (params: {
     if (row.status !== "active") {
       return {
         status: "error",
-        message: `connection "${row.displayName}" is ${row.status} — fix it under Settings → Connected apps`,
+        message: `connection "${row.displayName}" is ${row.status}. Fix it under Settings → Connected apps`,
       };
     }
     return {

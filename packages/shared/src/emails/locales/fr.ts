@@ -23,7 +23,7 @@ export default {
         "Utilisez le code ci-dessous pour réinitialiser votre mot de passe Fretik.",
     },
     changeEmail: {
-      subject: "Confirmez votre nouvelle adresse e-mail — votre code Fretik",
+      subject: "Votre code Fretik pour confirmer votre nouvelle adresse e-mail",
       intro:
         "Utilisez le code ci-dessous pour confirmer cette adresse e-mail pour votre compte Fretik.",
     },
@@ -42,7 +42,7 @@ export default {
       "{{inviterName}} vous a invité à rejoindre l'équipe {{teamName}} dans {{organizationName}} sur Fretik.",
     subjectExistingMember: "Vous avez reçu l'accès à l'équipe {{teamName}}",
     messageExistingMember:
-      "{{inviterName}} vous a invité dans l'équipe {{teamName}} de {{organizationName}}. En acceptant, elle s'ajoute aux espaces auxquels vous avez déjà accès — vos équipes actuelles et votre rôle restent inchangés.",
+      "{{inviterName}} vous a invité dans l'équipe {{teamName}} de {{organizationName}}. En acceptant, elle s'ajoute aux espaces auxquels vous avez déjà accès. Vos équipes actuelles et votre rôle restent inchangés.",
     ctaExistingMember: "Rejoindre l'équipe",
     organizationLabel: "Organisation : {{organizationName}}",
     teamLabel: "Équipe : {{teamName}}",
@@ -132,10 +132,32 @@ export default {
     greetingNamed: "Bonjour {{name}},",
     greetingAnonymous: "Bonjour,",
     intro:
-      'Le workflow "{{workflowName}}" a mis une exécution en pause — elle nécessite une validation avant de pouvoir continuer.',
+      'Le workflow "{{workflowName}}" a mis une exécution en pause. Elle nécessite une validation avant de pouvoir continuer.',
     cta: "Examiner et reprendre l'exécution",
     questionsHeader: "Questions en attente de réponse",
     multiSelectHint: "Plusieurs réponses possibles.",
     genericDetail: "Ouvrez l'exécution pour examiner l'action en attente.",
+  },
+
+  securityNotice: {
+    greetingNamed: "Bonjour {{name}},",
+    greetingAnonymous: "Bonjour,",
+    passkeyAdded: {
+      subject: "Une clé d'accès a été ajoutée à votre compte Fretik",
+      intro:
+        "Une nouvelle clé d'accès a été ajoutée à votre compte Fretik. Elle permet désormais de se connecter sans mot de passe.",
+    },
+    passkeyRemoved: {
+      subject: "Une clé d'accès a été supprimée de votre compte Fretik",
+      intro:
+        "Une clé d'accès a été supprimée de votre compte Fretik. Elle ne permet plus de se connecter.",
+    },
+    passkeyLabel: "Clé d'accès : {{name}}",
+    defaultPasskeyName: "Clé d'accès",
+    dateLabel: "Date : {{date}}",
+    deviceLabel: "Appareil : {{device}}",
+    cta: "Vérifier vos paramètres de sécurité",
+    notYou:
+      "Si vous n'êtes pas à l'origine de cette action, changez votre mot de passe immédiatement et supprimez toute clé d'accès que vous ne reconnaissez pas.",
   },
 };

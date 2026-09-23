@@ -274,6 +274,138 @@ export const providerConcurrencySchema = z.object({
 });
 export type ProviderConcurrency = z.infer<typeof providerConcurrencySchema>;
 
+/** A budget of `requests` calls per `perSeconds`, with an optional burst. */
+export const rateBudgetSchema = z.object({
+  requests: z.number().int().min(1).max(100_000),
+  perSeconds: z.number().int().min(1).max(86_400),
+  /**
+   * How many may land back-to-back before the pacing bites. Defaults to the
+   * whole allowance, which is what an API that publishes "600/min" means: 600
+   * at once is within the budget, 601 is not.
+   */
+  burst: z.number().int().min(1).max(100_000).optional(),
+});
+export type RateBudget = z.infer<typeof rateBudgetSchema>;
+
+/**
+ * What this app can take, as the app itself publishes it.
+ *
+ * Declared here rather than discovered, because discovery means learning it
+ * from a 429 — and a 429 is already a request someone lost. It is optional in
+ * every part: most APIs are generous enough that the process-wide default
+ * (`EXTERNAL_APP_DEFAULT_RATE_PER_MINUTE`) is the right answer, and a limit
+ * invented to look thorough would throttle a provider nobody measured.
+ *
+ * Two scopes because the ceilings are genuinely two different ceilings, and a
+ * single one would be wrong in both directions:
+ *
+ *  - `perConnection` is per ACCOUNT. Almost every published limit is this one
+ *    ("600 requests per minute per API key"), and it must not be shared: one
+ *    team's fan-out has no business slowing another team's.
+ *  - `perProvider` is shared by EVERY connection of this provider in this
+ *    deployment. It is what an API limiting by IP means, and it is what the
+ *    Nango account limit means — that one applies to every proxied call we
+ *    make, all teams together, so no per-account budget can express it.
+ *
+ * `maxConcurrent` is the other axis: how many calls may be IN FLIGHT at once on
+ * one connection, which is what a licence-seat pool bounds (Akanea WMS leases a
+ * seat per action) and what no request-per-second budget can say.
+ */
+export const providerRateLimitSchema = z.object({
+  perConnection: rateBudgetSchema.optional(),
+  perProvider: rateBudgetSchema.optional(),
+  maxConcurrent: z.number().int().min(1).max(64).optional(),
+  /**
+   * The header this API answers a 429 with, when it is not `Retry-After`.
+   * Nango's own provider config carries the same idea (`retry.after` /
+   * `retry.at`) for the same reason: the NAME varies, the meaning does not.
+   */
+  retryAfterHeader: z.string().min(1).max(64).optional(),
+});
+export type ProviderRateLimit = z.infer<typeof providerRateLimitSchema>;
+
+/**
+ * How a READ action is walked past its first answer.
+ *
+ * It exists because pagination here is genuinely not uniform and never was
+ * declared anywhere a machine could read: Front returns cursor pages
+ * (`{page: X}` + `page_token`), most providers take `limit`/`offset`, Planner
+ * and SharePoint set `paginate: true` and are walked server-side by the proxy,
+ * and Akanea has no paging at all and says so in prose. A collection sync has
+ * to pull EVERY row, so it needs that fact as data rather than as a convention
+ * in an action's name.
+ *
+ * Absent, the walker infers: `returns: {page}` → cursor with `page_token`,
+ * `paginate: true` → already whole, anything else → one call. Declaring it is
+ * how a provider corrects a wrong inference, never how it invents a capability
+ * the API lacks.
+ */
+export const actionPaginationSchema = z.object({
+  kind: z.enum([
+    /** `page_token` in, `page_token` out. */
+    "cursor",
+    /** `limit` + `offset`, where the offset counts ROWS. */
+    "offset",
+    /**
+     * `limit` + a 1-based PAGE INDEX. Not a dialect of `offset`: Directus'
+     * `page` is `1` for the first page where an offset is `0`, so walking one
+     * as the other either skips the first page or re-reads it forever. Pbyp is
+     * the case, and it is why this kind exists rather than a cast.
+     */
+    "page-number",
+    /** The executor already returns every page (`paginate: true`). */
+    "auto",
+    /** One call is all there is. Narrow the filter instead. */
+    "none",
+  ]),
+  /** Param carrying the page size. Defaults to `limit`. */
+  limitParam: z.string().optional(),
+  /** Largest page size the API accepts — asking for more is an error, not a cap. */
+  maxLimit: z.number().int().positive().optional(),
+  /** `cursor` only — param carrying the token. Defaults to `page_token`. */
+  tokenParam: z.string().optional(),
+  /** `cursor` only — key of the next token in the answer. Defaults to `page_token`. */
+  tokenPath: z.string().optional(),
+  /** `offset` only — param carrying the offset. Defaults to `offset`. */
+  offsetParam: z.string().optional(),
+  /** `page-number` only — param carrying the index. Defaults to `page`. */
+  pageParam: z.string().optional(),
+});
+export type ActionPagination = z.infer<typeof actionPaginationSchema>;
+
+/**
+ * This read accepts SEVERAL ids in one call.
+ *
+ * The one declaration that turns a per-row refresh from N calls into N/max.
+ * Only `ftp-sftp.get_entries` qualifies today; Outlook's `$batch` writes and
+ * Pbyp's `query_items(filter: {id: {_in: […]}})` are the obvious next two.
+ * Declaring it is a promise about the ANSWER too: the rows must come back in a
+ * shape the caller can re-key by id, or batching silently mixes records up.
+ */
+export const actionBatchSchema = z.object({
+  /** Param taking the id list. */
+  param: z.string().min(1),
+  /** Ids per call. */
+  maxItems: z.number().int().min(2).max(500),
+});
+export type ActionBatch = z.infer<typeof actionBatchSchema>;
+
+/**
+ * This read can be bounded to what changed since a timestamp.
+ *
+ * What turns an hourly full pull into a delta — Front's `updated_after`,
+ * Shiptify's `created_date_from`. The sync binds the source's own
+ * `lastSuccessAt` to it, and DROPS the key on the first run so the seeding
+ * pass sees everything.
+ */
+export const actionIncrementalSchema = z.object({
+  /** Param taking the lower bound. */
+  param: z.string().min(1),
+  /** Wire format the API expects for it. */
+  format: z.enum(["iso", "date", "epoch-seconds", "epoch-millis"]),
+});
+export type ActionIncremental = z.infer<typeof actionIncrementalSchema>;
+
 export const actionSchema = z.object({
   /** Snake-case action name, unique within the provider, e.g. `send_email`. */
   name: z
@@ -327,6 +459,15 @@ export const actionSchema = z.object({
    * action's result.
    */
   handler: z.string().optional(),
+  /**
+   * Read-only capability declarations, consumed by the collection-sync walker
+   * (`services/collection-sync/walk-read.ts`). None of them changes how the
+   * agent calls the action, and the SDK/SKILL generator ignores all three — a
+   * manifest that declares nothing behaves exactly as it did.
+   */
+  pagination: actionPaginationSchema.optional(),
+  batch: actionBatchSchema.optional(),
+  incremental: actionIncrementalSchema.optional(),
 });
 export type ManifestAction = z.infer<typeof actionSchema>;
 
@@ -794,8 +935,62 @@ export const providerManifestSchema = z
     scopes: z.array(z.string()),
     /** How the dispatcher executes this provider's actions. */
     transport: providerTransportSchema,
-    /** Omit for `parallel` — the default, and the one that costs nothing. */
+    /**
+     * Omit for `parallel` — the default, and the one that costs nothing.
+     *
+     * @deprecated Superseded by `rateLimit.maxConcurrent`, which says the same
+     * thing as a number instead of as a mode and can also say "three at a
+     * time". Kept because three manifests and a connection-level override
+     * (`external_app_connections.concurrency_mode`) still speak it, and the
+     * governor reads `mode: "serial"` as `maxConcurrent: 1`.
+     */
     concurrency: providerConcurrencySchema.optional(),
+    /**
+     * What this app can take. Omit unless the API publishes a number — see
+     * `providerRateLimitSchema` for why an invented one is worse than none.
+     */
+    rateLimit: providerRateLimitSchema.optional(),
+    /**
+     * `true` when this app tells us something changed instead of waiting to be
+     * asked — its webhook is relayed by Nango and a delivery brings the
+     * connection's incremental sync sources forward
+     * (`collection-sync/nudge-on-notify.ts`).
+     *
+     * DISPLAY ONLY, and nothing branches on it. It changes one sentence a team
+     * reads about a source's cadence ("Once a day, and whenever <app> tells
+     * us"), and that sentence is the whole value: a cadence the team believes
+     * is what they judge the data by. The nudging itself is keyed on the
+     * delivery arriving, not on this flag, so a `true` here with no webhook
+     * registered upstream is a LIE to the user and not a broken sync — which is
+     * why it may only be set once the operator has registered the integration's
+     * webhook URL with the provider (`backend/docs/OPERATIONS.md`), and not
+     * when the provider merely supports webhooks.
+     */
+    notifiesChanges: z.boolean().optional(),
+    /**
+     * A provider that exists only so automated tests can exercise this whole
+     * path — catalogue, generated SKILL + SDK, sync walker, governor — against
+     * something that answers, without a third party.
+     *
+     * Two consequences, and they are the definition rather than a policy laid
+     * on top of it:
+     *  - it is NOT offered in `GET /external-apps/providers`, so nobody can
+     *    connect it from the app;
+     *  - it holds no credentials, so `callCustomHandler` does not ask Nango for
+     *    any. A connection to it is a row and nothing more.
+     *
+     * Why this exists at all. The sync eval suite spent three runs measuring an
+     * app it could not call: every refusal — a missing manifest, then a missing
+     * Nango binding, then a 404 from Nango — reached the agent as a DIFFERENT
+     * failure, and it improvised differently each time, so five of nine cases
+     * changed verdict between runs (2026-09-20). A fixture that cannot answer
+     * cannot test what the agent does with an answer. Its handlers return rows
+     * from memory and reach no network, so the suite stays hermetic.
+     *
+     * `custom-handler` only — there is nothing to proxy. Never set it on a
+     * provider a customer connects.
+     */
+    testOnly: z.literal(true).optional(),
     /**
      * Frontend credentials form descriptor — required when the provider
      * uses a `custom-handler` transport (since the frontend cannot rely
@@ -909,6 +1104,20 @@ export const providerManifestSchema = z
       });
     }
 
+    // A test-only provider has no third party behind it, so there is nothing
+    // for Nango to proxy and nothing for a user to connect. Any other transport
+    // would go looking for one.
+    if (
+      manifest.testOnly === true &&
+      manifest.transport.kind !== "custom-handler"
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        message:
+          "testOnly requires a custom-handler transport — there is no third party to proxy to",
+      });
+    }
+
     const names = new Set<string>();
     for (const action of manifest.actions) {
       if (names.has(action.name)) {
@@ -918,6 +1127,24 @@ export const providerManifestSchema = z
         });
       }
       names.add(action.name);
+
+      // The three sync capabilities describe how a READ is walked, batched or
+      // bounded. On a write they would describe nothing, and a reader that
+      // believed them would page through a side effect.
+      if (action.kind !== "read") {
+        for (const capability of [
+          "pagination",
+          "batch",
+          "incremental",
+        ] as const) {
+          if (action[capability] !== undefined) {
+            ctx.addIssue({
+              code: "custom",
+              message: `action "${action.name}" declares \`${capability}\` but is a write — those describe how a read is walked`,
+            });
+          }
+        }
+      }
 
       // Transport-specific action requirements.
       // `nango-proxy` and `http-direct` both go through the declarative

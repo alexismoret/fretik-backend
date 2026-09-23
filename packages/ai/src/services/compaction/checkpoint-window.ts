@@ -25,6 +25,7 @@ import {
   loadRawMessagesBelow,
 } from "@fretik/shared/services/ai/messages";
 import type { UIMessage } from "ai";
+import { parseIntEnv } from "../../agents/shared/env";
 import type { ModelProfile } from "../../lib/model-registry/types";
 import { type CompactionArtifact, compactConversation } from "./compact";
 import { getCompactUserSummaryMessage } from "./prompt";
@@ -57,6 +58,32 @@ export interface AgentWindowResult extends AgentWindow {
 }
 
 /**
+ * How many rows after the checkpoint one turn will carry — a guard, not the
+ * bound that shapes the window. Tokens do that: compaction fires at the cap
+ * (~150 000 on the chat model) and folds what it covers into a checkpoint.
+ *
+ * It was 30 until 2026-09-23, and 30 rows is ~15 exchanges — far below any
+ * token cap, so on ordinary chat the ROW bound fired first. Two costs, both
+ * measured. The window slid two rows a turn, so the history's cache was lost
+ * on every turn past row 30: 19 % of production turn boundaries, 13.5 % of
+ * the chat bill over 7 days, and a probe on an 80-row conversation read the
+ * same 22 400 cached tokens — the static prefix — on four turns running.
+ * And the rows that slid out were never summarised, since compaction only
+ * sees the window: a fact stated in the oldest of 40 exchanges was answered
+ * "no longer visible" 3 times out of 3, 60 000 tokens below the cap.
+ *
+ * At 500 the token cap fires first unless rows average under 300 tokens.
+ * Past it the old behaviour returns — rows slide out unsummarised — which is
+ * why reaching it is logged. The env override exists to roll back without a
+ * deploy; below 30 is refused, since that would lose history outright.
+ */
+export const AGENT_WINDOW_ROW_LIMIT = parseIntEnv("AGENT_WINDOW_ROW_LIMIT", {
+  fallback: 500,
+  min: 30,
+  max: 5000,
+});
+
+/**
  * Load a conversation the way an agent must read it.
  *
  * `limit` bounds the rows AFTER the checkpoint, not the conversation: the two
@@ -65,9 +92,16 @@ export interface AgentWindowResult extends AgentWindow {
  */
 export const loadAgentWindow = async (
   conversationId: string,
-  limit = 30,
+  limit = AGENT_WINDOW_ROW_LIMIT,
 ): Promise<AgentWindowResult> => {
   const window = await loadConversationForAgent(conversationId, limit);
+  // Approximate by one or two rows — a stale partial row is dropped after the
+  // limit applies — which is precise enough for a warning.
+  if (window.messages.length >= limit) {
+    console.warn(
+      `[agent-window] row guard reached conversation=${conversationId} rows=${window.messages.length.toString()} limit=${limit.toString()}: older rows after the checkpoint are neither loaded nor summarised`,
+    );
+  }
   const { checkpoint } = window;
   if (!checkpoint) {
     return { ...window, nextGeneration: 1 };
@@ -202,7 +236,7 @@ export const compactAheadOfNextTurn = async (input: {
     // RELOADED, not reused: the turn's own answer committed after the window
     // it read, and a cut that excludes it would leave the next window carrying
     // both a summary and the messages the summary already covers.
-    const window = await loadAgentWindow(input.conversationId, 30);
+    const window = await loadAgentWindow(input.conversationId);
     // No threshold test of our own here, deliberately: `compactConversation`
     // owns it, and a second copy would be a clause no test can kill —
     // below the cap it returns without ever calling `onCompacted`, so the

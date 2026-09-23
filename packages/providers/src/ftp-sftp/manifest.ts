@@ -461,6 +461,7 @@ export const ftpSftpManifest: ProviderManifest = {
         },
         limit: { type: "integer", min: 1, max: MAX_WALK_RESULTS, default: 200 },
       },
+      incremental: { param: "modified_after", format: "iso" },
       returns: { list: "RemoteEntry" },
     },
     {
@@ -479,6 +480,7 @@ export const ftpSftpManifest: ProviderManifest = {
           description: "Files or folders to look up, in one round-trip",
         },
       },
+      batch: { param: "paths", maxItems: 200 },
       returns: { list: "EntryLookup" },
     },
 

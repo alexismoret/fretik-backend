@@ -3,6 +3,14 @@ import {
   type HonoLoggedAppType,
 } from "@fretik/shared/lib/auth-middleware";
 import { teamRequired } from "@fretik/shared/lib/errors";
+import {
+  beginBulkOperationRequestSchema,
+  bulkOperationChunkRequestSchema,
+  bulkOperationChunkResponseSchema,
+  bulkOperationResponseSchema,
+  bulkRecordWriteRequestSchema,
+  bulkRecordWriteResponseSchema,
+} from "@fretik/shared/schemas/bulk-operations";
 import { paramsIdSchema } from "@fretik/shared/schemas/common/params";
 import {
   nextCursorSchema,
@@ -27,9 +35,21 @@ import {
   setRecordStatusRequestSchema,
   updateCollectionRecordRequestSchema,
 } from "@fretik/shared/schemas/ontology";
+import {
+  beginApiLoad,
+  commitApiLoad,
+  findTeamBulkOperation,
+  serializeApiLoad,
+  uploadApiChunk,
+} from "@fretik/shared/services/bulk-operations/api-load";
+import { listDoneChunkIndexes } from "@fretik/shared/services/bulk-operations/begin";
 import { aggregateRecordsByGroup } from "@fretik/shared/services/collection-records/aggregate-by-group";
+import { bulkCreateCollectionRecords } from "@fretik/shared/services/collection-records/bulk-create";
+import { bulkDeleteCollectionRecords } from "@fretik/shared/services/collection-records/bulk-delete";
+import { bulkUpdateCollectionRecords } from "@fretik/shared/services/collection-records/bulk-update";
 import { createCollectionRecord } from "@fretik/shared/services/collection-records/create";
 import { deleteCollectionRecord } from "@fretik/shared/services/collection-records/delete";
+import { idsInCollection } from "@fretik/shared/services/collection-records/ids-in-collection";
 import { getMapPoints } from "@fretik/shared/services/collection-records/map-points";
 import {
   getCollectionRecord,
@@ -248,6 +268,142 @@ const deleteRouteDef = createRoute({
   },
 });
 
+// ── Bulk writes ──────────────────────────────────────────────────────────
+//
+// One door for a load that fits a request, another for one that does not. The
+// second is the same ledger the sandbox SDK uploads against — announce with a
+// digest, send numbered chunks, commit — so a client that drops its connection
+// re-runs the identical call and is told which chunks to skip.
+
+const bulkWriteRoute = createRoute({
+  method: "post",
+  path: "/bulk",
+  summary: "Create, update or delete many records in one request",
+  description:
+    "Up to 5 000 rows. Rows that fail come back in `errors` — the call is a partial success, not an all-or-nothing transaction. Past 5 000 rows, open a bulk operation instead.",
+  tags: ["CollectionRecords"],
+  request: {
+    body: {
+      content: {
+        "application/json": { schema: bulkRecordWriteRequestSchema },
+      },
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      content: {
+        "application/json": { schema: bulkRecordWriteResponseSchema },
+      },
+      description: "Rows written",
+    },
+    ...responseBadRequestSchema,
+    ...responseNotFoundSchema,
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const beginBulkOperationRoute = createRoute({
+  method: "post",
+  path: "/bulk-operations",
+  summary: "Open (or re-find) a load too large for one request",
+  description:
+    "Announces the load without carrying a row. Idempotent on the load's description plus `rowsDigest`: re-submitting returns the same operation and the chunks already received.",
+  tags: ["CollectionRecords"],
+  request: {
+    body: {
+      content: {
+        "application/json": { schema: beginBulkOperationRequestSchema },
+      },
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      content: {
+        "application/json": { schema: bulkOperationResponseSchema },
+      },
+      description: "Operation opened or resumed",
+    },
+    ...responseBadRequestSchema,
+    ...responseNotFoundSchema,
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const bulkOperationChunkRoute = createRoute({
+  method: "post",
+  path: "/bulk-operations/{id}/chunks",
+  summary: "Upload one numbered chunk of a load",
+  description:
+    "Applied on arrival. Re-sending a chunk already received is a no-op, not a second write.",
+  tags: ["CollectionRecords"],
+  request: {
+    params: paramsIdSchema,
+    body: {
+      content: {
+        "application/json": { schema: bulkOperationChunkRequestSchema },
+      },
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      content: {
+        "application/json": { schema: bulkOperationChunkResponseSchema },
+      },
+      description: "Chunk applied",
+    },
+    ...responseBadRequestSchema,
+    ...responseNotFoundSchema,
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const commitBulkOperationRoute = createRoute({
+  method: "post",
+  path: "/bulk-operations/{id}/commit",
+  summary: "Close a load and get its tally",
+  description:
+    "Refused while a chunk is missing — a load that wrote 198 000 of 200 000 rows must say so rather than report success.",
+  tags: ["CollectionRecords"],
+  request: { params: paramsIdSchema },
+  responses: {
+    200: {
+      content: {
+        "application/json": { schema: bulkOperationResponseSchema },
+      },
+      description: "Load closed",
+    },
+    ...responseBadRequestSchema,
+    ...responseNotFoundSchema,
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const getBulkOperationRoute = createRoute({
+  method: "get",
+  path: "/bulk-operations/{id}",
+  summary: "Read a load's state and counters",
+  tags: ["CollectionRecords"],
+  request: { params: paramsIdSchema },
+  responses: {
+    200: {
+      content: {
+        "application/json": { schema: bulkOperationResponseSchema },
+      },
+      description: "Operation retrieved",
+    },
+    ...responseNotFoundSchema,
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
 collectionRecordRoutes.openapi(listRoute, async (c) => {
   const team = c.get("team");
   if (!team) return c.json(teamRequired(), 403);
@@ -411,6 +567,132 @@ collectionRecordRoutes.openapi(deleteRouteDef, async (c) => {
   });
   const result = await deleteCollectionRecord({ id });
   return c.json(result, 200);
+});
+
+collectionRecordRoutes.openapi(bulkWriteRoute, async (c) => {
+  const team = c.get("team");
+  if (!team) return c.json(teamRequired(), 403);
+  const user = c.get("user");
+  const body = c.req.valid("json");
+  // The acting user, as on every other write here. A bulk call is one request
+  // that writes many rows, not a different kind of author.
+  const actor = { actorType: "user" as const, actorUserId: user.id };
+
+  if (body.op === "create") {
+    const result = await bulkCreateCollectionRecords({
+      organizationId: team.organizationId,
+      teamId: team.id,
+      userId: user.id,
+      collectionId: body.collectionId,
+      rows: body.rows.map((data) => ({ data })),
+      actor,
+    });
+    return c.json(
+      {
+        okCount: result.ids.filter((id) => id !== null).length,
+        ids: result.ids,
+        errors: result.errors,
+      },
+      200,
+    );
+  }
+
+  // `collectionId` is in the body, so it is a promise the caller made about
+  // every id it sent — and one the write services cannot check, since they
+  // scope by team. An id from another collection is refused, not written.
+  const ids = body.op === "update" ? body.updates.map((u) => u.id) : body.ids;
+  const owned = await idsInCollection({
+    teamId: team.id,
+    collectionId: body.collectionId,
+    ids,
+  });
+  const strays = ids
+    .filter((id) => !owned.has(id))
+    .map((id) => ({ id, error: "Record not found in this collection." }));
+
+  if (body.op === "update") {
+    const result = await bulkUpdateCollectionRecords({
+      teamId: team.id,
+      updates: body.updates.filter((u) => owned.has(u.id)),
+      merge: body.merge,
+      actor,
+    });
+    return c.json(
+      {
+        okCount: result.updatedIds.length,
+        updatedIds: result.updatedIds,
+        errors: [...strays, ...result.errors],
+      },
+      200,
+    );
+  }
+
+  const result = await bulkDeleteCollectionRecords({
+    teamId: team.id,
+    ids: ids.filter((id) => owned.has(id)),
+    actor,
+  });
+  return c.json(
+    {
+      okCount: result.deletedIds.length,
+      deletedIds: result.deletedIds,
+      errors: [...strays, ...result.errors],
+    },
+    200,
+  );
+});
+
+collectionRecordRoutes.openapi(beginBulkOperationRoute, async (c) => {
+  const team = c.get("team");
+  if (!team) return c.json(teamRequired(), 403);
+  const user = c.get("user");
+  const handle = await beginApiLoad({
+    ...c.req.valid("json"),
+    organizationId: team.organizationId,
+    teamId: team.id,
+    userId: user.id,
+  });
+  return c.json(serializeApiLoad(handle.operation, handle.doneChunks), 200);
+});
+
+collectionRecordRoutes.openapi(bulkOperationChunkRoute, async (c) => {
+  const team = c.get("team");
+  if (!team) return c.json(teamRequired(), 403);
+  const { id } = c.req.valid("param");
+  const { chunkIndex, rows } = c.req.valid("json");
+  const operation = await findTeamBulkOperation(id, team.id);
+  const outcome = await uploadApiChunk({ operation, chunkIndex, rows });
+  return c.json(
+    {
+      applied: outcome.applied,
+      okCount: outcome.succeeded,
+      ids: outcome.ids ?? [],
+      errors: outcome.errors,
+    },
+    200,
+  );
+});
+
+collectionRecordRoutes.openapi(commitBulkOperationRoute, async (c) => {
+  const team = c.get("team");
+  if (!team) return c.json(teamRequired(), 403);
+  const { id } = c.req.valid("param");
+  const finished = await commitApiLoad(
+    await findTeamBulkOperation(id, team.id),
+  );
+  // The ledger is dropped on success, so there is nothing left to skip.
+  return c.json(serializeApiLoad(finished, []), 200);
+});
+
+collectionRecordRoutes.openapi(getBulkOperationRoute, async (c) => {
+  const team = c.get("team");
+  if (!team) return c.json(teamRequired(), 403);
+  const { id } = c.req.valid("param");
+  const operation = await findTeamBulkOperation(id, team.id);
+  return c.json(
+    serializeApiLoad(operation, await listDoneChunkIndexes(operation.id)),
+    200,
+  );
 });
 
 export { collectionRecordRoutes };

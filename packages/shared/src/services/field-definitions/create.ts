@@ -8,6 +8,7 @@ import type {
 import { fieldDefinitions } from "../../db/schema";
 import { internalError, throwHttpError } from "../../lib/errors";
 import { refreshCollectionTableAfterCatalogChange } from "../collection-schema/catalog-sync";
+import { RESERVED_FIELD_KEYS } from "../collection-schema/identifiers";
 import { isDocumentCollection } from "../collections/is-document-type";
 import {
   emitDomainEvent,
@@ -72,7 +73,12 @@ const resolveUniqueFieldKey = async (data: {
           : eq(fieldDefinitions.teamId, data.teamId),
       ),
     );
-  const taken = new Set(rows.map((r) => r.key));
+  // The reserved keys are seeded as taken, not checked separately: a column
+  // named "Id" is an ordinary thing to want (every app's rows carry one), and
+  // its slug lands on the collection's own `id`. Treated as a collision it
+  // becomes `id_2` like any other; left out, it reached the DDL layer and threw
+  // — a 500 on a label a person is entitled to type.
+  const taken = new Set([...rows.map((r) => r.key), ...RESERVED_FIELD_KEYS]);
   const root = slugifyFieldKey(data.base);
   if (!taken.has(root)) return root;
   for (let i = 2; ; i++) {

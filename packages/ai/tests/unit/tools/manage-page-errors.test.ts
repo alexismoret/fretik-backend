@@ -145,7 +145,7 @@ describe("liftPageError — ownership", () => {
       httpError(
         400,
         badRequest(
-          "page.userId can only be null (team-shared) or your own id (private to you) — a page can't be scoped to another user.",
+          "page.userId can only be null (team-shared) or your own id (private to you). A page can't be scoped to another user.",
         ),
       ),
       { action: "update", pageId: "page-42" },

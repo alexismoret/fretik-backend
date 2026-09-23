@@ -3,6 +3,7 @@ import db from "../../db";
 import { workflows, type Workflow } from "../../db/schema";
 import { badRequest, throwHttpError } from "../../lib/errors";
 import {
+  liveTriggerCompletenessError,
   UpdateWorkflowSchema,
   type UpdateWorkflowInput,
   type WorkflowResponse,
@@ -82,6 +83,37 @@ export const updateWorkflow = async (params: {
     // validates the stored list, it does not rewrite it.
     if (input.externalAppConnectionIds !== undefined) {
       externalAppConnectionIds = validated;
+    }
+  }
+
+  // Editing the trigger of an ALREADY-ACTIVE workflow never passes through
+  // `activateWorkflow` (it returns early on `status === "active"`), so the
+  // three completeness gates that live there — cron pattern, ≥1 event
+  // subscription, form fields — were unreachable on this path. An event
+  // config emptied here left the workflow displayed as active while
+  // subscribed to nothing: `eventSubscriptions()` returns `[]`, `matchesEvent`
+  // runs `.some()` over it, and the workflow goes permanently silent with no
+  // error, no log and no `pausedReason`. Autosave-incomplete stays legal on a
+  // draft or a paused workflow; what is refused is making a LIVE workflow
+  // unreachable.
+  if (input.triggerType !== undefined || input.triggerConfig !== undefined) {
+    const current =
+      existingRow ??
+      (await db.query.workflows.findFirst({
+        where: { id: params.id, teamId: params.teamId },
+        columns: { status: true, triggerType: true, triggerConfig: true },
+      }));
+    if (!current) return undefined;
+    if (current.status === "active") {
+      const nextType = input.triggerType ?? current.triggerType;
+      const nextConfig = input.triggerConfig ?? current.triggerConfig;
+      const completenessError = liveTriggerCompletenessError(
+        nextType,
+        nextConfig,
+      );
+      if (completenessError) {
+        return throwHttpError(400, badRequest(completenessError));
+      }
     }
   }
 

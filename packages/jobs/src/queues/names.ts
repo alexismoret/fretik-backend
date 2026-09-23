@@ -63,6 +63,24 @@ export const MODEL_SYNC_QUEUE = "model-sync";
 // workspace would hold it for minutes and the 15s journal and trigger sweeps
 // would not run at all while it did.
 export const FOLDER_DESCRIBE_QUEUE = "folder-describe";
+/**
+ * Collection sync — external-app-fed collections and columns.
+ *
+ * The name and the payload are OWNED BY `@fretik/shared` and re-exported here,
+ * not declared twice: the producers are the API's refresh endpoint, the agent's
+ * `manageSync` tool and the collection-open path, none of which may import
+ * `@fretik/jobs`. This package owns the consumer.
+ *
+ * Not the maintenance queue. One run walks a third party for up to ten minutes
+ * (`SYNC_LIMITS.runBudgetMs`), and maintenance runs at concurrency 1 with the
+ * 15 s journal and workflow-trigger sweeps behind it — the same head-of-line
+ * problem `mcp-refresh` and `collection-index` are isolated for.
+ */
+export {
+  EXTERNAL_SYNC_QUEUE,
+  EXTERNAL_SYNC_RUN_JOB,
+  type ExternalSyncJobData,
+} from "@fretik/shared/services/collection-sync/queue";
 
 /** One journal event to resolve against the collection graph (P3). */
 export interface MemoryResolveJobData {
@@ -178,6 +196,15 @@ export const MODEL_TELEMETRY_ROLLUP_JOB = "model-telemetry-rollup";
  * crossed the size threshold by growing row by row rather than through an
  * import or a page save. */
 export const COLLECTION_INDEX_SWEEP_JOB = "collection-index-sweep";
+
+/** 60s — claims every sync source whose `next_run_at` has passed and hands each
+ * one to EXTERNAL_SYNC_QUEUE. Rides the maintenance queue because the claim is
+ * ONE `UPDATE … RETURNING` and an `addBulk`: the work it finds is done
+ * elsewhere, which is the property that lets a job sit on a concurrency-1
+ * worker. A minute rather than 15 s because the shortest cadence a source can
+ * have is fifteen minutes (`SYNC_LIMITS.minIntervalMinutes`) — sweeping faster
+ * would only re-read an empty index. */
+export const EXTERNAL_SYNC_SWEEP_JOB = "external-sync-sweep";
 
 /** Job name on MCP_REFRESH_QUEUE — 05:00 UTC cron, re-introspects every active
  * MCP connection and adopts any tool-surface change. */

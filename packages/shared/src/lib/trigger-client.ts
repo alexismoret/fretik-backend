@@ -1,4 +1,4 @@
-import { auth, runs, schedules, tasks, wait } from "@trigger.dev/sdk";
+import { auth, runs, schedules, tasks } from "@trigger.dev/sdk";
 import {
   WORKFLOW_CRON_TASK_ID,
   WORKFLOW_RUN_TASK_ID,
@@ -103,20 +103,6 @@ export const cancelWorkflowTriggerRun = async (
 ): Promise<void> => {
   assertConfigured();
   await runs.cancel(triggerRunId);
-};
-
-/**
- * Complete a run's approval wait token so the orchestrator loop resumes.
- * Called from the approval-decision path once the user grants/rejects.
- */
-export const completeWorkflowWaitToken = async (
-  tokenId: string,
-  decision: "approved" | "rejected",
-): Promise<void> => {
-  assertConfigured();
-  await wait.completeToken<{ decision: "approved" | "rejected" }>(tokenId, {
-    decision,
-  });
 };
 
 /**

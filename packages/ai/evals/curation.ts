@@ -145,7 +145,7 @@ export const CURATED: Record<string, CuratedCase> = {
     tier: "model-gate",
   },
   "if-json-fenced": { capability: "instruction-following", tier: "model-gate" },
-  // long-context (7 — NEVER smoke: long runs, see session-8 note above)
+  // long-context (8 — NEVER smoke: long runs, see session-8 note above)
   "lc-deep-retrieval": { capability: "long-context", tier: "model-gate" },
   "lc-multidoc-qa": { capability: "long-context", tier: "model-gate" },
   // The three compaction regimes. `lc-recall-40k` is the control and only
@@ -153,6 +153,9 @@ export const CURATED: Record<string, CuratedCase> = {
   "lc-recall-40k": { capability: "long-context", tier: "model-gate" },
   "lc-recall-120k": { capability: "long-context", tier: "model-gate" },
   "lc-recall-340k": { capability: "long-context", tier: "model-gate" },
+  // The ROW axis the three above cannot reach: 80 rows, below the cap. Guards
+  // the agent window against ever again dropping rows it did not summarise.
+  "lc-recall-80rows": { capability: "long-context", tier: "model-gate" },
   // The other half of what a summary has to carry. `lc-recall-*` asks for a
   // VALUE, which every summariser prompt has a section ordering it to keep
   // verbatim; these ask for the objective and the constraint the user stated
@@ -225,6 +228,28 @@ export const CURATED: Record<string, CuratedCase> = {
   "obj-formula-margin": { capability: "objects" },
   "obj-formula-not-for-entered-values": { capability: "objects" },
   "obj-formula-is-read-only": { capability: "objects" },
+  // ── A collection an app fills (2026-09). Seeds a source on a credential-less
+  // connection with a hand-written `last_success_at`: nothing calls a third
+  // party, and the age three of these turn on is fixed rather than whenever
+  // the suite ran.
+  "obj-sync-age-quoted": { capability: "objects" },
+  "obj-sync-column-refused": { capability: "objects" },
+  "obj-sync-refresh-when-stale": { capability: "objects" },
+  "obj-sync-propose-from-app": { capability: "objects" },
+  // ── Live read vs synced collection vs workflow (2026-09-19): the decision
+  // the platform guide settles for data another system holds, in the three
+  // shapes users actually bring it — a dashboard, a question about a column
+  // they cannot edit, a scheduled deliverable.
+  "obj-sync-page-wants-synced": { capability: "objects" },
+  "obj-sync-explain-plainly": { capability: "objects" },
+  "obj-sync-workflow-reads-collection": { capability: "objects" },
+  // ── One collection, several apps, and the read the ACTION decides
+  // (2026-09-20). The first guards the expensive shape — asking an app once
+  // per record when it publishes a list — and the second guards the
+  // assumption that one app owns a table, which was never true: column
+  // ownership is per field.
+  "obj-sync-columns-by-list": { capability: "objects" },
+  "obj-sync-second-app": { capability: "objects" },
   // ── Pages generation (2026-08) — the quality gate `managePage` shipped
   // without. Seeds its own deterministic collection, so NOT smoke. Graded on
   // the STORED definition (structure + the dry-run `warnings` channel of the

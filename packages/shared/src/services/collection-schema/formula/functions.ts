@@ -104,19 +104,19 @@ export const FORMULA_FUNCTIONS: Record<string, FormulaFunction> = {
     params: [{ name: "value", type: "number" }],
     result: "number",
     sql: (a) => `abs(${p(a[0] ?? "")})`,
-    hint: "abs(value) — drops the sign",
+    hint: "abs(value): drops the sign",
   },
   ceil: {
     params: [{ name: "value", type: "number" }],
     result: "number",
     sql: (a) => `ceil(${p(a[0] ?? "")})`,
-    hint: "ceil(value) — rounds up",
+    hint: "ceil(value): rounds up",
   },
   floor: {
     params: [{ name: "value", type: "number" }],
     result: "number",
     sql: (a) => `floor(${p(a[0] ?? "")})`,
-    hint: "floor(value) — rounds down",
+    hint: "floor(value): rounds down",
   },
   least: {
     params: [
@@ -126,7 +126,7 @@ export const FORMULA_FUNCTIONS: Record<string, FormulaFunction> = {
     variadic: true,
     result: unifyTypes,
     sql: (a) => `least(${a.map(p).join(", ")})`,
-    hint: "least(a, b, …) — the smallest of the values ON THIS ROW",
+    hint: "least(a, b, …): the smallest of the values ON THIS ROW",
   },
   greatest: {
     params: [
@@ -136,7 +136,7 @@ export const FORMULA_FUNCTIONS: Record<string, FormulaFunction> = {
     variadic: true,
     result: unifyTypes,
     sql: (a) => `greatest(${a.map(p).join(", ")})`,
-    hint: "greatest(a, b, …) — the largest of the values ON THIS ROW",
+    hint: "greatest(a, b, …): the largest of the values ON THIS ROW",
   },
   coalesce: {
     params: [
@@ -146,7 +146,7 @@ export const FORMULA_FUNCTIONS: Record<string, FormulaFunction> = {
     variadic: true,
     result: unifyTypes,
     sql: (a) => `coalesce(${a.map(p).join(", ")})`,
-    hint: "coalesce(a, b, …) — the first value that is not empty",
+    hint: "coalesce(a, b, …): the first value that is not empty",
   },
   nullif: {
     params: [
@@ -155,13 +155,13 @@ export const FORMULA_FUNCTIONS: Record<string, FormulaFunction> = {
     ],
     result: (args) => unifyTypes(args),
     sql: (a) => `nullif(${p(a[0] ?? "")}, ${p(a[1] ?? "")})`,
-    hint: "nullif(a, b) — empty when a equals b",
+    hint: "nullif(a, b): empty when a equals b",
   },
   length: {
     params: [{ name: "text", type: "text" }],
     result: "number",
     sql: (a) => `length(${p(a[0] ?? "")})`,
-    hint: "length(text) — number of characters",
+    hint: "length(text): number of characters",
   },
   lower: {
     params: [{ name: "text", type: "text" }],
@@ -179,7 +179,7 @@ export const FORMULA_FUNCTIONS: Record<string, FormulaFunction> = {
     params: [{ name: "text", type: "text" }],
     result: "text",
     sql: (a) => `btrim(${p(a[0] ?? "")})`,
-    hint: "trim(text) — removes surrounding spaces",
+    hint: "trim(text): removes surrounding spaces",
   },
   concat: {
     params: [
@@ -192,7 +192,7 @@ export const FORMULA_FUNCTIONS: Record<string, FormulaFunction> = {
     // immutable. `||` yields NULL if any part is NULL, so each part is defaulted
     // to an empty string — joining a name to a missing one must not erase both.
     sql: (a) => a.map((arg) => `coalesce(${p(arg)}, '')`).join(" || "),
-    hint: "concat(a, b, …) — joins text",
+    hint: "concat(a, b, …): joins text",
   },
   text: {
     params: [{ name: "value", type: "any" }],
@@ -200,7 +200,7 @@ export const FORMULA_FUNCTIONS: Record<string, FormulaFunction> = {
     // Only reachable for number/boolean — the checker refuses `date` here,
     // because rendering an instant depends on the session time zone.
     sql: (a) => `${p(a[0] ?? "")}::text`,
-    hint: "text(value) — a number or checkbox as text",
+    hint: "text(value): a number or checkbox as text",
   },
   if: {
     params: [
@@ -224,7 +224,7 @@ export const FORMULA_FUNCTIONS: Record<string, FormulaFunction> = {
     // the session time zone and be refused by the generated column.
     sql: (a) =>
       `floor(extract(epoch from (${p(a[0] ?? "")} - ${p(a[1] ?? "")})) / 86400)`,
-    hint: "days_between(later, earlier) — whole days between two dates",
+    hint: "days_between(later, earlier): whole days between two dates",
   },
 };
 

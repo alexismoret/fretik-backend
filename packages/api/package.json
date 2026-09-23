@@ -1,6 +1,6 @@
 {
   "name": "@fretik/api",
-  "version": "0.7.49",
+  "version": "0.7.55",
   "private": true,
   "type": "module",
   "scripts": {

@@ -39,6 +39,12 @@ export const startBulkOperation = async (
       .returning();
     if (row === undefined) return null;
 
+    // A load with no conversation is `direct` by construction and never
+    // reaches a grant — but the guard is here rather than assumed, because a
+    // wait row pointing at no conversation is the one failure this function's
+    // whole transaction exists to prevent.
+    if (row.conversationId === null) return row;
+
     await registerConversationTask({
       tx,
       conversationId: row.conversationId,

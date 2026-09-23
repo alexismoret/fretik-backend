@@ -13,6 +13,7 @@ import {
   extensionColumnCount,
   readRecordDataBatch,
 } from "../collection-schema/record-io";
+import { loadSyncSourceApps } from "../collections/sync-provenance";
 import { type EventActor, SYSTEM_ACTOR } from "../domain-events/emit";
 import { emitDomainEventsBulk } from "../domain-events/emit-bulk";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
@@ -25,6 +26,24 @@ import { collectMemberUserIds } from "./validate-members";
 const REGISTRY_UPDATE_PARAMS_PER_ROW = 5;
 /** System columns `buildExtensionUpdateBatch` binds per row, before the fields. */
 const EXTENSION_UPDATE_SYS_PARAMS = 2;
+
+/**
+ * Rows this service puts in ONE transaction for a collection of this shape —
+ * the update sibling of `recordWriteChunkSize`, and exported for the same
+ * reason: a streamed load must size its chunks to match, or "the chunk failed"
+ * stops implying "nothing landed" and the ledger's exactly-once guard becomes
+ * a guess. The update binds fewer parameters per row than the insert, so the
+ * two numbers differ and neither may stand in for the other.
+ */
+export const recordUpdateChunkSize = (
+  fieldDefs: Parameters<typeof extensionColumnCount>[0],
+): number =>
+  chunkSizeForParams(
+    Math.max(
+      REGISTRY_UPDATE_PARAMS_PER_ROW,
+      EXTENSION_UPDATE_SYS_PARAMS + extensionColumnCount(fieldDefs),
+    ),
+  );
 
 /**
  * The registry half of a bulk update, as one `UPDATE … FROM (VALUES …)`.
@@ -119,6 +138,12 @@ export const bulkUpdateCollectionRecords = async (input: {
    * pre-approval dry-run. `updatedIds` comes back empty.
    */
   dryRun?: boolean;
+  /**
+   * Let these writes fill the columns a sync source owns — how the sync runner
+   * lands a refreshed batch. Explicit rather than derived from the actor: see
+   * `validate.ts`.
+   */
+  allowSyncedFields?: boolean;
   actor?: EventActor;
 }): Promise<BulkUpdateResult> => {
   const actor = input.actor ?? SYSTEM_ACTOR;
@@ -161,12 +186,17 @@ export const bulkUpdateCollectionRecords = async (input: {
   }
   const fieldDefsByType = new Map<string, FieldDefinition[]>();
   const beforeByType = new Map<string, Map<string, Record<string, unknown>>>();
+  // `syncSourceId` → app name, per type, read here rather than in the
+  // validation loop below so that loop keeps its "no SQL" contract. No query
+  // for a type no app feeds.
+  const syncSourceApps = new Map<string, Map<string, string>>();
   for (const [typeId, ids] of byType) {
     const fds = await getFieldDefinitionsForTeam({
       teamId: input.teamId,
       collectionId: typeId,
     });
     fieldDefsByType.set(typeId, fds);
+    syncSourceApps.set(typeId, await loadSyncSourceApps(fds));
     beforeByType.set(
       typeId,
       await readRecordDataBatch({
@@ -204,6 +234,8 @@ export const bulkUpdateCollectionRecords = async (input: {
     const validator = buildRecordDataValidator({
       fieldDefs: fds,
       strict: input.strict,
+      allowSyncedFields: input.allowSyncedFields,
+      syncSourceApps: syncSourceApps.get(typeId) ?? new Map(),
     });
     const prep: PreparedUpdate[] = [];
     for (const id of ids) {
@@ -216,7 +248,10 @@ export const bulkUpdateCollectionRecords = async (input: {
         const effectiveData = input.merge
           ? { ...(before.get(id) ?? {}), ...provided }
           : provided;
-        const parsed = validator.validate(effectiveData);
+        // The stored row is the guard's reference: an app-filled column may be
+        // echoed back unchanged but never edited, and is pinned back into the
+        // parsed data so this full replace cannot clear it (`validate.ts`).
+        const parsed = validator.validate(effectiveData, before.get(id));
         const invalidMembers = collectMemberUserIds(fds, parsed).filter(
           (m) => !allowedMembers.has(m),
         );
@@ -275,12 +310,7 @@ export const bulkUpdateCollectionRecords = async (input: {
     const fds = fieldDefsByType.get(typeId) ?? [];
     // Sized from THIS type's width: the extension update binds `id` + `label`
     // plus one parameter per scalar column, the registry update binds 5.
-    const chunkSize = chunkSizeForParams(
-      Math.max(
-        REGISTRY_UPDATE_PARAMS_PER_ROW,
-        EXTENSION_UPDATE_SYS_PARAMS + extensionColumnCount(fds),
-      ),
-    );
+    const chunkSize = recordUpdateChunkSize(fds);
     for (const batch of chunkForBulk(prep, chunkSize)) {
       await db.transaction(async (tx) => {
         // `record.updated` has no natural once-only token — no dedupKey. One

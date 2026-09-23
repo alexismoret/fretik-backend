@@ -27,10 +27,14 @@ export type McpConnectionTarget = Pick<
   | "id"
   | "providerKey"
   | "displayName"
-  // Not read by the resolver: `mcpCallTool` needs it to decide whether this
-  // server tolerates two calls at once. An MCP connection has no manifest, so
-  // the column is the only place that answer can come from.
+  // Not read by the resolver: `mcpCallTool` hands these to the governor, which
+  // needs them to decide how fast this server may be asked. An MCP connection
+  // has no manifest, so the columns are the only place that answer can come
+  // from — which is exactly why they are columns.
   | "concurrencyMode"
+  | "rateLimitRequests"
+  | "rateLimitPerSeconds"
+  | "maxConcurrent"
   | "mcpAuthKind"
   | "mcpServerUrl"
   | "mcpApiKeyHeader"
@@ -82,7 +86,7 @@ const readCredentialField = (
   const value = isRecord(credentials) ? credentials[field] : undefined;
   if (typeof value !== "string" || value === "") {
     throw new Error(
-      `Connection "${displayName}" is missing its "${field}" credential in Nango — reconnect it.`,
+      `Connection "${displayName}" is missing its "${field}" credential in Nango. Reconnect it.`,
     );
   }
   return value;
@@ -164,7 +168,7 @@ export const resolveMcpTarget = async (
   }
   if (connection.mcpServerUrl === null) {
     throw new Error(
-      `Connection "${connection.displayName}" predates the direct MCP transport — remove it and reconnect.`,
+      `Connection "${connection.displayName}" predates the direct MCP transport. Remove it and reconnect.`,
     );
   }
   await assertPublicHttpsUrl(connection.mcpServerUrl);

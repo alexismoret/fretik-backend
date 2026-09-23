@@ -37,5 +37,5 @@ export const pageOwnerWriteError = (
 ): string | null => {
   if (userId === undefined || userId === null) return null;
   if (userId === actingUserId) return null;
-  return "page.userId can only be null (team-shared) or your own id (private to you) — a page can't be scoped to another user.";
+  return "page.userId can only be null (team-shared) or your own id (private to you). A page can't be scoped to another user.";
 };

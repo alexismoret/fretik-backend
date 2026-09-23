@@ -20,6 +20,7 @@ import { createManageFieldTool } from "../../tools/manage-field";
 import { createManageLinkTool } from "../../tools/manage-link";
 import { createManagePageTool } from "../../tools/manage-page";
 import { createManageRecordTool } from "../../tools/manage-record";
+import { createManageSyncTool } from "../../tools/manage-sync";
 import { createManageWorkflowTool } from "../../tools/manage-workflow";
 import { createMemoryTool } from "../../tools/memory";
 import { buildPageProjectTools } from "../../tools/page-project";
@@ -291,6 +292,12 @@ export const buildDomainTools = () => ({
     searchHint:
       "create update delete collection schema table model define new kind of thing entity category rename",
   }),
+  manageSync: buildChatbotTool({
+    ...createManageSyncTool(),
+    category: "domain",
+    searchHint:
+      "sync connect feed pull import external app connection refresh schedule cadence source api live data fill collection from app stale figures",
+  }),
   manageField: buildChatbotTool({
     ...createManageFieldTool(),
     category: "domain",
@@ -505,10 +512,20 @@ export const buildChatbotTools = (extras: {
     buildPage: extras.buildPage,
   };
   const coreTools = buildCoreTools(domainTools);
+  // `dispatchAgent` sits INSIDE the core block, not after the domain set, and
+  // the position is the point. `activeTools` cannot reorder anything: the SDK
+  // filters by the static registry (`filterActiveTools`, ai@7 —
+  // `Object.entries(tools).filter(([name]) => activeTools.includes(name))`),
+  // so the wire order is this object's key order. Registered last, an
+  // always-active core tool sat BEHIND every domain tool Progressive
+  // Disclosure activates, and therefore shifted position on every single
+  // activation — moving the end of the cached prefix with it. Measured
+  // 2026-09-21 on one 31-step turn: five steps served an input cache of zero.
+  // Here it closes a core block that is byte-identical on every step.
   return {
     ...coreTools,
-    ...domainTools,
     dispatchAgent: extras.dispatchAgent,
+    ...domainTools,
   };
 };
 

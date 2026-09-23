@@ -3,6 +3,15 @@
 // input falls back to the normal parser, so error reporting is unchanged.
 import "zod/compile";
 
+// Registers every external-app provider manifest into the in-memory registry
+// (`setProviders`). A side-effect import, like the one above, and required
+// since collection sync joined this process: `resolveSyncAction` looks an
+// action up by `<provider>.<operation>`, and without this the registry is empty
+// and EVERY manifest-backed sync fails with "unknown operation". The API and
+// the AI service have always done this at boot; the jobs process had no reason
+// to until now. Already a dependency and already in the Dockerfile.
+import "@fretik/providers";
+
 import {
   assertMigrationsCurrent,
   runMigrationsWithLock,
@@ -15,6 +24,7 @@ import { healthApp } from "./health";
 import { registerSchedulers } from "./queues/schedulers";
 import { startCollectionIndexWorker } from "./workers/collection-index-sweep";
 import { startDreamingWorker } from "./workers/dreaming";
+import { startExternalSyncWorker } from "./workers/external-sync";
 import { startFolderDescribeWorker } from "./workers/folder-describe";
 import { startMaintenanceWorker } from "./workers/maintenance";
 import { startMcpRefreshWorker } from "./workers/mcp-refresh";
@@ -61,6 +71,7 @@ startWorkflowGateWorker();
 startWorkflowRunCreateWorker();
 startMaintenanceWorker();
 startMcpRefreshWorker();
+startExternalSyncWorker();
 startCollectionIndexWorker();
 startVectorReconcileWorker();
 startModelSyncWorker();
@@ -70,7 +81,7 @@ await registerSchedulers();
 console.log(`
 ---------------------------
 fretik jobs v${packagejson.version}
-workers: document-processing · document-vector-refresh · memory-resolve · memory-distill · record-card · memory-dreaming · memory-maintenance · workflow-trigger · mcp-refresh · collection-index · vector-reconcile · model-sync · bulk-operation
+workers: document-processing · document-vector-refresh · memory-resolve · memory-distill · record-card · memory-dreaming · memory-maintenance · workflow-trigger · mcp-refresh · external-sync · collection-index · vector-reconcile · model-sync · bulk-operation
 ---------------------------
 `);
 

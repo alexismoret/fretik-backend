@@ -21,10 +21,17 @@ import { rateLimiter } from "hono-rate-limiter";
  * before the body is parsed and before anything is written. A request that
  * fails it is refused with 401 and nothing else happens.
  *
- * Subscribed to one event: `on_connection_deletion` (Environment Settings →
- * Webhooks in the Nango dashboard). Every other type Nango may send is
- * accepted and ignored — see `decideNangoWebhook` for why ignoring beats
- * rejecting.
+ * Subscribed to two events, both configured in the Nango dashboard:
+ * `on_connection_deletion` (Environment Settings → Webhooks), which marks the
+ * connection `error`, and `forward` — a provider's own webhook, relayed — which
+ * brings that connection's incremental sync sources forward and does nothing
+ * else. Every other type Nango may send is accepted and ignored: see
+ * `decideNangoWebhook` for why ignoring beats rejecting.
+ *
+ * A `forward` delivery reaches this route only once an operator has registered
+ * the integration's forwarding URL WITH THE PROVIDER (`OPERATIONS.md` §11).
+ * Until then nothing arrives, and every source still runs on its schedule —
+ * the webhook is an accelerator, never the mechanism.
  *
  * ## Why this answers 200 so readily
  *

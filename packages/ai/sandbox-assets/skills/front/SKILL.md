@@ -1,7 +1,7 @@
 ---
 name: front
 description: Front — read, triage, and reply to conversations across the team's shared inboxes on the connected Front account.
-version: 48f58f48be09
+version: a3a8d190f2ac
 ---
 
 # Front — 30 actions

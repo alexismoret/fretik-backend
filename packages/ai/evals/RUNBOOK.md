@@ -29,9 +29,22 @@ traces that pollute prod analytics.
 
 Needs a **live `@fretik/ai` service** and `AI_SERVICE_URL` (it is NOT in `.env` — pass it inline):
 
+**Wrap every run in `caffeinate -i`.** A laptop that sleeps mid-run does not
+pause the harness — the per-case watchdog counts WALL CLOCK, so it charges the
+sleep to whatever turn was in flight and kills it at 1 200 s with
+`hung: <case> still pending after 1200s — killed by the eval watchdog`. That
+reads exactly like a wedged turn, and the case is then SKIPPED rather than
+scored. Measured 2026-09-20: a 12-turn run started at 17:45, the Mac idle-slept
+78 seconds later and stayed down until a trackpad woke it at 18:53; two cases
+were reported hung, both killed within one second of a wake. Nothing had hung,
+and an hour of laptop time bought no measurement. `-i` only prevents idle sleep,
+so closing the lid still sleeps — leave it open.
+
 ```bash
 cd backend/packages/ai
 # 1. start the service in another pane (dev DB): bun run dev   (or ../../dev.sh)
+caffeinate -i env AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse   # CORE baseline (~45 cases)
+# The rest omit `caffeinate -i` for readability — add it to every one of them.
 AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse                 # CORE baseline (~45 cases)
 AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse -- --all        # + model-gate probes (~72, model promotions / deep re-baseline)
 AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse -- --smoke      # smoke subset (~17, both tiers)

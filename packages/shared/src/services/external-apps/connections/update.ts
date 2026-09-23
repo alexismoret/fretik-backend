@@ -38,7 +38,7 @@ const resolveActionNames = async (
     if (snapshot === undefined) {
       return throwHttpError(409, {
         code: ERROR_CODES.EXTERNAL_APP_MCP_NOT_READY,
-        message: `Connection "${connection.displayName}" has no tool list yet — its server hasn't been introspected. Retry once it is ready.`,
+        message: `Connection "${connection.displayName}" has no tool list yet because its server hasn't been introspected. Retry once it is ready.`,
       });
     }
     return new Set(snapshot.descriptor.actions.map((a) => a.name));
@@ -88,6 +88,13 @@ export const updateConnection = async (params: {
   actionPolicies?: Record<string, ToolPolicyLevel | null>;
   /** How many calls this account tolerates at once; `null` follows the manifest. */
   concurrencyMode?: ExternalAppConcurrencyMode | null;
+  /**
+   * This account's own call budget; `null` clears it and follows the manifest.
+   * Whole-object because the pair is the unit — see the write below.
+   */
+  rateLimit?: { requests: number; perSeconds: number } | null;
+  /** In-flight ceiling for this account; `null` follows the manifest. */
+  maxConcurrent?: number | null;
   /** Whether the caller is an org admin — required to edit `actionPolicies` on
    * a TEAM-scoped connection (any member can see it, only admins may change its
    * permissions). Personal connections are owner-only via `getConnectionForCaller`. */
@@ -137,6 +144,28 @@ export const updateConnection = async (params: {
       });
     }
     patch.concurrencyMode = params.concurrencyMode;
+  }
+
+  if (params.rateLimit !== undefined || params.maxConcurrent !== undefined) {
+    // Same gate, same reason: a budget is shared by everyone who reads through
+    // this connection, so widening it is a decision about the whole team's
+    // traffic and not one member's.
+    if (current.userId === null && params.isOrgAdmin !== true) {
+      return throwHttpError(403, {
+        code: ERROR_CODES.FORBIDDEN,
+        message: "Only an admin can change a team connection's call limits.",
+      });
+    }
+    if (params.rateLimit !== undefined) {
+      // Both columns move together or neither does: a count with no period is
+      // read as "no override" by the resolver, so a half-applied patch would
+      // silently do nothing while the screen showed a number.
+      patch.rateLimitRequests = params.rateLimit?.requests ?? null;
+      patch.rateLimitPerSeconds = params.rateLimit?.perSeconds ?? null;
+    }
+    if (params.maxConcurrent !== undefined) {
+      patch.maxConcurrent = params.maxConcurrent;
+    }
   }
 
   if (params.actionPolicies !== undefined) {

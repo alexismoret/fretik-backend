@@ -55,10 +55,12 @@ export const finalizeRun = async (params: {
         ...(params.outputs !== undefined ? { outputs: params.outputs } : {}),
         ...(params.error !== undefined ? { error: params.error } : {}),
         ...(params.usage !== undefined ? { usage: params.usage } : {}),
-        waitTokenId: null,
-        // A run can die parked (canceled by the user, or APPROVAL_TIMEOUT):
-        // bank the open window here too, or its final duration would carry
-        // however long the approval went unanswered.
+        // A run can die parked (canceled by the user, or APPROVAL_TIMEOUT).
+        // Clear the resume point so nothing can start an orchestrator for a
+        // run that is already closed, and bank the open window, or its final
+        // duration would carry however long the approval went unanswered.
+        resumeFromTurnIndex: null,
+        resumeRemainingMs: null,
         pausedMs: closePausedWindow(now),
         pausedAt: null,
         finishedAt: now,

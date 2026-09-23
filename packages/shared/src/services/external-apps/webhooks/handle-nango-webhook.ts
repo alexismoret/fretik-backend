@@ -1,3 +1,4 @@
+import { nudgeSyncSourcesForConnection } from "../../collection-sync/nudge-on-notify";
 import { markConnectionAsError } from "../connections/mark-as-error";
 import {
   decideNangoWebhook,
@@ -41,6 +42,19 @@ export const handleNangoWebhook = async (
 ): Promise<NangoWebhookDecision> => {
   const decision = decideNangoWebhook(body);
   if (decision.action === "ignored") return decision;
+
+  // A relayed provider webhook is not an incident — it brings the connection's
+  // incremental sources forward and touches nothing else. Never a failure the
+  // caller retries: Nango redelivers a non-2xx, and a nudge that could not be
+  // taken (debounced, no incremental source) is a correct outcome, not an
+  // error, so the route answers 200 either way.
+  if (decision.action === "app-notified") {
+    await nudgeSyncSourcesForConnection({
+      nangoConnectionId: decision.nangoConnectionId,
+      nangoProviderConfigKey: decision.nangoProviderConfigKey,
+    });
+    return decision;
+  }
 
   await markConnectionAsError({
     nangoConnectionId: decision.nangoConnectionId,

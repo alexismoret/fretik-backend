@@ -134,6 +134,7 @@ export interface EvalCaseContext {
  *   - `toolUsed`    one of the listed tool names must have been called
  *   - `toolNotUsed` none of the listed tool names may have been called
  *   - `latencyUnder` wall-clock cap in ms
+ *   - `toolCallsUnder` HARD cap on tool calls — a runaway fails the case
  *   - `noError`     `error` must be unset and `finishReason !== "error"`
  *   - `judge`       LLM-as-judge with a rubric string (graded verdict,
  *                   partial credit; see `evals/judge.ts`)
@@ -168,6 +169,21 @@ export type Assertion =
   | { type: "toolUsed"; tools: string[]; mode?: "any" | "all" }
   | { type: "toolNotUsed"; tools: string[] }
   | { type: "latencyUnder"; ms: number }
+  /**
+   * A HARD ceiling on the turn's tool calls, unlike `budget.maxToolCalls`
+   * which reports `tool-budget-overage` and is deliberately never folded into
+   * `correctness`.
+   *
+   * Both exist for different jobs and the soft one is right for chattiness.
+   * This one is for a RUNAWAY: measured 2026-09-20, one sync case issued 1 430
+   * tool calls — 1 388 of them `bash` — in a turn lasting eleven minutes. The
+   * per-step budget refused all but twelve per step, so nothing ran, and the
+   * loop guard ended the turn; the suite still scored the case GREEN and
+   * reported the number in a metric nobody reads. Set this where a turn's
+   * shape is part of what the case asserts, well above any healthy trajectory
+   * (the same case answers correctly in nine calls).
+   */
+  | { type: "toolCallsUnder"; max: number }
   | { type: "noError" }
   | { type: "judge"; rubric: string; expectPass?: boolean }
   | {

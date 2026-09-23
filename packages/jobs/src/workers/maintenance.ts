@@ -6,6 +6,7 @@ import { type Job, Worker } from "bullmq";
 import {
   CONVERSATION_TASK_SWEEP_JOB,
   DREAMING_SWEEP_JOB,
+  EXTERNAL_SYNC_SWEEP_JOB,
   FOLDER_DESCRIBE_SWEEP_JOB,
   GC_DEMOTE_JOB,
   JOURNAL_SWEEP_JOB,
@@ -16,6 +17,7 @@ import {
   WORKFLOW_TRIGGER_SWEEP_JOB,
 } from "../queues/names";
 import { runDreamingSweep } from "./dreaming";
+import { runExternalSyncSweep } from "./external-sync";
 import { runFolderDescribeSweep } from "./folder-describe";
 import { runGcDemote } from "./gc-demote";
 import { runJournalSweep } from "./journal-sweep";
@@ -88,6 +90,15 @@ export const startMaintenanceWorker = (): Worker => {
           if (reconciled > 0 || signaled > 0 || slotsCleared > 0) {
             console.info(
               `[conversation-task-sweep] reconciled ${reconciled.toString()} tasks, signaled ${signaled.toString()} conversations, cleared ${slotsCleared.toString()} stuck slots`,
+            );
+          }
+          return;
+        }
+        case EXTERNAL_SYNC_SWEEP_JOB: {
+          const { claimed } = await runExternalSyncSweep();
+          if (claimed > 0) {
+            console.info(
+              `[external-sync-sweep] claimed ${claimed.toString()} due sources`,
             );
           }
           return;

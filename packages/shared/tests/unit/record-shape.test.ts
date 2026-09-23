@@ -33,6 +33,7 @@ const makeField = (
   label: partial.key,
   description: null,
   config: {},
+  syncSourceId: null,
   aiExtractionEnabled: true,
   vectorizeInclude: true,
   displayInPanel: true,

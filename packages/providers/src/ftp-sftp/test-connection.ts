@@ -65,34 +65,37 @@ export const testFtpSftpCredentials: ProviderTestCredentials = async ({
 const describeFailure = (error: unknown, rootPath: string): string => {
   const raw = error instanceof Error ? error.message : String(error);
   const lower = raw.toLowerCase();
+  // The hint follows as its own sentence, so the raw message loses any
+  // trailing full stop rather than doubling it.
+  const lead = raw.replace(/[.\s]+$/, "");
 
   if (
     lower.includes("all configured authentication methods failed") ||
     lower.includes("530") ||
     lower.includes("permission denied")
   ) {
-    return `${raw} — check the username and password, or the private key and its passphrase.`;
+    return `${lead}. Check the username and password, or the private key and its passphrase.`;
   }
   if (lower.includes("host key") || lower.includes("hostverifier")) {
-    return `${raw} — the server's host key does not match the fingerprint pinned on this connection.`;
+    return `${lead}. The server's host key does not match the fingerprint pinned on this connection.`;
   }
   if (
     lower.includes("self signed") ||
     lower.includes("self-signed") ||
     lower.includes("unable to verify the first certificate")
   ) {
-    return `${raw} — turn on "Allow self-signed certificate" in the advanced settings if this server uses its own certificate authority.`;
+    return `${lead}. Turn on "Allow self-signed certificate" in the advanced settings if this server uses its own certificate authority.`;
   }
   if (lower.includes("econnrefused")) {
-    return `${raw} — nothing is listening on that host and port. SFTP is usually 22, FTP and FTPS 21, implicit FTPS 990.`;
+    return `${lead}. Nothing is listening on that host and port. SFTP is usually 22, FTP and FTPS 21, implicit FTPS 990.`;
   }
   if (lower.includes("etimedout") || lower.includes("timed out")) {
-    return `${raw} — the server did not answer. Check the host, the port, and whether it allows connections from outside your network.`;
+    return `${lead}. The server did not answer. Check the host, the port, and whether it allows connections from outside your network.`;
   }
   if (lower.includes("550") || lower.includes("no such file")) {
     return rootPath === ""
-      ? `${raw} — the account signed in but its starting folder could not be listed.`
-      : `${raw} — the account signed in but the root folder "${rootPath}" could not be listed. Check the path, or leave it empty.`;
+      ? `${lead}. The account signed in, but its starting folder could not be listed.`
+      : `${lead}. The account signed in, but the root folder "${rootPath}" could not be listed. Check the path, or leave it empty.`;
   }
   return raw;
 };

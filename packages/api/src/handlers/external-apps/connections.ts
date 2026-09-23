@@ -24,6 +24,7 @@ import {
   dynamicOptionsResponseSchema,
   externalAppConnectionResponseSchema,
   externalAppConnectionsListResponseSchema,
+  includeSignaturesQuerySchema,
   mcpCatalogQuerySchema,
   mcpCatalogResponseSchema,
   mcpInspectRequestSchema,
@@ -45,6 +46,8 @@ import { getConnectionConfigForReconnect } from "@fretik/shared/services/externa
 import { listConnections } from "@fretik/shared/services/external-apps/connections/list";
 import { testConnectionCredentials } from "@fretik/shared/services/external-apps/connections/test-credentials";
 import { updateConnection } from "@fretik/shared/services/external-apps/connections/update";
+import { readUpstreamStats } from "@fretik/shared/services/external-apps/exec/governor/permit";
+import { resolveGovernorPolicy } from "@fretik/shared/services/external-apps/exec/governor/policy";
 import { isMcpConnection } from "@fretik/shared/services/external-apps/mcp/connection-kind";
 import { inspectMcpServer } from "@fretik/shared/services/external-apps/mcp/inspect-server";
 import {
@@ -77,7 +80,49 @@ connectionsRoutes.use("*", authMiddleware);
 
 // ---- DTO mapper ------------------------------------------------------
 
-const toDto = (row: ExternalAppConnection): ExternalAppConnectionResponse => ({
+/**
+ * What is enforced, what this account overrode, and what it spent today.
+ *
+ * `effective` comes from the same `resolveGovernorPolicy` the runtime uses, so
+ * the screen cannot drift from the enforcement: a second implementation of the
+ * precedence here is how a UI ends up promising 600/min against a governor
+ * holding the connection to 300.
+ */
+const rateLimitDto = (
+  row: ExternalAppConnection,
+): ExternalAppConnectionResponse["rateLimit"] => {
+  const policy = resolveGovernorPolicy(row);
+  return {
+    effective:
+      policy.perConnection === undefined
+        ? null
+        : {
+            requests: policy.perConnection.requests,
+            perSeconds: policy.perConnection.perSeconds,
+          },
+    override:
+      row.rateLimitRequests === null || row.rateLimitPerSeconds === null
+        ? null
+        : {
+            requests: row.rateLimitRequests,
+            perSeconds: row.rateLimitPerSeconds,
+          },
+    maxConcurrent: policy.maxConcurrent === 0 ? null : policy.maxConcurrent,
+    maxConcurrentOverride: row.maxConcurrent,
+    perProvider:
+      policy.perProvider === undefined
+        ? null
+        : {
+            requests: policy.perProvider.requests,
+            perSeconds: policy.perProvider.perSeconds,
+          },
+  };
+};
+
+const toDto = (
+  row: ExternalAppConnection,
+  usage: ExternalAppConnectionResponse["usage"],
+): ExternalAppConnectionResponse => ({
   id: row.id,
   providerKey: row.providerKey,
   displayName: row.displayName,
@@ -101,6 +146,8 @@ const toDto = (row: ExternalAppConnection): ExternalAppConnectionResponse => ({
   options: row.options,
   actionPolicies: row.actionPolicies ?? null,
   concurrencyMode: row.concurrencyMode,
+  rateLimit: rateLimitDto(row),
+  usage,
   // Filled in by `toConnectionDto` for MCP connections (snapshot-backed);
   // manifest providers keep `null` — their tools come from the catalogue.
   actions: null,
@@ -115,21 +162,54 @@ const toDto = (row: ExternalAppConnection): ExternalAppConnectionResponse => ({
  * current snapshot so Settings → Tool permissions can render a per-tool policy
  * row (the static provider catalogue has no MCP actions). A connection still
  * preparing / errored has no snapshot, so `actions` stays null.
+ *
+ * `includeSignatures` is the same opt-in as `GET /providers`: a caller that
+ * has to BUILD a call — the sync composer, generating an argument form from
+ * `params` — asks for it; the permissions list, which only needs a name and a
+ * level, does not pay for a parameter tree per tool. Reads only, for the same
+ * reason there: a write is composed by the approval path.
  */
 const toConnectionDto = async (
   row: ExternalAppConnection,
+  options?: { includeSignatures?: boolean },
 ): Promise<ExternalAppConnectionResponse> => {
-  const base = toDto(row);
+  // Best-effort by construction: the counters live in Redis and a connection
+  // screen must render whether or not Redis is reachable.
+  const stats = await readUpstreamStats(row).catch(() => ({
+    connection: { calls: 0, rateLimited: 0 },
+    provider: { calls: 0, rateLimited: 0 },
+  }));
+  const base = toDto(row, {
+    callsToday: stats.connection.calls,
+    rateLimitedToday: stats.connection.rateLimited,
+    providerCallsToday: stats.provider.calls,
+  });
   if (!isMcpConnection(row)) return base;
   const snapshot = await getSnapshotForConnection(row);
   if (snapshot === undefined) return base;
+  const withSignatures = options?.includeSignatures === true;
   const actions: ConnectionActionEntry[] = snapshot.descriptor.actions.map(
-    (a) => ({
-      name: a.name,
-      kind: a.kind,
-      summary: a.summary,
-      defaultLevel: a.approvalDefault,
-    }),
+    (a) => {
+      const entry = {
+        name: a.name,
+        kind: a.kind,
+        summary: a.summary,
+        defaultLevel: a.approvalDefault,
+      };
+      if (!withSignatures || a.kind !== "read") return entry;
+      // Spread — `exactOptionalPropertyTypes` keeps an explicit `undefined`
+      // distinct from an absent key. An MCP descriptor declares no pagination
+      // (`tools/list` has nowhere to say it), so those three are usually gone
+      // and a sync over this action honestly reports "one call".
+      return {
+        ...entry,
+        params: a.params,
+        returns: a.returns,
+        ...(a.pagination === undefined ? {} : { pagination: a.pagination }),
+        ...(a.batch === undefined ? {} : { batch: a.batch }),
+        ...(a.incremental === undefined ? {} : { incremental: a.incremental }),
+      };
+    },
   );
   return { ...base, actions };
 };
@@ -239,8 +319,9 @@ const listRoute = createRoute({
   path: "/connections",
   summary: "List external-app connections the caller can use",
   description:
-    "Returns every team-scoped connection (shared with everyone in the team) plus the caller's user-scoped connections. Newest first.",
+    "Returns every team-scoped connection (shared with everyone in the team) plus the caller's user-scoped connections. Newest first. `includeSignatures=true` adds `params` / `returns` (and any declared pagination, batch or incremental capability) to the READ actions of an MCP connection's snapshot, so a form can be generated from them.",
   tags: ["ExternalApps"],
+  request: { query: includeSignaturesQuerySchema },
   responses: {
     200: {
       content: {
@@ -259,8 +340,10 @@ const getOneRoute = createRoute({
   method: "get",
   path: "/connections/{id}",
   summary: "Fetch a single connection",
+  description:
+    "`includeSignatures=true` adds the READ actions' `params` / `returns` and sync capabilities, as on the list route.",
   tags: ["ExternalApps"],
-  request: { params: paramsIdSchema },
+  request: { params: paramsIdSchema, query: includeSignaturesQuerySchema },
   responses: {
     200: {
       content: {
@@ -539,8 +622,11 @@ connectionsRoutes.openapi(listRoute, async (c) => {
   const user = c.get("user");
   if (!user) return c.json(forbidden("Authentication required"), 403);
 
+  const { includeSignatures } = c.req.valid("query");
   const rows = await listConnections(team.id, user.id);
-  const connections = await Promise.all(rows.map(toConnectionDto));
+  const connections = await Promise.all(
+    rows.map((row) => toConnectionDto(row, { includeSignatures })),
+  );
   return c.json({ connections }, 200);
 });
 
@@ -551,8 +637,9 @@ connectionsRoutes.openapi(getOneRoute, async (c) => {
   if (!user) return c.json(forbidden("Authentication required"), 403);
 
   const { id } = c.req.valid("param");
+  const { includeSignatures } = c.req.valid("query");
   const row = await getConnectionForCaller(id, team.id, user.id);
-  return c.json(await toConnectionDto(row), 200);
+  return c.json(await toConnectionDto(row, { includeSignatures }), 200);
 });
 
 connectionsRoutes.openapi(updateRoute, async (c) => {
@@ -567,9 +654,14 @@ connectionsRoutes.openapi(updateRoute, async (c) => {
   // taking a shared connection private when you are not the member who
   // connected it. The service enforces both (personal connections stay
   // owner-only via caller visibility).
+  // The limits join that list for the same reason the concurrency mode is on
+  // it: a budget is shared by everyone who reads through the connection, so
+  // widening one is a decision about the whole team's traffic.
   const admin =
     patch.actionPolicies !== undefined ||
     patch.concurrencyMode !== undefined ||
+    patch.rateLimit !== undefined ||
+    patch.maxConcurrent !== undefined ||
     patch.scope !== undefined
       ? await isOrgAdmin(team.organizationId, user.id)
       : undefined;
@@ -583,6 +675,8 @@ connectionsRoutes.openapi(updateRoute, async (c) => {
     options: patch.options,
     actionPolicies: patch.actionPolicies,
     concurrencyMode: patch.concurrencyMode,
+    rateLimit: patch.rateLimit,
+    maxConcurrent: patch.maxConcurrent,
     isOrgAdmin: admin,
   });
   return c.json(await toConnectionDto(row), 200);

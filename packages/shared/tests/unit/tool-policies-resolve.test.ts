@@ -371,6 +371,40 @@ describe("resolveBuiltinToolPolicy — per-action levels", () => {
     }
   });
 
+  test("manageSync asks only before overriding the orphan floor", () => {
+    // Declaring, re-pointing, refreshing or detaching a source removes no
+    // record — detaching leaves the columns and their values as ordinary local
+    // ones — so the whole surface is `auto`.
+    for (const action of [
+      "preview",
+      "create",
+      "update",
+      "delete",
+      "refresh",
+      "list",
+    ] as const) {
+      expect(
+        resolveBuiltinToolPolicy({
+          toolName: "manageSync",
+          action,
+          teamPolicies: {},
+          autonomy: null,
+        }),
+      ).toBe("auto");
+    }
+    // `confirmFullResync` is the one that applies an orphan policy to rows the
+    // floor refused to touch — many at once, and no refresh brings back what
+    // the app no longer returns.
+    expect(
+      resolveBuiltinToolPolicy({
+        toolName: "manageSync",
+        action: "confirmFullResync",
+        teamPolicies: {},
+        autonomy: null,
+      }),
+    ).toBe("approval");
+  });
+
   test("every approval-gated action has a grant executor", () => {
     // An `approval` default with no entry in TOOL_CALL_APPLY would strand the
     // write: the card opens, the grant then finds nothing to run.

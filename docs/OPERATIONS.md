@@ -82,7 +82,7 @@ guaranteed and does not need to be.
 | **verify / codegen** | CI `check` job + husky                             | package scripts                            | `db:check`, `file-types:sync --check`, `measure:tokens`, `lint-migrations`                   |
 | **migrations**       | service boot, `RUN_MIGRATIONS=true`                | `db/migrations.ts`                         | `drizzle/*`                                                                                  |
 | **release tasks**    | service boot, after migrations, once per `GIT_SHA` | ledger (§8)                                | `langfuse-seed-prompts`, `models-audit`                                                      |
-| **periodic**         | the jobs container                                 | BullMQ schedulers (`queues/schedulers.ts`) | model sync 00:30, bench 01:15, dreaming 03:00, GC 04:00                                      |
+| **periodic**         | the jobs container                                 | BullMQ schedulers (`queues/schedulers.ts`) | model sync 00:30, bench 01:15, dreaming 03:00, GC 04:00, collection-sync sweep every 60 s    |
 | **ad-hoc operator**  | **inside** the container, via `docker exec`        | operator guard                             | `models:admin`, `models:bench`, backfills, `memory:audit`, `grant:super-admin`, `db:migrate` |
 | **evals**            | a laptop, against a reachable non-prod service     | `evals/*`                                  | `evals:gate` — see `packages/ai/evals/RUNBOOK.md`                                            |
 | **authoring**        | a laptop, writes S3 only (never the database)      | package scripts                            | `changelog:media` — see `CHANGELOG-AUTHORING.md` in fretik-app                               |
@@ -149,6 +149,13 @@ Same for the reverse: stop reading a column in one release, drop it in the next.
 `DATABASE_URL`, `REDIS_URL`, `RUN_MIGRATIONS=true`, plus Better Auth and
 Scaleway S3/email variables. `FRETIK_RUNTIME=container` comes from the image.
 
+`PASSKEY_RP_ID` is optional and is the one auth variable that cannot be changed
+later: it is the domain every passkey is bound to. Unset, it is `APP_URL`'s
+hostname. Set it to the registrable parent (`fretik.com`) before the first
+passkey exists if the app may ever move between subdomains; boot refuses a value
+that is not `APP_URL`'s host or one of its parents. Mirror it in the frontend's
+`NUXT_PUBLIC_PASSKEY_RP_ID`.
+
 ### `@fretik/ai`
 
 | Var                                                    | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                        |
@@ -160,20 +167,22 @@ Scaleway S3/email variables. `FRETIK_RUNTIME=container` comes from the image.
 | `AI_WEB_*`                                             | Opt-in egress tightening (`AI_WEB_BLOCKED_DOMAINS`, `AI_WEB_ALLOWED_DOMAINS`, `AI_WEB_FETCH_MAX_URL_LEN`, `AI_WEB_TOOLS_ENABLED`), plus timeouts, cache TTLs and the price table used for the Langfuse cost trace. Always-on hygiene — scheme, private-IP/metadata, length, punycode — applies regardless, and is now load-bearing: `webMap` fetches `robots.txt`/`sitemap.xml` from the service itself and re-validates every redirect hop. |
 | `LANGFUSE_*`                                           | Optional; tracing is a no-op without them.                                                                                                                                                                                                                                                                                                                                                                                                   |
 
-### `@fretik/jobs` — three keys people forget
+### `@fretik/jobs` — five keys people forget
 
-The nightly model sync runs in the **jobs** container, not the AI one, so jobs
-needs its own copies:
+The nightly model sync and the collection sync worker run in the **jobs**
+container, not the AI one, so jobs needs its own copies:
 
-| Var                           | What breaks without it                                                                                                                                                                                                                                                                       |
-| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `OPENROUTER_API_KEY`          | `/endpoints` percentiles are auth-gated. Unauthenticated calls return `throughput_last_30m: null` with **HTTP 200** — this shipped once (2026-09-01): every OpenRouter endpoint silently lost its percentiles, the throughput/TTFT policy rules never ran, and the sync still reported `ok`. |
-| `ARTIFICIAL_ANALYSIS_API_KEY` | Empty intelligence map ⇒ the `intelligence-floor` rule never evaluates.                                                                                                                                                                                                                      |
-| `AI_GATEWAY_API_KEY`          | ZDR probe + quarantine re-probe ⇒ expired quarantines are never re-checked.                                                                                                                                                                                                                  |
+| Var                              | What breaks without it                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `OPENROUTER_API_KEY`             | `/endpoints` percentiles are auth-gated. Unauthenticated calls return `throughput_last_30m: null` with **HTTP 200** — this shipped once (2026-09-01): every OpenRouter endpoint silently lost its percentiles, the throughput/TTFT policy rules never ran, and the sync still reported `ok`.                                                                                                                                                                                                                             |
+| `ARTIFICIAL_ANALYSIS_API_KEY`    | Empty intelligence map ⇒ the `intelligence-floor` rule never evaluates.                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `AI_GATEWAY_API_KEY`             | ZDR probe + quarantine re-probe ⇒ expired quarantines are never re-checked.                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `NANGO_HOST`, `NANGO_SECRET_KEY` | **Every scheduled collection sync fails.** Credentials for a connected app live in Nango, so the worker that refreshes an app-fed collection reads them on every run — including for providers whose transport is a custom handler, which use Nango purely as the credential store. Without the keys each run ends `error` with `NANGO_HOST env var must be set`, which reads as the app's fault and is ours. The API and AI services have them; a `packages/jobs/.env` written before collection sync shipped does not. |
 
 **Mirror any future secret read under
-`packages/shared/src/services/model-registry/sync/` onto the jobs service** —
-that code runs wherever the sync runs.
+`packages/shared/src/services/model-registry/sync/` or
+`packages/shared/src/services/collection-sync/` onto the jobs service** — that
+code runs wherever the sync runs.
 
 The **workflow trigger gate** and the **Drive filer** also live here, and both
 call the AI service rather than a provider directly — so jobs needs
@@ -563,7 +572,92 @@ and a reindex is pessimistic — say which it was.
 does not exist yet either; both belong to the prewarm work, and until then a
 restart leaves the index cold and the first queries slow.
 
-## 10. Nango — the credential vault
+## 10. Collection sync — external-app-fed columns
+
+The engine behind `docs/EXTERNAL-DATA-COLUMNS.md`. Operationally it is one more
+BullMQ queue, and everything a team can see about it lives in its own tables,
+not in a dashboard.
+
+### The rails
+
+| Piece             | Where                                                                  |
+| ----------------- | ---------------------------------------------------------------------- |
+| Declarations      | `collection_sync_sources` (one row per "this app fills these columns") |
+| Run history       | `collection_sync_runs` — latest 20 per source, trimmed post-insert     |
+| Per-row freshness | `record_sync_state` (record × source, with the content hash)           |
+| Sweep             | `EXTERNAL_SYNC_SWEEP_JOB`, maintenance queue, every 60 s               |
+| Runner            | the `external-sync` queue + worker, concurrency 3, own queue           |
+| Services          | `@fretik/shared/services/collection-sync/*`                            |
+
+**Why its own queue.** One table run walks a third party page by page and can
+hold a worker for minutes. On the concurrency-1 maintenance queue that is
+head-of-line blocking for the 15 s journal and workflow-trigger sweeps — the
+same reason `mcp-refresh` and `collection-index-sweep` were moved out.
+
+**Why a sweep and not one repeatable job per source.** A repeatable job is Redis
+state; a source's schedule belongs to the database that already owns the source.
+The sweep claims what is due (`next_run_at <= now()`, `claimed_at` guarding
+against a second replica) exactly as `workflow-trigger-sweep` claims events. A
+flushed Redis costs a cycle, not a silently dead sync.
+
+**Why not Trigger.dev.** Its tasks cannot reach Postgres — deliberately, see the
+header of `packages/workflows/src/tasks/workflow-run.ts` — and a sync run is
+almost entirely database work. Full reasoning in `docs/EXTERNAL-DATA-COLUMNS.md`
+§3.4.
+
+### What the jobs container needs
+
+`@fretik/jobs` now imports `@fretik/providers` at boot for the registration side
+effect: a sync dispatches provider read actions, and the registry is populated by
+that import alone. The package was already a dependency and already in the
+Dockerfile, so this costs nothing at build time — but a jobs image built without
+it will fail every run with "unknown operation".
+
+No new secret. The sync reads through the team's existing
+`external_app_connections`, so Nango holds the credentials exactly as it does
+for the chatbot and for page datasets.
+
+### Reading the state
+
+```sql
+-- Sources that are failing, worst first.
+SELECT s.id, s.provider_key, s.operation, s.consecutive_failures,
+       s.last_error_at, left(s.last_error, 120) AS err
+FROM collection_sync_sources s
+WHERE s.consecutive_failures > 0
+ORDER BY s.consecutive_failures DESC, s.last_error_at DESC;
+
+-- What a source has been doing, and what it costs upstream.
+SELECT status, trigger, started_at, finished_at,
+       created_count, updated_count, unchanged_count, failed_count, upstream_calls
+FROM collection_sync_runs
+WHERE sync_source_id = '<id>'
+ORDER BY started_at DESC LIMIT 20;
+
+-- Stuck claims: a runner that died mid-flight holds `claimed_at`.
+SELECT id, provider_key, operation, claimed_at
+FROM collection_sync_sources
+WHERE claimed_at < now() - interval '30 minutes';
+```
+
+**`unchanged_count` is the number to watch.** It is the share of rows whose hash
+was identical, so nothing was written, no `domain_events` row was emitted and no
+record card was re-embedded. A source whose `unchanged_count` is near zero on
+every run is either genuinely volatile or mapping a field that changes on every
+read (a timestamp, a computed total) — the second is a mapping bug that costs an
+embedding per row per run.
+
+### Turning it off
+
+A source is disabled with `enabled = false` (the user's switch in the UI) and
+that is the whole kill switch: the sweep's index is partial on `enabled`, so a
+disabled source is not even visible to it. Disabling never deletes data. To stop
+the engine estate-wide, stop enqueueing: remove `EXTERNAL_SYNC_SWEEP_JOB` from
+`registerSchedulers` and redeploy — the worker then simply has nothing to pull.
+
+---
+
+## 11. Nango — the credential vault
 
 Self-hosted, and used for one thing: storing every external-app credential
 encrypted. `nango-proxy` providers (Outlook, SharePoint, Planner) also route
@@ -613,6 +707,39 @@ the same event; the handler is a no-op when the row is already gone.
 Nango retries a non-2xx, so the route answers 200 to anything it knowingly
 ignores (a different event type, a body that will never parse) and reserves
 401 / 500 for the failures a redelivery could actually fix.
+
+### `forward` — an app that says it changed (per integration, operator step)
+
+The same route accepts Nango's `forward` event: a provider's OWN webhook,
+relayed. A delivery brings that connection's **incremental** sync sources
+forward (`collection-sync/nudge-on-notify.ts`) — nothing else. The payload is
+never read, so there is no per-provider parser to maintain: the event says the
+app is not idle, and the incremental run that follows says what changed.
+
+Polling is not replaced and must not be. A provider that stops delivering, a
+lost delivery, or an integration whose webhook URL was never registered costs
+**freshness**, never correctness — the schedule still runs.
+
+Enabling it for one provider is two steps, and the second is the one that is
+easy to forget:
+
+1. In Nango → **Integrations → \<integration\> → Webhooks**, copy the forwarding
+   URL Nango generates for that integration.
+2. Register that URL **with the provider**, in their own developer console, and
+   subscribe to the events that matter. Nango relays what the provider sends it;
+   it does not subscribe on your behalf.
+
+Only once step 2 is done may the manifest set `notifiesChanges: true`. That flag
+is display only — it is what makes a source's cadence line read "Once a day, and
+whenever \<app\> tells us". Setting it without a registered webhook does not
+break a sync; it tells a team their data is fresher than it is, which is worse,
+because the cadence is what they judge the figures by.
+
+Two limits worth knowing before enabling it on a chatty app: the nudge is
+debounced per connection for 15 minutes (`SYNC_LIMITS.minIntervalMinutes`,
+cluster-wide via Redis), and a source that does not bind `{"$since": true}` is
+never nudged — a full walk brought forward by every notification would spend its
+whole page budget per burst.
 
 ### Still worth adopting
 

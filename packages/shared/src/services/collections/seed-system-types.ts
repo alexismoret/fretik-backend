@@ -59,7 +59,7 @@ const SYSTEM_COLLECTIONS: SeedCollection[] = [
     label: "Document",
     labelPlural: "Documents",
     description:
-      "One record per uploaded file — its extracted metadata and the entities it mentions. Link a record to a file via its document record.",
+      "One record per uploaded file, with its extracted metadata and the entities it mentions. Link a record to a file via its document record.",
     icon: "file-text",
     fields: [
       // The locked title — defaults to the filename, the one title a document may

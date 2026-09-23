@@ -44,8 +44,15 @@ const dropInvalidOptionColors = (
 /**
  * Domain tool (deferred) — manage an object TYPE (the schema, not its rows):
  * create a new type (optionally with all its fields in one call), rename/restyle
- * one, or delete it. Creating provisions the typed table; deleting drops it and
- * its records. Edit individual fields later with `manageField`.
+ * one, delete it, or re-pull the columns a connected app fills. Creating
+ * provisions the typed table; deleting drops it and its records. Edit
+ * individual fields later with `manageField`.
+ *
+ * Nothing about SYNC lives here any more. Declaring a source — which app,
+ * which action, which arguments, which upstream path becomes which column,
+ * how often — is a mapping decision made against a live preview, and the one
+ * action that did live here (`refreshSync`) was a fragment of a workflow whose
+ * other half was missing. It is all `manageSync` now, including the refresh.
  */
 export const createManageCollectionTool = () =>
   tool({
@@ -57,6 +64,8 @@ export const createManageCollectionTool = () =>
       "- create: key (snake_case) + label + description + icon. Pass `fields` to build the whole schema in ONE call. Add relation/rollup fields after with manageField.",
       "- update: collectionKey + any of label, labelPlural, description, icon, enabled.",
       "- delete: collectionKey. Drops the type and all its records.",
+      "",
+      "A collection an app fills — creating one, changing its cadence, or refreshing it now — is `manageSync`.",
       "",
       "Types are private to the team by default. `sharing` widens the audience (records inherit it live). Owner team only; propose with askUserQuestion before sharing beyond the team — especially write or whole-org.",
       "",

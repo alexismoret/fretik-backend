@@ -190,6 +190,10 @@ export const createWorkflowRun = async (params: {
         teamId: workflow.teamId,
         maxDurationMinutes:
           workflow.limits.maxDurationMinutes ?? WORKFLOW_MAX_DURATION_MINUTES,
+        // A fresh run starts at turn 1 on the full budget. Only
+        // `resumeRunFromApproval` passes anything else — a run parked on a
+        // human is driven by a SECOND orchestrator picking up mid-playbook.
+        startTurnIndex: 1,
       },
       { idempotencyKey: `workflow-run:${runId}` },
     );

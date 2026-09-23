@@ -11,6 +11,7 @@ import {
   fieldOptions,
 } from "../../db/schema/field-types";
 import { badRequest, throwHttpError } from "../../lib/errors";
+import { RESERVED_FIELD_KEYS } from "../collection-schema/identifiers";
 import {
   FIELD_DEFINITION_KEY_REGEX,
   FIELD_DEFINITION_LIMITS,
@@ -42,6 +43,18 @@ export const validateFieldDefinitionShape = (
       400,
       badRequest(
         `Field key '${patch.key}' must match ${FIELD_DEFINITION_KEY_REGEX} (lowercase, alphanum + underscore, 1-60 chars).`,
+      ),
+    );
+  }
+  // `id`, `created_at` and `updated_at` are the collection's own columns. The
+  // DDL layer already refuses them, but it refuses by THROWING — a caller that
+  // asks for one gets a 500 with no way to tell it apart from a database
+  // outage. Named here, the answer says which key and what to do instead.
+  if (patch.key !== undefined && RESERVED_FIELD_KEYS.has(patch.key)) {
+    return throwHttpError(
+      400,
+      badRequest(
+        `Field key '${patch.key}' is one of the columns every collection already has (${[...RESERVED_FIELD_KEYS].join(", ")}). Name the column something else, or omit the key and let one be derived.`,
       ),
     );
   }
@@ -99,7 +112,7 @@ export const validateFieldDefinitionShape = (
         400,
         badRequest(
           allowed.length === 0
-            ? `A '${patch.type}' field cannot render as a code — drop config.display.`
+            ? `A '${patch.type}' field cannot render as a code. Drop config.display.`
             : `A '${patch.type}' field only supports config.display '${allowed.join("' or '")}'.`,
         ),
       );

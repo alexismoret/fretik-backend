@@ -313,6 +313,7 @@ const genericActions: ManifestAction[] = [
         description: "Grouping keys, used with `aggregate`.",
       },
     },
+    pagination: { kind: "page-number", maxLimit: 200 },
     returns: {
       fields: {
         items: { type: "array", items: FREE_OBJECT },

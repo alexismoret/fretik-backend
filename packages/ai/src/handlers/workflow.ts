@@ -13,9 +13,9 @@ import {
   isTerminalRunStatus,
   WORKFLOW_DEFAULT_MAX_TOTAL_TOKENS,
   WorkflowFinalizeRequestSchema,
+  WorkflowParkRequestSchema,
   WorkflowTurnRequestSchema,
   WorkflowTurnResultSchema,
-  WorkflowWaitTokenRequestSchema,
   type WorkflowRunUsage,
   type WorkflowTaskState,
   type WorkflowTurnResult,
@@ -40,7 +40,7 @@ import { getWorkflowRow } from "@fretik/shared/services/workflows/get";
 import { getWorkflowRunRow } from "@fretik/shared/services/workflows/get-run";
 import {
   heartbeatRun,
-  setRunWaitToken,
+  parkRunForApproval,
 } from "@fretik/shared/services/workflows/heartbeat-run";
 import { onWorkflowRunTerminal } from "@fretik/shared/services/workflows/on-run-terminal";
 import { recordTurnResult } from "@fretik/shared/services/workflows/record-turn-result";
@@ -116,6 +116,7 @@ import {
 } from "../services/native-input";
 import {
   buildTurnMessageMetadata,
+  createStepClock,
   filterNewAssistantMessages,
   narrowMessageMetadata,
 } from "./turn-helpers";
@@ -137,7 +138,13 @@ import {
 
 const logPrefix = "[workflow.turn]";
 
-/** How many history messages feed the agent (same default as the chatbot).
+/** How many history messages feed the agent.
+ *
+ * Not the chatbot's figure any more: chat moved to `AGENT_WINDOW_ROW_LIMIT`
+ * (2026-09-23) because 30 rows fired before its token cap and slid rows out
+ * unsummarised. Runs never get there — two rows a turn, and over 30 days of
+ * production 104 runs took at most 4 turns — so 40 stays, and the flat
+ * re-summarisation cost below keeps its bound.
  *
  * This used to say that summarising compaction was not wired for runs because
  * "turns are bounded and the playbook re-grounds every turn". Both halves were
@@ -711,6 +718,9 @@ const executeTurn = async (params: {
         finalMessages = messages;
       },
       execute: ({ writer }) => {
+        // Step timers, as in the chatbot: the run transcript renders through
+        // the same stream component. See createStepClock.
+        const stepClock = createStepClock();
         writer.merge(
           toUIMessageStream<WorkflowTools>({
             stream: result.stream,
@@ -718,7 +728,7 @@ const executeTurn = async (params: {
             // message with the trace id + finish/usage blob so a run's messages
             // carry the same observability the chat UI's do.
             messageMetadata: ({ part }) => {
-              if (part.type !== "finish") return undefined;
+              if (part.type !== "finish") return stepClock(part);
               return buildTurnMessageMetadata(
                 part,
                 streamOutcome.servedBy,
@@ -1235,17 +1245,20 @@ workflowTriggerRoutes.post("/runs/:runId/turn", async (c) => {
   );
 });
 
-/** POST /internal/trigger/runs/:runId/wait-token — record the approval wait
- * token the orchestrator parked on. */
-workflowTriggerRoutes.post("/runs/:runId/wait-token", async (c) => {
+/** POST /internal/trigger/runs/:runId/park — the orchestrator is ending on a
+ * human wait and hands over where to pick up. It does NOT stay alive: on
+ * self-hosted Trigger.dev a parked run would hold its workflow's concurrency
+ * slot for the whole wait. */
+workflowTriggerRoutes.post("/runs/:runId/park", async (c) => {
   const runId = c.req.param("runId");
-  const parsed = WorkflowWaitTokenRequestSchema.safeParse(await c.req.json());
+  const parsed = WorkflowParkRequestSchema.safeParse(await c.req.json());
   if (!parsed.success) {
     return c.json({ code: "VALIDATION_ERROR", message: "Invalid body" }, 400);
   }
-  const { parked } = await setRunWaitToken({
+  const { parked } = await parkRunForApproval({
     runId,
-    waitTokenId: parsed.data.waitTokenId,
+    resumeFromTurnIndex: parsed.data.resumeFromTurnIndex,
+    remainingMs: parsed.data.remainingMs,
   });
   // Approval email — only from the POST that actually parked the run (a
   // retried callback must not double-send). Fire-and-forget.

@@ -420,6 +420,26 @@ interface Row {
   firstError: string | null;
 }
 
+const fmt = (value: number | null, digits: number): string =>
+  value === null ? "—" : value.toFixed(digits);
+
+/**
+ * One upstream on one line, printed as soon as it is measured.
+ *
+ * Deliberately NOT the table's aligned row: the table is ranked by ceiling and
+ * only exists once every upstream has been measured, whereas this is progress
+ * — it has to read on its own, out of order, possibly as the last thing the
+ * run ever prints.
+ */
+const summarise = (row: Row): string =>
+  [
+    `${fmt(row.tps, 1)} tok/s (best ${fmt(row.tpsMax, 1)})`,
+    `intact ${row.intact.toString()}/${row.intactRuns.toString()}`,
+    `cold $${fmt(row.coldCost, 5)} → warm $${fmt(row.warmCost, 5)}`,
+    `429 ${row.rateLimited.toString()}`,
+    `fail ${row.failures.toString()}`,
+  ].join(" · ");
+
 const rows: Row[] = [];
 
 // oxlint-disable no-await-in-loop -- the serialisation IS the measurement
@@ -540,7 +560,7 @@ for (const provider of providers) {
     rateLimited += 1;
   }
 
-  rows.push({
+  const row: Row = {
     provider,
     tps: median(tpsSamples),
     tpsMax: tpsSamples.length > 0 ? Math.max(...tpsSamples) : null,
@@ -555,12 +575,16 @@ for (const provider of providers) {
     rateLimited,
     failures,
     firstError,
-  });
-  console.log("done");
+  };
+  rows.push(row);
+  // Report the upstream the moment it is measured, not only in the ranked
+  // table at the end. A full pass is minutes per upstream — the 2026-09-22 run
+  // on `zai-glm-5-3-flash` took eight of them — and an operator who loses
+  // patience, or a shell that goes away, used to take every measurement with
+  // them. The table below still ranks, which needs ALL the rows; this line
+  // needs one, so it is the half that survives an interrupted run.
+  console.log(summarise(row));
 }
-
-const fmt = (value: number | null, digits: number): string =>
-  value === null ? "—" : value.toFixed(digits);
 
 // Ranked by CEILING, not median: a pool exists to give `sort: "throughput"`
 // candidates worth promoting when they are hot, and an upstream that never goes
@@ -639,3 +663,13 @@ if (save) {
     `\nSaved ${written.toString()} row(s) to model_bench_runs — \`models:admin -- scorecard ${profileKey}\` will show them.`,
   );
 }
+
+// `warmModelRegistry` subscribes to the registry's Redis invalidation channel
+// (`services/model-registry/live.ts` → `subscribeChannel`) and nothing here
+// unsubscribes, so the event loop never empties and the process never exits.
+// Measured 2026-09-22: a completed run sat for twenty further minutes at 0 %
+// CPU with two Redis sockets and nothing else open, and only went away on a
+// signal — which reads, to whoever is waiting, exactly like a bench that hung
+// mid-measurement. Same explicit exit as `check-model-catalog.ts`, for the
+// same reason: a script that warms the registry has to say when it is done.
+process.exit(0);

@@ -7,6 +7,7 @@ import { countNonNullColumnValues } from "@fretik/shared/services/collection-rec
 import { isVirtualField } from "@fretik/shared/services/collection-schema/columns";
 import { assertCanWriteType } from "@fretik/shared/services/collection-sharing/write-access";
 import { resolveCollectionId } from "@fretik/shared/services/collections/resolve";
+import { loadSyncProvenance } from "@fretik/shared/services/collections/sync-provenance";
 import { FIELD_DEFINITION_LIMITS } from "@fretik/shared/services/field-definitions/constants";
 import { createFieldDefinition } from "@fretik/shared/services/field-definitions/create";
 import { deleteFieldDefinition } from "@fretik/shared/services/field-definitions/delete";
@@ -33,7 +34,7 @@ export const createManageFieldTool = () =>
       "Manage a field on a collection (the typed column). Get current fields from describeCollection. The field TYPE decides what the team can filter, sum, and view on — when unsure which type fits (stored vs computed, select vs text, relation vs field), read `skills/designing-collections/SKILL.md` first.",
       "",
       "- add: collectionKey + label + type + description (one line — what it holds). Optional config (select options, number bounds, …) and key.",
-      "- update: collectionKey + fieldKey + any of label, description, config, enabled. Keeps stored values.",
+      "- update: collectionKey + fieldKey + any of label, description, config, enabled. Keeps stored values. It is also the only action a `synced` column takes — see `<collections>`.",
       "- changeType: collectionKey + fieldKey + type (+ config). RESETS the field's values.",
       "- delete: collectionKey + fieldKey. Pass cascade=true to drop a field that holds values.",
       "",
@@ -135,6 +136,28 @@ export const createManageFieldTool = () =>
             TOOL_ERROR_CODES.COLLECTION_QUERY_ERROR,
             `No field '${input.fieldKey}' on type '${input.collectionKey}'.`,
             "Call describeCollection to see the field keys.",
+          );
+        }
+
+        // A column a connected app fills is not ours to retype or drop: the next
+        // run would write its values into a column that no longer accepts them
+        // (`changeType` also RESETS every stored value), and the source's field
+        // mapping would point at nothing. Refused here rather than left to fail
+        // mid-run, and the way out is named — deleting the SOURCE keeps the data
+        // and hands the column back, which is what the person usually wants.
+        if (
+          field.syncSourceId !== null &&
+          (input.action === "delete" || input.action === "changeType")
+        ) {
+          const source = (await loadSyncProvenance([field.syncSourceId])).get(
+            field.syncSourceId,
+          );
+          const app = source ? source.app : "a connected app";
+          const via = source ? ` (${source.operation})` : "";
+          return toolError(
+            TOOL_ERROR_CODES.COLLECTION_QUERY_ERROR,
+            `'${field.key}' is filled by ${app}${via}, so it cannot be ${input.action === "delete" ? "deleted" : "retyped"} here.`,
+            `Detach the column from its sync source first, or delete the source — the data stays and the column becomes editable. Changing what ${app} sends is done in ${app}.`,
           );
         }
 

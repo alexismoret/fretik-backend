@@ -27,7 +27,7 @@ review. NOT shipped to the model — maintainer notes only.
 
 Findings worth recording:
 
-- **Zero stale references** (manageTasks, listEntities, getDocumentContent, old prompt section names) across all 16 skills.
+- **Zero stale references** (manageTasks, listEntities, getDocumentContent, old prompt section names) across all 16 skills. — **Stale again by 2026-09-19**: `skill-author` still carried the snake_case tool table (`sql_query`, `rag_search`, `list_entities`, `manage_tasks`…) and three references named the "Python objects SDK" after the rename to `collections`; both fixed that day. The mechanical sweep is worth re-running after every tool rename.
 - **Zero industry vocabulary** in bundled skills (the `BL` hit in xlsx L260 is an Excel column letter, not a bill of lading).
 - **No approval-flow duplication**: provider guidance mentions of `run_plan`/approval are provider-specific mechanics (bulk `*_messages` variants, one-plan bundling, API quirks) — the doctrine itself lives only in `<external_apps>`.
 

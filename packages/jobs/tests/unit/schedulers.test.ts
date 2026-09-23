@@ -4,7 +4,7 @@ import { mockModule } from "../lib/mock-module";
 /**
  * The nightly timetable, pinned as data.
  *
- * `registerSchedulers` is imperative — thirteen `upsertJobScheduler` calls in a
+ * `registerSchedulers` is imperative — fourteen `upsertJobScheduler` calls in a
  * row — and nothing until now read it back. That matters because every claim it
  * makes is a claim about things NOT colliding, and a collision is silent:
  *
@@ -16,8 +16,11 @@ import { mockModule } from "../lib/mock-module";
  *    `schedulers.ts` are almost entirely about avoiding exactly this, and
  *    comments do not fail;
  *  - a legacy `{ repeat }` registration (the BullMQ 5 API) hard-crashes the
- *    process at boot on BullMQ 6. That already happened once — it is what
- *    `scripts/drop-legacy-orphan-repeatable.ts` exists to clean up.
+ *    process at boot on BullMQ 6. That already happened once, and the one-shot
+ *    written to sweep the leftover metadata out of Redis has since been deleted
+ *    — which is exactly why this test has to hold: the cleanup is gone, so
+ *    nothing but this stops the next legacy registration from reaching a
+ *    deploy.
  *
  * The queues are doubled because the subject is the REGISTRATION, not Redis.
  */
@@ -100,6 +103,12 @@ describe("what may share the 15-second maintenance queue", () => {
       [
         "conversation-task-sweep",
         "dreaming-sweep",
+        // The collection-sync claim pass qualifies on the same rule as the
+        // rest: it is ONE `UPDATE … RETURNING` plus an `addBulk`, and the runs
+        // it finds — which can each spend ten minutes on a third party — happen
+        // on the `external-sync` queue. Enqueuing is cheap; being enqueued is
+        // not, and only the first half belongs here.
+        "external-sync-sweep",
         // Fan-out only: it lists the teams and enqueues one job each. The
         // model calls it causes all land on `folder-describe`.
         "folder-describe-sweep",
@@ -149,8 +158,9 @@ describe("repeat definitions", () => {
   test("nothing uses the legacy BullMQ 5 repeat option", () => {
     // `queue.add(name, data, { repeat })` was removed in BullMQ 6 and throws at
     // BOOT — "Legacy repeatable job metadata is not supported" — taking the
-    // whole jobs container with it. That is the incident
-    // `drop-legacy-orphan-repeatable.ts` was written to clean up after.
+    // whole jobs container with it. The cleanup written after that incident is
+    // gone, so this assertion is the only thing between a legacy registration
+    // and a crash loop.
     for (const r of registrations) {
       expect(r.template.opts).not.toHaveProperty("repeat");
       expect(Object.keys(r.repeat).sort()).toEqual(

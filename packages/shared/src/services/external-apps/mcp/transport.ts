@@ -1,6 +1,6 @@
-import { withConnectionSlot } from "../exec/connection-slot";
+import { withUpstreamPermit, type GovernorMode } from "../exec/governor/permit";
 import { callToolOnTarget, listToolsOnTarget } from "./client";
-import { type McpConnectionTarget, resolveMcpTarget } from "./target";
+import { resolveMcpTarget, type McpConnectionTarget } from "./target";
 import type { McpCallToolResult, McpTool } from "./types";
 
 /**
@@ -29,23 +29,30 @@ const CALL_LEASE_MS = 35_000;
 /**
  * Call one MCP tool on a connection with the given arguments.
  *
- * This is where the connection slot is taken for MCP, rather than in the two
- * callers (`page-query`, `page-run`), because `client.ts` opens a NEW client
- * per call — a page with N MCP datasets otherwise runs N `initialize`
- * handshakes at once against one server, and a server that is single-session or
- * rate-limits `initialize` fails some of them. Default is still `parallel`;
- * `concurrency_mode = 'serial'` on the connection is how an operator tames one.
+ * This is where the permit is taken for MCP, rather than in the two callers
+ * (`page-query`, `page-run`), because `client.ts` opens a NEW client per call —
+ * a page with N MCP datasets otherwise runs N `initialize` handshakes at once
+ * against one server, and a server that is single-session or rate-limits
+ * `initialize` fails some of them.
+ *
+ * An MCP server has no manifest, so everything the governor knows about it
+ * comes from the connection's own columns: `max_concurrent` (or the older
+ * `concurrency_mode`) and the rate budget an operator typed in. Absent those it
+ * is paced only by the process-wide default, which is the right answer for a
+ * server nobody has measured.
  */
 export const mcpCallTool = async (
   connection: McpConnectionTarget,
   name: string,
   args: Record<string, unknown>,
+  mode: GovernorMode = { kind: "interactive" },
 ): Promise<McpCallToolResult> =>
-  await withConnectionSlot(
+  await withUpstreamPermit(
     connection,
+    mode,
+    { holdMs: CALL_LEASE_MS },
     async () => {
       const target = await resolveMcpTarget(connection);
       return await callToolOnTarget(target, name, args);
     },
-    { leaseMs: CALL_LEASE_MS },
   );

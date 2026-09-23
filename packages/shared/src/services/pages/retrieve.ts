@@ -17,12 +17,17 @@ export const listPages = async (params: {
   teamId: string;
   requester?: PageRequester;
   limit?: number;
+  /** Only the pages this conversation built (their provenance). */
+  sourceConversationId?: string;
 }): Promise<PageSummary[]> => {
   const rows = await db.query.pages.findMany({
     where: {
       teamId: params.teamId,
       archivedAt: { isNull: true },
       ...pageVisibilityWhere(params.requester),
+      ...(params.sourceConversationId === undefined
+        ? {}
+        : { sourceConversationId: params.sourceConversationId }),
     },
     orderBy: { updatedAt: "desc" },
     limit: params.limit ?? 100,

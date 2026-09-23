@@ -16,6 +16,14 @@ A workflow is this assistant running unattended: a trigger fires, the playbook's
 - **event** — fires on a workspace event: `document.uploaded` (filterable by folder), `record.created` (filterable by collection), or a connector event (`connector.<app>.<kind>`). The backbone of ingest pipelines.
 - **form** — Fretik hosts a shareable public form; each submission (answers + attached files) starts a run. Right for collecting structured input from people outside the conversation — clients, field staff, other departments.
 
+## When a workflow "isn't running" or "is too slow"
+
+Read `get` before diagnosing — it returns `runs` ({ running, queued, needsApproval, waitingSince }), and the answer is usually there.
+
+- **`needsApproval > 0`** — it is not slow, it is waiting on a person, and has been since `waitingSince`. Say that, name the decisions, and get them answered. Redesigning the playbook changes nothing while they sit.
+- **`queued > 0` with `running` at 0** — work arrived and has not started. Report it as a queue, not as a failure.
+- **Never read the cause off the playbook's prose.** What fires a run is `triggerConfig`, nothing else: a folder named in the goal restricts nothing unless the subscription carries `filter.folderId`. Check the trigger before blaming it.
+
 ## Design for the input space
 
 A playbook is a program: each run executes against whatever the trigger delivers THAT run — not against the files shown while building. Before writing tasks, decide from the user's request how variable the input is:
@@ -54,7 +62,8 @@ The same discipline covers the deliverable. When the output leaves a real choice
 
 ## Traps
 
-- The executor cannot create or modify collections, fields, skills, or workflows mid-run. Build schema and skills in the conversation FIRST; the workflow only fills them.
+- The executor cannot create or modify collections, fields, sync sources, skills, or workflows mid-run. Build schema and skills in the conversation FIRST; the workflow only fills them.
+- A playbook never mirrors an app's table into a collection — that is a synced collection, built in the conversation (`manageSync`). A run that needs the app's data reads that collection, refreshing it first (`collections.sync.refresh`) when it must be current, and spends its steps on what to DO with the rows.
 - A playbook that needs data from a collection should name the type by its human label and let the run resolve it — hardcoding table names breaks on schema evolution.
-- Bulk record writes inside a run go through the Python objects SDK in ONE script (one approval covers all rows).
+- Bulk record writes inside a run go through the Python `collections` SDK in ONE script (one approval covers all rows).
 - When a proposal replaces something the team does by hand, run the first execution as a test on real recent data and show the user the run before activating — trust comes from the visible run, not the description.

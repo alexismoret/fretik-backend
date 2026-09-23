@@ -41,6 +41,17 @@ export interface CustomHandlerCall {
 export const callCustomHandler = async (
   call: CustomHandlerCall,
 ): Promise<unknown> => {
+  // A test-only provider has no third party and therefore no credentials —
+  // asking Nango for some would fail on a connection Nango has never heard of,
+  // and the failure would reach the agent as if the app were broken. See
+  // `testOnly` in the manifest schema for why such a provider exists.
+  if (call.manifest.testOnly === true) {
+    return await call.handler(call.args, {
+      credentials: {},
+      connection_config: {},
+    });
+  }
+
   const nango = getNangoClient();
 
   let connection;
@@ -64,12 +75,12 @@ export const callCustomHandler = async (
   const rawCredentials: Record<string, unknown> = isRecord(
     connection.credentials,
   )
-    ? (connection.credentials as Record<string, unknown>)
+    ? connection.credentials
     : {};
   const rawConnectionConfig: Record<string, unknown> = isRecord(
     connection.connection_config,
   )
-    ? (connection.connection_config as Record<string, unknown>)
+    ? connection.connection_config
     : {};
   // Reverse `nangoKey` rename — same reason as http-direct: handlers
   // read canonical snake_case keys regardless of how Nango stored them.

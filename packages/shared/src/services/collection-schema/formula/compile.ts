@@ -163,7 +163,7 @@ class Compiler {
     }
     if (!def.enabled) {
       throw new FormulaError(
-        `\`${def.label}\` is disabled — a formula can only read active fields.`,
+        `\`${def.label}\` is disabled, and a formula can only read active fields.`,
         node.at,
       );
     }
@@ -189,7 +189,7 @@ class Compiler {
     }
     if (this.inlining.length >= MAX_INLINE_DEPTH) {
       throw new FormulaError(
-        `\`${def.label}\` is too many formulas deep — flatten the chain.`,
+        `\`${def.label}\` is too many formulas deep. Flatten the chain.`,
         node.at,
       );
     }
@@ -202,7 +202,7 @@ class Compiler {
       // not looking at — re-anchor the message on the reference they wrote.
       if (error instanceof FormulaError) {
         throw new FormulaError(
-          `\`${def.label}\` cannot be used here — its own formula fails: ${error.message}`,
+          `\`${def.label}\` cannot be used here because its own formula fails: ${error.message}`,
           node.at,
         );
       }
@@ -296,7 +296,7 @@ class Compiler {
     const arity = arityOf(node.name, fn);
     if (node.args.length < arity.min || node.args.length > arity.max) {
       throw new FormulaError(
-        `\`${node.name}\` takes ${fn.variadic ? `at least ${arity.min}` : arity.min === arity.max ? `${arity.min}` : `${arity.min} or ${arity.max}`} argument${arity.min === 1 && !fn.variadic ? "" : "s"} — ${fn.hint}.`,
+        `\`${node.name}\` takes ${fn.variadic ? `at least ${arity.min}` : arity.min === arity.max ? `${arity.min}` : `${arity.min} or ${arity.max}`} argument${arity.min === 1 && !fn.variadic ? "" : "s"} (${fn.hint}).`,
         node.at,
       );
     }
@@ -320,7 +320,7 @@ class Compiler {
     // depends on a time zone, which a stored column may not depend on.
     if (node.name === "text" && walked[0]?.type === "date") {
       throw new FormulaError(
-        "`text` cannot turn a date into text — how a date reads depends on the reader's time zone.",
+        "`text` cannot turn a date into text, because how a date reads depends on the reader's time zone.",
         node.args[0]?.at ?? node.at,
       );
     }
@@ -389,7 +389,7 @@ export const compileFormula = (input: {
   const { sql, type } = compiler.compile(input.source);
   if (type === null) {
     throw new FormulaError(
-      "This formula always produces an empty value — it needs to compute something.",
+      "This formula always produces an empty value. It needs to compute something.",
       0,
     );
   }

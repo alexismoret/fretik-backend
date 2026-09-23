@@ -341,6 +341,90 @@ export const DECISION_POINTS: Readonly<
     defaultMode: "shadow",
     evalGate: { suites: ["shared unit: link-type-match"] },
   },
+
+  "memory.distill.worth": {
+    key: "memory.distill.worth",
+    purpose:
+      "Whether a conversation holds anything worth remembering before the distiller writes it up as an episode. Asked once, for a conversation that has no episode yet.",
+    questionVersion: 1,
+    families: {
+      // An episode not written is a memory the team never gets back, while
+      // one written for small talk costs one retrieval slot. So only an
+      // unmistakable "nothing here" skips.
+      worth: { kind: "boolean", signal: "probability", threshold: 0.05 },
+    },
+    noAnswer: "legacy",
+    state: {
+      maxTokens: 8000,
+      admit: ["transcript"],
+      content: ["transcript"],
+      maxValueChars: 32_000,
+    },
+    egress: "content",
+    path: "background",
+    timeoutMs: 4000,
+    fallbackTransport: true,
+    journal: { policy: "all" },
+    defaultMode: "shadow",
+    evalGate: { suites: ["evals:memory -- --case mem-distill-*"] },
+  },
+
+  "memory.promote.support": {
+    key: "memory.promote.support",
+    purpose:
+      "Whether each episode of a promotion cluster actually states the team fact the promoter proposes to store. One question per (proposed fact, episode); the count of supporting episodes decides whether the write happens.",
+    questionVersion: 1,
+    families: {
+      // Per episode, a plain majority reading: the count across episodes is
+      // what carries the rule (two for a new fact, one for a correction).
+      sup: { kind: "boolean", signal: "probability", threshold: 0.5 },
+    },
+    noAnswer: "legacy",
+    state: {
+      maxTokens: 9000,
+      admit: ["episodes"],
+      content: ["episodes"],
+      maxValueChars: 24_000,
+    },
+    egress: "content",
+    path: "background",
+    timeoutMs: 4000,
+    fallbackTransport: true,
+    journal: { policy: "all" },
+    defaultMode: "shadow",
+    evalGate: { suites: ["evals:memory -- --case mem-promote-*"] },
+  },
+
+  "graph.entity-match": {
+    key: "graph.entity-match",
+    purpose:
+      'Whether a party a document mentions is a record the team already has, when its name is close to existing records but not close enough for spelling to decide. One choice per such mention over its nearest records, plus "another one".',
+    questionVersion: 1,
+    families: {
+      // A wrong link attaches a document to the wrong client, which every
+      // later answer about that client repeats. A missed link costs a
+      // suggested duplicate a person merges. So linking needs certainty.
+      ent: {
+        kind: "choice",
+        signal: "confidence",
+        threshold: 0.8,
+        minChosenProbability: 0.5,
+      },
+    },
+    noAnswer: "legacy",
+    state: {
+      maxTokens: 1500,
+      admit: ["filename", "documentSummary"],
+      content: ["documentSummary"],
+    },
+    egress: "redactable",
+    path: "background",
+    timeoutMs: 2500,
+    fallbackTransport: true,
+    journal: { policy: "all" },
+    defaultMode: "shadow",
+    evalGate: { suites: ["shared unit: entity-match"] },
+  },
 };
 
 export const decisionPoint = (key: DecisionPointKey): DecisionPointSpec =>

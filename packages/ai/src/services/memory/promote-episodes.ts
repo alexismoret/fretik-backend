@@ -4,11 +4,22 @@ import { createMemory } from "@fretik/shared/services/ai-memory/create";
 import { findMemoryByPath } from "@fretik/shared/services/ai-memory/lookup";
 import { overwriteMemory } from "@fretik/shared/services/ai-memory/overwrite";
 import { getTeamBotUserId } from "@fretik/shared/services/auth/bot-user";
+import { recordDecisions } from "@fretik/shared/services/decisions/journal";
+import type { DecisionEvaluator } from "@fretik/shared/services/decisions/remote";
 import { generateText } from "ai";
 import { z } from "zod";
 import { telemetryFor } from "../../lib/langfuse";
 import { resolveMemoryModel } from "../../lib/model-registry/team-model";
 import { withNamedTrace } from "../../lib/trace-tool";
+import { inProcessEvaluator } from "../decisions/in-process";
+import {
+  buildSupportQuestions,
+  episodeTag,
+  type ProposedPromotion,
+  readSupport,
+  SUPPORT_POINT,
+  supportJournalEntries,
+} from "./promote-support";
 
 /**
  * Episode → semantic promotion (P8.5). When a record recurs across several
@@ -173,6 +184,8 @@ export const promoteEpisodes = async (input: {
   organizationId: string;
   /** Force a registry profile — EVAL/BENCH ONLY. */
   modelProfileKey?: string;
+  /** The decision engine for the support check. Tests inject one. */
+  evaluator?: DecisionEvaluator;
 }): Promise<PromoteResult> => {
   const noop: PromoteResult = { added: 0, updated: 0, noop: 0 };
   const { teamId, organizationId } = input;
@@ -284,6 +297,54 @@ export const promoteEpisodes = async (input: {
   );
   if (!output) return noop;
 
+  // The recurrence rule, counted instead of trusted: which episodes actually
+  // state each proposed fact. Only enforced once the point is live; in shadow
+  // every verdict is journaled and the promoter's answer stands.
+  const proposed: ProposedPromotion[] = output.promotions.flatMap((p) =>
+    p.action === "NOOP" ||
+    !p.path.startsWith(LEARNED_PREFIX) ||
+    !p.content.trim()
+      ? []
+      : [{ action: p.action, path: p.path, content: p.content }],
+  );
+  const refused = new Set<string>();
+  if (proposed.length > 0) {
+    const response = await (input.evaluator ?? inProcessEvaluator)(
+      {
+        point: SUPPORT_POINT,
+        subject: {
+          type: "episode",
+          id: [...episodes.map((e) => e.id)].sort()[0] ?? "",
+        },
+        sessionId: `memory-dreaming:${teamId}:${dreamDate}`,
+        state: {
+          episodes: episodes.map(
+            (e, j) =>
+              `<episode id="${episodeTag(j)}">\n${e.title}\n${e.summary.slice(0, MAX_SUMMARY_CHARS)}\n</episode>`,
+          ),
+        },
+        questions: buildSupportQuestions(proposed, episodes.length),
+      },
+      { teamId, organizationId },
+    );
+    const verdict = readSupport(response, proposed, episodes.length);
+    await recordDecisions(
+      supportJournalEntries({
+        organizationId,
+        teamId,
+        episodeIds: episodes.map((e) => e.id),
+        promotions: proposed,
+        response,
+        verdict,
+      }),
+    );
+    if (!verdict.shadow) {
+      proposed.forEach((p, i) => {
+        if (verdict.allowed[i] === false) refused.add(p.path);
+      });
+    }
+  }
+
   const sources = episodes.map((e) => `episode:${e.id}`).join(", ");
   const result: PromoteResult = { added: 0, updated: 0, noop: 0 };
   const actor = { userId: attributionUserId, actor: "agent" as const };
@@ -303,6 +364,13 @@ export const promoteEpisodes = async (input: {
       console.warn(
         `[memory-promote] team ${teamId}: dropped a ${p.action} outside ${LEARNED_PREFIX} — path "${p.path}"`,
       );
+      continue;
+    }
+    if (refused.has(p.path)) {
+      console.info(
+        `[memory-promote] team ${teamId}: ${p.action} ${p.path} refused, too few episodes state it`,
+      );
+      result.noop++;
       continue;
     }
     const content = `${p.content.trim()}\n\nSources: ${sources}`;

@@ -15,6 +15,9 @@ export const DECISION_POINT_KEYS = [
   "memory.consolidate.prescreen",
   "memory.resolve.verify",
   "graph.link-type-match",
+  "memory.distill.worth",
+  "memory.promote.support",
+  "graph.entity-match",
 ] as const;
 
 export type DecisionPointKey = (typeof DECISION_POINT_KEYS)[number];

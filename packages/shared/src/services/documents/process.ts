@@ -39,6 +39,7 @@ import {
   convertFirstPageToPdf,
 } from "./convert";
 import { joinDocumentPagesMarkdown } from "./markdown";
+import { mentionKey, preResolveMentions } from "./pre-resolve-mentions";
 import { syncDocumentGraph } from "./sync-document-graph";
 import { generateImageThumbnail, generatePdfThumbnail } from "./thumbnails";
 import { vectorisationSkipReason } from "./vectorisable";
@@ -509,6 +510,20 @@ export const processDocument = async (
     confidenceScore: preExtractResult.confidenceScore?.toString(),
   };
 
+  // Parties whose names are close to existing records but not close enough
+  // for spelling to decide, matched by meaning HERE, before the transaction:
+  // it is a network call, and the fold below holds Postgres open.
+  const mentionHints = await preResolveMentions({
+    organizationId,
+    teamId,
+    documentId,
+    mentions: preExtractResult.entities,
+    context: {
+      filename: metadata.originalFilename,
+      documentSummary: preExtractResult.documentSummary,
+    },
+  });
+
   const graphResult = await db.transaction(async (tx) => {
     await tx
       .insert(documentProperties)
@@ -536,10 +551,14 @@ export const processDocument = async (
       folderId: metadata.folderId,
       filename: metadata.originalFilename,
       customFields: preExtractResult.customFields,
-      mentions: preExtractResult.entities.map((e) => ({
-        name: e.name,
-        confidence: e.confidence,
-      })),
+      mentions: preExtractResult.entities.map((e) => {
+        const recordId = mentionHints.get(mentionKey(e.name.trim()));
+        return {
+          name: e.name,
+          confidence: e.confidence,
+          ...(recordId !== undefined ? { recordId } : {}),
+        };
+      }),
       actor: uploadActor,
     });
 

@@ -24,6 +24,13 @@ export const answerJournalEntry = (params: {
   teamId: string;
   point: DecisionPointKey;
   questionId: string;
+  /**
+   * The id the ROW is keyed by, when it must differ from the wire id: a
+   * question named by its position in one call (`sup:0-E2`) is journaled by
+   * what it is about, so the same question asked another night is the same
+   * row. Same family prefix as `questionId`.
+   */
+  journalQuestionId?: string;
   subjectType: string;
   subjectId: string;
   targetId?: string | null;
@@ -56,7 +63,7 @@ export const answerJournalEntry = (params: {
     teamId: params.teamId,
     point: params.point,
     family: familyOf(params.questionId),
-    questionId: params.questionId,
+    questionId: (params.journalQuestionId ?? params.questionId).slice(0, 120),
     questionVersion:
       answered?.policy.questionVersion ??
       decisionPoint(params.point).questionVersion,

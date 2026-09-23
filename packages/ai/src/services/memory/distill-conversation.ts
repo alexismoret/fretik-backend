@@ -1,13 +1,22 @@
 import db from "@fretik/shared/db";
 import type { EpisodeVectorMetadata } from "@fretik/shared/db/schema";
 import { parseLlmJsonObject } from "@fretik/shared/lib/llm-json";
+import { recordDecisions } from "@fretik/shared/services/decisions/journal";
+import type { DecisionEvaluator } from "@fretik/shared/services/decisions/remote";
 import { upsertEpisode } from "@fretik/shared/services/episodes/upsert";
 import { generateText, type UIMessage } from "ai";
 import { z } from "zod";
 import { telemetryFor } from "../../lib/langfuse";
 import { resolveMemoryModel } from "../../lib/model-registry/team-model";
 import { withNamedTrace } from "../../lib/trace-tool";
+import { inProcessEvaluator } from "../decisions/in-process";
 import { vectorizeSource } from "../vectorize";
+import {
+  readWorth,
+  WORTH_POINT,
+  WORTH_QUESTION,
+  worthJournalEntry,
+} from "./distill-worth";
 
 /**
  * Conversation → episode distillation (P4). One utility-tier LLM call turns a
@@ -240,6 +249,8 @@ export const distillConversation = async (input: {
   organizationId: string;
   /** Force a registry profile — EVAL/BENCH ONLY (model bake-off). */
   modelProfileKey?: string;
+  /** The decision engine for the "worth remembering?" check. Tests inject one. */
+  evaluator?: DecisionEvaluator;
 }): Promise<DistillConversationResult> => {
   const { conversationId, teamId, organizationId } = input;
 
@@ -286,6 +297,36 @@ export const distillConversation = async (input: {
   // real, distillable run; the chat threshold would skip every short run.
   const minLines = workflowRun ? WORKFLOW_MIN_MESSAGES : MIN_MESSAGES;
   if (lines.length < minLines) return { distilled: false };
+
+  // Anything worth remembering? Asked only before the FIRST episode: once
+  // one exists, re-distilling keeps it current whatever the answer.
+  const existing = await db.query.aiEpisodes.findFirst({
+    where: { conversationId },
+    columns: { id: true },
+  });
+  if (!existing) {
+    const response = await (input.evaluator ?? inProcessEvaluator)(
+      {
+        point: WORTH_POINT,
+        subject: { type: "conversation", id: conversationId },
+        sessionId: conversationId,
+        state: { transcript: renderTranscript(lines) },
+        questions: { worth: WORTH_QUESTION },
+      },
+      { teamId, organizationId },
+    );
+    const verdict = readWorth(response);
+    await recordDecisions([
+      worthJournalEntry({
+        organizationId,
+        teamId,
+        conversationId,
+        response,
+        verdict,
+      }),
+    ]);
+    if (verdict.skip && !verdict.shadow) return { distilled: false };
+  }
 
   const first = rows[0];
   const last = rows[rows.length - 1];

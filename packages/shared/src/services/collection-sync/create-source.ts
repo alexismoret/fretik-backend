@@ -272,7 +272,7 @@ export const assertAdoptable = (
     return throwHttpError(
       400,
       badRequest(
-        `The column "${field.key}" is a ${field.type} — its value is computed from other data, so an app cannot fill it. Map the value to a plain column and let the ${field.type} read that.`,
+        `The column "${field.key}" is a ${field.type}: its value is computed from other data, so an app cannot fill it. Map the value to a plain column and let the ${field.type} read that.`,
       ),
     );
   }
@@ -314,7 +314,7 @@ export const assertMatchField = (
     return throwHttpError(
       400,
       badRequest(
-        `"${key}" is how rows are matched, so this source cannot also fill it — the app's own value would overwrite the key that found the row. Map a different column.`,
+        `"${key}" is how rows are matched, so this source cannot also fill it: the app's own value would overwrite the key that found the row. Map a different column.`,
       ),
     );
   }

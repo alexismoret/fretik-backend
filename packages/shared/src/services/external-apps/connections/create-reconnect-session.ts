@@ -47,7 +47,7 @@ export const createReconnectSession = async (params: {
     return throwHttpError(400, {
       code: ERROR_CODES.EXTERNAL_APP_MCP_UNSUPPORTED,
       message:
-        "An MCP connection has no Connect UI reconnect flow — delete and re-add the server instead.",
+        "An MCP connection has no Connect UI reconnect flow. Delete and re-add the server instead.",
     });
   }
 

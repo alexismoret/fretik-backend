@@ -59,7 +59,7 @@ export const cancelQueuedEventRuns = async (params: {
           status: "canceled",
           error: {
             code: "CANCELED",
-            message: "Canceled while queued — the workflow was paused.",
+            message: "Canceled while queued because the workflow was paused.",
           },
         });
         return transitioned;

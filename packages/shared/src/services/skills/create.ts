@@ -51,7 +51,7 @@ export const createSkill = async (
     return throwHttpError(400, {
       code: ERROR_CODES.SKILL_INVALID_NAME,
       message:
-        "Skill name could not be derived from input — use letters, digits, or hyphens",
+        "Skill name could not be derived from input. Use letters, digits, or hyphens",
     });
   }
   const finalName = await pickAvailableSkillSlug(baseSlug, input.teamId);

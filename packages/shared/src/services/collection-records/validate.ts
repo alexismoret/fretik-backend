@@ -66,8 +66,8 @@ export interface RecordDataValidator {
  */
 const refuseSyncedField = (key: string, app: string | undefined): string =>
   app === undefined
-    ? `"${key}" is filled by a connected app and cannot be edited here — change it in that app, or detach the column from its sync source.`
-    : `"${key}" is filled by ${app} and cannot be edited here — change it in ${app}, or detach the column from its sync source.`;
+    ? `"${key}" is filled by a connected app and cannot be edited here. Change it in that app, or detach the column from its sync source.`
+    : `"${key}" is filled by ${app} and cannot be edited here. Change it in ${app}, or detach the column from its sync source.`;
 
 /** Value equality for "did this write CHANGE the column" — shape-insensitive. */
 const sameValue = (a: unknown, b: unknown): boolean => {
@@ -187,7 +187,7 @@ export const buildRecordDataValidator = (input: {
       const validList =
         valid.slice(0, 12).join(", ") + (valid.length > 12 ? ", …" : "");
       push(
-        `Unknown field(s): ${unknownKeys.join(", ")} — not keys of this type. Use a field key from: ${validList}`,
+        `Unknown field(s): ${unknownKeys.join(", ")}. These are not keys of this type. Use a field key from: ${validList}`,
       );
     }
     if (!result.success) {
@@ -202,7 +202,7 @@ export const buildRecordDataValidator = (input: {
         );
       }
     }
-    const summary = `Some values don't match their field — fix and retry: ${lines.join("; ")}`;
+    const summary = `Some values don't match their field. Fix them and retry: ${lines.join("; ")}`;
     return throwHttpError(400, badRequest(summary, lines));
   };
 

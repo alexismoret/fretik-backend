@@ -101,7 +101,7 @@ export const hitsOrphanFloor = (census: OrphanCensus): boolean => {
 
 /** The sentence a person reads before confirming. Numbers, then the offer. */
 export const orphanFloorReason = (census: OrphanCensus): string =>
-  `the app answered with ${String(census.tracked - census.newOrphans)} of the ${String(census.tracked)} rows this collection tracks — nothing was rejected or deleted. Confirm a full resync to apply the orphan policy anyway.`;
+  `the app answered with ${String(census.tracked - census.newOrphans)} of the ${String(census.tracked)} rows this collection tracks. Nothing was rejected or deleted. Confirm a full resync to apply the orphan policy anyway.`;
 
 /**
  * One page of orphan ids, walked forward by record id.

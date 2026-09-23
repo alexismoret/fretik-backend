@@ -91,7 +91,7 @@ export const updateSkill = async (
     return throwHttpError(400, {
       code: ERROR_CODES.SKILL_BUNDLED_READONLY,
       message:
-        "Bundled skills can only be enabled or disabled — their content lives on disk",
+        "Bundled skills can only be enabled or disabled, since their content lives on disk",
     });
   }
 

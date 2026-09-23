@@ -40,5 +40,5 @@ export const workflowOwnerWriteError = (
 ): string | null => {
   if (userId === undefined || userId === null) return null;
   if (userId === actingUserId) return null;
-  return "workflow.userId can only be null (team-shared) or your own id (private to you) — a workflow can't be scoped to another user.";
+  return "workflow.userId can only be null (team-shared) or your own id (private to you). A workflow can't be scoped to another user.";
 };

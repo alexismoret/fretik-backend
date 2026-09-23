@@ -61,7 +61,7 @@ export const findOrCreateContextProfile = async (
   if (scope.scope === "team" && !scope.teamId) {
     return throwHttpError(403, {
       code: "TEAM_REQUIRED",
-      message: "No active team — cannot create a team context profile.",
+      message: "No active team: cannot create a team context profile.",
     });
   }
 

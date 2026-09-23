@@ -122,8 +122,8 @@
               <li style="margin-bottom: 4px">
                 <strong style="font-weight: 600; color: #18181b">{{
                   label
-                }}</strong>
-                {{#if description}} — {{ description }}{{/if}}
+                }}</strong
+                >{{#if description}}: {{ description }}{{/if}}
               </li>
               {{/each}}
             </ul>

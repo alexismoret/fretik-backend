@@ -2017,7 +2017,7 @@ export const runChatbotTurn = async (
               type: "text-delta",
               id: finalId,
               delta:
-                "Both models stopped without producing an answer. Please retry — for large attachments, try opening the file directly in `python` (e.g. `pdfplumber.open(...)`, `pd.read_csv(...)`).",
+                "Both models stopped without producing an answer. Please retry. For large attachments, try opening the file directly in `python` (e.g. `pdfplumber.open(...)`, `pd.read_csv(...)`).",
             });
             writer.write({ type: "text-end", id: finalId });
           }

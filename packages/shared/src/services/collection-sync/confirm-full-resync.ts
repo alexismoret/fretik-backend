@@ -33,7 +33,7 @@ export const confirmFullResync = async (input: {
     return throwHttpError(
       409,
       alreadyExists(
-        "This source has not asked for a full resync. Confirming one would apply its orphan policy to a difference nobody has seen — refresh it, and confirm if it stops again.",
+        "This source has not asked for a full resync. Confirming one would apply its orphan policy to a difference nobody has seen. Refresh it, and confirm if it stops again.",
       ),
     );
   }

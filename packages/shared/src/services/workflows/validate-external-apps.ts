@@ -81,7 +81,7 @@ export const validateWorkflowExternalApps = async (params: {
       badRequest(
         params.ownerUserId === null
           ? `A team workflow runs as the team assistant and cannot use a personal connection (${names}). Make the workflow private, or share the connection with the team.`
-          : `This workflow runs as its owner, who cannot use ${names} — it is personal to someone else. Share that connection with the team to use it here.`,
+          : `This workflow runs as its owner, who cannot use ${names} because it is personal to someone else. Share that connection with the team to use it here.`,
       ),
     );
   }

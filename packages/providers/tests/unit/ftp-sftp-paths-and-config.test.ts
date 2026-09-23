@@ -193,7 +193,7 @@ describe("parseFileTransferConfig", () => {
         { username: "edi", private_key: "key" },
         { protocol: "ftps", host: "h", auth_method: "private_key" },
       ),
-    ).toThrow(/SSH key authentication exists on SFTP/);
+    ).toThrow(/SSH key authentication is only available on SFTP/);
   });
 
   test("names the missing secret rather than failing at the server", () => {

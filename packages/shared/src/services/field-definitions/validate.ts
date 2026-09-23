@@ -112,7 +112,7 @@ export const validateFieldDefinitionShape = (
         400,
         badRequest(
           allowed.length === 0
-            ? `A '${patch.type}' field cannot render as a code — drop config.display.`
+            ? `A '${patch.type}' field cannot render as a code. Drop config.display.`
             : `A '${patch.type}' field only supports config.display '${allowed.join("' or '")}'.`,
         ),
       );

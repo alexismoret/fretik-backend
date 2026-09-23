@@ -144,7 +144,7 @@ export const isHttpDirectCredentialFailure = (
   if (status === 401) {
     return {
       matched: true,
-      reason: "HTTP 401 — API key rejected by provider",
+      reason: "HTTP 401: API key rejected by provider",
     };
   }
   if (status === 403) {
@@ -153,7 +153,7 @@ export const isHttpDirectCredentialFailure = (
       if (lower.includes(pattern)) {
         return {
           matched: true,
-          reason: `HTTP 403 — credentials rejected (${pattern})`,
+          reason: `HTTP 403: credentials rejected (${pattern})`,
         };
       }
     }
@@ -206,7 +206,7 @@ export const isAuthFailure = (error: unknown): AuthFailureCheck => {
   if (status === 401 || status === 403) {
     return {
       matched: true,
-      reason: `HTTP ${status} — credentials rejected by provider`,
+      reason: `HTTP ${status}: credentials rejected by provider`,
     };
   }
 

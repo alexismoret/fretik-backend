@@ -53,7 +53,7 @@ export const assertFieldNotSynced = async (
   return throwHttpError(
     400,
     badRequest(
-      `'${field.key}' is filled by ${app}${via}, so it cannot be ${verb} here. Detach the column from its sync source first, or delete the source — the data stays and the column becomes editable.${action === "renameKey" ? " Its label can be changed either way." : ""}`,
+      `'${field.key}' is filled by ${app}${via}, so it cannot be ${verb} here. Detach the column from its sync source first, or delete the source. The data stays and the column becomes editable.${action === "renameKey" ? " Its label can be changed either way." : ""}`,
     ),
   );
 };

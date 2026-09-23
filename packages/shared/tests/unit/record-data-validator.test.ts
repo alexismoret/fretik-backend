@@ -141,10 +141,10 @@ describe("validateRecordData — the error strings the agent reads", () => {
       }),
     );
     expect(details).toEqual([
-      "Unknown field(s): annual_value_amount — not keys of this type. Use a field key from: name, headcount, active, tier, phone, signed_on",
+      "Unknown field(s): annual_value_amount. These are not keys of this type. Use a field key from: name, headcount, active, tier, phone, signed_on",
     ]);
     expect(message).toBe(
-      "Some values don't match their field — fix and retry: Unknown field(s): annual_value_amount — not keys of this type. Use a field key from: name, headcount, active, tier, phone, signed_on",
+      "Some values don't match their field. Fix them and retry: Unknown field(s): annual_value_amount. These are not keys of this type. Use a field key from: name, headcount, active, tier, phone, signed_on",
     );
   });
 
@@ -156,7 +156,7 @@ describe("validateRecordData — the error strings the agent reads", () => {
       validateRecordData({ fieldDefs: many, data: { nope: 1 } }),
     );
     expect(details[0]).toBe(
-      "Unknown field(s): nope — not keys of this type. Use a field key from: f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, …",
+      "Unknown field(s): nope. These are not keys of this type. Use a field key from: f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, …",
     );
   });
 

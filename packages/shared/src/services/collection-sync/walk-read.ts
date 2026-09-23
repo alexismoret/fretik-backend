@@ -270,7 +270,7 @@ export const walkPages = async function* (
     const page = extractRows(payload, input.resultPath);
     if (page === undefined) {
       throw new Error(
-        `resultPath "${input.resultPath ?? ""}" found nothing in the answer — preview the operation to see its real shape`,
+        `resultPath "${input.resultPath ?? ""}" found nothing in the answer. Preview the operation to see its real shape`,
       );
     }
     lastPayload = payload;

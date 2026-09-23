@@ -221,7 +221,7 @@ export default {
         update_draft: {
           title: {
             default: "Update draft",
-            withSubject: 'Update draft — "{{subject}}"',
+            withSubject: 'Update draft: "{{subject}}"',
           },
         },
         delete_message: {
@@ -258,7 +258,7 @@ export default {
         update_calendar_event: {
           title: {
             default: "Update calendar event",
-            withSubject: 'Update calendar event — "{{subject}}"',
+            withSubject: 'Update calendar event: "{{subject}}"',
           },
         },
         delete_calendar_event: {
@@ -281,7 +281,7 @@ export default {
         update_inbox_rule: {
           title: {
             default: "Update inbox rule",
-            withName: 'Update inbox rule — "{{name}}"',
+            withName: 'Update inbox rule: "{{name}}"',
           },
         },
         delete_inbox_rule: {
@@ -376,7 +376,7 @@ export default {
           title: {
             default: "Create a SharePoint sharing link",
             anonymous:
-              "Create a PUBLIC SharePoint link — anyone holding the URL can open it",
+              "Create a PUBLIC SharePoint link that anyone holding the URL can open",
           },
         },
         grant_item_access: {
@@ -465,7 +465,7 @@ export default {
             // Said in the title because it is the one action here with no
             // undo on any of the three protocols.
             recursive:
-              'Delete the folder "{{path}}" AND everything inside it — permanently',
+              'Permanently delete the folder "{{path}}" AND everything inside it',
           },
         },
       },

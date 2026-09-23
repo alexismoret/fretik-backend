@@ -34,7 +34,7 @@ export const byExternalId: WalkResolverFactory = ({ source, actor }) => {
     // The create schema refuses this, so reaching it means a row was written
     // around the service. Failing loudly beats duplicating the collection.
     throw new Error(
-      "this table source has no externalIdPath — without a stable upstream id every run would duplicate the collection",
+      "this table source has no externalIdPath: without a stable upstream id, every run would duplicate the collection",
     );
   }
 

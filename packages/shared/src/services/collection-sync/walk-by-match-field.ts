@@ -40,7 +40,7 @@ export const byMatchField: WalkResolverFactory = ({
   const { matchFieldKey, externalIdPath } = source;
   if (matchFieldKey === null || externalIdPath === null) {
     throw new Error(
-      "this columns source has neither a match column nor a field binding — it has no way to tell whose answer an upstream row is",
+      "this columns source has neither a match column nor a field binding, so it has no way to tell whose answer an upstream row is",
     );
   }
   const field = fieldDefs.find((def) => def.key === matchFieldKey);

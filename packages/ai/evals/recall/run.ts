@@ -15,7 +15,7 @@
  *   bun run evals:recall -- --case rec-typo-record
  *   bun run evals:recall -- --repeats 5
  *   bun run evals:recall -- --run-name after-prompt-v4
- *   bun run evals:recall -- --mode judge    # judge | verbatim | adaptive
+ *   bun run evals:recall -- --mode judge    # judge | verbatim | adaptive | decision
  *   bun run evals:recall -- --prefetch      # the topology a real turn has
  *   bun run evals:recall -- --scale 50000   # grow the corpus, then run
  *   bun run evals:recall -- --cleanup-scale # drop the volume, keep the universe
@@ -114,7 +114,7 @@ const judgeProfileKey = opt("--judge-profile");
 const modeRaw = opt("--mode");
 if (modeRaw !== undefined && !isRecallMode(modeRaw)) {
   console.error(
-    `--mode must be judge | verbatim | adaptive (got "${modeRaw}")`,
+    `--mode must be judge | verbatim | adaptive | decision (got "${modeRaw}")`,
   );
   await exitAfterFlush(1);
 }

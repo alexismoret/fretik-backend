@@ -481,6 +481,66 @@ export const DECISION_POINTS: Readonly<
     defaultMode: "shadow",
     evalGate: { suites: ["measurement only: joined to workflow_runs.error"] },
   },
+
+  "chat.recall-select": {
+    key: "chat.recall-select",
+    purpose:
+      "Which retrieved candidates help answer the message, on the turns where retrieval was too weak to serve deterministically (the ones `adaptive` hands to the recall judge). One yes/no per candidate; the kept ones go through the SAME verbatim renderer. Only reached under RECALL_MODE / X-Recall-Mode `decision`.",
+    questionVersion: 1,
+    families: {
+      rel: { kind: "boolean", signal: "probability", threshold: 0.5 },
+    },
+    noAnswer: "legacy",
+    state: {
+      maxTokens: 1500,
+      admit: ["message", "recent"],
+      content: ["message", "recent"],
+    },
+    egress: "content",
+    path: "hot",
+    timeoutMs: 1500,
+    fallbackTransport: false,
+    journal: { policy: "all" },
+    // Hot path: `on` needs recorded evidence (`evalGate.evidence`). Until
+    // then, the `decision` recall mode journals and falls back to the judge;
+    // an A/B that must act sets DECISION_OVERRIDES
+    // {"chat.recall-select":{"mode":"on"}} on the AI service it runs against.
+    defaultMode: "shadow",
+    evalGate: {
+      suites: [
+        "evals:recall -- --mode decision --repeats 10 (parity 23/23, lower p50)",
+        "evals:langfuse -- --suite memory-recall --recall-mode decision",
+      ],
+    },
+  },
+
+  "chat.addressee": {
+    key: "chat.addressee",
+    purpose:
+      "In a conversation with several people, whether a message is addressed to the assistant or to the others. The assistant answers every message today; this measures how often it should not, before anything lets it stay quiet.",
+    questionVersion: 1,
+    families: {
+      addr: { kind: "boolean", signal: "probability", threshold: 0.3 },
+    },
+    noAnswer: "proceed",
+    state: {
+      maxTokens: 2000,
+      admit: ["participants", "message", "recent"],
+      content: ["participants", "message", "recent"],
+      maxValueChars: 3000,
+    },
+    egress: "content",
+    // Fire-and-forget from the stream route: never waited on, so background.
+    path: "background",
+    timeoutMs: 2500,
+    fallbackTransport: true,
+    journal: { policy: "all" },
+    // Shadow for good until a person can see "Fretik did not answer" and
+    // ask it to: staying quiet with no way back would be the invisible
+    // failure every other point here is built to avoid.
+    defaultMode: "shadow",
+    evalGate: { suites: ["measurement only"] },
+  },
 };
 
 export const decisionPoint = (key: DecisionPointKey): DecisionPointSpec =>

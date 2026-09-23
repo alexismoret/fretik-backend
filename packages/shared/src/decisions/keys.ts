@@ -20,6 +20,8 @@ export const DECISION_POINT_KEYS = [
   "graph.entity-match",
   "chat.turn.continuation",
   "workflow.turn.convergence",
+  "chat.recall-select",
+  "chat.addressee",
 ] as const;
 
 export type DecisionPointKey = (typeof DECISION_POINT_KEYS)[number];

@@ -22,6 +22,7 @@ import {
   type RecallSearchHit,
   renderCandidates,
 } from "./candidates";
+import { selectByDecision } from "./decision-select";
 import { gatherGraphNeighborhood } from "./graph";
 import { RECALL_JUDGE_SYSTEM_PROMPT } from "./prompt";
 import { buildVerbatimBlock, shouldEscalateToJudge } from "./verbatim";
@@ -91,10 +92,19 @@ const RECALL_TIMEOUT_MS = 15_000;
  * `judge` is the pass this module was built around, kept as the rollback: one
  * env var restores the previous behaviour exactly, with no deploy.
  */
-export type RecallMode = "judge" | "verbatim" | "adaptive";
+/*
+ * `decision` is `adaptive` with the judge's turns handed to the decision
+ * model first (`decision-select.ts`): one yes/no per candidate, the kept
+ * ones rendered verbatim, the judge on any failure. Opt-in only, and until
+ * its point is live it journals and runs the judge anyway.
+ */
+export type RecallMode = "judge" | "verbatim" | "adaptive" | "decision";
 
 export const isRecallMode = (raw: string): raw is RecallMode =>
-  raw === "judge" || raw === "verbatim" || raw === "adaptive";
+  raw === "judge" ||
+  raw === "verbatim" ||
+  raw === "adaptive" ||
+  raw === "decision";
 
 /**
  * The PROCESS default, read once at module load — which is why switching modes
@@ -880,12 +890,36 @@ export const runUnifiedRecall = async (
     // in `adaptive` it is also the escalation signal: whether the judge runs is
     // read off the same pass that would otherwise have produced the block.
     const mode = params.modeOverride ?? RECALL_MODE;
-    const selection = mode === "judge" ? null : buildVerbatimBlock(gathered);
-    const escalate =
+    const deterministic =
+      mode === "judge" ? null : buildVerbatimBlock(gathered);
+    const wouldEscalate =
       mode === "judge" ||
-      (mode === "adaptive" &&
-        selection !== null &&
-        shouldEscalateToJudge(selection));
+      ((mode === "adaptive" || mode === "decision") &&
+        deterministic !== null &&
+        shouldEscalateToJudge(deterministic));
+    // `decision`: the judge's turns go to the decision model first. A block
+    // from it is served like a deterministic one; null means the judge runs.
+    const decided =
+      mode === "decision" && wouldEscalate
+        ? await timeStage(
+            turnTimings,
+            "decision",
+            selectByDecision({
+              gathered,
+              userMessage: params.userMessage,
+              ...(params.recentTail !== undefined
+                ? { recentTail: params.recentTail }
+                : {}),
+              teamId: params.teamId,
+              organizationId: params.organizationId,
+              ...(params.conversationId !== undefined
+                ? { conversationId: params.conversationId }
+                : {}),
+            }),
+          )
+        : null;
+    const selection = decided ?? deterministic;
+    const escalate = decided === null && wouldEscalate;
 
     if (selection !== null) {
       console.info(

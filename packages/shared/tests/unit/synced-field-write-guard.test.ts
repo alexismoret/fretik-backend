@@ -106,7 +106,7 @@ describe("a synced column refuses every writer but its own", () => {
     // Verbatim: the wording IS the contract here — it is the only place a user
     // learns where the value comes from and what the two ways out are.
     expect(error.message).toBe(
-      '"revenue" is filled by Acme and cannot be edited here — change it in Acme, or detach the column from its sync source.',
+      '"revenue" is filled by Acme and cannot be edited here. Change it in Acme, or detach the column from its sync source.',
     );
     expect(error.details).toHaveLength(1);
   });

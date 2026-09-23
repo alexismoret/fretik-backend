@@ -50,7 +50,7 @@ export const assertSinceBinding = (
     return throwHttpError(
       400,
       badRequest(
-        'This action has no incremental parameter, so {"$since": true} would be sent as a filter it does not know — it would be ignored, and the source would silently stop detecting rows deleted upstream. Remove the binding; every run reads the whole list, which is what this action supports.',
+        'This action has no incremental parameter, so {"$since": true} would be sent as a filter it does not know. It would be ignored, and the source would silently stop detecting rows deleted upstream. Remove the binding; every run reads the whole list, which is what this action supports.',
       ),
     );
   }
@@ -69,7 +69,7 @@ export const assertSinceBinding = (
     return throwHttpError(
       400,
       badRequest(
-        `Only one argument may take {"$since": true} — ${topLevel.map((key) => `"${key}"`).join(", ")} all do. This action reads incrementally through "${incremental.param}".`,
+        `Only one argument may take {"$since": true}, but ${topLevel.map((key) => `"${key}"`).join(", ")} all do. This action reads incrementally through "${incremental.param}".`,
       ),
     );
   }
@@ -78,7 +78,7 @@ export const assertSinceBinding = (
     return throwHttpError(
       400,
       badRequest(
-        `"${bound}" is not what this action filters by date — bind {"$since": true} to "${incremental.param}" instead. On the wrong argument the app returns everything AND the source stops noticing deleted rows, without ever reporting an error.`,
+        `"${bound}" is not what this action filters by date. Bind {"$since": true} to "${incremental.param}" instead. On the wrong argument the app returns everything AND the source stops noticing deleted rows, without ever reporting an error.`,
       ),
     );
   }
@@ -123,7 +123,7 @@ export const assertSinceBindingForSource = async (input: {
     return throwHttpError(
       400,
       badRequest(
-        `This source binds {"$since": true}, which only works on the argument the action declares as incremental — and that action cannot be read right now (${resolved.message}). Try again once it resolves, or remove the binding.`,
+        `This source binds {"$since": true}, which only works on the argument the action declares as incremental, and that action cannot be read right now (${resolved.message}). Try again once it resolves, or remove the binding.`,
       ),
     );
   }

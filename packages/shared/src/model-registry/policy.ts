@@ -380,7 +380,7 @@ export const evaluatePolicy = (
           "soft",
           false,
           endpoints.length > 0
-            ? `${endpoints.length.toString()} endpoint(s), none declaring a retention stance — enforced at request time, not verifiable from the catalogue`
+            ? `${endpoints.length.toString()} endpoint(s), none declaring a retention stance (enforced at request time, not verifiable from the catalogue)`
             : "no endpoint data and no probe on record",
         ),
       );
@@ -473,7 +473,7 @@ export const evaluatePolicy = (
           forcing.length > 0,
           forcing.length > 0
             ? `${forcing.length.toString()} of ${answering.length.toString()} reporting endpoint(s) accept a forced tool call`
-            : `no reporting endpoint accepts \`tool_choice: required\` — forced extraction would answer in prose instead`,
+            : `no reporting endpoint accepts \`tool_choice: required\`, so forced extraction would answer in prose instead`,
         ),
       );
     } else {
@@ -671,7 +671,7 @@ export const evaluatePolicy = (
           "intelligence-floor",
           "soft",
           "not-measured",
-          "no Artificial Analysis record matched — key unset, or the model is not graded there",
+          "no Artificial Analysis record matched (key unset, or the model is not graded there)",
         ),
       );
     }

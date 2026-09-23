@@ -48,7 +48,7 @@ export const assertConnectionUsable = async (input: {
     return throwHttpError(
       400,
       badRequest(
-        `"${connection.displayName}" is ${connection.status} — reconnect it under Settings → Connected apps, then create the source.`,
+        `"${connection.displayName}" is ${connection.status}. Reconnect it under Settings → Connected apps, then create the source.`,
       ),
     );
   }

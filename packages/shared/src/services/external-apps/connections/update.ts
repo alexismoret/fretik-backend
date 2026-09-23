@@ -38,7 +38,7 @@ const resolveActionNames = async (
     if (snapshot === undefined) {
       return throwHttpError(409, {
         code: ERROR_CODES.EXTERNAL_APP_MCP_NOT_READY,
-        message: `Connection "${connection.displayName}" has no tool list yet — its server hasn't been introspected. Retry once it is ready.`,
+        message: `Connection "${connection.displayName}" has no tool list yet because its server hasn't been introspected. Retry once it is ready.`,
       });
     }
     return new Set(snapshot.descriptor.actions.map((a) => a.name));

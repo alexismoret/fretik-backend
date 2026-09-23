@@ -138,7 +138,7 @@ const stillWorking = (
   waitedMs: number,
 ): PageQueryResult => ({
   status: "error",
-  message: `"${connection.displayName}" is still working after ${Math.max(Math.round(waitedMs / 1000), 1).toString()}s — its answer is being cached, not lost. Query this dataset again in a few seconds.`,
+  message: `"${connection.displayName}" is still working after ${Math.max(Math.round(waitedMs / 1000), 1).toString()}s. Its answer is being cached, not lost. Query this dataset again in a few seconds.`,
   retryAfterMs: 5_000,
 });
 
@@ -149,7 +149,7 @@ const stillWorking = (
  */
 const notAsked = (connection: ExternalAppConnection): PageQueryResult => ({
   status: "error",
-  message: `this page spent its budget waiting on "${connection.displayName}" before reaching this dataset — query it on its own in a few seconds, when the earlier answers are cached.`,
+  message: `this page spent its budget waiting on "${connection.displayName}" before reaching this dataset. Query it on its own in a few seconds, when the earlier answers are cached.`,
   retryAfterMs: 5_000,
 });
 
@@ -211,7 +211,7 @@ const blockedMessage = (
   operation: string,
   connection: ExternalAppConnection,
 ): string =>
-  `"${operation}" is disabled on connection "${connection.displayName}" by its permission settings — an admin can change that under Settings → Tool permissions`;
+  `"${operation}" is disabled on connection "${connection.displayName}" by its permission settings. An admin can change that under Settings → Tool permissions`;
 
 /** Call the app over whichever transport the connection speaks. Throws. */
 const callUpstream = async (
@@ -224,7 +224,7 @@ const callUpstream = async (
     if (snapshot === undefined) {
       return {
         ok: false,
-        message: `connection "${connection.displayName}" is still preparing its tools — retry shortly`,
+        message: `connection "${connection.displayName}" is still preparing its tools. Retry shortly`,
       };
     }
     const action = snapshot.descriptor.actions.find(
@@ -244,7 +244,7 @@ const callUpstream = async (
     if (action.kind !== "read") {
       return {
         ok: false,
-        message: `"${operation}" is a write — a page dataset may only read; writes belong to page operations`,
+        message: `"${operation}" is a write: a page dataset may only read, and writes belong to page operations`,
       };
     }
     if (action.mcpToolName === undefined) {
@@ -277,7 +277,7 @@ const callUpstream = async (
   if (resolved.action.kind !== "read") {
     return {
       ok: false,
-      message: `"${operation}" is a write — a page dataset may only read; writes belong to page operations`,
+      message: `"${operation}" is a write: a page dataset may only read, and writes belong to page operations`,
     };
   }
   const level = resolveConnectionActionPolicy({

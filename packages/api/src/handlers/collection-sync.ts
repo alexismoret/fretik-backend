@@ -418,9 +418,9 @@ collectionSyncRoutes.openapi(runSourceRoute, async (c) => {
       400,
       badRequest(
         outcome.reason === "disabled"
-          ? "This sync source is turned off. Enable it first — its columns keep the values of the last run in the meantime."
+          ? "This sync source is turned off. Enable it first. Its columns keep the values of the last run in the meantime."
           : outcome.reason === "no_connection"
-            ? "This sync source has no connection left to read through. Reconnect the app, then point the source at the new connection — the columns and their data are untouched."
+            ? "This sync source has no connection left to read through. Reconnect the app, then point the source at the new connection. The columns and their data are untouched."
             : "The data is already fresher than this request asked for.",
       ),
     );

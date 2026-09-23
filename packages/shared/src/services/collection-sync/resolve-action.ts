@@ -102,7 +102,7 @@ export const resolveSyncAction = async (
     if (snapshot === undefined) {
       return {
         ok: false,
-        message: `connection "${connection.displayName}" is still preparing its tools — the next run will pick them up`,
+        message: `connection "${connection.displayName}" is still preparing its tools. The next run will pick them up`,
       };
     }
     const action = snapshot.descriptor.actions.find(
@@ -111,13 +111,13 @@ export const resolveSyncAction = async (
     if (action === undefined) {
       return {
         ok: false,
-        message: `"${operation}" no longer exists on ${connection.displayName} — the server's tool list changed; re-pick the operation on this source`,
+        message: `"${operation}" no longer exists on ${connection.displayName}: the server's tool list changed. Pick the operation again on this source`,
       };
     }
     if (action.kind !== "read") {
       return {
         ok: false,
-        message: `"${operation}" is a write — a sync source may only read`,
+        message: `"${operation}" is a write, and a sync source may only read`,
       };
     }
     if (action.mcpToolName === undefined) {
@@ -181,7 +181,7 @@ export const resolveSyncAction = async (
   if (resolved.action.kind !== "read") {
     return {
       ok: false,
-      message: `"${operation}" is a write — a sync source may only read`,
+      message: `"${operation}" is a write, and a sync source may only read`,
     };
   }
   const level = resolveConnectionActionPolicy({
@@ -234,7 +234,7 @@ export const resolveSyncAction = async (
 };
 
 const blocked = (operation: string): string =>
-  `"${operation}" is disabled on this connection by its permission settings — an admin can change that under Settings → Tool permissions`;
+  `"${operation}" is disabled on this connection by its permission settings. An admin can change that under Settings → Tool permissions`;
 
 /**
  * One row's declared fields, whichever way the action names them. A `{void}`

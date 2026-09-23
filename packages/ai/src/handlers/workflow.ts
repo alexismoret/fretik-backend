@@ -114,6 +114,7 @@ import {
 } from "../services/native-input";
 import {
   buildTurnMessageMetadata,
+  createStepClock,
   filterNewAssistantMessages,
   narrowMessageMetadata,
 } from "./turn-helpers";
@@ -715,6 +716,9 @@ const executeTurn = async (params: {
         finalMessages = messages;
       },
       execute: ({ writer }) => {
+        // Step timers, as in the chatbot: the run transcript renders through
+        // the same stream component. See createStepClock.
+        const stepClock = createStepClock();
         writer.merge(
           toUIMessageStream<WorkflowTools>({
             stream: result.stream,
@@ -722,7 +726,7 @@ const executeTurn = async (params: {
             // message with the trace id + finish/usage blob so a run's messages
             // carry the same observability the chat UI's do.
             messageMetadata: ({ part }) => {
-              if (part.type !== "finish") return undefined;
+              if (part.type !== "finish") return stepClock(part);
               return buildTurnMessageMetadata(
                 part,
                 streamOutcome.servedBy,

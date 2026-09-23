@@ -1,18 +1,9 @@
 <mj-column width="100%">
-  <mj-text font-size="15px" color="#374151">
-    {{ greeting }}
-  </mj-text>
+  <mj-text>{{ greeting }}</mj-text>
 
-  <mj-text font-size="15px" color="#374151" padding-top="16px">
-    {{ intro }}
-  </mj-text>
+  <mj-text padding-top="12px">{{ intro }}</mj-text>
 
-  <mj-button
-    href="{{runUrl}}"
-    align="center"
-    padding-top="20px"
-    padding-bottom="24px"
-  >
+  <mj-button href="{{runUrl}}" padding-top="24px" padding-bottom="28px">
     {{ cta }}
   </mj-button>
 
@@ -26,59 +17,76 @@
       style="
         border-collapse: separate;
         border-spacing: 0;
-        border-radius: 12px;
-        background-color: #ffffff;
-        border: 1px solid #e5e7eb;
-        overflow: hidden;
+        border: 1px solid #fecaca;
+        border-radius: 2px;
       "
     >
       <tr>
         <td
           style="
-            padding: 12px 22px;
+            padding: 10px 16px;
             background-color: #fef2f2;
-            border-bottom: 1px solid #e5e7eb;
+            border-bottom: 1px solid #fecaca;
             font-family:
-              &quot;Inter&quot;, &quot;Helvetica Neue&quot;, Helvetica, Arial,
+              &quot;Public Sans&quot;,
+              -apple-system,
+              BlinkMacSystemFont,
+              &quot;Segoe UI&quot;,
+              Helvetica,
+              Arial,
               sans-serif;
-            font-size: 11px;
-            font-weight: 700;
-            letter-spacing: 0.1em;
-            color: #dc2626;
-            text-transform: uppercase;
-            line-height: 1.5;
+            font-size: 12px;
+            font-weight: 600;
+            line-height: 16px;
+            color: #b91c1c;
           "
         >
-          {{ errorHeader }}
+          <span
+            style="
+              display: inline-block;
+              width: 7px;
+              height: 7px;
+              margin-right: 8px;
+              background-color: #dc2626;
+              vertical-align: 1px;
+            "
+          ></span
+          >{{ errorHeader }}
         </td>
       </tr>
       <tr>
         <td
           style="
-            padding: 18px 22px;
-            background-color: #ffffff;
+            padding: 16px 20px;
             font-family:
-              &quot;Inter&quot;, &quot;Helvetica Neue&quot;, Helvetica, Arial,
+              &quot;Public Sans&quot;,
+              -apple-system,
+              BlinkMacSystemFont,
+              &quot;Segoe UI&quot;,
+              Helvetica,
+              Arial,
               sans-serif;
             font-size: 14px;
-            color: #374151;
-            line-height: 1.55;
+            line-height: 22px;
+            color: #3f3f46;
           "
         >
           {{#if errorCode}}
           <div
             style="
               font-family:
-                ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+                &quot;SF Mono&quot;, Menlo, Consolas,
+                &quot;Liberation Mono&quot;, monospace;
               font-size: 12px;
-              color: #dc2626;
-              margin-bottom: 8px;
+              line-height: 18px;
+              color: #b91c1c;
+              margin-bottom: 6px;
             "
           >
             {{ errorCode }}
           </div>
           {{/if}}
-          <div style="color: #111827">{{ errorMessage }}</div>
+          <div style="color: #18181b">{{ errorMessage }}</div>
         </td>
       </tr>
     </table>
@@ -95,36 +103,45 @@
       style="
         border-collapse: separate;
         border-spacing: 0;
-        border-radius: 12px;
-        background-color: #ffffff;
-        border: 1px solid #e5e7eb;
-        overflow: hidden;
+        border: 1px solid #e4e4e7;
+        border-radius: 2px;
       "
     >
       <tr>
         <td
           style="
-            padding: 12px 22px;
-            background-color: #f9fafb;
-            border-bottom: 1px solid #e5e7eb;
+            padding: 10px 16px;
+            background-color: #fafafa;
+            border-bottom: 1px solid #e4e4e7;
             font-family:
-              &quot;Inter&quot;, &quot;Helvetica Neue&quot;, Helvetica, Arial,
+              &quot;Public Sans&quot;,
+              -apple-system,
+              BlinkMacSystemFont,
+              &quot;Segoe UI&quot;,
+              Helvetica,
+              Arial,
               sans-serif;
-            font-size: 11px;
-            font-weight: 700;
-            letter-spacing: 0.1em;
-            color: #0d9488;
-            text-transform: uppercase;
-            line-height: 1.5;
+            font-size: 12px;
+            font-weight: 600;
+            line-height: 16px;
+            color: #52525b;
           "
         >
-          {{ resultHeader }}
+          <span
+            style="
+              display: inline-block;
+              width: 7px;
+              height: 7px;
+              margin-right: 8px;
+              background-color: #14b8a6;
+              vertical-align: 1px;
+            "
+          ></span
+          >{{ resultHeader }}
         </td>
       </tr>
       <tr>
-        <td style="padding: 18px 22px 6px 22px; background-color: #ffffff">
-          {{{ summaryHtml }}}
-        </td>
+        <td style="padding: 16px 20px 4px 20px">{{{ summaryHtml }}}</td>
       </tr>
     </table>
   </mj-text>

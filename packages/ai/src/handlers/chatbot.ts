@@ -204,6 +204,7 @@ import {
 import type { HonoInternalAppType } from "../types/hono";
 import {
   buildTurnMessageMetadata,
+  createStepClock,
   filterNewAssistantMessages,
   narrowMessageMetadata,
 } from "./turn-helpers";
@@ -1958,6 +1959,8 @@ export const runChatbotTurn = async (
                 }
               : {}),
           });
+          // Its own clock: the fallback times its own calls (see createStepClock).
+          const fallbackStepClock = createStepClock();
           writer.merge(
             openedOnFirstChunk(
               dropChunksAfterAbort(
@@ -1970,7 +1973,8 @@ export const runChatbotTurn = async (
                     sendStart: false,
                     onError: recordStreamError,
                     messageMetadata: ({ part }) => {
-                      if (part.type !== "finish") return undefined;
+                      if (part.type !== "finish")
+                        return fallbackStepClock(part);
                       // Failover (zombie or transparent) always serves the fallback
                       // agent — flagged for the eval harness.
                       return buildTurnMessageMetadata(
@@ -2013,7 +2017,7 @@ export const runChatbotTurn = async (
               type: "text-delta",
               id: finalId,
               delta:
-                "Both models stopped without producing an answer. Please retry — for large attachments, try opening the file directly in `python` (e.g. `pdfplumber.open(...)`, `pd.read_csv(...)`).",
+                "Both models stopped without producing an answer. Please retry. For large attachments, try opening the file directly in `python` (e.g. `pdfplumber.open(...)`, `pd.read_csv(...)`).",
             });
             writer.write({ type: "text-end", id: finalId });
           }
@@ -2078,6 +2082,7 @@ export const runChatbotTurn = async (
               }
             : {}),
         });
+        const contStepClock = createStepClock();
         writer.merge(
           openedOnFirstChunk(
             dropChunksAfterAbort(
@@ -2089,7 +2094,7 @@ export const runChatbotTurn = async (
                   sendStart: false,
                   onError: recordStreamError,
                   messageMetadata: ({ part }) => {
-                    if (part.type !== "finish") return undefined;
+                    if (part.type !== "finish") return contStepClock(part);
                     return buildTurnMessageMetadata(
                       part,
                       servedBy,
@@ -2371,13 +2376,16 @@ export const runChatbotTurn = async (
         // `messageMetadata` is attached HERE (not on the outer
         // createUIMessageStream — `messageMetadata` is a `toUIMessageStream`
         // option, not a `createUIMessageStream` one). It is invoked on
-        // the inner stream's `start` and `finish` events; we only emit
-        // metadata on `finish` (start would overwrite a prior turn with
-        // `undefined`). The returned blob lands in the assistant message's
-        // `metadata`: `langfuseTraceId` (so the feedback control can score
-        // the right Langfuse trace) plus `finishReason` / `usage` (read by
-        // the eval harness over SSE). Full per-turn observability —
-        // tool calls, RAG hits, latency, cost — lives in Langfuse.
+        // every part of the inner stream. On `finish` the returned blob
+        // lands in the assistant message's `metadata`: `langfuseTraceId`
+        // (so the feedback control can score the right Langfuse trace) plus
+        // `finishReason` / `usage` (read by the eval harness over SSE).
+        // Before it, only the step clock speaks — one `stepDurations` entry
+        // per settled tool call, for the transcript's step timers; nothing
+        // is ever emitted on `start`, which would overwrite a prior turn
+        // with `undefined`. Full per-turn observability — tool calls, RAG
+        // hits, latency, cost — lives in Langfuse.
+        const stepClock = createStepClock();
         writer.merge(
           openedOnFirstChunk(
             dropChunksAfterAbort(
@@ -2393,7 +2401,7 @@ export const runChatbotTurn = async (
                   // the same mapper so both surfaces agree on the wire frame.
                   onError: recordStreamError,
                   messageMetadata: ({ part }) => {
-                    if (part.type !== "finish") return undefined;
+                    if (part.type !== "finish") return stepClock(part);
                     // `servedBy` reports which agent answered under which profile;
                     // the eval harness reads it over SSE so a silent failover to
                     // the fallback model is flagged, not scored as the candidate.

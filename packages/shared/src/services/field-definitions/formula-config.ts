@@ -79,7 +79,7 @@ export const resolveFormulaConfig = (input: {
     return throwHttpError(
       400,
       badRequest(
-        `\`${input.label}\` is a formula field, so it needs \`config.expression\` — for example \`revenue - cost\`.`,
+        `\`${input.label}\` is a formula field, so it needs \`config.expression\`, for example \`revenue - cost\`.`,
       ),
     );
   }

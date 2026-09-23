@@ -58,7 +58,7 @@ export const getConnectionConfigForReconnect = async (params: {
   if (provider.manifest.transport.kind === "nango-proxy") {
     return throwHttpError(400, {
       code: ERROR_CODES.EXTERNAL_APP_NOT_CUSTOM_HANDLER,
-      message: `Provider "${row.providerKey}" uses OAuth — no credentials form to pre-fill.`,
+      message: `Provider "${row.providerKey}" uses OAuth, so there is no credentials form to pre-fill.`,
     });
   }
   if (provider.manifest.credentialsForm === undefined) {

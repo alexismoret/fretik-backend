@@ -113,7 +113,7 @@ export const summariseMissedMessages = async (params: {
     participants,
   );
   if (missedTranscript.length === 0) {
-    return "You're all caught up — nothing new since you last read this conversation.";
+    return "You're all caught up. Nothing new since you last read this conversation.";
   }
 
   const priorTranscript = buildTranscript(priorContext, participants);
@@ -137,7 +137,7 @@ export const summariseMissedMessages = async (params: {
     const text = (await result.text).trim();
     return text.length > 0
       ? text
-      : "You're all caught up — nothing new since you last read this conversation.";
+      : "You're all caught up. Nothing new since you last read this conversation.";
   } catch (error) {
     console.warn(
       "[catch-up-summary] failed:",

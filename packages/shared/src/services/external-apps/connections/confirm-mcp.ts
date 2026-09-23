@@ -125,7 +125,7 @@ const recoverGenericServerUrl = (
   if (url !== undefined && url !== "") return url;
   if (fallback !== undefined && fallback !== "") return fallback;
   return badRequest(
-    "The custom MCP server did not report its URL — reconnect it.",
+    "The custom MCP server did not report its URL. Reconnect it.",
   );
 };
 

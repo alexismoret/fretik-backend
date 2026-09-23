@@ -198,7 +198,7 @@ class Parser {
     const trailing = this.peek();
     if (trailing.type !== "end") {
       throw new FormulaError(
-        `\`${trailing.value}\` is unexpected here — is an operator missing before it?`,
+        `\`${trailing.value}\` is unexpected here. Is an operator missing before it?`,
         trailing.at,
       );
     }
@@ -210,7 +210,7 @@ class Parser {
     this.depth++;
     if (this.depth > MAX_DEPTH) {
       throw new FormulaError(
-        "This formula nests too deeply — split it into several fields.",
+        "This formula nests too deeply. Split it into several fields.",
         this.peek().at,
       );
     }

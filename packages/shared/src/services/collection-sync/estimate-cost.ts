@@ -79,7 +79,7 @@ export const estimateSyncCost = (input: {
       ? {
           warning:
             input.read === "row"
-              ? "At this cadence this source would exceed the app's published budget — asking about one record at a time spends one request per row. If the app has a list of these, match on a column instead and it costs one request per page; otherwise slow the cadence."
+              ? "At this cadence this source would exceed the app's published budget: asking about one record at a time spends one request per row. If the app has a list of these, match on a column instead and it costs one request per page; otherwise slow the cadence."
               : "At this cadence a full collection would exceed the app's published budget. Slow the cadence, cap the rows, or bind an incremental argument.",
         }
       : {}),

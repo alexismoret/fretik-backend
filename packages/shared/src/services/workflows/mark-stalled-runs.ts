@@ -112,14 +112,14 @@ export const markStalledRuns = async (params?: {
       id: row.id,
       error: {
         code: "STALLED",
-        message: `No heartbeat for ${WORKFLOW_STALL_MINUTES.toString()} min — the run was reclaimed.`,
+        message: `No heartbeat for ${WORKFLOW_STALL_MINUTES.toString()} min, so the run was reclaimed.`,
       },
     })),
     ...expired.map((row) => ({
       id: row.id,
       error: {
         code: "EXPIRED",
-        message: "Queued longer than the queue TTL — the run never started.",
+        message: "Queued longer than the queue TTL, so the run never started.",
       },
     })),
     ...unanswered.map((row) => ({

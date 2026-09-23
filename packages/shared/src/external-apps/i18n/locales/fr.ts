@@ -220,7 +220,7 @@ export default {
         update_draft: {
           title: {
             default: "Mettre à jour le brouillon",
-            withSubject: 'Mettre à jour le brouillon — "{{subject}}"',
+            withSubject: 'Mettre à jour le brouillon : "{{subject}}"',
           },
         },
         delete_message: {
@@ -258,7 +258,7 @@ export default {
           title: {
             default: "Mettre à jour l'événement de calendrier",
             withSubject:
-              'Mettre à jour l\'événement de calendrier — "{{subject}}"',
+              'Mettre à jour l\'événement de calendrier : "{{subject}}"',
           },
         },
         delete_calendar_event: {
@@ -283,7 +283,7 @@ export default {
           title: {
             default: "Mettre à jour la règle de boîte de réception",
             withName:
-              'Mettre à jour la règle de boîte de réception — "{{name}}"',
+              'Mettre à jour la règle de boîte de réception : "{{name}}"',
           },
         },
         delete_inbox_rule: {
@@ -384,7 +384,7 @@ export default {
           title: {
             default: "Créer un lien de partage SharePoint",
             anonymous:
-              "Créer un lien SharePoint PUBLIC — toute personne disposant de l'URL pourra l'ouvrir",
+              "Créer un lien SharePoint PUBLIC que toute personne disposant de l'URL pourra ouvrir",
           },
         },
         grant_item_access: {
@@ -473,7 +473,7 @@ export default {
           title: {
             default: 'Supprimer le dossier "{{path}}"',
             recursive:
-              'Supprimer le dossier "{{path}}" ET tout son contenu — définitivement',
+              'Supprimer définitivement le dossier "{{path}}" ET tout son contenu',
           },
         },
       },

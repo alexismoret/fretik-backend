@@ -102,7 +102,7 @@ export const runApprovalGate = async (params: {
       }
       return {
         status: "error",
-        message: "Approval claim raced with another dispatch — retry.",
+        message: "Approval claim raced with another dispatch. Retry.",
       };
     }
     try {
@@ -197,7 +197,7 @@ export const runApprovalGate = async (params: {
     if (rowErrors.length > 0) {
       return {
         status: "error",
-        message: "Some rows failed validation — fix them and resubmit.",
+        message: "Some rows failed validation. Fix them and resubmit.",
         data: { rowErrors },
       };
     }

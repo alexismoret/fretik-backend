@@ -161,7 +161,7 @@ export const runSyncSource = async (input: {
     : await openRun(source, input);
   if (run === undefined) {
     throw new Error(
-      "could not open a run row for this sync source — refusing to walk without one, since the run's own start is what decides which records this walk did not see",
+      "could not open a run row for this sync source. Refusing to walk without one, since the run's own start is what decides which records this walk did not see",
     );
   }
   const runId = run.id;
@@ -187,7 +187,7 @@ export const runSyncSource = async (input: {
           });
     if (connection === undefined) {
       throw new Error(
-        "the connection this source reads through is gone — reconnect the app and the data is picked up again; nothing stored has been lost",
+        "the connection this source reads through is gone. Reconnect the app and the data is picked up again; nothing stored has been lost",
       );
     }
     // The deadline is settled BEFORE the action is resolved, because the

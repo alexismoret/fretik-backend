@@ -129,8 +129,13 @@ const listRoute = createRoute({
   path: "/",
   summary: "List the team's pages",
   description:
-    "Summaries only — node/dataset counts instead of the full tree. Newest-touched first.",
+    "Summaries only — node/dataset counts instead of the full tree. Newest-touched first. `conversationId` keeps the pages that conversation built (their `sourceConversationId`) — what the chat header's Pages control lists.",
   tags: ["Pages"],
+  request: {
+    query: z.object({
+      conversationId: z.uuid().optional(),
+    }),
+  },
   responses: {
     200: {
       content: {
@@ -488,7 +493,14 @@ pageRoutes.openapi(listRoute, async (c) => {
   if (!team) return c.json(teamRequired(), 403);
   const user = c.get("user");
   const requester = await resolveRequester(user, team);
-  const data = await listPages({ teamId: team.id, requester });
+  const { conversationId } = c.req.valid("query");
+  const data = await listPages({
+    teamId: team.id,
+    requester,
+    ...(conversationId === undefined
+      ? {}
+      : { sourceConversationId: conversationId }),
+  });
   return c.json({ data }, 200);
 });
 

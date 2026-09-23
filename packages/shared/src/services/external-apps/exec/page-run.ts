@@ -48,7 +48,7 @@ const withTimeout = async <T>(work: Promise<T>): Promise<T> => {
     timer = setTimeout(() => {
       reject(
         new Error(
-          `the app did not answer within ${(UPSTREAM_TIMEOUT_MS / 1000).toString()}s — it may still have gone through, so check there before retrying`,
+          `the app did not answer within ${(UPSTREAM_TIMEOUT_MS / 1000).toString()}s. It may still have gone through, so check there before retrying`,
         ),
       );
     }, UPSTREAM_TIMEOUT_MS);
@@ -92,7 +92,7 @@ const blockedMessage = (
   actionName: string,
   connection: ExternalAppConnection,
 ): string =>
-  `"${actionName}" is disabled on connection "${connection.displayName}" by its permission settings — an admin can change that under Settings → Tool permissions`;
+  `"${actionName}" is disabled on connection "${connection.displayName}" by its permission settings. An admin can change that under Settings → Tool permissions`;
 
 /**
  * What the caller must know BEFORE running: whether the action exists, whether
@@ -117,7 +117,7 @@ export const describePageAction = async (
     if (snapshot === undefined) {
       return {
         ok: false,
-        message: `connection "${connection.displayName}" is still preparing its tools — retry shortly`,
+        message: `connection "${connection.displayName}" is still preparing its tools. Retry shortly`,
       };
     }
     const action = snapshot.descriptor.actions.find(

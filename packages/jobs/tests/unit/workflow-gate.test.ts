@@ -87,7 +87,7 @@ describe("readGateVerdicts", () => {
       0.15,
     );
     expect(verdict?.allowed).toBe(false);
-    expect(verdict?.decision?.outcome).toBe("blocked");
+    expect(verdict?.decision?.outcome).toBe("filtered");
     expect(verdict?.decision?.probability).toBe(0.03);
     expect(verdict?.decision?.threshold).toBe(0.15);
   });

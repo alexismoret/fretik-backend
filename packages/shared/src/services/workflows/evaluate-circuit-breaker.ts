@@ -78,7 +78,7 @@ export const evaluateCircuitBreaker = async (params: {
   // evaluation.
   //
   // `not_applicable` belongs in the window: the playbook ran and concluded, so
-  // it is evidence the workflow is healthy. `blocked` is deliberately NOT —
+  // it is evidence the workflow is healthy. `filtered` is deliberately NOT —
   // those runs never executed, and admitting them would let a burst of gated
   // launches silently reset a real failure streak, which is the one thing this
   // breaker exists to catch.

@@ -256,7 +256,7 @@ export const workflowRuns = pgTable(
      * where someone asking "why did my workflow not fire?" looks, and a
      * parallel table would have them join two places to read one answer. Every
      * gated launch produces a row either way: allowed ones become the run that
-     * happened, refused ones a `blocked` row that exists precisely so the
+     * happened, refused ones a `filtered` row that exists precisely so the
      * refusal is visible and reversible.
      *
      * The criterion is SNAPSHOTTED into it. Editing the workflow afterwards

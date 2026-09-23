@@ -90,10 +90,10 @@ describe("scheduler identities", () => {
     for (const r of registrations) expect(r.template.name).toBe(r.id);
   });
 
-  test("the whole timetable is fourteen entries", () => {
+  test("the whole timetable is fifteen entries", () => {
     // A count, so that adding or removing a scheduled pass has to be a
     // deliberate edit to this file rather than a diff nobody reads.
-    expect(registrations).toHaveLength(14);
+    expect(registrations).toHaveLength(15);
   });
 });
 

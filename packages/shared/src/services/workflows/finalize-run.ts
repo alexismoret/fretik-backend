@@ -11,7 +11,7 @@ import { emitDomainEvent } from "../domain-events/emit";
 import { closePausedWindow } from "./paused-clock";
 
 /**
- * Terminal run statuses `finalizeRun` may set. `blocked` is absent on purpose:
+ * Terminal run statuses `finalizeRun` may set. `filtered` is absent on purpose:
  * a gated launch never becomes a run, so it is written by the gate worker at
  * creation time and has nothing to finalize.
  */

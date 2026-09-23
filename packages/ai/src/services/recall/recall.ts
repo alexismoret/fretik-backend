@@ -22,10 +22,9 @@ import {
   type RecallSearchHit,
   renderCandidates,
 } from "./candidates";
-import { recallEscalationMode, shouldEscalate } from "./escalation";
 import { gatherGraphNeighborhood } from "./graph";
 import { RECALL_JUDGE_SYSTEM_PROMPT } from "./prompt";
-import { buildVerbatimBlock } from "./verbatim";
+import { buildVerbatimBlock, shouldEscalateToJudge } from "./verbatim";
 
 /**
  * Unified pre-turn recall (P5) — the evolution of Active Memory.
@@ -710,26 +709,6 @@ export const expandHandles = (
     },
   );
 
-/**
- * Short labels for what the gather found, best first — what the escalation
- * router reads instead of a score.
- *
- * Labels, not content. The router is answering "is this about what was
- * asked", which a title answers and a thousand characters of body only makes
- * slower; and this runs on a turn's hot path, where the whole point is that
- * it costs less than the judge it decides about.
- */
-const CANDIDATE_LABEL_LIMIT = 8;
-const candidateLabelsOf = (gathered: RecallGathered): string[] =>
-  [...gathered.knowledgeResults, ...gathered.documentResults]
-    .slice(0, CANDIDATE_LABEL_LIMIT)
-    .map((hit) => {
-      const name = metadataString(hit.metadata, "name");
-      const head = hit.content.replace(/\s+/g, " ").trim().slice(0, 120);
-      return name ? `${name} — ${head}` : head;
-    })
-    .filter((label) => label.length > 0);
-
 /** Pure prompt assembly over the gathered candidates. */
 export const buildJudgeInput = (
   params: UnifiedRecallParams,
@@ -906,15 +885,11 @@ export const runUnifiedRecall = async (
       mode === "judge" ||
       (mode === "adaptive" &&
         selection !== null &&
-        (await shouldEscalate({
-          selection,
-          message: params.userMessage,
-          candidateLabels: candidateLabelsOf(gathered),
-        })));
+        shouldEscalateToJudge(selection));
 
     if (selection !== null) {
       console.info(
-        `[recall] mode=${mode} route=${recallEscalationMode()} escalate=${escalate.toString()} best=${selection.ambiguity.bestScore?.toFixed(3) ?? "none"} uncorroboratedAnchors=${selection.ambiguity.uncorroboratedAnchors.toString()} nearTies=${selection.ambiguity.nearTies.toString()} greyZone=${selection.ambiguity.greyZone.toString()} clipped=${selection.ambiguity.clippedCandidates.toString()} chars=${(selection.block ?? "").length.toString()}`,
+        `[recall] mode=${mode} escalate=${escalate.toString()} best=${selection.ambiguity.bestScore?.toFixed(3) ?? "none"} uncorroboratedAnchors=${selection.ambiguity.uncorroboratedAnchors.toString()} nearTies=${selection.ambiguity.nearTies.toString()} greyZone=${selection.ambiguity.greyZone.toString()} clipped=${selection.ambiguity.clippedCandidates.toString()} chars=${(selection.block ?? "").length.toString()}`,
       );
     }
 

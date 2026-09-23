@@ -8,7 +8,7 @@ import type { WorkflowGateDecision } from "../../schemas/workflows";
  * The row is the point. A gate that simply dropped the firing would be a
  * silent veto — the workflow stops running, nothing says so, and the team
  * finds out weeks later from a client. So a refusal produces a run row like
- * any other launch, terminal at `blocked`, carrying the decision that
+ * any other launch, terminal at `filtered`, carrying the decision that
  * produced it and offering "run anyway".
  *
  * It is DELIBERATELY not a real run: no conversation, no Trigger.dev task, no
@@ -22,7 +22,7 @@ import type { WorkflowGateDecision } from "../../schemas/workflows";
  * run has, so a re-swept event cannot produce a second refusal and a refusal
  * can never race a real run for the same firing.
  */
-export const createBlockedWorkflowRun = async (params: {
+export const createFilteredWorkflowRun = async (params: {
   workflow: Workflow;
   sourceEventId: string;
   triggerPayload: Record<string, unknown>;
@@ -36,7 +36,7 @@ export const createBlockedWorkflowRun = async (params: {
       organizationId: params.workflow.organizationId,
       teamId: params.workflow.teamId,
       workflowId: params.workflow.id,
-      status: "blocked",
+      status: "filtered",
       triggerType: "event",
       triggerPayload: params.triggerPayload,
       sourceEventId: params.sourceEventId,

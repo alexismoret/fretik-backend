@@ -14,6 +14,7 @@ import {
   paramsListSchema,
 } from "@fretik/shared/schemas/common/params";
 import {
+  responseAlreadyExistSchema,
   responseBadRequestSchema,
   responseForbiddenSchema,
   responseInternalErrorSchema,
@@ -48,7 +49,7 @@ import { getWorkflowRunRow } from "@fretik/shared/services/workflows/get-run";
 import { listWorkflows } from "@fretik/shared/services/workflows/list";
 import { listActiveWorkflowRuns } from "@fretik/shared/services/workflows/list-active-runs";
 import { listWorkflowRuns } from "@fretik/shared/services/workflows/list-runs";
-import { overrideBlockedWorkflowRun } from "@fretik/shared/services/workflows/override-blocked-run";
+import { overrideFilteredWorkflowRun } from "@fretik/shared/services/workflows/override-filtered-run";
 import { pauseWorkflow } from "@fretik/shared/services/workflows/pause";
 import { serializeWorkflowRun } from "@fretik/shared/services/workflows/serialize";
 import { updateWorkflow } from "@fretik/shared/services/workflows/update";
@@ -380,9 +381,9 @@ const stopRunRoute = createRoute({
 const runAnywayRoute = createRoute({
   method: "post",
   path: "/runs/{runId}/run-anyway",
-  summary: "Start a run the trigger gate blocked",
+  summary: "Start a run the trigger gate filtered out",
   description:
-    "Overrides a `blocked` launch and starts it. The blocked row is consumed — it holds the (workflow, source event) identity that dedups event runs — and the decision it carried is stamped `overridden` on the new run, so the refusal stays on the record of the launch that overruled it. This is also the only signal there is for a gate false negative.",
+    "Overrides a `filtered` launch and starts it. The filtered row is replaced atomically — it holds the (workflow, source event) identity that dedups event runs — and the decision it carried is stamped `overridden` on the new run, so the refusal stays on the record of the launch that overruled it. 409 when someone already started it. This is also the only signal there is for a gate false negative.",
   tags: ["Workflows"],
   request: { params: runIdParamSchema },
   responses: {
@@ -392,6 +393,7 @@ const runAnywayRoute = createRoute({
     },
     ...responseForbiddenSchema,
     ...responseNotFoundSchema,
+    ...responseAlreadyExistSchema,
     ...responseInternalErrorSchema,
   },
 });
@@ -647,10 +649,10 @@ workflowRoutes.openapi(runAnywayRoute, async (c) => {
   const user = c.get("user");
   const { runId } = c.req.valid("param");
   const requester = await resolveRequester(user, team);
-  // A private workflow's blocked run is no more startable by a teammate than
+  // A private workflow's filtered run is no more startable by a teammate than
   // its normal runs are visible to them, hence the same requester the read
   // routes resolve.
-  const run = await overrideBlockedWorkflowRun({
+  const run = await overrideFilteredWorkflowRun({
     runId,
     teamId: team.id,
     userId: user.id,

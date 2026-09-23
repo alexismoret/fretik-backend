@@ -5,6 +5,7 @@ import { badRequest, throwHttpError } from "../../lib/errors";
 import {
   liveTriggerCompletenessError,
   UpdateWorkflowSchema,
+  workflowCriterionError,
   type UpdateWorkflowInput,
   type WorkflowResponse,
 } from "../../schemas/workflows";
@@ -113,6 +114,27 @@ export const updateWorkflow = async (params: {
       );
       if (completenessError) {
         return throwHttpError(400, badRequest(completenessError));
+      }
+    }
+  }
+
+  // Same hole, one field over: the criterion lint lives in `activateWorkflow`
+  // too, so a criterion edited on a LIVE workflow skipped it — and a criterion
+  // naming the example file it was written against passes every test and
+  // refuses every real firing afterwards. On a draft or a paused workflow the
+  // text may be half-written; activation checks it then.
+  if (input.triggerCriterion !== undefined && input.triggerCriterion !== null) {
+    const current =
+      existingRow ??
+      (await db.query.workflows.findFirst({
+        where: { id: params.id, teamId: params.teamId },
+        columns: { status: true },
+      }));
+    if (!current) return undefined;
+    if (current.status === "active") {
+      const criterionError = workflowCriterionError(input.triggerCriterion);
+      if (criterionError) {
+        return throwHttpError(400, badRequest(criterionError));
       }
     }
   }

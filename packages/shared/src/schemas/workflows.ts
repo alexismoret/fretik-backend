@@ -74,13 +74,18 @@ export const WORKFLOW_RUN_STATUS_VALUES = [
   "not_applicable",
   /**
    * The run never started — the trigger gate judged the input irrelevant to
-   * this workflow's criterion. The row exists ON PURPOSE: a blocked launch
+   * this workflow's criterion. The row exists ON PURPOSE: a filtered launch
    * that left no trace is a silent veto, and a workflow that stops firing with
    * nothing to look at is the one failure mode this whole feature must not
    * introduce. It carries the decision that produced it and offers
-   * "run anyway", which is also how a wrong block gets labelled.
+   * "run anyway", which is also how a wrong filter gets labelled.
+   *
+   * Not `blocked`: that word already means two other things here — a workflow
+   * stuck waiting on an approval (`summarizeRunPressure`, the "Blocked" badge)
+   * and a tool-policy level — and a third meaning in the same UI would make
+   * all three unreadable.
    */
-  "blocked",
+  "filtered",
 ] as const;
 
 /**
@@ -88,15 +93,15 @@ export const WORKFLOW_RUN_STATUS_VALUES = [
  * every "is this run over" read share this list, so a new terminal status is
  * declared once instead of being remembered in five `notInArray`s.
  *
- * `blocked` is terminal too: a blocked run is re-launched by mutating the row
- * back to `queued` through the explicit override path, never by a finalize.
+ * `filtered` is terminal too: a filtered run is re-launched through the
+ * explicit override path, never by a finalize.
  */
 export const WORKFLOW_RUN_TERMINAL_STATUSES = [
   "succeeded",
   "failed",
   "canceled",
   "not_applicable",
-  "blocked",
+  "filtered",
 ] as const;
 
 const TERMINAL_RUN_STATUSES: ReadonlySet<string> = new Set(
@@ -584,14 +589,14 @@ export const WORKFLOW_GATE_OUTCOMES = [
   /** The criterion was judged and cleared the threshold — the run started. */
   "allowed",
   /** The criterion was judged and did not clear it — no run was started. */
-  "blocked",
+  "filtered",
   /**
    * No answer was available (the model was off, timed out, or errored) and
    * the launch proceeded. The one outcome that must never be silent: it means
    * the gate was not applied, and a stretch of these is an incident.
    */
   "fell_open",
-  /** A human overrode a block with "run anyway". */
+  /** A human overrode a filtered launch with "run anyway". */
   "overridden",
 ] as const;
 export const workflowGateOutcomeSchema = z.enum(WORKFLOW_GATE_OUTCOMES);
@@ -619,7 +624,7 @@ export const WorkflowGateDecisionSchema = z.object({
   costUsd: z.number().nonnegative().optional(),
   modelId: z.string().max(120).optional(),
   decidedAt: z.string(),
-  /** Set when someone pressed "run anyway" on a blocked launch. */
+  /** Set when someone pressed "run anyway" on a filtered launch. */
   overriddenAt: z.string().optional(),
   overriddenByUserId: z.string().optional(),
 });
@@ -947,7 +952,7 @@ export const WorkflowRunResponseSchema = z.object({
    * page render the same inline approve/reject card as the chat. */
   approvalRequestId: z.string().nullable(),
   /** What the trigger gate decided about this launch, when it was gated. The
-   * run page reads it to explain a `blocked` row and offer "run anyway". */
+   * run page reads it to explain a `filtered` row and offer "run anyway". */
   gateDecision: WorkflowGateDecisionSchema.nullable(),
   isTest: z.boolean(),
   triggeredByUserId: z.uuid().nullable(),

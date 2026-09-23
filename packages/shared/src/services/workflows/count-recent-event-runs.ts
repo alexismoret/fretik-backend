@@ -7,7 +7,7 @@ import { workflowRuns } from "../../db/schema";
  * per-workflow rate cap that keeps an event storm (a bulk import firing
  * thousands of `document.uploaded`) from launching a matching run for each.
  *
- * `blocked` rows are EXCLUDED, and getting this wrong would have turned the
+ * `filtered` rows are EXCLUDED, and getting this wrong would have turned the
  * trigger gate against the workflows it protects: a refusal writes a row with
  * `trigger_type = 'event'` like any launch, so a broad trigger with a good
  * criterion — the exact case the gate exists for — would have accumulated
@@ -25,7 +25,7 @@ export const countRecentEventRuns = async (params: {
       and(
         eq(workflowRuns.workflowId, params.workflowId),
         eq(workflowRuns.triggerType, "event"),
-        ne(workflowRuns.status, "blocked"),
+        ne(workflowRuns.status, "filtered"),
         gte(workflowRuns.createdAt, params.since),
       ),
     );

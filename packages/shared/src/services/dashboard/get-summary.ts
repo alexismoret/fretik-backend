@@ -103,10 +103,10 @@ export const getDashboardSummary = async (data: {
   // refused one here would make a workflow look busier the better its
   // trigger criterion got.
   const runsTotal = runRows
-    .filter((r) => r.status !== "blocked")
+    .filter((r) => r.status !== "filtered")
     .reduce((a, r) => a + r.count, 0);
   // "Of the runs that tried, how many did their job." `not_applicable` and
-  // `blocked` are left out of BOTH sides on purpose: neither attempted the
+  // `filtered` are left out of BOTH sides on purpose: neither attempted the
   // playbook, so counting them as failures would make a healthy workflow read
   // as broken the moment its trigger is broad — which is precisely the
   // situation the gate exists to create.

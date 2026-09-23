@@ -588,6 +588,7 @@ export const createManageWorkflowTool = () =>
                   // the caller can see what it actually left behind.
                   triggerType: workflow.triggerType,
                   triggerConfig: workflow.triggerConfig,
+                  triggerCriterion: workflow.triggerCriterion,
                 },
                 ...(updateWarnings.length > 0
                   ? { warnings: updateWarnings }

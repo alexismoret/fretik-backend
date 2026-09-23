@@ -1,8 +1,8 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "363b998d-9ae4-4dea-a1ab-b920bce2d824",
-  "prevIds": ["03f27156-93bd-4e73-acdc-dd0d81b82b0c"],
+  "id": "c89a8083-f344-4b04-b510-3eba4d3e29bb",
+  "prevIds": ["84917006-f370-4b78-836b-2e596f6f84b3"],
   "ddl": [
     {
       "values": ["uploaded", "authored"],
@@ -85,6 +85,36 @@
     {
       "values": ["read", "write"],
       "name": "collection_permission",
+      "entityType": "enums",
+      "schema": "public"
+    },
+    {
+      "values": ["table", "columns"],
+      "name": "collection_sync_kind",
+      "entityType": "enums",
+      "schema": "public"
+    },
+    {
+      "values": ["keep", "reject", "delete"],
+      "name": "collection_sync_orphan_policy",
+      "entityType": "enums",
+      "schema": "public"
+    },
+    {
+      "values": ["running", "success", "partial", "failed", "cancelled"],
+      "name": "collection_sync_run_status",
+      "entityType": "enums",
+      "schema": "public"
+    },
+    {
+      "values": ["schedule", "manual", "event", "open", "initial"],
+      "name": "collection_sync_run_trigger",
+      "entityType": "enums",
+      "schema": "public"
+    },
+    {
+      "values": ["ok", "error", "missing", "pending"],
+      "name": "record_sync_status",
       "entityType": "enums",
       "schema": "public"
     },
@@ -293,7 +323,7 @@
         "failed",
         "canceled",
         "not_applicable",
-        "blocked"
+        "filtered"
       ],
       "name": "workflow_run_status",
       "entityType": "enums",
@@ -338,6 +368,12 @@
     {
       "isRlsEnabled": false,
       "name": "organization",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "passkey",
       "entityType": "tables",
       "schema": "public"
     },
@@ -554,6 +590,24 @@
     {
       "isRlsEnabled": false,
       "name": "record_shares",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "collection_sync_runs",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "collection_sync_sources",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "record_sync_state",
       "entityType": "tables",
       "schema": "public"
     },
@@ -796,7 +850,7 @@
     {
       "type": "text",
       "typeSchema": null,
-      "notNull": true,
+      "notNull": false,
       "dimensions": 0,
       "default": null,
       "generated": null,
@@ -1208,6 +1262,162 @@
       "entityType": "columns",
       "schema": "public",
       "table": "organization"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "uuid_generate_v7()",
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "passkey"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "name",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "passkey"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "public_key",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "passkey"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "user_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "passkey"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "credential_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "passkey"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "counter",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "passkey"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "device_type",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "passkey"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "backed_up",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "passkey"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "transports",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "passkey"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "passkey"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "aaguid",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "passkey"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "last_used_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "passkey"
     },
     {
       "type": "uuid",
@@ -3368,6 +3578,58 @@
       "table": "folders"
     },
     {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "description",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "folders"
+    },
+    {
+      "type": "varchar(10)",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "description_source",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "folders"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "description_generated_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "folders"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "description_document_count",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "folders"
+    },
+    {
       "type": "uuid",
       "typeSchema": null,
       "notNull": false,
@@ -4655,6 +4917,32 @@
       "table": "collection_records"
     },
     {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "sync_source_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_records"
+    },
+    {
+      "type": "varchar(200)",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "external_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_records"
+    },
+    {
       "type": "boolean",
       "typeSchema": null,
       "notNull": true,
@@ -5396,6 +5684,19 @@
       "table": "field_definitions"
     },
     {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "sync_source_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "field_definitions"
+    },
+    {
       "type": "boolean",
       "typeSchema": null,
       "notNull": true,
@@ -5927,6 +6228,799 @@
       "entityType": "columns",
       "schema": "public",
       "table": "record_shares"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "uuid_generate_v7()",
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_runs"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "sync_source_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_runs"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "team_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_runs"
+    },
+    {
+      "type": "collection_sync_run_status",
+      "typeSchema": "public",
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'running'",
+      "generated": null,
+      "identity": null,
+      "name": "status",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_runs"
+    },
+    {
+      "type": "collection_sync_run_trigger",
+      "typeSchema": "public",
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "trigger",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_runs"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "started_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_runs"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "finished_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_runs"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "created_count",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_runs"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "updated_count",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_runs"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "unchanged_count",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_runs"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "orphan_count",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_runs"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "failed_count",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_runs"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "missing_count",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_runs"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "unmatched_count",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_runs"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "upstream_calls",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_runs"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "false",
+      "generated": null,
+      "identity": null,
+      "name": "truncated",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_runs"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "1",
+      "generated": null,
+      "identity": null,
+      "name": "legs",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_runs"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "stop_reason",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_runs"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "error",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_runs"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "triggered_by_user_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_runs"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "uuid_generate_v7()",
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "organization_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "team_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "collection_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "type": "collection_sync_kind",
+      "typeSchema": "public",
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "kind",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "connection_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "type": "varchar(64)",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "provider_key",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "type": "varchar(120)",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "operation",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'{}'",
+      "generated": null,
+      "identity": null,
+      "name": "args",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "result_path",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "external_id_path",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "type": "varchar(120)",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "match_field_key",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'[]'",
+      "generated": null,
+      "identity": null,
+      "name": "field_mapping",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'{\"mode\":\"manual\"}'",
+      "generated": null,
+      "identity": null,
+      "name": "schedule",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "type": "collection_sync_orphan_policy",
+      "typeSchema": "public",
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'keep'",
+      "generated": null,
+      "identity": null,
+      "name": "orphan_policy",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "20000",
+      "generated": null,
+      "identity": null,
+      "name": "row_cap",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "true",
+      "generated": null,
+      "identity": null,
+      "name": "enabled",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "last_run_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "last_success_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "last_error",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "last_error_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "consecutive_failures",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "next_run_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "claimed_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "walk_checkpoint",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "full_resync_requested_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "full_resync_reason",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "full_resync_confirmed_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "untracked_scan_cursor",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "untracked_scan_done_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "last_full_walk_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "created_by_user_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "updated_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "record_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "record_sync_state"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "sync_source_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "record_sync_state"
+    },
+    {
+      "type": "record_sync_status",
+      "typeSchema": "public",
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'ok'",
+      "generated": null,
+      "identity": null,
+      "name": "status",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "record_sync_state"
+    },
+    {
+      "type": "varchar(64)",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "content_hash",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "record_sync_state"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "error",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "record_sync_state"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "0",
+      "generated": null,
+      "identity": null,
+      "name": "attempts",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "record_sync_state"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "synced_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "record_sync_state"
     },
     {
       "type": "uuid",
@@ -9321,6 +10415,45 @@
       "table": "external_app_connections"
     },
     {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "rate_limit_requests",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "external_app_connections"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "rate_limit_per_seconds",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "external_app_connections"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "max_concurrent",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "external_app_connections"
+    },
+    {
       "type": "text",
       "typeSchema": null,
       "notNull": false,
@@ -9945,14 +11078,27 @@
       "table": "workflow_runs"
     },
     {
-      "type": "text",
+      "type": "integer",
       "typeSchema": null,
       "notNull": false,
       "dimensions": 0,
       "default": null,
       "generated": null,
       "identity": null,
-      "name": "wait_token_id",
+      "name": "resume_from_turn_index",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "workflow_runs"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "resume_remaining_ms",
       "entityType": "columns",
       "schema": "public",
       "table": "workflow_runs"
@@ -10805,7 +11951,7 @@
     {
       "type": "uuid",
       "typeSchema": null,
-      "notNull": true,
+      "notNull": false,
       "dimensions": 0,
       "default": null,
       "generated": null,
@@ -10818,7 +11964,7 @@
     {
       "type": "varchar(128)",
       "typeSchema": null,
-      "notNull": true,
+      "notNull": false,
       "dimensions": 0,
       "default": null,
       "generated": null,
@@ -11711,7 +12857,7 @@
       "nameExplicit": true,
       "columns": [
         {
-          "value": "issuer",
+          "value": "provider_id",
           "isExpression": false,
           "asc": true,
           "nullsFirst": false,
@@ -11730,7 +12876,7 @@
       "with": "",
       "method": "btree",
       "concurrently": false,
-      "name": "account_issuer_accountId_uidx",
+      "name": "account_providerId_accountId_uidx",
       "entityType": "indexes",
       "schema": "public",
       "table": "account"
@@ -11867,6 +13013,48 @@
       "entityType": "indexes",
       "schema": "public",
       "table": "organization"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "user_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "passkey_userId_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "passkey"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "credential_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "passkey_credentialID_uidx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "passkey"
     },
     {
       "nameExplicit": true,
@@ -12992,6 +14180,34 @@
       "nameExplicit": true,
       "columns": [
         {
+          "value": "sync_source_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "external_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": true,
+      "where": "sync_source_id IS NOT NULL AND external_id IS NOT NULL",
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "collection_records_sync_external_uniq",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "collection_records"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
           "value": "event_id",
           "isExpression": false,
           "asc": true,
@@ -13440,6 +14656,27 @@
       "nameExplicit": true,
       "columns": [
         {
+          "value": "sync_source_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": "sync_source_id IS NOT NULL",
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "field_definitions_sync_source_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "field_definitions"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
           "value": "team_id",
           "isExpression": false,
           "asc": true,
@@ -13666,6 +14903,223 @@
       "entityType": "indexes",
       "schema": "public",
       "table": "record_shares"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "sync_source_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "started_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "collection_sync_runs_source_started_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "collection_sync_runs"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "team_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "started_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "collection_sync_runs_team_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "collection_sync_runs"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "collection_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "collection_sync_sources_collection_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "team_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "collection_sync_sources_team_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "connection_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "collection_sync_sources_connection_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "next_run_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": "enabled AND next_run_at IS NOT NULL",
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "collection_sync_sources_due_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "collection_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": true,
+      "where": "kind = 'table'",
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "collection_sync_sources_table_uniq",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "sync_source_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "synced_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "record_sync_state_source_synced_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "record_sync_state"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "sync_source_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "status",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "record_sync_state_source_status_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "record_sync_state"
     },
     {
       "nameExplicit": true,
@@ -15795,6 +17249,34 @@
       "nameExplicit": true,
       "columns": [
         {
+          "value": "team_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "lookup_hash",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": true,
+      "where": "\"conversation_id\" IS NULL",
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "bulk_operations_team_hash_uniq",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "bulk_operations"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
           "value": "approval_id",
           "isExpression": false,
           "asc": true,
@@ -16107,6 +17589,19 @@
       "entityType": "fks",
       "schema": "public",
       "table": "member"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["user_id"],
+      "schemaTo": "public",
+      "tableTo": "user",
+      "columnsTo": ["id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "passkey_user_id_user_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "passkey"
     },
     {
       "nameExplicit": false,
@@ -16838,6 +18333,19 @@
     },
     {
       "nameExplicit": false,
+      "columns": ["sync_source_id"],
+      "schemaTo": "public",
+      "tableTo": "collection_sync_sources",
+      "columnsTo": ["id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "SET NULL",
+      "name": "field_definitions_USCpeyhFfLMH_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "field_definitions"
+    },
+    {
+      "nameExplicit": false,
       "columns": ["organization_id"],
       "schemaTo": "public",
       "tableTo": "organization",
@@ -16965,6 +18473,136 @@
       "entityType": "fks",
       "schema": "public",
       "table": "record_shares"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["sync_source_id"],
+      "schemaTo": "public",
+      "tableTo": "collection_sync_sources",
+      "columnsTo": ["id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "collection_sync_runs_2kQQwvI8EY1Z_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "collection_sync_runs"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["team_id"],
+      "schemaTo": "public",
+      "tableTo": "team",
+      "columnsTo": ["id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "collection_sync_runs_team_id_team_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "collection_sync_runs"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["triggered_by_user_id"],
+      "schemaTo": "public",
+      "tableTo": "user",
+      "columnsTo": ["id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "SET NULL",
+      "name": "collection_sync_runs_triggered_by_user_id_user_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "collection_sync_runs"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["organization_id"],
+      "schemaTo": "public",
+      "tableTo": "organization",
+      "columnsTo": ["id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "collection_sync_sources_organization_id_organization_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["team_id"],
+      "schemaTo": "public",
+      "tableTo": "team",
+      "columnsTo": ["id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "collection_sync_sources_team_id_team_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["collection_id"],
+      "schemaTo": "public",
+      "tableTo": "collections",
+      "columnsTo": ["id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "collection_sync_sources_collection_id_collections_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["connection_id"],
+      "schemaTo": "public",
+      "tableTo": "external_app_connections",
+      "columnsTo": ["id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "SET NULL",
+      "name": "collection_sync_sources_ZcsZnSy3MZW8_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["created_by_user_id"],
+      "schemaTo": "public",
+      "tableTo": "user",
+      "columnsTo": ["id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "SET NULL",
+      "name": "collection_sync_sources_created_by_user_id_user_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "collection_sync_sources"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["record_id"],
+      "schemaTo": "public",
+      "tableTo": "collection_records",
+      "columnsTo": ["id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "record_sync_state_record_id_collection_records_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "record_sync_state"
+    },
+    {
+      "nameExplicit": false,
+      "columns": ["sync_source_id"],
+      "schemaTo": "public",
+      "tableTo": "collection_sync_sources",
+      "columnsTo": ["id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "record_sync_state_EnJxkiIcjQOn_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "record_sync_state"
     },
     {
       "nameExplicit": false,
@@ -18345,6 +19983,14 @@
       "table": "changelog_reads"
     },
     {
+      "columns": ["record_id", "sync_source_id"],
+      "nameExplicit": false,
+      "name": "record_sync_state_pkey",
+      "entityType": "pks",
+      "schema": "public",
+      "table": "record_sync_state"
+    },
+    {
       "columns": ["user_id", "file_id"],
       "nameExplicit": true,
       "name": "ai_context_user_file_mutes_pk",
@@ -18414,6 +20060,14 @@
       "name": "organization_pkey",
       "schema": "public",
       "table": "organization",
+      "entityType": "pks"
+    },
+    {
+      "columns": ["id"],
+      "nameExplicit": false,
+      "name": "passkey_pkey",
+      "schema": "public",
+      "table": "passkey",
       "entityType": "pks"
     },
     {
@@ -18702,6 +20356,22 @@
       "name": "record_shares_pkey",
       "schema": "public",
       "table": "record_shares",
+      "entityType": "pks"
+    },
+    {
+      "columns": ["id"],
+      "nameExplicit": false,
+      "name": "collection_sync_runs_pkey",
+      "schema": "public",
+      "table": "collection_sync_runs",
+      "entityType": "pks"
+    },
+    {
+      "columns": ["id"],
+      "nameExplicit": false,
+      "name": "collection_sync_sources_pkey",
+      "schema": "public",
+      "table": "collection_sync_sources",
       "entityType": "pks"
     },
     {

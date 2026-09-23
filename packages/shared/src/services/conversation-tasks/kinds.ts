@@ -52,7 +52,7 @@ export const terminalTaskStatusOfRun = (
     // the wait would never settle and a chat that launched a test run would
     // hang on it forever.
     case "not_applicable":
-    case "blocked":
+    case "filtered":
       return "succeeded";
     default:
       return null;

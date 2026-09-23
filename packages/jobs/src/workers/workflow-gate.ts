@@ -3,7 +3,7 @@ import { createWorkerConnection } from "@fretik/shared/lib/queue/connection";
 import { decide } from "@fretik/shared/services/decisions/decide";
 import { redactSensitiveFacts } from "@fretik/shared/services/facts/redact";
 import { resolveFactSheet } from "@fretik/shared/services/facts/resolve";
-import { createBlockedWorkflowRun } from "@fretik/shared/services/workflows/create-blocked-run";
+import { createFilteredWorkflowRun } from "@fretik/shared/services/workflows/create-filtered-run";
 import { type Job, Worker } from "bullmq";
 import { buildGateQuestions, readGateVerdicts } from "../lib/workflow-gate";
 import { buildTriggerPayload } from "../lib/workflow-trigger-matching";
@@ -31,10 +31,10 @@ import { getWorkflowTriggerQueue } from "../queues/queues";
  * case of this entire feature is therefore the behaviour that shipped before
  * it — workflows fire on everything — and the only way to lose a launch is a
  * model that answered, confidently, that the firing was not this workflow's.
- * Even then the refusal is a visible `blocked` row with "run anyway" on it.
+ * Even then the refusal is a visible `filtered` row with "run anyway" on it.
  *
  * A thrown job is safe: BullMQ retries it, and both outcomes are idempotent —
- * the create jobs carry their `wfrun-{wf}-{event}` ids and the blocked rows
+ * the create jobs carry their `wfrun-{wf}-{event}` ids and the filtered rows
  * hit the same partial unique index every event run shares.
  */
 
@@ -114,7 +114,7 @@ export const startWorkflowGateWorker = (): Worker<WorkflowGateJobData> => {
       for (const verdict of refused) {
         const workflow = byId.get(verdict.workflowId);
         if (!workflow || verdict.decision === null) continue;
-        await createBlockedWorkflowRun({
+        await createFilteredWorkflowRun({
           workflow,
           sourceEventId: eventId,
           triggerPayload,
@@ -126,7 +126,7 @@ export const startWorkflowGateWorker = (): Worker<WorkflowGateJobData> => {
       // otherwise write a log line per file per workflow.
       if (refused.length > 0) {
         console.info(
-          `[workflow-gate] event ${eventId}: ${allowed.length.toString()} allowed, ${refused.length.toString()} blocked`,
+          `[workflow-gate] event ${eventId}: ${allowed.length.toString()} allowed, ${refused.length.toString()} filtered`,
         );
       }
     },

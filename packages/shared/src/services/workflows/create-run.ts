@@ -1,7 +1,7 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import db from "../../db";
 import { aiConversations, workflowRuns, type Workflow } from "../../db/schema";
-import { internalError, throwHttpError } from "../../lib/errors";
+import { alreadyExists, internalError, throwHttpError } from "../../lib/errors";
 import { triggerWorkflowRun } from "../../lib/trigger-client";
 import { requiredRunFileInputs } from "../../schemas/workflow-triggers";
 import type {
@@ -62,6 +62,15 @@ export const createWorkflowRun = async (params: {
    * launch it never applied to.
    */
   gateDecision?: WorkflowGateDecision | null;
+  /**
+   * A `filtered` row this run takes the place of ("run anyway"). It holds the
+   * `(workflow_id, source_event_id)` identity this run needs, so it is deleted
+   * INSIDE the same transaction that inserts the replacement: if the insert
+   * fails, the refusal is still there to be retried, instead of both the run
+   * and the record of the refusal being lost with the journal cursor long past
+   * the event that produced them.
+   */
+  replacesFilteredRunId?: string;
   /** Files handed to the run (a form submission's uploads) — stored on the
    * run's conversation as `ai_chat_files` so the agent reads them via
    * `<file_attachments>`. Written before the task fires. */
@@ -90,6 +99,28 @@ export const createWorkflowRun = async (params: {
     workflow.userId ?? (await getTeamBotUserId(workflow.teamId));
 
   const { runId, conversationId } = await db.transaction(async (tx) => {
+    if (params.replacesFilteredRunId !== undefined) {
+      // Only while still `filtered`: two people pressing "run anyway"
+      // together must produce one run, and the loser deletes nothing here and
+      // then collides on the unique identity below, which rolls it back.
+      const [replaced] = await tx
+        .delete(workflowRuns)
+        .where(
+          and(
+            eq(workflowRuns.id, params.replacesFilteredRunId),
+            eq(workflowRuns.teamId, workflow.teamId),
+            eq(workflowRuns.status, "filtered"),
+          ),
+        )
+        .returning({ id: workflowRuns.id });
+      if (!replaced) {
+        return throwHttpError(
+          409,
+          alreadyExists("This run has already been started."),
+        );
+      }
+    }
+
     const [conversation] = await tx
       .insert(aiConversations)
       .values({

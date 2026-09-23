@@ -29,14 +29,36 @@ const asFactValue = (value: unknown): FactValue | undefined => {
   return undefined;
 };
 
+/**
+ * The two connection-lifecycle events OUR side emits. They share the
+ * `connector.` namespace with provider activity but not its shape: the second
+ * segment is what happened, not who, and the provider rides the payload.
+ * Split positionally they would read as provider "connected" with no kind.
+ */
+const LIFECYCLE_KINDS: ReadonlySet<string> = new Set([
+  "connected",
+  "disconnected",
+]);
+
 export const resolveConnectorFacts = (event: DomainEvent): FactSheet => {
   // `connector.<provider>.<kind>` — the provider is one segment, the kind is
   // whatever remains, since a provider may well mint `a.b.c`.
-  const [, providerKey, ...kindParts] = event.type.split(".");
-  const facts: Record<string, FactValue> = {
-    providerKey: providerKey ?? null,
-    eventKind: kindParts.length > 0 ? kindParts.join(".") : null,
-  };
+  const [, second, ...kindParts] = event.type.split(".");
+  const payloadProvider = event.payload["providerKey"];
+  const isLifecycle =
+    second !== undefined &&
+    kindParts.length === 0 &&
+    LIFECYCLE_KINDS.has(second);
+  const facts: Record<string, FactValue> = isLifecycle
+    ? {
+        providerKey:
+          typeof payloadProvider === "string" ? payloadProvider : null,
+        eventKind: second,
+      }
+    : {
+        providerKey: second ?? null,
+        eventKind: kindParts.length > 0 ? kindParts.join(".") : null,
+      };
   for (const [key, raw] of Object.entries(event.payload)) {
     const value = asFactValue(raw);
     if (value !== undefined) facts[`payload.${key}`] = value;

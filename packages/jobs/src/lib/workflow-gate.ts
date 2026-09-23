@@ -101,7 +101,7 @@ export interface GateVerdict {
  *     the reason. A run of these means the gate is not being applied, which is
  *     an incident and must not look like a quiet success;
  *   - P(relevant) at or above the threshold → `allowed`;
- *   - below it → `blocked`, the only path that stops a launch.
+ *   - below it → `filtered`, the only path that stops a launch.
  */
 export const readGateVerdicts = (
   workflows: readonly Workflow[],
@@ -151,7 +151,7 @@ export const readGateVerdicts = (
       workflowId: workflow.id,
       allowed,
       decision: {
-        outcome: allowed ? "allowed" : "blocked",
+        outcome: allowed ? "allowed" : "filtered",
         criterion,
         probability,
         threshold,

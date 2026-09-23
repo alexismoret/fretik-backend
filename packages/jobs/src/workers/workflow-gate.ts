@@ -1,11 +1,14 @@
 import db from "@fretik/shared/db";
 import { createWorkerConnection } from "@fretik/shared/lib/queue/connection";
-import { decide } from "@fretik/shared/services/decisions/decide";
-import { redactSensitiveFacts } from "@fretik/shared/services/facts/redact";
+import { remoteEvaluator } from "@fretik/shared/services/decisions/remote";
 import { resolveFactSheet } from "@fretik/shared/services/facts/resolve";
 import { createFilteredWorkflowRun } from "@fretik/shared/services/workflows/create-filtered-run";
 import { type Job, Worker } from "bullmq";
-import { buildGateQuestions, readGateVerdicts } from "../lib/workflow-gate";
+import {
+  buildGateQuestions,
+  GATE_POINT,
+  readGateVerdicts,
+} from "../lib/workflow-gate";
 import { buildTriggerPayload } from "../lib/workflow-trigger-matching";
 import {
   WORKFLOW_GATE_QUEUE,
@@ -67,18 +70,24 @@ export const startWorkflowGateWorker = (): Worker<WorkflowGateJobData> => {
 
       const sheet = await resolveFactSheet(event);
       const questions = buildGateQuestions(workflows);
+      // The WHOLE sheet goes, plus the event type: the engine cuts it to the
+      // point's allow-list and strips content when content may not leave.
+      // That happens there, not here, so the same rule holds for every
+      // caller — while the unredacted sheet still becomes the run's own
+      // trigger payload, since a run is entitled to its team's content.
       const response =
         Object.keys(questions).length === 0
           ? null
-          : await decide({
-              // Redaction is applied HERE, at the one point a fact sheet
-              // crosses out of the platform — never at resolution, because
-              // the same sheet becomes the run's own trigger payload and a
-              // run is entitled to its team's content.
-              state: redactSensitiveFacts(sheet).facts,
-              questions,
-              context: { teamId, organizationId },
-            });
+          : await remoteEvaluator(
+              {
+                point: GATE_POINT,
+                subject: { type: "domain_event", id: eventId },
+                sessionId: `workflow-gate:${eventId}`,
+                state: { ...sheet.facts, eventType: event.type },
+                questions,
+              },
+              { teamId, organizationId },
+            );
 
       const verdicts = readGateVerdicts(workflows, response, new Date());
       const byId = new Map(workflows.map((w) => [w.id, w]));

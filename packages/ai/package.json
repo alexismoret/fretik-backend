@@ -38,6 +38,7 @@
     "models:bench": "bun run scripts/measure-upstreams.ts",
     "probe:cache": "bun --env-file=.env run scripts/probe-cache.ts",
     "probe:turn-cache": "bun --env-file=.env run scripts/probe-turn-cache.ts",
+    "probe:decisions": "bun --env-file=.env run scripts/probe-decisions.ts",
     "models:admin": "bun run scripts/model-admin.ts",
     "backfill:discovery-vectors": "bun run scripts/backfill-discovery-vectors.ts",
     "models:export": "bun run scripts/export-fleet.ts",

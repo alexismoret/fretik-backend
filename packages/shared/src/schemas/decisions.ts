@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DECISION_POINT_KEYS } from "../decisions/keys";
 
 /**
  * The decision protocol — typed questions asked about one state, answered
@@ -13,14 +14,20 @@ import { z } from "zod";
  *
  * A decision model answers both in well under a second for a fraction of a
  * cent, because it does not generate prose: it returns a typed value with the
- * probability behind it. This file is the contract — deliberately a MIRROR of
- * the AI SDK's evaluation-model shape rather than a vocabulary of our own,
- * since inventing one would mean maintaining two mappings and the only thing
- * it would buy is a rename.
+ * probability behind it. This file is the contract, deliberately a MIRROR of
+ * the AI SDK's evaluation-model shape — with the two constraints the Decisions
+ * API adds on top written in rather than discovered as a 400:
+ *
+ * - a boolean's `criteria` carries BOTH sides or neither (the provider refuses
+ *   one side alone);
+ * - every rung of a score has a description (the provider refuses a null).
  *
  * The one asymmetry worth knowing before reading any threshold in this
  * codebase: a boolean answer is **P(true)**, not confidence in the answer. A
- * `probability` of 0.02 is a strong "no", not a weak anything.
+ * `probability` of 0.02 is a strong "no", not a weak anything. Choice and
+ * score answers DO carry a `confidence`, derived by the model from the shape
+ * of the whole distribution — which is why a filing decision reads it and a
+ * gate decision cannot.
  */
 
 /**
@@ -42,36 +49,48 @@ export const DecisionStateSchema = z.record(
   decisionStateValueSchema,
 );
 export type DecisionState = z.infer<typeof DecisionStateSchema>;
+export type DecisionStateValue = z.infer<typeof decisionStateValueSchema>;
+
+const instructions = z.string().min(1).max(4000);
+const description = z.string().min(1).max(2000);
 
 /**
- * Yes or no. `criteria` optionally spells out what each side MEANS, which is
- * where a vague question becomes a sharp one — "true when the document is an
- * invoice or a credit note; false for quotes and delivery notes" decides cases
- * that "is this an invoice?" leaves to taste.
+ * Yes or no. `criteria` spells out what each side MEANS, which is where a
+ * vague question becomes a sharp one — "true when the document is an invoice
+ * or a credit note; false for quotes and delivery notes" decides cases that
+ * "is this an invoice?" leaves to taste.
  */
 export const BooleanQuestionSchema = z.object({
   type: z.literal("boolean"),
-  instructions: z.string().min(1).max(4000),
-  criteria: z
-    .object({
-      true: z.string().max(2000).optional(),
-      false: z.string().max(2000).optional(),
-    })
-    .optional(),
+  instructions,
+  criteria: z.object({ true: description, false: description }).optional(),
 });
+
+/**
+ * The most options one choice may carry — the provider's own ceiling.
+ * Anything past it has to be narrowed in code before it is asked.
+ */
+export const DECISION_MAX_CHOICE_OPTIONS = 255;
 
 /** One of N named options. `criteria` maps each option to its description. */
 export const ChoiceQuestionSchema = z.object({
   type: z.literal("choice"),
-  instructions: z.string().min(1).max(4000),
-  criteria: z.record(z.string(), z.string().max(2000).nullable()),
+  instructions,
+  criteria: z
+    .record(z.string().min(1).max(120), description)
+    .refine((c) => Object.keys(c).length >= 2, {
+      message: "a choice needs at least two options",
+    })
+    .refine((c) => Object.keys(c).length <= DECISION_MAX_CHOICE_OPTIONS, {
+      message: `a choice takes at most ${DECISION_MAX_CHOICE_OPTIONS.toString()} options`,
+    }),
 });
 
-/** A position on an ordered ladder, indexed from zero. At least two rungs. */
+/** A position on an ordered ladder, indexed from zero. Two to ten rungs. */
 export const ScoreQuestionSchema = z.object({
   type: z.literal("score"),
-  instructions: z.string().min(1).max(4000),
-  criteria: z.array(z.string().max(2000).nullable()).min(2),
+  instructions,
+  criteria: z.array(description).min(2).max(10),
 });
 
 export const DecisionQuestionSchema = z.discriminatedUnion("type", [
@@ -82,18 +101,32 @@ export const DecisionQuestionSchema = z.discriminatedUnion("type", [
 export type DecisionQuestion = z.infer<typeof DecisionQuestionSchema>;
 
 /**
- * How many questions may ride one call.
- *
- * A ceiling rather than a design limit: the whole point of asking N questions
- * about one state is that the state — the expensive half, since output tokens
- * are free on this endpoint — is paid for once. One upload matched against
- * twenty listening workflows is ONE call, not twenty. The cap only stops a
- * pathological team from putting a 32k context window's worth of questions in
- * front of a 32k context window.
+ * How many questions ride ONE provider call. Not a limit on a request: the
+ * engine splits a larger one into calls of this size against the same state,
+ * run in parallel. What it bounds is the blast radius of one failed call —
+ * forty questions falling open together is a bad minute, two hundred is an
+ * incident.
  */
-export const DECISION_MAX_QUESTIONS = 40;
+export const DECISION_CHUNK_QUESTIONS = 40;
+
+/** The most questions one request may carry, across all its chunks. */
+export const DECISION_MAX_QUESTIONS = 256;
+
+export const DecisionPointKeySchema = z.enum(DECISION_POINT_KEYS);
+
+/** What the decision is ABOUT — journaled, never sent to the model. */
+export const DecisionSubjectSchema = z.object({
+  type: z.string().min(1).max(32),
+  id: z.string().min(1).max(200),
+});
+export type DecisionSubject = z.infer<typeof DecisionSubjectSchema>;
 
 export const DecisionRequestSchema = z.object({
+  point: DecisionPointKeySchema,
+  subject: DecisionSubjectSchema.optional(),
+  /** Groups related calls on the provider side (one workflow run, one
+   * conversation). OpenRouter caps it at 256 characters. */
+  sessionId: z.string().min(1).max(256).optional(),
   state: DecisionStateSchema,
   /** Keyed by caller-chosen ids; answers come back under the same keys. */
   questions: z
@@ -102,7 +135,7 @@ export const DecisionRequestSchema = z.object({
       message: "at least one question is required",
     })
     .refine((q) => Object.keys(q).length <= DECISION_MAX_QUESTIONS, {
-      message: `at most ${DECISION_MAX_QUESTIONS.toString()} questions per call`,
+      message: `at most ${DECISION_MAX_QUESTIONS.toString()} questions per request`,
     }),
 });
 export type DecisionRequest = z.infer<typeof DecisionRequestSchema>;
@@ -116,11 +149,18 @@ export const ChoiceAnswerSchema = z.object({
   type: z.literal("choice"),
   choice: z.string(),
   probabilities: z.record(z.string(), z.number()).optional(),
+  /** The model's own certainty, from the distribution's shape. Absent on a
+   * transport that does not report it — which is NOT low confidence. */
+  confidence: z.number().min(0).max(1).optional(),
 });
 export const ScoreAnswerSchema = z.object({
   type: z.literal("score"),
+  /** Fractional position in [0, rungs - 1]. */
   score: z.number(),
   probabilities: z.record(z.string(), z.number()).optional(),
+  confidence: z.number().min(0).max(1).optional(),
+  /** The rung descriptions as the provider echoed them, keyed by index. */
+  legend: z.record(z.string(), z.string()).optional(),
 });
 
 export const DecisionAnswerSchema = z.discriminatedUnion("type", [
@@ -129,15 +169,94 @@ export const DecisionAnswerSchema = z.discriminatedUnion("type", [
   ScoreAnswerSchema,
 ]);
 export type DecisionAnswer = z.infer<typeof DecisionAnswerSchema>;
+export type BooleanAnswer = z.infer<typeof BooleanAnswerSchema>;
+export type ChoiceAnswer = z.infer<typeof ChoiceAnswerSchema>;
+export type ScoreAnswer = z.infer<typeof ScoreAnswerSchema>;
 
-export const DecisionResponseSchema = z.object({
+/**
+ * Why a question came back without an answer. Per QUESTION, because a large
+ * request is several calls and one of them failing says nothing about the
+ * others: a caller falls open on the missing ids only.
+ *
+ * `invalid_request` is kept apart from the outages on purpose. A 400 is OUR
+ * bug — a question the provider refuses will be refused on every retry and
+ * by every transport — and reading it as "the provider is down" is how a
+ * malformed question falls open silently forever.
+ */
+export const DECISION_MISSING_REASONS = [
+  "timeout",
+  "unavailable",
+  "rate_limited",
+  "invalid_request",
+  "too_large",
+  "no_answer",
+] as const;
+export type DecisionMissingReason = (typeof DECISION_MISSING_REASONS)[number];
+
+/** Why the whole request was not evaluated. Never an incident by itself. */
+export const DECISION_SKIP_REASONS = [
+  /** `DECISIONS_ENABLED=false`, the global kill switch. */
+  "disabled",
+  /** The point's resolved mode is `off`. */
+  "off",
+  /** The point sends content and this deployment forbids content egress. */
+  "egress",
+  /** The per-minute budget refused a background point. */
+  "rate_limited",
+] as const;
+export type DecisionSkipReason = (typeof DECISION_SKIP_REASONS)[number];
+
+export const DECISION_TRANSPORTS = ["openrouter", "gateway"] as const;
+export type DecisionTransport = (typeof DECISION_TRANSPORTS)[number];
+
+export const DECISION_MODES = ["off", "shadow", "on"] as const;
+export type DecisionMode = (typeof DECISION_MODES)[number];
+
+/**
+ * The thresholds the service resolved for this call, echoed back so a caller
+ * in another process applies EXACTLY the numbers the operator set — the
+ * registry default, overridden by `DECISION_OVERRIDES` where the call was
+ * made. Without the echo, an override would have to be set identically on
+ * every container that reads a verdict, and one forgotten container is a
+ * gate running on a different bar from the one on the dashboard.
+ */
+export const DecisionPolicyEchoSchema = z.object({
+  mode: z.enum(["shadow", "on"]),
+  questionVersion: z.number().int().positive(),
+  thresholds: z.record(z.string(), z.number().min(0).max(1)),
+  minChosenProbability: z.record(z.string(), z.number().min(0).max(1)),
+});
+export type DecisionPolicyEcho = z.infer<typeof DecisionPolicyEchoSchema>;
+
+export const DecisionAnsweredSchema = z.object({
+  status: z.literal("answered"),
+  point: DecisionPointKeySchema,
+  policy: DecisionPolicyEchoSchema,
   answers: z.record(z.string(), DecisionAnswerSchema),
+  missing: z.array(
+    z.object({ id: z.string(), reason: z.enum(DECISION_MISSING_REASONS) }),
+  ),
+  /** Which transport answered — null when no call succeeded. Kept on every
+   * record because the gateway serves a FLOATING model: its answers are fine
+   * to act on and wrong to calibrate against. */
+  transport: z.enum(DECISION_TRANSPORTS).nullable(),
+  modelId: z.string().optional(),
+  inputTokens: z.number().int().nonnegative().optional(),
   /** Exact USD the provider billed, when it reported one. Never estimated. */
   costUsd: z.number().nonnegative().optional(),
   latencyMs: z.number().int().nonnegative(),
-  /** Decimals the provider rounded probabilities to — two, today. A threshold
-   * finer than this is a threshold the answers cannot express. */
-  probabilityDecimals: z.number().int().nonnegative().optional(),
-  modelId: z.string().optional(),
 });
+export type DecisionAnswered = z.infer<typeof DecisionAnsweredSchema>;
+
+export const DecisionSkippedSchema = z.object({
+  status: z.literal("skipped"),
+  point: DecisionPointKeySchema,
+  reason: z.enum(DECISION_SKIP_REASONS),
+});
+export type DecisionSkipped = z.infer<typeof DecisionSkippedSchema>;
+
+export const DecisionResponseSchema = z.discriminatedUnion("status", [
+  DecisionAnsweredSchema,
+  DecisionSkippedSchema,
+]);
 export type DecisionResponse = z.infer<typeof DecisionResponseSchema>;

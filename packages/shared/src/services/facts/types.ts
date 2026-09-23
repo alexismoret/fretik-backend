@@ -78,9 +78,10 @@ export interface FactDescriptor {
    * catalog skips it — same convention as the trigger registry. */
   available: boolean;
   /**
-   * The fact reproduces workspace CONTENT rather than describing it. Redacted
-   * from any sheet crossing a trust boundary when the deployment says content
-   * may not leave (`redactSensitiveFacts`).
+   * The fact reproduces workspace CONTENT rather than describing it. Feeds
+   * the decision registry's `state.content` lists (`decisions/points.ts`), so
+   * the engine drops it from any decision when the deployment says content
+   * may not leave (`DECISION_CONTENT_EGRESS=false`).
    */
   sensitive?: boolean;
 }

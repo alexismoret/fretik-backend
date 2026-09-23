@@ -166,6 +166,11 @@ that is not `APP_URL`'s host or one of its parents. Mirror it in the frontend's
 | `PERPLEXITY_API_KEY`, `PARALLEL_API_KEY`               | Web research, and availability is **per tool**: a missing key prunes only what it backs. Search runs on whichever of the two is keyed (`AI_WEB_SEARCH_PROVIDER` picks the preferred one, default `perplexity`, and the other becomes the automatic fallback); `webFetch` needs Parallel specifically, for its server-side headless browser; `webMap` needs no key at all. See `docs/WEB-RESEARCH.md`.                                        |
 | `AI_WEB_*`                                             | Opt-in egress tightening (`AI_WEB_BLOCKED_DOMAINS`, `AI_WEB_ALLOWED_DOMAINS`, `AI_WEB_FETCH_MAX_URL_LEN`, `AI_WEB_TOOLS_ENABLED`), plus timeouts, cache TTLs and the price table used for the Langfuse cost trace. Always-on hygiene — scheme, private-IP/metadata, length, punycode — applies regardless, and is now load-bearing: `webMap` fetches `robots.txt`/`sitemap.xml` from the service itself and re-validates every redirect hop. |
 | `LANGFUSE_*`                                           | Optional; tracing is a no-op without them.                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `DECISIONS_ENABLED`                                    | Default on. `false` switches off every decision point (read at module load, so it applies on the next restart). Every caller falls open on it: workflows fire as they did before the trigger gate, documents stay at the Drive root.                                                                                                                                                                                                         |
+| `DECISION_OVERRIDES`                                   | JSON, per point: `{"workflow.gate":{"mode":"shadow","thresholds":{"wf":0.3}}}`. The emergency lever, to turn a point `off` or to `shadow` or move one of its bars without shipping code. **A malformed value fails the boot**: an override that silently matched nothing would leave an operator believing a gate is off while it keeps deciding. Defaults live with each point in `packages/shared/src/decisions/points.ts`.                |
+| `DECISION_CONTENT_EGRESS`                              | Default on, since both routes to the decision model are zero-data-retention. `false` strips content-bearing facts (summaries, field values, mentioned organisations) from every decision: redactable points decide on metadata alone, content points are skipped. Set it when a deployment's data policy says content may not leave.                                                                                                         |
+| `DECISIONS_RPM`                                        | Default `1000`, under the provider's 1 200. A per-minute budget counted in Redis across replicas. Background points stop at 80 % of it, so a bulk upload cannot starve a user who is waiting. Fails open on a Redis error.                                                                                                                                                                                                                   |
+| `AI_GATEWAY_API_KEY`                                   | Also the decision engine's fallback: background points retry an OpenRouter outage once on the Gateway (`typesafe-ai/jev`, zero-retention requested per call). Unset, that retry fails and they fall open instead.                                                                                                                                                                                                                            |
 
 ### `@fretik/jobs` — five keys people forget
 
@@ -192,14 +197,12 @@ workflows fire on everything (the behaviour that shipped before the gate) and
 documents stay at the Drive root. Nothing breaks loudly, which is exactly why
 it is written here.
 
-| Var                          | Notes                                                                                                                                                                                                                                                                                                        |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `WORKFLOW_GATE_THRESHOLD`    | Default `0.15`. P(relevant) a firing must clear to start a run. LOW and asymmetric on purpose: a run that should not have started is visible (`not_applicable`, countable), while one that should have started and did not is invisible until a client asks. Raise it only against measured false positives. |
-| `DRIVE_FILING_THRESHOLD`     | Default `0.7`. The INVERSE asymmetry: a misfiled document is worse than an unfiled one, because nobody knows where to look for it. Below the bar, the document stays at the root.                                                                                                                            |
-| `FACTS_ALLOW_CONTENT_EGRESS` | Default on. `false` strips content-bearing facts (document summaries, extracted field values, mentioned organisations) from anything posted to the decision vendor. The gate keeps working on metadata alone — degraded, not broken. Set it when a deployment's data policy says content may not leave.      |
-
-Decision behaviour itself (`DECISIONS_ENABLED`, `DECISION_MODEL_ID`,
-`DECISION_TIMEOUT_MS`) is read in **@fretik/ai**, where the call is made.
+Neither has a threshold to set here. A threshold is a measurement against one
+pinned model, so it lives with its decision point in
+`packages/shared/src/decisions/points.ts` and changes by pull request, like a
+role binding. The AI service echoes the policy it applied in every answer, so
+an operator override set there (`DECISION_OVERRIDES`, table above) reaches
+these workers without being set twice.
 
 ### One-off, on the production database
 

@@ -33,6 +33,7 @@
     "./file-types": "./src/file-types/index.ts",
     "./file-types/*": "./src/file-types/*.ts",
     "./model-registry/*": "./src/model-registry/*.ts",
+    "./decisions/*": "./src/decisions/*.ts",
     "./services/*": "./src/services/*.ts",
     "./lib/*": "./src/lib/*.ts",
     "./schemas": "./src/schemas/index.ts",

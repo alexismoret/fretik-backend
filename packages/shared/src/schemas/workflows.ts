@@ -623,36 +623,22 @@ export const WorkflowGateDecisionSchema = z.object({
   latencyMs: z.number().int().nonnegative().optional(),
   costUsd: z.number().nonnegative().optional(),
   modelId: z.string().max(120).optional(),
+  /** Which transport answered. The gateway serves a floating model: its
+   * verdicts are acted on, never calibrated against. */
+  transport: z.enum(["openrouter", "gateway"]).optional(),
+  /** The question wording this verdict answered (the registry's
+   * `questionVersion`). Two versions never share a calibration. */
+  questionVersion: z.number().int().positive().optional(),
+  /** The point ran in shadow: the verdict was recorded, not acted on. An
+   * `allowed` outcome with a probability under the threshold is what it
+   * WOULD have filtered. */
+  shadow: z.boolean().optional(),
   decidedAt: z.string(),
   /** Set when someone pressed "run anyway" on a filtered launch. */
   overriddenAt: z.string().optional(),
   overriddenByUserId: z.string().optional(),
 });
 export type WorkflowGateDecision = z.infer<typeof WorkflowGateDecisionSchema>;
-
-/**
- * The bar P(relevant) must clear for a launch to proceed.
- *
- * LOW, and asymmetric on purpose. The two ways to be wrong do not cost the
- * same: a run that should not have started burns tokens and shows up in the
- * `not_applicable` count, where anyone can see it. A run that should have
- * started and did not is INVISIBLE — nobody notices a workflow that quietly
- * stopped firing until a client asks why their document was never processed.
- * So the gate only refuses when the model is confidently negative, and
- * anything ambiguous runs.
- */
-const parseGateThreshold = (): number => {
-  const raw = process.env["WORKFLOW_GATE_THRESHOLD"];
-  if (raw === undefined || raw === "") return 0.15;
-  const parsed = Number.parseFloat(raw);
-  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
-    throw new Error(
-      `Invalid WORKFLOW_GATE_THRESHOLD: "${raw}" — expected a number in [0,1].`,
-    );
-  }
-  return parsed;
-};
-export const WORKFLOW_GATE_THRESHOLD = parseGateThreshold();
 
 /**
  * Criteria that would gate on the wrong thing, rejected at activation.

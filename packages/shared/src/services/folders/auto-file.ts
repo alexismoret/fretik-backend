@@ -1,9 +1,12 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
 import db from "../../db";
 import { documents, folders } from "../../db/schema";
-import type { DecisionQuestion } from "../../schemas/decisions";
-import { chosenOption, decide } from "../decisions/decide";
-import { redactSensitiveFacts } from "../facts/redact";
+import { chosenOf, minChosenFor, thresholdFor } from "../../decisions/policy";
+import type {
+  DecisionQuestion,
+  DecisionResponse,
+} from "../../schemas/decisions";
+import { remoteEvaluator, type DecisionEvaluator } from "../decisions/remote";
 import type { FactSheet } from "../facts/types";
 
 /**
@@ -13,35 +16,23 @@ import type { FactSheet } from "../facts/types";
  * is promoted to the Drive with no folder — so it lands at the root, and the
  * root is where files go to be lost. Nobody sorts them afterwards.
  *
- * THE ASYMMETRY IS THE OPPOSITE OF THE TRIGGER GATE'S, and every number here
- * follows from that. A wrongly-filed document is worse than an unfiled one:
- * unfiled, the person sees it at the root and moves it; misfiled, they do not
- * know it exists and have nowhere to look. So this asks for a CONFIDENT
- * answer and falls back to the root on anything less — the inverse of the
- * gate, which refuses only on a confident negative.
+ * The folder's own DESCRIPTION is the policy. A person, or the assistant
+ * through `manageDrive`, says what a folder is for, and the model judges the
+ * document against those sentences — nothing to configure elsewhere, and the
+ * reason a document went where it went is readable on the folder itself.
+ *
+ * THE ASYMMETRY IS THE OPPOSITE OF THE TRIGGER GATE'S. A wrongly-filed
+ * document is worse than an unfiled one: unfiled, the person sees it at the
+ * root and moves it; misfiled, they do not know it exists and have nowhere to
+ * look. So this asks for a CONFIDENT answer (the registry's `folder` family)
+ * and leaves the document alone on anything less.
  *
  * Run AFTER processing, never at upload: the whole value is the semantic
  * match, and the summary that makes it possible does not exist until the
- * extraction has finished. A document that sits at the root for a minute and
- * is then filed, with a banner saying so, is the intended experience.
+ * extraction has finished.
  */
 
-/**
- * How sure the model must be. High, per the asymmetry above — measured
- * against the chosen option's own probability, not against the field.
- */
-const parseFilingThreshold = (): number => {
-  const raw = process.env["DRIVE_FILING_THRESHOLD"];
-  if (raw === undefined || raw === "") return 0.7;
-  const parsed = Number.parseFloat(raw);
-  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
-    throw new Error(
-      `Invalid DRIVE_FILING_THRESHOLD: "${raw}" — expected a number in [0,1].`,
-    );
-  }
-  return parsed;
-};
-export const DRIVE_FILING_THRESHOLD = parseFilingThreshold();
+export const FILING_POINT = "drive.file";
 
 /**
  * The option meaning "leave it at the root".
@@ -54,12 +45,10 @@ export const DRIVE_FILING_THRESHOLD = parseFilingThreshold();
 export const ROOT_OPTION = "__root__";
 
 /**
- * How many folders may be offered.
- *
- * The decision model holds 32k tokens of context, and a team with hundreds of
- * folders would blow it. Capped by document count — the folders a team
- * actually uses are the folders it has put things in — and each candidate is
- * a line, so the cap is generous rather than tight.
+ * How many folders may be offered. Capped by document count — the folders a
+ * team actually uses are the folders it has put things in — so truncating the
+ * tail drops the least plausible options rather than a random sixty. Sixty
+ * candidates at a line each sit comfortably inside the model's context.
  */
 const MAX_CANDIDATES = 60;
 /** Descriptions are capped at generation; this is the belt to that braces. */
@@ -72,14 +61,6 @@ export interface FilingCandidate {
   description: string | null;
 }
 
-/**
- * The folders a document could go in: the team's, busiest first.
- *
- * Ordering by `documentCount` is what makes the cap safe rather than
- * arbitrary. A folder nobody has filed anything in is the least likely
- * destination for the next thing, so truncating the tail costs the least
- * plausible options rather than a random sixty.
- */
 export const listFilingCandidates = async (params: {
   teamId: string;
 }): Promise<FilingCandidate[]> =>
@@ -101,80 +82,159 @@ export const listFilingCandidates = async (params: {
 export const buildFilingQuestion = (
   candidates: readonly FilingCandidate[],
 ): DecisionQuestion => {
-  const criteria: Record<string, string | null> = {
+  const criteria: Record<string, string> = {
     [ROOT_OPTION]:
-      "None of these folders is clearly right for this document, or it does not belong in any of them. Choose this whenever the match is a guess.",
+      "None of these folders is clearly right for this document, or it belongs in none of them.",
   };
   for (const candidate of candidates) {
     criteria[candidate.id] = candidate.description
-      ? `${candidate.fullPath} — ${candidate.description.slice(0, DESCRIPTION_CHARS)}`
+      ? `${candidate.fullPath}: ${candidate.description.slice(0, DESCRIPTION_CHARS)}`
       : candidate.fullPath;
   }
   return {
     type: "choice",
     instructions:
-      "A document was added to this workspace without a destination. Given what is known about it, which folder does it belong in? Choose a folder only when the document clearly belongs there; otherwise leave it unfiled.",
+      "A document was added to a workspace with no destination. Which folder, as described, holds documents like this one?",
     criteria,
   };
 };
 
-const QUESTION_ID = "folder";
+export const FILING_QUESTION_ID = "folder";
+
+export type FilingVerdict =
+  | {
+      file: true;
+      folderId: string;
+      confidence: number;
+      probability: number;
+    }
+  | {
+      file: false;
+      reason:
+        | "unreachable"
+        | "skipped"
+        | "no_answer"
+        | "root"
+        | "unknown_option"
+        | "no_confidence"
+        | "below_threshold"
+        | "shadow";
+      confidence?: number;
+      probability?: number;
+      folderId?: string;
+    };
+
+/**
+ * Read the answer into a filing, or a reason not to file.
+ *
+ * Every reason is a way of leaving the document exactly where it is, which is
+ * always safe. Three are worth naming. A MISSING confidence (the gateway does
+ * not report one) is not a low one — but it is not evidence of certainty
+ * either, and this is the decision that needs evidence, so it does not file.
+ * The chosen option must also carry a real share of the probability: a
+ * confident distribution over two near-identical folders can still pick the
+ * wrong twin. And `shadow` files nothing while recording what it would have
+ * done.
+ */
+export const readFilingVerdict = (
+  response: DecisionResponse | null,
+  candidates: readonly FilingCandidate[],
+): FilingVerdict => {
+  if (response === null) return { file: false, reason: "unreachable" };
+  if (response.status === "skipped") return { file: false, reason: "skipped" };
+
+  const chosen = chosenOf(response.answers[FILING_QUESTION_ID]);
+  if (chosen === null) return { file: false, reason: "no_answer" };
+  const scores = {
+    ...(chosen.confidence !== null ? { confidence: chosen.confidence } : {}),
+    ...(chosen.probability !== null ? { probability: chosen.probability } : {}),
+  };
+  if (chosen.choice === ROOT_OPTION) {
+    return { file: false, reason: "root", ...scores };
+  }
+  if (!candidates.some((c) => c.id === chosen.choice)) {
+    return { file: false, reason: "unknown_option", ...scores };
+  }
+  if (chosen.confidence === null || chosen.probability === null) {
+    return {
+      file: false,
+      reason: "no_confidence",
+      folderId: chosen.choice,
+      ...scores,
+    };
+  }
+
+  const threshold = thresholdFor(response.policy, FILING_QUESTION_ID) ?? 1;
+  const minChosen = minChosenFor(response.policy, FILING_QUESTION_ID) ?? 0;
+  if (chosen.confidence < threshold || chosen.probability < minChosen) {
+    return {
+      file: false,
+      reason: "below_threshold",
+      folderId: chosen.choice,
+      ...scores,
+    };
+  }
+  if (response.policy.mode === "shadow") {
+    return {
+      file: false,
+      reason: "shadow",
+      folderId: chosen.choice,
+      ...scores,
+    };
+  }
+  return {
+    file: true,
+    folderId: chosen.choice,
+    confidence: chosen.confidence,
+    probability: chosen.probability,
+  };
+};
 
 /**
  * File one processed document, or leave it where it is.
  *
- * Returns the folder it was moved to, or null for every other outcome —
- * no answer, an answer below the threshold, the root option, a folder that
- * vanished between the decision and the write. Never throws: the caller is
- * the tail of the document pipeline, and a filing that cannot be decided must
- * not fail an upload that otherwise succeeded.
+ * Returns the folder it was moved to, or null for every other outcome. Never
+ * throws: the caller is the tail of the document pipeline, and a filing that
+ * cannot be decided must not fail an upload that otherwise succeeded.
  */
 export const autoFileDocument = async (params: {
   documentId: string;
   teamId: string;
   organizationId: string;
-  /** The whole sheet, not its facts: redaction needs the event type to know
-   * which of them carry content. */
   sheet: FactSheet;
-}): Promise<{ folderId: string; confidence: number | null } | null> => {
+  evaluator?: DecisionEvaluator;
+}): Promise<{ folderId: string; confidence: number } | null> => {
   try {
     const candidates = await listFilingCandidates({ teamId: params.teamId });
     if (candidates.length === 0) return null;
 
-    const response = await decide({
-      // Redacted HERE, at the one point a fact sheet leaves the platform —
-      // the same seam the trigger gate uses. Without it
-      // `FACTS_ALLOW_CONTENT_EGRESS=false` would be a setting that reads as
-      // honoured and is not, which is worse than not having it.
-      state: redactSensitiveFacts(params.sheet).facts,
-      questions: { [QUESTION_ID]: buildFilingQuestion(candidates) },
-      context: {
-        teamId: params.teamId,
-        organizationId: params.organizationId,
+    // The whole sheet goes: the engine cuts it to the point's allow-list
+    // (summary, filename, mentions, language) and drops content when content
+    // may not leave, for this caller and every other.
+    const response = await (params.evaluator ?? remoteEvaluator)(
+      {
+        point: FILING_POINT,
+        subject: { type: "document", id: params.documentId },
+        sessionId: `documents:${params.documentId}`,
+        state: params.sheet.facts,
+        questions: { [FILING_QUESTION_ID]: buildFilingQuestion(candidates) },
       },
-    });
+      { teamId: params.teamId, organizationId: params.organizationId },
+    );
 
-    const chosen = chosenOption(response, QUESTION_ID);
-    if (chosen === null || chosen.choice === ROOT_OPTION) return null;
-    // An unknown id means the model named something that was not offered.
-    if (!candidates.some((c) => c.id === chosen.choice)) return null;
-    // `null` here is an answer with no distribution behind it — not the same
-    // as a low one, but not evidence of confidence either, and this decision
-    // is the one that needs evidence.
-    if (chosen.probability === null) return null;
-    if (chosen.probability < DRIVE_FILING_THRESHOLD) return null;
+    const verdict = readFilingVerdict(response, candidates);
+    if (!verdict.file) return null;
 
     // The move and the counter in ONE transaction, like every other move
-    // (`documents/update.ts`). `folders.documentCount` is not decoration: it
-    // orders the filing candidates and gates the nightly describe pass, so a
-    // failure between the two would skew both, permanently, with nothing to
-    // recompute it from.
+    // (`documents/update.ts`). `folders.documentCount` orders the filing
+    // candidates and gates the nightly describe pass; a failure between the
+    // two would skew both, permanently.
     const moved = await db.transaction(async (tx) => {
       // Only move a document still at the root: a person who filed it in the
       // meantime has said where it goes, and that beats any inference.
       const [row] = await tx
         .update(documents)
-        .set({ folderId: chosen.choice })
+        .set({ folderId: verdict.folderId })
         .where(
           and(
             eq(documents.id, params.documentId),
@@ -188,12 +248,12 @@ export const autoFileDocument = async (params: {
       await tx
         .update(folders)
         .set({ documentCount: sql`${folders.documentCount} + 1` })
-        .where(eq(folders.id, chosen.choice));
+        .where(eq(folders.id, verdict.folderId));
       return true;
     });
     if (!moved) return null;
 
-    return { folderId: chosen.choice, confidence: chosen.probability };
+    return { folderId: verdict.folderId, confidence: verdict.confidence };
   } catch (error) {
     console.warn(
       `[drive.auto-file] could not file ${params.documentId}:`,

@@ -138,4 +138,26 @@ export default {
     multiSelectHint: "Plusieurs réponses possibles.",
     genericDetail: "Ouvrez l'exécution pour examiner l'action en attente.",
   },
+
+  securityNotice: {
+    greetingNamed: "Bonjour {{name}},",
+    greetingAnonymous: "Bonjour,",
+    passkeyAdded: {
+      subject: "Une clé d'accès a été ajoutée à votre compte Fretik",
+      intro:
+        "Une nouvelle clé d'accès a été ajoutée à votre compte Fretik. Elle permet désormais de se connecter sans mot de passe.",
+    },
+    passkeyRemoved: {
+      subject: "Une clé d'accès a été supprimée de votre compte Fretik",
+      intro:
+        "Une clé d'accès a été supprimée de votre compte Fretik. Elle ne permet plus de se connecter.",
+    },
+    passkeyLabel: "Clé d'accès : {{name}}",
+    defaultPasskeyName: "Clé d'accès",
+    dateLabel: "Date : {{date}}",
+    deviceLabel: "Appareil : {{device}}",
+    cta: "Vérifier vos paramètres de sécurité",
+    notYou:
+      "Si vous n'êtes pas à l'origine de cette action, changez votre mot de passe immédiatement et supprimez toute clé d'accès que vous ne reconnaissez pas.",
+  },
 };

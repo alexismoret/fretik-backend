@@ -149,6 +149,13 @@ Same for the reverse: stop reading a column in one release, drop it in the next.
 `DATABASE_URL`, `REDIS_URL`, `RUN_MIGRATIONS=true`, plus Better Auth and
 Scaleway S3/email variables. `FRETIK_RUNTIME=container` comes from the image.
 
+`PASSKEY_RP_ID` is optional and is the one auth variable that cannot be changed
+later: it is the domain every passkey is bound to. Unset, it is `APP_URL`'s
+hostname. Set it to the registrable parent (`fretik.com`) before the first
+passkey exists if the app may ever move between subdomains; boot refuses a value
+that is not `APP_URL`'s host or one of its parents. Mirror it in the frontend's
+`NUXT_PUBLIC_PASSKEY_RP_ID`.
+
 ### `@fretik/ai`
 
 | Var                                                    | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                        |

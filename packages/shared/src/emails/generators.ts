@@ -608,3 +608,62 @@ export const generateChatbotApprovalPending = async (
 
   return { subject, html };
 };
+
+/** Account security events that warrant a heads-up email to the account owner. */
+export type SecurityNoticeKind = "passkeyAdded" | "passkeyRemoved";
+
+interface SecurityNoticeParams {
+  kind: SecurityNoticeKind;
+  /** Display name of the account owner. Falls back to a generic greeting. */
+  userName: string | null;
+  /** Label of the passkey concerned; null renders the localized default. */
+  passkeyName: string | null;
+  occurredAt: Date;
+  /** Short "Browser · OS" summary of the device that made the change. */
+  device: string | null;
+}
+
+/**
+ * Build a security notice ("a passkey was added / removed"). Sent to the
+ * account owner on every change to how their account can be signed into, so
+ * a stolen session that plants its own passkey does not go unnoticed. The
+ * CTA lands on the security settings where the passkey can be removed.
+ */
+export const generateSecurityNoticeEmail = async (
+  params: SecurityNoticeParams,
+  lang: string,
+): Promise<EmailData> => {
+  const t = i18n.getFixedT(lang);
+  const trimmedName = params.userName?.trim();
+  const passkeyName =
+    params.passkeyName?.trim() || t("securityNotice.defaultPasskeyName");
+  // The recipient's time zone is unknown here: state UTC rather than let the
+  // server's zone pass for theirs. (`timeZoneName` cannot be combined with
+  // `dateStyle`/`timeStyle`, hence the suffix.)
+  const date = `${params.occurredAt.toLocaleString(dateLocale(lang), {
+    dateStyle: "long",
+    timeStyle: "short",
+    timeZone: "UTC",
+  })} UTC`;
+
+  const html = await renderEmail(
+    "security-notice",
+    {
+      greeting: trimmedName
+        ? t("securityNotice.greetingNamed", { name: trimmedName })
+        : t("securityNotice.greetingAnonymous"),
+      intro: t(`securityNotice.${params.kind}.intro`),
+      subjectLabel: t("securityNotice.passkeyLabel", { name: passkeyName }),
+      dateLabel: t("securityNotice.dateLabel", { date }),
+      deviceLabel: params.device
+        ? t("securityNotice.deviceLabel", { device: params.device })
+        : "",
+      ctaUrl: `${appUrl}/settings/security`,
+      cta: t("securityNotice.cta"),
+      notYou: t("securityNotice.notYou"),
+    },
+    lang,
+  );
+
+  return { subject: t(`securityNotice.${params.kind}.subject`), html };
+};

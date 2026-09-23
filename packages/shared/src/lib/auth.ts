@@ -1,5 +1,6 @@
 import { drizzleAdapter } from "@better-auth/drizzle-adapter/relations-v2";
 import { electron } from "@better-auth/electron";
+import { passkey } from "@better-auth/passkey";
 import { redisStorage } from "@better-auth/redis-storage";
 import { APIError } from "better-auth/api";
 import { betterAuth, type BetterAuthOptions } from "better-auth/minimal";
@@ -21,12 +22,15 @@ import { duplicateOrgDefsToTeam } from "../services/field-definitions/duplicate-
 import { getTeamLocale } from "../services/field-definitions/get-locale";
 import { sendOrganizationInvitationEmail } from "../services/invitations/send-invitation-email";
 import { scrubWorkflowNotificationRecipient } from "../services/workflows/scrub-notification-recipient";
+import { accountSecurity } from "./auth-account-security";
+import { recordAuthEvent } from "./auth-audit";
 import {
   INVITATION_EXPIRY_SECONDS,
   MAX_MEMBERS_PER_TEAM,
   OTP_EXPIRY_SECONDS,
 } from "./auth-constants";
 import { organizationTeamInvitationHooks } from "./auth-hooks";
+import { passkeyOptions } from "./auth-passkey";
 import {
   invalidateOrgTeamMembershipCache,
   invalidateTeamMembershipCache,
@@ -52,27 +56,6 @@ const cookieDomain = process.env.BETTER_AUTH_COOKIE_DOMAIN;
 // and the renderer loads the SPA from `app://fretik` — so both are trusted here.
 const electronScheme = process.env.ELECTRON_PROTOCOL_SCHEME ?? "com.fretik.app";
 const electronOrigins = [`${electronScheme}:/`, "app://fretik"];
-
-/**
- * Best-effort write to the auth security audit trail. Never throws into the
- * auth hot path — a failed audit insert is logged and swallowed.
- */
-const recordAuthEvent = async (
-  event: string,
-  userId: string | null,
-  details?: { ip?: string | null; userAgent?: string | null },
-): Promise<void> => {
-  try {
-    await db.insert(schema.authAuditLog).values({
-      event,
-      userId,
-      ip: details?.ip ?? null,
-      userAgent: details?.userAgent ?? null,
-    });
-  } catch (err) {
-    console.warn(`[auth-audit] failed to record ${event}:`, err);
-  }
-};
 
 /**
  * Best-effort scrub of workflow email-recipient lists when a user loses
@@ -190,7 +173,8 @@ const options = {
 
   session: {
     // Window during which a session counts as "fresh" for sensitive actions
-    // (e.g. deleting the account without re-entering the password).
+    // (e.g. deleting the account without re-entering the password, adding a
+    // passkey). Past it, `POST /security/reauthenticate` renews it in place.
     freshAge: 60 * 60,
   },
 
@@ -203,6 +187,13 @@ const options = {
     customRules: {
       "/sign-in/email": { window: 60, max: 5 },
       "/sign-up/email": { window: 60, max: 3 },
+      // The sign-in page asks for passkey options on every visit (browser
+      // autofill), hence a roomier budget than the ceremony it precedes.
+      "/passkey/generate-authenticate-options": { window: 60, max: 30 },
+      "/passkey/verify-authentication": { window: 60, max: 10 },
+      "/passkey/generate-register-options": { window: 60, max: 10 },
+      "/passkey/verify-registration": { window: 60, max: 10 },
+      "/security/reauthenticate": { window: 60, max: 5 },
     },
   },
 
@@ -381,6 +372,16 @@ const options = {
     twoFactor({
       issuer: "Fretik",
     }),
+
+    // Passkeys (WebAuthn): sign in with a fingerprint, face or device PIN.
+    // The RP ID, the pinned origin and why user verification is enforced are
+    // documented in `auth-passkey.ts`. A passkey sign-in skips two-factor,
+    // like everywhere else: the passkey is itself two factors.
+    passkey(passkeyOptions),
+
+    // "Confirm it's you" + the security settings' passkey list, and the
+    // audit/email side effects of adding or removing a passkey.
+    accountSecurity(),
 
     // Desktop (Electron) support. Adds the /electron/token + OAuth-proxy
     // endpoints and the redirect-cookie hand-off used by the desktop app's

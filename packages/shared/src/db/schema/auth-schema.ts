@@ -50,12 +50,15 @@ export const account = pgTable(
       .primaryKey(),
     accountId: text("account_id").notNull(),
     /**
-     * Account identity namespace, required since Better Auth 1.7. Local
-     * credentials get `local:credential`; an OAuth provider would get
-     * `local:oauth:<providerId>`. Paired with `accountId` it is the unique
-     * identity of an account — see the compound index below.
+     * Legacy. Better Auth 1.7.0–1.7.2 required it (`local:credential` for a
+     * password account); 1.7.3 dropped it and identifies an account by
+     * `(providerId, accountId)` again, as in 1.6 — see the compound index
+     * below. New rows leave it NULL, which is why it is nullable: a NOT NULL
+     * column Better Auth never writes rejects every sign-up. Kept rather than
+     * dropped so a replica still running 1.7.2 during a rolling deploy can
+     * keep writing it; drop it once no 1.7.2 code is left anywhere.
      */
-    issuer: text("issuer").notNull(),
+    issuer: text("issuer"),
     providerId: text("provider_id").notNull(),
     userId: uuid("user_id")
       .notNull()
@@ -82,8 +85,10 @@ export const account = pgTable(
   },
   (table) => [
     index("account_userId_idx").on(table.userId),
-    uniqueIndex("account_issuer_accountId_uidx").on(
-      table.issuer,
+    // Better Auth refuses an account lookup that matches more than one row;
+    // this makes that impossible rather than merely unlikely.
+    uniqueIndex("account_providerId_accountId_uidx").on(
+      table.providerId,
       table.accountId,
     ),
   ],
@@ -264,4 +269,47 @@ export const twoFactor = pgTable(
     }),
   },
   (table) => [index("twoFactor_userId_idx").on(table.userId)],
+);
+
+// Added by the Better Auth `passkey` plugin (`@better-auth/passkey`). One row
+// per WebAuthn credential; a user may hold several (one per password manager
+// or security key). Id follows this codebase's uuid v7 convention; `user_id`
+// is `uuid` to match the `user.id` it references.
+export const passkey = pgTable(
+  "passkey",
+  {
+    id: uuid("id")
+      .default(sql`uuid_generate_v7()`)
+      .primaryKey(),
+    // User-chosen label. Filled at registration with the authenticator's
+    // provider name (see `lib/auth-passkey.ts`), renameable afterwards.
+    name: text("name"),
+    publicKey: text("public_key").notNull(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    // base64url credential id. Sign-in looks the credential up by it, and two
+    // rows sharing one would make that lookup ambiguous: unique, not just
+    // indexed.
+    credentialID: text("credential_id").notNull(),
+    counter: integer("counter").notNull(),
+    // `singleDevice` (a security key) or `multiDevice` (a synced passkey).
+    deviceType: text("device_type").notNull(),
+    backedUp: boolean("backed_up").notNull(),
+    transports: text("transports"),
+    createdAt: timestamp("created_at", { mode: "date", withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    // Authenticator model (Google Password Manager, 1Password, ...). All-zero
+    // when the platform hides it (Apple under `attestation: "none"`).
+    aaguid: text("aaguid"),
+    // Not a Better Auth field: stamped by `authentication.afterVerification`
+    // on every passkey sign-in and read by the security settings list. Better
+    // Auth never selects or writes it, so the plugin stays unaware of it.
+    lastUsedAt: timestamp("last_used_at", { mode: "date", withTimezone: true }),
+  },
+  (table) => [
+    index("passkey_userId_idx").on(table.userId),
+    uniqueIndex("passkey_credentialID_uidx").on(table.credentialID),
+  ],
 );

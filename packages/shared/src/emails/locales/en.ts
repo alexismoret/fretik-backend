@@ -134,4 +134,26 @@ export default {
     multiSelectHint: "Multiple answers possible.",
     genericDetail: "Open the run to review the pending action.",
   },
+
+  securityNotice: {
+    greetingNamed: "Hello {{name}},",
+    greetingAnonymous: "Hello,",
+    passkeyAdded: {
+      subject: "A passkey was added to your Fretik account",
+      intro:
+        "A new passkey was added to your Fretik account. It can now be used to sign in without a password.",
+    },
+    passkeyRemoved: {
+      subject: "A passkey was removed from your Fretik account",
+      intro:
+        "A passkey was removed from your Fretik account. It can no longer be used to sign in.",
+    },
+    passkeyLabel: "Passkey: {{name}}",
+    defaultPasskeyName: "Passkey",
+    dateLabel: "Date: {{date}}",
+    deviceLabel: "Device: {{device}}",
+    cta: "Review your security settings",
+    notYou:
+      "If this wasn't you, change your password right away and remove any passkey you don't recognize.",
+  },
 };

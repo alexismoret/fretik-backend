@@ -37,20 +37,28 @@ import { derivePageRoutes, type PageRoute } from "./routes";
  */
 
 /**
- * Which `/page-runtime/<version>/` assets a fresh compile is built against.
+ * Which `/page-runtime/<version>/` assets a fresh compile is built against. It
+ * must equal `PAGE_RUNTIME_VERSION` in the app's `page-runtime/version.ts`,
+ * the directory its build writes.
  *
  * DEPLOY ORDER IS LOAD-BEARING, in this direction only: the frame imports
- * these files from the APP origin, so the app carrying `v2/` must be live
- * before the backend starts stamping `v2` on compiles. Ship them the other way
+ * these files from the APP origin, so the app carrying `v3/` must be live
+ * before the backend starts stamping `v3` on compiles. Ship them the other way
  * round and every page compiled in between renders a blank frame, because its
  * import map points at files nobody is serving yet.
  *
  * Nothing breaks for pages already stored: `compiled.runtimeVersion` travels
- * with the artifact and decides that page's import map, and `v1/` stays
- * committed and served until the last page compiled against it has been
- * rebuilt.
+ * with the artifact and decides that page's import map, and `v1/` and `v2/`
+ * stay committed and served until the last page compiled against them has been
+ * rebuilt. A page that is not frozen recompiles against `v3` on its next open,
+ * since the version is part of its compile key.
+ *
+ * v3: the La Boucle theme (2px radius scale, squared switch). The runtime's
+ * class set moved with it, which is why this is a new version and not a
+ * rebuild of `v2` in place: a page compiled against `v2` dropped the rules
+ * `v2` declared, and some of them are gone from `v3`.
  */
-export const PAGE_RUNTIME_VERSION = "v2";
+export const PAGE_RUNTIME_VERSION = "v3";
 
 /**
  * Bump when the compiler's OUTPUT changes shape for source it has already

@@ -1,5 +1,6 @@
 import db from "@fretik/shared/db";
 import { createWorkerConnection } from "@fretik/shared/lib/queue/connection";
+import { recordDecisions } from "@fretik/shared/services/decisions/journal";
 import { remoteEvaluator } from "@fretik/shared/services/decisions/remote";
 import { resolveFactSheet } from "@fretik/shared/services/facts/resolve";
 import { createFilteredWorkflowRun } from "@fretik/shared/services/workflows/create-filtered-run";
@@ -7,6 +8,7 @@ import { type Job, Worker } from "bullmq";
 import {
   buildGateQuestions,
   GATE_POINT,
+  gateJournalEntries,
   readGateVerdicts,
 } from "../lib/workflow-gate";
 import { buildTriggerPayload } from "../lib/workflow-trigger-matching";
@@ -90,6 +92,14 @@ export const startWorkflowGateWorker = (): Worker<WorkflowGateJobData> => {
             );
 
       const verdicts = readGateVerdicts(workflows, response, new Date());
+
+      // Journaled BEFORE any run exists, so a label arriving from the run
+      // ("run anyway", its outcome) always finds its row. Best-effort: a
+      // journal failure never costs a launch.
+      await recordDecisions(
+        gateJournalEntries({ verdicts, eventId, teamId, organizationId }),
+      );
+
       const byId = new Map(workflows.map((w) => [w.id, w]));
       const triggerPayload = buildTriggerPayload(event, sheet.facts);
 

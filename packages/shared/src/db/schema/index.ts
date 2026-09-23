@@ -108,6 +108,10 @@ export * from "./approvals";
 // Workflows (autonomous agents: definitions + runs, Trigger.dev-driven)
 export * from "./workflows";
 
+// Decision log (every question asked of the decision model, numbers only,
+// labelled afterwards by what people and runs did — the calibration data)
+export * from "./decisions";
+
 // Background work a chat conversation waits on (workflow runs today) — the
 // registry behind "launch, keep working, get resumed when it finishes".
 export * from "./conversation-tasks";

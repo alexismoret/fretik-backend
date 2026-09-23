@@ -89,7 +89,8 @@ export interface DecisionPointSpec {
   timeoutMs: number;
   /** Retry on the gateway when OpenRouter is unavailable. Never on `hot`. */
   fallbackTransport: boolean;
-  /** Which calls are journaled once the journal exists. */
+  /** Which decisions reach `decision_log`: every one, only those that changed
+   * what happened, a random sample, or none. */
   journal: {
     policy: "all" | "consequential" | "sampled" | "none";
     sampleRate?: number;

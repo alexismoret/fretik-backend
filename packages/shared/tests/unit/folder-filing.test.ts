@@ -7,10 +7,12 @@ import type {
 import {
   buildFilingQuestion,
   FILING_QUESTION_ID,
+  filingJournalEntry,
   readFilingVerdict,
   ROOT_OPTION,
   type FilingCandidate,
 } from "../../src/services/folders/auto-file";
+import { gateLabelForRunStatus } from "../../src/services/workflows/label-gate-outcome";
 
 /**
  * How the Drive filer asks where a document belongs, and when it acts.
@@ -262,5 +264,114 @@ describe("readFilingVerdict", () => {
         folders,
       ),
     ).toEqual({ file: false, reason: "no_answer" });
+  });
+});
+
+describe("filingJournalEntry", () => {
+  const entry = (response: DecisionResponse | null, moved: boolean) =>
+    filingJournalEntry({
+      documentId: "d1",
+      teamId: "team-1",
+      organizationId: "org-1",
+      response,
+      candidates: folders,
+      verdict: readFilingVerdict(response, folders),
+      moved,
+    });
+
+  test("a filing that moved the document is `filed`, aimed at its folder", () => {
+    expect(entry(answered(choice("f1", 0.8, 0.9)), true)).toMatchObject({
+      point: "drive.file",
+      subjectType: "document",
+      subjectId: "d1",
+      targetId: "f1",
+      choice: "f1",
+      outcome: "filed",
+      applied: true,
+      confidence: 0.9,
+      probability: 0.8,
+      threshold: 0.75,
+    });
+  });
+
+  test("a document LEFT at the root still records the folder it would have gone to", () => {
+    // That runner-up is what a later manual move is compared against: the
+    // only evidence on whether the bar is set too high.
+    expect(entry(answered(choice("f2", 0.9, 0.6)), false)).toMatchObject({
+      outcome: "left",
+      applied: true,
+      reason: "below_threshold",
+      targetId: "f2",
+      confidence: 0.6,
+    });
+  });
+
+  test("choosing the root aims at nothing", () => {
+    expect(entry(answered(choice(ROOT_OPTION, 0.7, 0.9)), false)).toMatchObject(
+      { outcome: "left", targetId: null, choice: ROOT_OPTION, reason: "root" },
+    );
+  });
+
+  test("a filing that lost the race to a person is not applied", () => {
+    expect(entry(answered(choice("f1", 0.8, 0.9)), false)).toMatchObject({
+      outcome: "left",
+      applied: false,
+      reason: "moved_meanwhile",
+    });
+  });
+
+  test("a fall-open carries the engine's own reason, not a generic one", () => {
+    expect(
+      entry(
+        answered(null, { missing: [{ id: "folder", reason: "timeout" }] }),
+        false,
+      ),
+    ).toMatchObject({
+      outcome: "fell_open",
+      applied: false,
+      reason: "timeout",
+    });
+    expect(
+      entry(
+        { status: "skipped", point: "drive.file", reason: "egress" },
+        false,
+      ),
+    ).toMatchObject({ outcome: "fell_open", reason: "egress" });
+    expect(entry(null, false)).toMatchObject({
+      outcome: "fell_open",
+      reason: "unreachable",
+      questionVersion: 2,
+    });
+  });
+
+  test("shadow records the choice and marks it not applied", () => {
+    expect(
+      entry(
+        answered(choice("f2", 0.9, 0.95), {
+          policy: {
+            mode: "shadow",
+            questionVersion: 2,
+            thresholds: { folder: 0.75 },
+            minChosenProbability: { folder: 0.5 },
+          },
+        }),
+        false,
+      ),
+    ).toMatchObject({ outcome: "left", applied: false, reason: "shadow" });
+  });
+});
+
+describe("gateLabelForRunStatus", () => {
+  test("only the two endings that read the input answer the gate's question", () => {
+    expect(gateLabelForRunStatus("succeeded")).toBe("true");
+    expect(gateLabelForRunStatus("not_applicable")).toBe("false");
+    for (const status of [
+      "failed",
+      "canceled",
+      "filtered",
+      "running",
+    ] as const) {
+      expect(gateLabelForRunStatus(status)).toBeNull();
+    }
   });
 });

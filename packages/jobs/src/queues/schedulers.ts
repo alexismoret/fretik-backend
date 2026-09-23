@@ -1,6 +1,7 @@
 import {
   COLLECTION_INDEX_SWEEP_JOB,
   CONVERSATION_TASK_SWEEP_JOB,
+  DECISION_LOG_GC_JOB,
   DREAMING_SWEEP_JOB,
   EXTERNAL_SYNC_SWEEP_JOB,
   FOLDER_DESCRIBE_SWEEP_JOB,
@@ -49,6 +50,9 @@ const FOLDER_DESCRIBE_CRON = "30 2 * * *";
 /** Dreaming at 03:00 UTC, GC an hour later — both in the quiet window. */
 const DREAMING_CRON = "0 3 * * *";
 const GC_CRON = "0 4 * * *";
+/** Twenty minutes after the episode GC, so the two batched deletes never
+ * share the quiet window's IO. */
+const DECISION_LOG_GC_CRON = "20 4 * * *";
 /** MCP tool-snapshot drift refresh at 05:00 UTC — after the memory window. */
 const MCP_REFRESH_CRON = "0 5 * * *";
 /** Object-index sweep at 02:00 UTC, ahead of the memory window: it issues
@@ -136,6 +140,11 @@ export const registerSchedulers = async (): Promise<void> => {
     GC_DEMOTE_JOB,
     { pattern: GC_CRON, tz: "UTC" },
     { name: GC_DEMOTE_JOB, opts: CRON_OPTS },
+  );
+  await maintenance.upsertJobScheduler(
+    DECISION_LOG_GC_JOB,
+    { pattern: DECISION_LOG_GC_CRON, tz: "UTC" },
+    { name: DECISION_LOG_GC_JOB, opts: CRON_OPTS },
   );
   await maintenance.upsertJobScheduler(
     WORKFLOW_TRIGGER_SWEEP_JOB,

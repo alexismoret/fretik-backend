@@ -2,15 +2,17 @@ import db from "../../db";
 import { publishConversationTaskResume } from "../../lib/conversation-task-resume";
 import { completeConversationTask } from "../conversation-tasks/complete";
 import { terminalTaskStatusOfRun } from "../conversation-tasks/kinds";
+import { labelGateOnRunOutcome } from "./label-gate-outcome";
 import { notifySourceConversation } from "./notify-source-conversation";
 
 /**
  * The single seam every terminal run path goes through to inform the chat
  * that launched it.
  *
- * Three effects, each with its own exactly-once anchor so racing paths (a
- * turn-close and a cancel landing together, a sweep and an orchestrator
- * finalize) never double up:
+ * Three effects on the chat, each with its own exactly-once anchor so racing
+ * paths (a turn-close and a cancel landing together, a sweep and an
+ * orchestrator finalize) never double up — and a fourth, the gate label, that
+ * is idempotent by construction:
  *  1. the wait registry is settled (`status = 'pending'` guard in the UPDATE);
  *  2. the visible completion notice is posted (dedup on the message metadata);
  *  3. a resume is signalled — the AI service decides whether the conversation
@@ -29,10 +31,21 @@ export const onWorkflowRunTerminal = async (params: {
 }): Promise<void> => {
   const run = await db.query.workflowRuns.findFirst({
     where: { id: params.runId },
-    columns: { status: true, sourceConversationId: true },
+    columns: {
+      status: true,
+      sourceConversationId: true,
+      teamId: true,
+      workflowId: true,
+      sourceEventId: true,
+      gateDecision: true,
+    },
   });
   const terminal = run ? terminalTaskStatusOfRun(run.status) : null;
-  if (terminal === null) return;
+  if (!run || terminal === null) return;
+
+  // 4. The trigger gate's decision learns how the run ended. Not anchored:
+  // the label write only fills an empty label, so a second pass is a no-op.
+  await labelGateOnRunOutcome(run);
 
   const { conversationId } = await completeConversationTask({
     kind: "workflow_run",

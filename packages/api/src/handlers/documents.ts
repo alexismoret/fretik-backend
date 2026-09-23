@@ -17,6 +17,7 @@ import {
   DocumentResponseSchema,
   DocumentVersionDownloadSchema,
   DocumentVersionSchema,
+  FilingFeedbackResponseSchema,
   GetDocumentDetailsResponseSchema,
   RecentDocumentSchema,
   SaveAuthoredContentResponseSchema,
@@ -58,6 +59,8 @@ import { uploadDocument } from "@fretik/shared/services/documents/upload";
 import { getDocumentVersionDownloadUrl } from "@fretik/shared/services/documents/versions/download";
 import { listDocumentVersions } from "@fretik/shared/services/documents/versions/list";
 import { restoreDocumentVersion } from "@fretik/shared/services/documents/versions/restore";
+import { confirmAutoFiling } from "@fretik/shared/services/folders/confirm-filing";
+import { undoAutoFiling } from "@fretik/shared/services/folders/undo-filing";
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import { streamSSE } from "hono/streaming";
 
@@ -257,6 +260,57 @@ const reextractDocumentRoute = createRoute({
     ...responseBadRequestSchema,
     ...responseNotFoundSchema,
     ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+/**
+ * -- AUTOMATIC FILING FEEDBACK
+ * --
+ * A person's two answers to the Drive filer: "not there" (undo, back to the
+ * root) and "that's right" (confirm, nothing moves). Both label the filing
+ * decision; both refuse once the document has left the folder it was filed in.
+ */
+const undoFilingRoute = createRoute({
+  method: "post",
+  path: "/{id}/filing/undo",
+  summary: "Undo an automatic filing",
+  description:
+    "Moves a document the Drive filer placed back to the root, and records that the filing was wrong. 409 when the document has been moved since.",
+  tags: ["Documents"],
+  request: { params: paramsIdSchema },
+  responses: {
+    200: {
+      content: {
+        "application/json": { schema: FilingFeedbackResponseSchema },
+      },
+      description: "Filing undone",
+    },
+    ...responseNotFoundSchema,
+    ...responseForbiddenSchema,
+    ...responseConflictSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const confirmFilingRoute = createRoute({
+  method: "post",
+  path: "/{id}/filing/confirm",
+  summary: "Confirm an automatic filing",
+  description:
+    "Records that the folder the Drive filer chose is the right one. Nothing moves. 409 when the document has been moved since.",
+  tags: ["Documents"],
+  request: { params: paramsIdSchema },
+  responses: {
+    200: {
+      content: {
+        "application/json": { schema: FilingFeedbackResponseSchema },
+      },
+      description: "Filing confirmed",
+    },
+    ...responseNotFoundSchema,
+    ...responseForbiddenSchema,
+    ...responseConflictSchema,
     ...responseInternalErrorSchema,
   },
 });
@@ -548,6 +602,36 @@ documentRoutes.openapi(updateDocumentRoute, async (c) => {
   }
 
   return c.json(formatDocumentResponse(updatedDocument), 200);
+});
+
+/**
+ * -- UNDO / CONFIRM AUTOMATIC FILING
+ * --
+ */
+documentRoutes.openapi(undoFilingRoute, async (c) => {
+  const team = c.get("team");
+  if (!team) return throwHttpError(403, teamRequired());
+  const user = c.get("user");
+  const { id } = c.req.valid("param");
+  const result = await undoAutoFiling({
+    documentId: id,
+    teamId: team.id,
+    userId: user.id,
+  });
+  return c.json(result, 200);
+});
+
+documentRoutes.openapi(confirmFilingRoute, async (c) => {
+  const team = c.get("team");
+  if (!team) return throwHttpError(403, teamRequired());
+  const user = c.get("user");
+  const { id } = c.req.valid("param");
+  const result = await confirmAutoFiling({
+    documentId: id,
+    teamId: team.id,
+    userId: user.id,
+  });
+  return c.json(result, 200);
 });
 
 /**

@@ -252,9 +252,10 @@ export const workflowRuns = pgTable(
     /**
      * What the trigger gate decided about THIS launch, and why.
      *
-     * It lives on the run rather than in a journal of its own because this is
-     * where someone asking "why did my workflow not fire?" looks, and a
-     * parallel table would have them join two places to read one answer. Every
+     * The READABLE answer lives on the run, because this is where someone
+     * asking "why did my workflow not fire?" looks. The numbers are also in
+     * `decision_log`, which carries no text and exists to calibrate the
+     * threshold; nothing a person reads should have to join the two. Every
      * gated launch produces a row either way: allowed ones become the run that
      * happened, refused ones a `filtered` row that exists precisely so the
      * refusal is visible and reversible.

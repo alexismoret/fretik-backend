@@ -172,6 +172,9 @@ export const JOURNAL_SWEEP_JOB = "journal-sweep";
 export const DREAMING_SWEEP_JOB = "dreaming-sweep";
 /** 04:00 UTC cron — demotes stale episodes out of the recall index. */
 export const GC_DEMOTE_JOB = "gc-demote";
+/** 04:20 UTC cron — purges the decision log past its retention (unlabelled
+ * rows after 30 days, labelled ones after a year). Batched deletes. */
+export const DECISION_LOG_GC_JOB = "decision-log-gc";
 /** 15s — reads the journal and enqueues event-triggered workflow runs. */
 export const WORKFLOW_TRIGGER_SWEEP_JOB = "workflow-trigger-sweep";
 /** 5min — reclaims stalled (heartbeat-dead) workflow runs. */

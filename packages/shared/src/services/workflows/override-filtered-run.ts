@@ -4,6 +4,7 @@ import type {
   WorkflowGateDecision,
   WorkflowRunResponse,
 } from "../../schemas/workflows";
+import { labelDecisions } from "../decisions/journal";
 import { createWorkflowRun } from "./create-run";
 import { getWorkflowRow } from "./get";
 import type { WorkflowRequester } from "./visibility";
@@ -69,7 +70,7 @@ export const overrideFilteredWorkflowRun = async (params: {
     overriddenByUserId: params.userId,
   };
 
-  return createWorkflowRun({
+  const run = await createWorkflowRun({
     workflow,
     triggerType: "event",
     triggerPayload: filtered.triggerPayload,
@@ -80,4 +81,19 @@ export const overrideFilteredWorkflowRun = async (params: {
     gateDecision: decision,
     replacesFilteredRunId: filtered.id,
   });
+
+  // The person just answered the gate's question: this firing DID meet the
+  // condition. An explicit act, so it outranks whatever the run later does.
+  if (filtered.sourceEventId !== null) {
+    await labelDecisions({
+      teamId: params.teamId,
+      point: "workflow.gate",
+      subjectId: filtered.sourceEventId,
+      targetId: filtered.workflowId,
+      label: "true",
+      source: "run_anyway",
+      userId: params.userId,
+    });
+  }
+  return run;
 };

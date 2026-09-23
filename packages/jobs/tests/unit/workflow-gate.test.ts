@@ -7,6 +7,7 @@ import type {
 import { describe, expect, test } from "bun:test";
 import {
   buildGateQuestions,
+  gateJournalEntries,
   gateQuestionId,
   readGateVerdicts,
 } from "../../src/lib/workflow-gate";
@@ -288,5 +289,87 @@ describe("readGateVerdicts", () => {
       expect(verdict.decision?.costUsd).toBe(0.00008);
       expect(verdict.decision?.transport).toBe("gateway");
     }
+  });
+});
+
+describe("gateJournalEntries", () => {
+  const journal = (response: DecisionResponse | null, workflows: Workflow[]) =>
+    gateJournalEntries({
+      verdicts: readGateVerdicts(workflows, response, now),
+      eventId: "e1",
+      teamId: "team-1",
+      organizationId: "org-1",
+    });
+
+  test("one row per workflow ASKED about, keyed so a run can label it", () => {
+    // The ungated workflow was never asked, so it has nothing to calibrate.
+    const rows = journal(
+      answered({ [id]: { type: "boolean", probability: 0.03 } }),
+      [workflow({}), workflow({ id: "w2", triggerCriterion: null })],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      point: "workflow.gate",
+      family: "wf",
+      questionId: id,
+      subjectType: "domain_event",
+      subjectId: "e1",
+      targetId: "w1",
+      outcome: "filtered",
+      applied: true,
+      probability: 0.03,
+      threshold: 0.15,
+    });
+  });
+
+  test("no text reaches the journal", () => {
+    // The criterion is on the run's snapshot; a copy here would outlive the
+    // workflow it came from.
+    const [row] = journal(
+      answered({ [id]: { type: "boolean", probability: 0.9 } }),
+      [workflow({})],
+    );
+    expect(JSON.stringify(row)).not.toContain("supplier invoice");
+  });
+
+  test("a shadow verdict and a fall-open are journaled as NOT applied", () => {
+    // Neither changed what happened. Counting them as decisions would credit
+    // the gate with launches it never refused.
+    const [shadow] = journal(
+      answered(
+        { [id]: { type: "boolean", probability: 0.02 } },
+        {
+          policy: {
+            mode: "shadow",
+            questionVersion: 2,
+            thresholds: { wf: 0.15 },
+            minChosenProbability: {},
+          },
+        },
+      ),
+      [workflow({})],
+    );
+    expect(shadow?.applied).toBe(false);
+    const [fellOpen] = journal(null, [workflow({})]);
+    expect(fellOpen).toMatchObject({
+      outcome: "fell_open",
+      applied: false,
+      reason: "unreachable",
+    });
+  });
+
+  test("the call's cost is split across its questions, so a SUM is the bill", () => {
+    const rows = journal(
+      answered(
+        {
+          [gateQuestionId("w1")]: { type: "boolean", probability: 0.9 },
+          [gateQuestionId("w2")]: { type: "boolean", probability: 0.9 },
+        },
+        { costUsd: 0.0001 },
+      ),
+      [workflow({ id: "w1" }), workflow({ id: "w2" })],
+    );
+    const total = rows.reduce((sum, row) => sum + (row.costUsd ?? 0), 0);
+    expect(total).toBeCloseTo(0.0001, 10);
   });
 });

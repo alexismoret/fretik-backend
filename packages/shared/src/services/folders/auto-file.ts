@@ -1,11 +1,14 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
 import db from "../../db";
 import { documents, folders } from "../../db/schema";
+import { decisionPoint } from "../../decisions/points";
 import { chosenOf, minChosenFor, thresholdFor } from "../../decisions/policy";
+import { deleteKeysByPrefix } from "../../lib/redis";
 import type {
   DecisionQuestion,
   DecisionResponse,
 } from "../../schemas/decisions";
+import { recordDecisions, type JournalEntry } from "../decisions/journal";
 import { remoteEvaluator, type DecisionEvaluator } from "../decisions/remote";
 import type { FactSheet } from "../facts/types";
 
@@ -191,6 +194,119 @@ export const readFilingVerdict = (
 };
 
 /**
+ * Move a document that is still at the root. False when it is not: a person
+ * who filed it in the meantime has said where it goes, and that beats any
+ * inference.
+ *
+ * The move and the counter in ONE transaction, like every other move
+ * (`documents/update.ts`). `folders.documentCount` orders the filing
+ * candidates and gates the nightly describe pass; a failure between the two
+ * would skew both, permanently.
+ */
+const moveFromRoot = async (params: {
+  documentId: string;
+  teamId: string;
+  folderId: string;
+}): Promise<boolean> => {
+  const moved = await db.transaction(async (tx) => {
+    const [row] = await tx
+      .update(documents)
+      .set({ folderId: params.folderId })
+      .where(
+        and(
+          eq(documents.id, params.documentId),
+          eq(documents.teamId, params.teamId),
+          isNull(documents.folderId),
+        ),
+      )
+      .returning({ id: documents.id });
+    if (!row) return false;
+
+    await tx
+      .update(folders)
+      .set({ documentCount: sql`${folders.documentCount} + 1` })
+      .where(eq(folders.id, params.folderId));
+    return true;
+  });
+  // The cached details still say "root" otherwise, for as long as they live.
+  if (moved) await deleteKeysByPrefix(`document:${params.documentId}`);
+  return moved;
+};
+
+/** Verdict reasons that mean the model never answered, as opposed to an
+ * answer that said "leave it". */
+const FELL_OPEN_REASONS = new Set(["unreachable", "skipped", "no_answer"]);
+
+/**
+ * The journal row for one filing decision. Pure, so its mapping is tested
+ * without a database.
+ *
+ * `applied` is whether the verdict CHANGED what happened: a filing that
+ * moved the document, or a considered "leave it". It is false for a shadow
+ * verdict, for a fall-open, and for a filing that lost the race to a person
+ * who moved the document first.
+ */
+export const filingJournalEntry = (params: {
+  documentId: string;
+  teamId: string;
+  organizationId: string;
+  response: DecisionResponse | null;
+  candidates: readonly FilingCandidate[];
+  verdict: FilingVerdict;
+  moved: boolean;
+}): JournalEntry => {
+  const { response, verdict } = params;
+  const answered = response?.status === "answered" ? response : null;
+  const chosen = chosenOf(answered?.answers[FILING_QUESTION_ID]);
+  const isCandidate =
+    chosen !== null && params.candidates.some((c) => c.id === chosen.choice);
+
+  const base = {
+    organizationId: params.organizationId,
+    teamId: params.teamId,
+    point: FILING_POINT,
+    family: FILING_QUESTION_ID,
+    questionId: FILING_QUESTION_ID,
+    questionVersion:
+      answered?.policy.questionVersion ??
+      decisionPoint(FILING_POINT).questionVersion,
+    subjectType: "document",
+    subjectId: params.documentId,
+    targetId: isCandidate ? chosen.choice : null,
+    probability: chosen?.probability ?? null,
+    confidence: chosen?.confidence ?? null,
+    choice: chosen?.choice ?? null,
+    threshold: answered
+      ? (thresholdFor(answered.policy, FILING_QUESTION_ID) ?? null)
+      : null,
+    transport: answered?.transport ?? null,
+    modelId: answered?.modelId ?? null,
+    latencyMs: answered?.latencyMs ?? null,
+    costUsd: answered?.costUsd ?? null,
+  };
+
+  if (verdict.file) {
+    return params.moved
+      ? { ...base, outcome: "filed", applied: true, reason: null }
+      : { ...base, outcome: "left", applied: false, reason: "moved_meanwhile" };
+  }
+  if (FELL_OPEN_REASONS.has(verdict.reason)) {
+    const missing = answered?.missing.find((m) => m.id === FILING_QUESTION_ID);
+    const reason =
+      response?.status === "skipped"
+        ? response.reason
+        : (missing?.reason ?? verdict.reason);
+    return { ...base, outcome: "fell_open", applied: false, reason };
+  }
+  return {
+    ...base,
+    outcome: "left",
+    applied: verdict.reason !== "shadow",
+    reason: verdict.reason,
+  };
+};
+
+/**
  * File one processed document, or leave it where it is.
  *
  * Returns the folder it was moved to, or null for every other outcome. Never
@@ -223,36 +339,30 @@ export const autoFileDocument = async (params: {
     );
 
     const verdict = readFilingVerdict(response, candidates);
-    if (!verdict.file) return null;
+    const moved = verdict.file
+      ? await moveFromRoot({
+          documentId: params.documentId,
+          teamId: params.teamId,
+          folderId: verdict.folderId,
+        })
+      : false;
 
-    // The move and the counter in ONE transaction, like every other move
-    // (`documents/update.ts`). `folders.documentCount` orders the filing
-    // candidates and gates the nightly describe pass; a failure between the
-    // two would skew both, permanently.
-    const moved = await db.transaction(async (tx) => {
-      // Only move a document still at the root: a person who filed it in the
-      // meantime has said where it goes, and that beats any inference.
-      const [row] = await tx
-        .update(documents)
-        .set({ folderId: verdict.folderId })
-        .where(
-          and(
-            eq(documents.id, params.documentId),
-            eq(documents.teamId, params.teamId),
-            isNull(documents.folderId),
-          ),
-        )
-        .returning({ id: documents.id });
-      if (!row) return false;
+    // Every decision is journaled, the ones that left the document alone
+    // included: a document left at the root and filed by hand a day later is
+    // the label that says whether the bar was too high.
+    await recordDecisions([
+      filingJournalEntry({
+        documentId: params.documentId,
+        teamId: params.teamId,
+        organizationId: params.organizationId,
+        response,
+        candidates,
+        verdict,
+        moved,
+      }),
+    ]);
 
-      await tx
-        .update(folders)
-        .set({ documentCount: sql`${folders.documentCount} + 1` })
-        .where(eq(folders.id, verdict.folderId));
-      return true;
-    });
-    if (!moved) return null;
-
+    if (!verdict.file || !moved) return null;
     return { folderId: verdict.folderId, confidence: verdict.confidence };
   } catch (error) {
     console.warn(

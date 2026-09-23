@@ -90,10 +90,10 @@ describe("scheduler identities", () => {
     for (const r of registrations) expect(r.template.name).toBe(r.id);
   });
 
-  test("the whole timetable is fifteen entries", () => {
+  test("the whole timetable is sixteen entries", () => {
     // A count, so that adding or removing a scheduled pass has to be a
     // deliberate edit to this file rather than a diff nobody reads.
-    expect(registrations).toHaveLength(15);
+    expect(registrations).toHaveLength(16);
   });
 });
 
@@ -102,6 +102,9 @@ describe("what may share the 15-second maintenance queue", () => {
     expect(on("memory-maintenance").sort()).toEqual(
       [
         "conversation-task-sweep",
+        // Batched deletes of at most 5 000 rows each, one night's worth of
+        // decisions: seconds, not minutes.
+        "decision-log-gc",
         "dreaming-sweep",
         // The collection-sync claim pass qualifies on the same rule as the
         // rest: it is ONE `UPDATE … RETURNING` plus an `addBulk`, and the runs
@@ -189,13 +192,15 @@ describe("repeat definitions", () => {
   test("the nightly chain is staggered rather than simultaneous", () => {
     // Not a correctness guarantee (an overrun simply queues), but the ordering
     // is deliberate and reasoned about in comments: sync, reconcile, index
-    // sweep, dreaming, GC, MCP refresh, each in its own hour.
+    // sweep, dreaming, GC, MCP refresh, each in its own hour; the decision-log
+    // GC follows the episode GC inside the same quiet hour.
     const nightly = [
       "model-sync-nightly",
       "vector-reconcile-sweep",
       "collection-index-sweep",
       "dreaming-sweep",
       "gc-demote",
+      "decision-log-gc",
       "mcp-snapshot-refresh",
     ].map((id) => minuteOfDay(patternOf(id)));
     expect(nightly).toEqual([...nightly].sort((a, b) => a - b));

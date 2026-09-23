@@ -6,6 +6,7 @@ import type {
   DecisionResponse,
 } from "@fretik/shared/schemas/decisions";
 import type { WorkflowGateDecision } from "@fretik/shared/schemas/workflows";
+import type { JournalEntry } from "@fretik/shared/services/decisions/journal";
 
 /**
  * The decisions the trigger gate makes, separated from the queries and the
@@ -187,4 +188,49 @@ export const readGateVerdicts = (
       },
     };
   });
+};
+
+/**
+ * The journal rows for one gated event: one per workflow that was ASKED
+ * about. Ungated workflows (no criterion) have no decision and no row.
+ *
+ * Numbers only — the criterion stays on the run's own `gate_decision`
+ * snapshot. `applied` is false in shadow and on a fall-open: neither verdict
+ * changed what happened. The call's cost is split evenly across the
+ * questions it answered, so a SUM over the journal is the real bill.
+ */
+export const gateJournalEntries = (params: {
+  verdicts: readonly GateVerdict[];
+  eventId: string;
+  teamId: string;
+  organizationId: string;
+}): JournalEntry[] => {
+  const decided = params.verdicts.filter(
+    (v): v is GateVerdict & { decision: WorkflowGateDecision } =>
+      v.decision !== null,
+  );
+  const version = decisionPoint(GATE_POINT).questionVersion;
+  return decided.map(({ workflowId, decision }) => ({
+    organizationId: params.organizationId,
+    teamId: params.teamId,
+    point: GATE_POINT,
+    family: "wf",
+    questionId: gateQuestionId(workflowId),
+    questionVersion: decision.questionVersion ?? version,
+    subjectType: "domain_event",
+    subjectId: params.eventId,
+    targetId: workflowId,
+    outcome: decision.outcome,
+    applied: decision.outcome !== "fell_open" && decision.shadow !== true,
+    reason: decision.reason ?? null,
+    probability: decision.probability ?? null,
+    confidence: null,
+    choice: null,
+    threshold: decision.threshold ?? null,
+    transport: decision.transport ?? null,
+    modelId: decision.modelId ?? null,
+    latencyMs: decision.latencyMs ?? null,
+    costUsd:
+      decision.costUsd !== undefined ? decision.costUsd / decided.length : null,
+  }));
 };

@@ -7,6 +7,7 @@ import type { UpdateDocumentInput } from "../../schemas/documents";
 import { setRecordData } from "../collection-records/update";
 import { readRecordData } from "../collection-schema/record-io";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
+import { labelFilingOnMove } from "../folders/label-filing-move";
 import { scheduleDocumentVectorRefresh } from "./vector-refresh-queue";
 
 /**
@@ -59,7 +60,12 @@ export const updateDocument = async (data: {
     return throwHttpError(404, notFound());
   }
 
-  const folderHasChanged = existingDocument.folderId !== updates.folderId;
+  // `folderId` is optional: absent means "not a move". Compared bare, a
+  // rename read as a move to `undefined` and decremented the folder's
+  // `documentCount` for a document that never left it.
+  const folderHasChanged =
+    updates.folderId !== undefined &&
+    existingDocument.folderId !== updates.folderId;
   const originalFilename = keepFileExtension(
     existingDocument.originalFilename,
     updates.originalFilename,
@@ -144,6 +150,16 @@ export const updateDocument = async (data: {
 
     return doc;
   });
+
+  // A person placing a document is the answer to any filing decision made
+  // about it. Best-effort, like the journal it writes to.
+  if (folderHasChanged && updates.folderId !== undefined) {
+    await labelFilingOnMove({
+      teamId,
+      documentId: id,
+      toFolderId: updates.folderId,
+    });
+  }
 
   // Through the queue, like the create and replace-content paths: a metadata
   // edit gets the same 30 s debounce and the same retry. Awaiting is safe —

@@ -19,6 +19,7 @@ import { seedSystemOntology } from "../services/collections/seed-system-types";
 import { applyDocumentFieldTemplate } from "../services/field-definitions/apply-template";
 import { getTeamLocale } from "../services/field-definitions/get-locale";
 import { sendOrganizationInvitationEmail } from "../services/invitations/send-invitation-email";
+import { withdrawInvitationsToDeletedTeam } from "../services/invitations/withdraw-for-deleted-team";
 import { maximumTeamsFor } from "../services/organization/team-limit";
 import { scrubWorkflowNotificationRecipient } from "../services/workflows/scrub-notification-recipient";
 import { accountSecurity } from "./auth-account-security";
@@ -304,6 +305,16 @@ const options = {
             action: "team.created",
             principal: { type: "team", id: data.team.id },
             metadata: { teamName: data.team.name },
+          });
+        },
+        // Before, not after: once deleted, nothing on an invitation says
+        // which team it was for (`withdraw-for-deleted-team.ts`).
+        beforeDeleteTeam: async (data) => {
+          await withdrawInvitationsToDeletedTeam({
+            organizationId: data.team.organizationId,
+            teamId: data.team.id,
+            teamName: data.team.name,
+            actorUserId: data.user?.id ?? null,
           });
         },
         afterDeleteTeam: async (data) => {

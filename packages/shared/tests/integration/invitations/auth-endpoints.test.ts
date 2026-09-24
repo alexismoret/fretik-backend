@@ -6,10 +6,16 @@ import {
   expect,
   test,
 } from "bun:test";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import db from "../../../src/db";
-import { invitation, member, team, teamMember } from "../../../src/db/schema";
+import {
+  accessAuditLog,
+  invitation,
+  member,
+  team,
+  teamMember,
+} from "../../../src/db/schema";
 import {
   createWorkspaceFixture,
   type WorkspaceFixture,
@@ -662,5 +668,57 @@ describe("sign-up of an invited address", () => {
     });
 
     expect(await isVerified(signUp.user.id)).toBe(true);
+  });
+});
+
+describe("POST /organization/remove-team", () => {
+  test("withdraws the invitations into that team alone, and journals them", async () => {
+    const doomed = await fx.createTeam();
+    const pending = (teamId: string) => ({
+      organizationId: fx.organizationId,
+      email: `it-doomed-${randomUUID().slice(0, 8)}@example.test`,
+      role: "member",
+      teamId,
+      status: "pending",
+      expiresAt: new Date(Date.now() + 60_000),
+      inviterId: owner.userId,
+    });
+    const [into, elsewhere] = await db
+      .insert(invitation)
+      .values([pending(doomed.id), pending(fx.teamId)])
+      .returning({ id: invitation.id });
+    if (!into || !elsewhere) throw new Error("fixture: no invitations");
+
+    await auth.api.removeTeam({
+      body: { teamId: doomed.id, organizationId: fx.organizationId },
+      headers: owner.headers,
+    });
+
+    const rows = await db
+      .select({
+        id: invitation.id,
+        status: invitation.status,
+        teamId: invitation.teamId,
+      })
+      .from(invitation)
+      .where(inArray(invitation.id, [into.id, elsewhere.id]));
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    // Not left pending with no team, as Better Auth alone would leave it.
+    expect(byId.get(into.id)?.status).toBe("canceled");
+    expect(byId.get(elsewhere.id)).toMatchObject({
+      status: "pending",
+      teamId: fx.teamId,
+    });
+    const journal = await db
+      .select({ principalId: accessAuditLog.principalId })
+      .from(accessAuditLog)
+      .where(
+        and(
+          eq(accessAuditLog.organizationId, fx.organizationId),
+          eq(accessAuditLog.action, "invitation.canceled"),
+          eq(accessAuditLog.principalId, into.id),
+        ),
+      );
+    expect(journal).toHaveLength(1);
   });
 });

@@ -34,6 +34,7 @@
     "measure:compaction": "bun --env-file=.env run scripts/measure-compaction-summariser.ts",
     "measure:compaction-latency": "bun --env-file=.env run scripts/measure-compaction-latency.ts",
     "measure:context-distribution": "bun --env-file=.env run scripts/measure-context-distribution.ts",
+    "measure:embedding-routes": "bun --env-file=.env run scripts/measure-embedding-routes.ts",
     "seed:heavy-conversation": "bun --env-file=.env run scripts/seed-heavy-conversation.ts",
     "models:check": "bun run scripts/check-model-catalog.ts",
     "models:bench": "bun run scripts/measure-upstreams.ts",

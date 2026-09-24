@@ -19,10 +19,10 @@ export const pageAdapter: ResourceAdapter = {
   type: "page",
   offeredLevels: ["view", "use", "edit", "full"],
   shareablePrincipals: ["user", "team", "project", "organization"],
-  loadNodes: async (ids) => {
+  loadNodes: async (ids, executor = db) => {
     const unique = [...new Set(ids)];
     if (unique.length === 0) return new Map();
-    const rows = await db
+    const rows = await executor
       .select({
         id: pages.id,
         organizationId: pages.organizationId,
@@ -39,6 +39,7 @@ export const pageAdapter: ResourceAdapter = {
     const grants = await loadExplicitGrants(
       "page",
       rows.map((row) => row.id),
+      executor,
     );
     return new Map(
       rows.map((row) => {
@@ -58,10 +59,10 @@ export const workflowAdapter: ResourceAdapter = {
   type: "workflow",
   offeredLevels: ["view", "use", "edit", "full"],
   shareablePrincipals: ["user", "team", "project", "organization"],
-  loadNodes: async (ids) => {
+  loadNodes: async (ids, executor = db) => {
     const unique = [...new Set(ids)];
     if (unique.length === 0) return new Map();
-    const rows = await db
+    const rows = await executor
       .select({
         id: workflows.id,
         organizationId: workflows.organizationId,
@@ -78,6 +79,7 @@ export const workflowAdapter: ResourceAdapter = {
     const grants = await loadExplicitGrants(
       "workflow",
       rows.map((row) => row.id),
+      executor,
     );
     return new Map(
       rows.map((row) => {

@@ -17,6 +17,8 @@ import {
   type UpdatePageInput,
 } from "../../schemas/pages";
 import { keepAccessAfterRestricting } from "../access/keep-access";
+import { recordAccessEvent } from "../access/record-event";
+import { refreshAclsAfterAccessChange } from "../ai-vectors/acl";
 import { resyncVectorUserScope } from "../ai-vectors/resync-user-scope";
 import { ensurePageCompiled } from "./compile";
 import { derivePageDescription } from "./derive-description";
@@ -76,6 +78,7 @@ export const updatePage = async (params: {
       ownerUserId: true,
       userId: true,
       createdByUserId: true,
+      accessRestricted: true,
     },
     where: {
       id: params.pageId,
@@ -185,6 +188,26 @@ export const updatePage = async (params: {
           organizationId: updated.organizationId,
           ownerUserId: restriction.ownerUserId,
           actingUserId: params.actingUserId,
+        });
+      }
+      await refreshAclsAfterAccessChange({
+        executor: tx,
+        type: "page",
+        id: updated.id,
+      });
+      const wasRestricted =
+        existing.accessRestricted || existing.userId !== null;
+      if (wasRestricted !== restriction.restricted) {
+        await recordAccessEvent({
+          executor: tx,
+          organizationId: updated.organizationId,
+          actorUserId: params.actingUserId,
+          action: "restriction.changed",
+          resource: { type: "page", id: updated.id },
+          metadata: {
+            restricted: restriction.restricted,
+            resourceName: updated.name,
+          },
         });
       }
     }

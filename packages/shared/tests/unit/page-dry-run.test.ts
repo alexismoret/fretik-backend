@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 // method only exists once `@hono/zod-openapi` has patched Zod. In a service
 // that happens at boot; here it has to be imported for the side effect.
 import "@hono/zod-openapi";
+import { systemPrincipal } from "../../src/authz/principal";
 import type { PageDefinition } from "../../src/schemas/pages";
 import { dryRunPage } from "../../src/services/pages/dry-run";
 
@@ -20,6 +21,9 @@ import { dryRunPage } from "../../src/services/pages/dry-run";
  * a faked `db` alive for them — a faked collection table can only ever answer
  * "no such collection", which is one of the two answers under test.
  */
+
+/** Inline datasets read no records, so who reads them never matters here. */
+const READER = systemPrincipal("unit test: inline datasets read no records");
 
 const withDatasets = (
   datasets: PageDefinition["datasets"],
@@ -41,6 +45,7 @@ describe("dryRunPage — characterisation of today's output", () => {
       ]),
       teamId: "team-1",
       userId: null,
+      reader: READER,
       assumeCompiled: true,
     });
 
@@ -74,6 +79,7 @@ describe("dryRunPage — characterisation of today's output", () => {
       definition: withDatasets([{ id: "deals", kind: "inline", rows }]),
       teamId: "team-1",
       userId: null,
+      reader: READER,
       assumeCompiled: true,
     });
 
@@ -113,6 +119,7 @@ describe("dryRunPage — characterisation of today's output", () => {
       ]),
       teamId: "team-1",
       userId: null,
+      reader: READER,
       assumeCompiled: true,
     });
     expect(result.samples.byStage?.groupCount).toBe(2);
@@ -124,6 +131,7 @@ describe("dryRunPage — characterisation of today's output", () => {
       definition: withDatasets([{ id: "sales", kind: "inline", rows: [] }]),
       teamId: "team-1",
       userId: null,
+      reader: READER,
       assumeCompiled: true,
     });
     expect(result.warnings).toContain(
@@ -141,6 +149,7 @@ describe("dryRunPage — characterisation of today's output", () => {
       definition: withDatasets([], ""),
       teamId: "team-1",
       userId: null,
+      reader: READER,
       assumeCompiled: true,
     });
     expect(
@@ -158,6 +167,7 @@ describe("dryRunPage — characterisation of today's output", () => {
       ),
       teamId: "team-1",
       userId: null,
+      reader: READER,
       dataOnly: true,
     });
     expect(result.refusals).toHaveLength(0);
@@ -174,6 +184,7 @@ describe("dryRunPage — characterisation of today's output", () => {
       ),
       teamId: "team-1",
       userId: null,
+      reader: READER,
     });
     const found = result.warnings.find((w) => w.startsWith("code [structure]"));
     expect(found).toBeDefined();
@@ -188,6 +199,7 @@ describe("dryRunPage — characterisation of today's output", () => {
       ),
       teamId: "team-1",
       userId: null,
+      reader: READER,
       assumeCompiled: true,
     });
     expect(result.warnings.some((w) => w.startsWith("code ["))).toBe(false);

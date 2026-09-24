@@ -656,6 +656,7 @@ pageRoutes.openapi(dataRoute, async (c) => {
         definition: page.definition,
         teamId: team.id,
         userId: user.id,
+        reader: c.get("principal"),
         pageId: id,
         variables,
         ...(datasetIds !== undefined ? { datasetIds } : {}),

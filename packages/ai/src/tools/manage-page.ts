@@ -631,6 +631,7 @@ export const createManagePageTool = () =>
                   definition: updated.page.definition,
                   teamId,
                   userId: userId ?? null,
+                  reader: principal,
                   assumeSanitized: true,
                   assumeCompiled: true,
                 })
@@ -680,6 +681,7 @@ export const createManagePageTool = () =>
               page,
               teamId,
               userId: userId ?? null,
+              reader: principal,
               conversationId: ctx.conversationId,
               scope: turnScope,
             });

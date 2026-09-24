@@ -145,7 +145,7 @@ beforeEach(() => {
   invalidatedIds = [];
 });
 
-const run = (
+const run = async (
   operation: PageOperation,
   state: Record<string, PageValue> = {},
 ) => {
@@ -155,6 +155,7 @@ const run = (
     organizationId: fx.organizationId,
     teamId: fx.teamId,
     userId: fx.userIds[0],
+    principal: await fx.principalOf(fx.userIds[0]),
     state,
   });
 };

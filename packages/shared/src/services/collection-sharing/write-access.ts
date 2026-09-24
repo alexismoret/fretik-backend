@@ -1,5 +1,12 @@
 import { and, eq, isNull, or, sql } from "drizzle-orm";
 import { requireUserCapability } from "../../authz/gates";
+import { loadPrincipal } from "../../authz/load-principal";
+import {
+  mirrorWriteRefusals,
+  refuseMirrorWrite,
+} from "../../authz/mirror-writes";
+import type { UserPrincipal } from "../../authz/principal";
+import { teamAgentPrincipal } from "../../authz/team-agent";
 import db, { type Executor } from "../../db";
 import { collectionGrants, recordShares } from "../../db/schema";
 import { forbidden, notFound, throwHttpError } from "../../lib/errors";
@@ -26,6 +33,10 @@ import { forbidden, notFound, throwHttpError } from "../../lib/errors";
  * below takes `userId` for that — undefined only when no person is behind the
  * write (a team workflow acting as the team), which the team itself vouches
  * for.
+ *
+ * A record that MIRRORS a Drive file follows the file too: one kept to some
+ * people takes `edit` on it, and reads as missing to whoever cannot open it
+ * (`authz/mirror-writes.ts`).
  *
  * STRUCTURE is not data. A write grant opens a type's RECORDS, never its shape:
  * renaming, disabling or deleting the type, and adding or changing its fields,
@@ -135,9 +146,27 @@ export const assertCanWriteType = async (input: {
 };
 
 /**
+ * Who a record write is for, as the engine sees them: the person, or — with no
+ * person behind it (a team workflow) — the team's agent, which reaches what
+ * the team reaches and nothing private.
+ */
+const writerPrincipal = async (input: {
+  teamId: string;
+  organizationId: string;
+  userId: string | undefined;
+}): Promise<UserPrincipal | null> =>
+  input.userId === undefined
+    ? teamAgentPrincipal(input)
+    : loadPrincipal({
+        organizationId: input.organizationId,
+        userId: input.userId,
+      });
+
+/**
  * Assert `teamId` may write the record `recordId`. Owner team, a `write` type
  * grant on its type, or a `write` share on the record; `404` cross-org / missing,
- * `403` foreign without a grant.
+ * `403` foreign without a grant. A record that mirrors a file kept to some
+ * people also takes `edit` on the file.
  */
 export const assertCanWriteRecord = async (input: {
   recordId: string;
@@ -154,11 +183,26 @@ export const assertCanWriteRecord = async (input: {
       organizationId: true,
       collectionId: true,
       inheritTypeSharing: true,
+      documentId: true,
     },
     where: { id: input.recordId },
   });
   if (!record || record.organizationId !== input.organizationId) {
     return throwHttpError(404, notFound("Record not found"));
+  }
+  if (record.documentId !== null) {
+    const principal = await writerPrincipal(input);
+    if (principal === null) {
+      return throwHttpError(404, notFound("Record not found"));
+    }
+    const refusal = (
+      await mirrorWriteRefusals({
+        principal,
+        recordIds: [input.recordId],
+        executor: exec,
+      })
+    ).get(input.recordId);
+    if (refusal !== undefined) return refuseMirrorWrite(principal, refusal);
   }
   if (record.teamId === input.teamId) return;
   // A type `write` grant only opens a record that still INHERITS the type's

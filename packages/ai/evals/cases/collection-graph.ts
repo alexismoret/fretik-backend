@@ -1,3 +1,5 @@
+import { driveVisibility } from "@fretik/shared/authz/drive-sql";
+import { SYSTEM } from "@fretik/shared/authz/system-principals";
 import db from "@fretik/shared/db";
 import { collectionRecords } from "@fretik/shared/db/schema";
 import { createCollectionRecord } from "@fretik/shared/services/collection-records/create";
@@ -60,7 +62,12 @@ const cleanupGraph = async (ctx: EvalCaseContext): Promise<void> => {
 };
 
 const seedGraph = async (ctx: EvalCaseContext): Promise<void> => {
-  const base = { organizationId: ctx.organizationId, teamId: ctx.teamId };
+  const base = {
+    organizationId: ctx.organizationId,
+    teamId: ctx.teamId,
+    // Seeding, not reading: the operator's script sees every file.
+    drive: await driveVisibility(SYSTEM.operatorScript, ctx.teamId),
+  };
 
   // Idempotent: clear any leftovers from a prior interrupted run first.
   await cleanupGraph(ctx);

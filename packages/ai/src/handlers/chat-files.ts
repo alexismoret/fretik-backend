@@ -261,6 +261,7 @@ chatFilesRoutes.get(
       conversationId,
       teamId: team.id,
       path: resolved.relative,
+      principal: c.get("principal"),
     });
     return c.json(state);
   },
@@ -364,6 +365,7 @@ chatFilesRoutes.post("/conversation/:id/workspace/promote", READ, async (c) => {
       organizationId: organization.id,
       teamId: team.id,
       userId: user.id,
+      principal: c.get("principal"),
       ...(replaceDocumentId !== undefined ? { replaceDocumentId } : {}),
       actorContext: { actor: "human", userId: user.id, conversationId },
     });

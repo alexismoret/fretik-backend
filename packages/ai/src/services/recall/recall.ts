@@ -5,6 +5,7 @@ import {
 import { stampEpisodeRecall } from "@fretik/shared/services/episodes/stamp-recall";
 import { getActiveSpanId, startObservation } from "@langfuse/tracing";
 import { generateText } from "ai";
+import { actingDrive } from "../../agents/shared/acting-principal";
 import { langfuseEnabled, telemetryFor } from "../../lib/langfuse";
 import { resolveMemoryModel } from "../../lib/model-registry/team-model";
 import {
@@ -427,16 +428,23 @@ export const gatherRecallCandidates = async (
   // deterministic side alone could spend `ARM_TIMEOUT_MS` twice (5 s) before
   // the judge was even asked. Chained, it overlaps the three searches and the
   // gather costs `max(arms)` instead of `max(arms) + graph`.
+  //
+  // Both read as the person the turn is for: a record mirroring a file they
+  // cannot open is neither an anchor nor a neighbour.
+  const drive = actingDrive(params);
   const anchorsPromise = withArmBudget<RecordAnchor[]>(
     timeStage(
       timings,
       "anchor",
-      anchorTextToRecords({
-        teamId: params.teamId,
-        text: params.userMessage,
-        maxAnchors: MAX_ANCHORS,
-        maxSpans: RECALL_MAX_ANCHOR_SPANS,
-      }),
+      drive.then((visibility) =>
+        anchorTextToRecords({
+          teamId: params.teamId,
+          drive: visibility,
+          text: params.userMessage,
+          maxAnchors: MAX_ANCHORS,
+          maxSpans: RECALL_MAX_ANCHOR_SPANS,
+        }),
+      ),
     ),
     [],
     "anchor",
@@ -446,10 +454,15 @@ export const gatherRecallCandidates = async (
       timeStage(
         timings,
         "graph",
-        gatherGraphNeighborhood({
-          anchors: anchors.filter(anchorIsPrecise),
-          userId: params.userId,
-        }),
+        drive.then((visibility) =>
+          gatherGraphNeighborhood({
+            anchors: anchors.filter(anchorIsPrecise),
+            organizationId: params.organizationId,
+            teamId: params.teamId,
+            drive: visibility,
+            userId: params.userId,
+          }),
+        ),
       ),
       null,
       "graph",

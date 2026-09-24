@@ -1,4 +1,8 @@
-import { eq, or, type SQL, sql } from "drizzle-orm";
+import { and, eq, or, type SQL, sql } from "drizzle-orm";
+import {
+  type DriveVisibility,
+  mirrorRecordVisible,
+} from "../../authz/drive-sql";
 import db from "../../db";
 import { collectionRecords } from "../../db/schema";
 import {
@@ -75,8 +79,22 @@ export const resolveRecordTypeScope = async (data: {
  * type grant the predicate is `inherit OR shared`, never unconditional.
  *
  * Always a predicate: an invisible type yields `false`, never "no filter".
+ *
+ * And never the mirror of a document the PERSON cannot open (`drive`): the
+ * team reads its records; a restricted file's name and fields stay with the
+ * people it is shared with.
  */
 export const recordVisibilityCondition = (data: {
+  teamId: string;
+  scope: RecordTypeScope;
+  drive: DriveVisibility;
+}): SQL =>
+  and(
+    teamRecordCondition(data),
+    mirrorRecordVisible(data.drive, collectionRecords.documentId),
+  ) ?? sql`false`;
+
+const teamRecordCondition = (data: {
   teamId: string;
   scope: RecordTypeScope;
 }): SQL => {

@@ -1,3 +1,4 @@
+import type { DriveVisibility } from "../../authz/drive-sql";
 import db, { type Executor, type Transaction } from "../../db";
 import type { Link, OntologySource } from "../../db/schema";
 import { badRequest, notFound, throwHttpError } from "../../lib/errors";
@@ -17,6 +18,8 @@ import { bulkCreateLinks } from "./bulk-create";
 export const createLink = async (input: {
   organizationId: string;
   teamId: string;
+  /** What the person linking can open in the Drive: a hidden mirror is out. */
+  drive: DriveVisibility;
   linkTypeId: string;
   fromRecordId: string;
   toRecordId: string;
@@ -29,6 +32,7 @@ export const createLink = async (input: {
   const { ids, errors } = await bulkCreateLinks({
     organizationId: input.organizationId,
     teamId: input.teamId,
+    drive: input.drive,
     links: [
       {
         linkTypeId: input.linkTypeId,

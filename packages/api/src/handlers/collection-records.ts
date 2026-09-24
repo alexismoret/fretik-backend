@@ -1,4 +1,6 @@
+import { driveVisibility } from "@fretik/shared/authz/drive-sql";
 import { access } from "@fretik/shared/authz/http";
+import { partitionMirrorWrites } from "@fretik/shared/authz/mirror-writes";
 import type { UserPrincipal } from "@fretik/shared/authz/principal";
 import { requireSharingAudience } from "@fretik/shared/authz/sharing-policy";
 import {
@@ -494,6 +496,7 @@ collectionRecordRoutes.openapi(listRoute, async (c) => {
   const result = await listCollectionRecords({
     teamId: team.id,
     collectionId,
+    drive: await driveVisibility(c.get("principal"), team.id),
     status,
     search,
     filters,
@@ -517,6 +520,7 @@ collectionRecordRoutes.openapi(aggregateRoute, async (c) => {
   const groups = await aggregateRecordsByGroup({
     teamId: team.id,
     collectionId,
+    drive: await driveVisibility(c.get("principal"), team.id),
     groupKey,
     status,
     sumKey,
@@ -540,6 +544,7 @@ collectionRecordRoutes.openapi(mapRoute, async (c) => {
   const result = await getMapPoints({
     teamId: team.id,
     collectionId,
+    drive: await driveVisibility(c.get("principal"), team.id),
     fieldKey,
     bbox,
   });
@@ -554,6 +559,7 @@ collectionRecordRoutes.openapi(getRoute, async (c) => {
     id,
     teamId: team.id,
     organizationId: team.organizationId,
+    drive: await driveVisibility(c.get("principal"), team.id),
   });
   return c.json(record, 200);
 });
@@ -569,6 +575,7 @@ collectionRecordRoutes.openapi(historyRoute, async (c) => {
     recordId: id,
     teamId: team.id,
     organizationId: team.organizationId,
+    drive: await driveVisibility(c.get("principal"), team.id),
   });
   const history = await getRecordHistory({
     recordId: id,
@@ -701,14 +708,24 @@ collectionRecordRoutes.openapi(bulkWriteRoute, async (c) => {
   // every id it sent — and one the write services cannot check, since they
   // scope by team. An id from another collection is refused, not written.
   const ids = body.op === "update" ? body.updates.map((u) => u.id) : body.ids;
-  const owned = await idsInCollection({
+  const inCollection = await idsInCollection({
     teamId: team.id,
     collectionId: body.collectionId,
     ids,
   });
-  const strays = ids
-    .filter((id) => !owned.has(id))
-    .map((id) => ({ id, error: "Record not found in this collection." }));
+  // A record mirroring a file kept from this person is theirs to write only
+  // with `edit` on the file (`authz/mirror-writes.ts`).
+  const mirrors = await partitionMirrorWrites({
+    principal: c.get("principal"),
+    recordIds: [...inCollection],
+  });
+  const owned = new Set(mirrors.writable);
+  const strays = [
+    ...ids
+      .filter((id) => !inCollection.has(id))
+      .map((id) => ({ id, error: "Record not found in this collection." })),
+    ...mirrors.refused,
+  ];
 
   if (body.op === "update") {
     const result = await bulkUpdateCollectionRecords({

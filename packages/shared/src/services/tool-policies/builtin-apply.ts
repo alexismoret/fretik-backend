@@ -1,4 +1,5 @@
 import { requireDriveAction } from "../../authz/drive";
+import { driveVisibility } from "../../authz/drive-sql";
 import { loadPrincipal } from "../../authz/load-principal";
 import type { UserPrincipal } from "../../authz/principal";
 import { forbidden, throwHttpError } from "../../lib/errors";
@@ -148,6 +149,7 @@ const applyManageLink: ToolCallApplyFn = async (ctx, args) => {
   const link = await createLink({
     organizationId: ctx.organizationId,
     teamId: ctx.teamId,
+    drive: await driveVisibility(await principalOf(ctx), ctx.teamId),
     linkTypeId: str(args, "linkTypeId"),
     fromRecordId: str(args, "fromRecordId"),
     toRecordId: str(args, "toRecordId"),
@@ -392,6 +394,7 @@ const applyUploadToDrive: ToolCallApplyFn = async (ctx, args) => {
         organizationId: ctx.organizationId,
         teamId: ctx.teamId,
         userId: ctx.userId,
+        principal,
         folderId,
         ...(replaceDocumentId !== null ? { replaceDocumentId } : {}),
         actorContext: {

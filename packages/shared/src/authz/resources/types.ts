@@ -1,3 +1,4 @@
+import type { Executor } from "../../db";
 import type {
   AccessLevel,
   AccessResourceType,
@@ -11,6 +12,8 @@ import type { ResourceNode } from "../rules";
  */
 export interface LoadedNode extends ResourceNode {
   readonly name: string;
+  /** Its folder, loaded the same way: the share dialog names it. */
+  readonly parent: LoadedNode | null;
 }
 
 /**
@@ -29,8 +32,13 @@ export interface ResourceAdapter {
   /**
    * The nodes of these ids that exist, keyed by id. Missing ids are simply
    * absent: the caller answers them like invisible ones (404).
+   *
+   * `executor` reads inside a transaction that has just changed who may see
+   * them (a grant, a restriction), so what follows it in the same transaction
+   * (the assistant's search index) sees the new state. `db` otherwise.
    */
   readonly loadNodes: (
     ids: readonly string[],
+    executor?: Executor,
   ) => Promise<Map<string, LoadedNode>>;
 }

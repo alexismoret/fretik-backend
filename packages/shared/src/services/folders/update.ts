@@ -3,6 +3,7 @@ import db from "../../db";
 import { folders } from "../../db/schema";
 import { internalError, notFound, throwHttpError } from "../../lib/errors";
 import type { UpdateFolderInput } from "../../schemas/folders";
+import { refreshAclsAfterAccessChange } from "../ai-vectors/acl";
 import {
   emitDomainEvent,
   type EventActor,
@@ -81,6 +82,12 @@ export const updateFolder = async (data: {
       })
       .where(eq(folders.id, id))
       .returning();
+
+    // Moved: the folder and everything below it now inherit from another
+    // parent, so the assistant's search follows them there (`acl.ts`).
+    if (parentChanged && updated) {
+      await refreshAclsAfterAccessChange({ executor: tx, type: "folder", id });
+    }
 
     // If fullPath changed, update all sub-folders paths
     if (newFullPath !== oldFullPath) {

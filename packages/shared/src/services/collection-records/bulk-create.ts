@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+import { driveVisibilityForWriter } from "../../authz/drive-sql";
 import db from "../../db";
 import type { OntologySource, OntologyStatus } from "../../db/schema";
 import { collectionRecords } from "../../db/schema";
@@ -385,6 +386,8 @@ const createRowRelations = async (
   input: {
     organizationId: string;
     teamId: string;
+    /** Whoever the rows are written for: their Drive bounds the targets. */
+    userId?: string | null;
     collectionId: string;
     rows: BulkCreateRow[];
     source?: OntologySource;
@@ -401,9 +404,12 @@ const createRowRelations = async (
   });
   if (flat.length === 0) return relationErrors;
 
+  // A relation to a file's mirror takes being able to open the file.
+  const drive = await driveVisibilityForWriter(input);
   const { resolved, errors: resolveErrors } = await resolveRelationInputs({
     organizationId: input.organizationId,
     teamId: input.teamId,
+    drive,
     fromCollectionId: input.collectionId,
     relations: flat.map((f) => f.rel),
   });
@@ -433,6 +439,7 @@ const createRowRelations = async (
     const { errors: linkErrors } = await bulkCreateLinks({
       organizationId: input.organizationId,
       teamId: input.teamId,
+      drive,
       links: linkInputs,
       source: input.source,
       actor: input.actor,

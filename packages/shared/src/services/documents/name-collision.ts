@@ -1,5 +1,10 @@
 import { and, eq, isNull, like } from "drizzle-orm";
 
+import {
+  DOCUMENT_ACCESS_COLUMNS,
+  type DriveVisibility,
+  visibleDocumentsWhere,
+} from "../../authz/drive-sql";
 import db from "../../db";
 import { documents } from "../../db/schema/documents";
 
@@ -15,6 +20,10 @@ import { documents } from "../../db/schema/documents";
  * The one case worth short-circuiting is identical BYTES: there is nothing to
  * decide, the file is already there, and asking would be a question with one
  * sensible answer.
+ *
+ * Only the files the uploader can open collide. A restricted file they were
+ * never given is not theirs to replace, to be told about, or to learn the id
+ * of: the new file simply sits beside it, as two files of the same name may.
  */
 
 export type NameCollision =
@@ -39,6 +48,7 @@ export const findNameCollision = async (args: {
   folderId: string | null;
   filename: string;
   fileHash: string;
+  visibility: DriveVisibility;
 }): Promise<NameCollision> => {
   const existing = await db.query.documents.findFirst({
     where: {
@@ -48,6 +58,7 @@ export const findNameCollision = async (args: {
       folderId:
         args.folderId === null ? { isNull: true } : { eq: args.folderId },
       originalFilename: args.filename,
+      ...visibleDocumentsWhere(args.visibility),
     },
     columns: { id: true, fileHash: true },
   });
@@ -102,6 +113,8 @@ export const nextAvailableFilename = async (args: {
   teamId: string;
   folderId: string | null;
   filename: string;
+  /** Only names the uploader can see are taken: see the header. */
+  visibility: DriveVisibility;
 }): Promise<string> => {
   const [stem] = splitExtension(args.filename);
 
@@ -112,6 +125,7 @@ export const nextAvailableFilename = async (args: {
       and(
         eq(documents.teamId, args.teamId),
         inSameFolder(args.folderId),
+        args.visibility.document(DOCUMENT_ACCESS_COLUMNS),
         // `%` and `_` are LIKE wildcards; a stem containing either would match
         // more than it should. Over-matching is harmless here — the set is only
         // used to test membership — but the escape keeps the query honest.

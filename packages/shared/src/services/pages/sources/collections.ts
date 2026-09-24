@@ -177,7 +177,7 @@ export const collectionsSource: PageDataSource = {
   kind: "collections",
   resolve: async (
     dataset,
-    { teamId, state, query },
+    { teamId, drive, state, query },
   ): Promise<PageDatasetResult> => {
     if (!dataset.collectionId) {
       return { status: "error", message: "dataset has no collectionId" };
@@ -215,6 +215,7 @@ export const collectionsSource: PageDataSource = {
       const { rows, truncated } = await aggregateRecords({
         teamId,
         collectionId: dataset.collectionId,
+        drive: await drive(),
         filters,
         groupBy: dataset.groupBy,
         dateBucket: dataset.dateBucket,
@@ -244,6 +245,7 @@ export const collectionsSource: PageDataSource = {
     const { count, data } = await listCollectionRecords({
       teamId,
       collectionId: dataset.collectionId,
+      drive: await drive(),
       filters,
       limit,
       page,

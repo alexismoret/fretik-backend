@@ -75,6 +75,12 @@ export const folders = pgTable(
     index("folders_project_idx")
       .on(table.projectId)
       .where(sql`project_id IS NOT NULL`),
+    // Restricted folders are rare, and every read of records looks for them
+    // (`authz/drive-sql.ts`, `teamPrivateFolderIds`): the index holds only
+    // those rows.
+    index("folders_restricted_idx")
+      .on(table.teamId)
+      .where(sql`access_restricted`),
   ],
 );
 

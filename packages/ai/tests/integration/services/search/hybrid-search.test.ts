@@ -48,6 +48,8 @@ interface SeedRowInput {
   content: string;
   embedding: number[];
   metadata: AiVectorMetadata;
+  /** Who may find it, when not simply its team (`services/ai-vectors/acl`). */
+  aclPrincipals?: string[] | null;
 }
 
 const insertSeedRow = async (input: SeedRowInput): Promise<void> => {
@@ -63,6 +65,7 @@ const insertSeedRow = async (input: SeedRowInput): Promise<void> => {
     totalChunks: 1,
     embedding: input.embedding,
     metadata: input.metadata,
+    aclPrincipals: input.aclPrincipals ?? null,
   });
 };
 
@@ -435,5 +438,154 @@ describe("hybridSearch scope filter (S5)", () => {
     expect(found.has(ids.memoryUserB)).toBe(false);
     expect(found.has(ids.contextUserA)).toBe(false);
     expect(found.has(ids.contextUserB)).toBe(false);
+  }, 60_000);
+});
+
+/**
+ * Rows with an audience of their own: a restricted or shared document keeps
+ * `acl_principals`, and search keeps it for the searcher, their ACTIVE team
+ * or the organization — whatever team the row belongs to, and never on its
+ * team alone.
+ */
+describe("hybridSearch: rows with their own audience", () => {
+  let fx: MemoryTestFixture;
+  let teamBId: string;
+  let queryEmbedding: number[];
+
+  const ids = {
+    restrictedToA: randomUUID(),
+    sharedWithTeamB: randomUUID(),
+    sharedWithOrg: randomUUID(),
+    restrictedToNobody: randomUUID(),
+  } as const;
+
+  beforeAll(async () => {
+    fx = await createMemoryTestFixture();
+    const [tb] = await db
+      .insert(team)
+      .values({
+        name: `team-b-acl-${randomUUID().slice(0, 8)}`,
+        organizationId: fx.organizationId,
+        createdAt: new Date(),
+      })
+      .returning({ id: team.id });
+    if (!tb) throw new Error("fixture: failed to insert team B");
+    teamBId = tb.id;
+    const [userA] = fx.userIds;
+
+    const contents = [
+      QUERY,
+      "carrier rates restricted to their owner",
+      "shipping contracts shared with another team",
+      "freight information shared with the whole organization",
+      "carrier notes nobody can open any more",
+    ];
+    const vectors = await embedBatch(contents);
+    queryEmbedding = vectors[0]!;
+
+    const seeds: Array<Omit<SeedRowInput, "embedding"> & { vIdx: number }> = [
+      {
+        // Team A's, restricted: its owner only.
+        sourceType: "documents",
+        sourceId: ids.restrictedToA,
+        teamId: fx.teamId,
+        organizationId: fx.organizationId,
+        userId: null,
+        content: contents[1]!,
+        metadata: buildMetadata("documents"),
+        aclPrincipals: [userA],
+        vIdx: 1,
+      },
+      {
+        // Team A's, restricted, shared with team B.
+        sourceType: "documents",
+        sourceId: ids.sharedWithTeamB,
+        teamId: fx.teamId,
+        organizationId: fx.organizationId,
+        userId: null,
+        content: contents[2]!,
+        metadata: buildMetadata("documents"),
+        aclPrincipals: [userA, teamBId],
+        vIdx: 2,
+      },
+      {
+        // Team B's, open, shared with everyone.
+        sourceType: "documents",
+        sourceId: ids.sharedWithOrg,
+        teamId: teamBId,
+        organizationId: fx.organizationId,
+        userId: null,
+        content: contents[3]!,
+        metadata: buildMetadata("documents"),
+        aclPrincipals: [fx.organizationId, teamBId],
+        vIdx: 3,
+      },
+      {
+        // Restricted, with its owner gone and nothing shared.
+        sourceType: "documents",
+        sourceId: ids.restrictedToNobody,
+        teamId: fx.teamId,
+        organizationId: fx.organizationId,
+        userId: null,
+        content: contents[4]!,
+        metadata: buildMetadata("documents"),
+        aclPrincipals: [],
+        vIdx: 4,
+      },
+    ];
+    for (const seed of seeds) {
+      // oxlint-disable-next-line no-await-in-loop
+      await insertSeedRow({ ...seed, embedding: vectors[seed.vIdx]! });
+    }
+  }, 60_000);
+
+  afterAll(async () => {
+    await fx.cleanup();
+  });
+
+  const search = async (teamId: string, userId: string | undefined) =>
+    new Set(
+      (
+        await hybridSearch({
+          query: QUERY,
+          queryEmbedding,
+          teamId,
+          organizationId: fx.organizationId,
+          userId,
+        })
+      ).map((row) => row.sourceId),
+    );
+
+  test("the owner finds what is restricted to them", async () => {
+    const [userA] = fx.userIds;
+    const found = await search(fx.teamId, userA);
+    expect(found.has(ids.restrictedToA)).toBe(true);
+    expect(found.has(ids.sharedWithTeamB)).toBe(true);
+    expect(found.has(ids.sharedWithOrg)).toBe(true);
+    expect(found.has(ids.restrictedToNobody)).toBe(false);
+  }, 60_000);
+
+  test("a teammate does not find it: its team is not in its audience", async () => {
+    const [, userB] = fx.userIds;
+    const found = await search(fx.teamId, userB);
+    expect(found.has(ids.restrictedToA)).toBe(false);
+    expect(found.has(ids.sharedWithTeamB)).toBe(false);
+    expect(found.has(ids.restrictedToNobody)).toBe(false);
+    // Shared with everyone, from another team.
+    expect(found.has(ids.sharedWithOrg)).toBe(true);
+  }, 60_000);
+
+  test("the team it is shared with finds it, working in that team", async () => {
+    const [, userB] = fx.userIds;
+    const found = await search(teamBId, userB);
+    expect(found.has(ids.sharedWithTeamB)).toBe(true);
+    expect(found.has(ids.restrictedToA)).toBe(false);
+  }, 60_000);
+
+  test("a search for nobody in particular keeps only the team's and everyone's", async () => {
+    const found = await search(fx.teamId, undefined);
+    expect(found.has(ids.sharedWithOrg)).toBe(true);
+    expect(found.has(ids.restrictedToA)).toBe(false);
+    expect(found.has(ids.sharedWithTeamB)).toBe(false);
   }, 60_000);
 });

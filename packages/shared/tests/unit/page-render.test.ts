@@ -4,12 +4,16 @@ import { describe, expect, test } from "bun:test";
 // Zod. In a service that happens at boot; here it has to be imported for the
 // side effect.
 import "@hono/zod-openapi";
+import { systemPrincipal } from "../../src/authz/principal";
 import type { PageDefinition } from "../../src/schemas/pages";
 import { compilePageCode } from "../../src/services/pages/compile";
 import { buildHarnessHtml } from "../../src/services/pages/render/harness";
 import { renderPage } from "../../src/services/pages/render/render-page";
 import { buildPageSrcdoc } from "../../src/services/pages/render/srcdoc";
 import { closeRenderViews } from "../../src/services/pages/render/webview";
+
+/** These pages read no records, so who they are read as never matters. */
+const READER = systemPrincipal("unit test: a render over inline data");
 
 /**
  * The renderer's contract, proven against a page built to fail the way real
@@ -152,6 +156,7 @@ describe("page renderer", () => {
       definition: definitionFor(compileResult.compiled),
       teamId: "00000000-0000-7000-8000-000000000000",
       userId: null,
+      reader: READER,
       pageName: "Renderer probe",
     });
 

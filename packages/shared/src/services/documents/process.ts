@@ -27,6 +27,7 @@ import {
 import { deleteFilesFromS3, getObjectBytes, uploadToS3 } from "../../lib/s3";
 import { emitUploadEvent } from "../../lib/upload-events";
 import { preExtractionResponseSchema } from "../../schemas/pre-extraction";
+import { refreshSourceVectorAcl } from "../ai-vectors/acl";
 import { readRecordData } from "../collection-schema/record-io";
 import { MENTIONS_LINK_TYPE_KEY } from "../collections/seed-system-types";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
@@ -304,6 +305,13 @@ export const processDocument = async (
             organizationId,
           })),
         );
+        // The copy takes THIS document's audience, not its twin's: the
+        // twin may sit in a folder nobody else here can open.
+        await refreshSourceVectorAcl({
+          executor: tx,
+          sourceType: "documents",
+          sourceId: documentId,
+        });
       }
 
       await tx

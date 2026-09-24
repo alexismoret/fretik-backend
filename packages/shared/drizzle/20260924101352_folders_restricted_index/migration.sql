@@ -1,0 +1,1 @@
+CREATE INDEX "folders_restricted_idx" ON "folders" ("team_id") WHERE access_restricted;

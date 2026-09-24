@@ -111,6 +111,13 @@ export const ERROR_CODES = {
   /** 409 — the change would leave the organization without an owner. */
   LAST_OWNER: "LAST_OWNER",
 
+  // Sharing
+  /**
+   * 409 — the change would leave a restricted item whose owner is gone with
+   * nobody who has full access: nobody could share it or delete it again.
+   */
+  LAST_FULL_ACCESS: "LAST_FULL_ACCESS",
+
   /**
    * Refused by the access engine, with the reason and who to ask in the
    * body's `access` field (`AccessDenial`). The client explains it and, when

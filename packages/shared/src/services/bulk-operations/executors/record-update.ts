@@ -4,12 +4,12 @@ import type {
   ToolApprovalRecordImportPayload,
 } from "../../../db/schema";
 import { bulkUpdateCollectionRecords } from "../../collection-records/bulk-update";
-import { idsInCollection } from "../../collection-records/ids-in-collection";
 import { getRecordSnapshots } from "../../collection-records/snapshot-batch";
 import type { EventActor } from "../../domain-events/emit";
 import { importAgentKey } from "../agent-key";
 import type { BulkOperationExecutor, ChunkOutcome } from "../types";
 import { MALFORMED_ROW, readUpdateRow } from "./rows";
+import { writableIds } from "./writable-ids";
 
 /**
  * `record_update` — many existing records of ONE collection, rewritten in
@@ -46,13 +46,6 @@ const actorFor = (op: BulkOperation): EventActor => ({
   agentKey: importAgentKey(op.id),
 });
 
-const ownedIds = (op: BulkOperation, ids: string[]): Promise<Set<string>> =>
-  idsInCollection({
-    teamId: op.teamId,
-    collectionId: op.params.collectionId,
-    ids,
-  });
-
 const mergeOf = (op: BulkOperation): boolean =>
   op.params.op === "update" ? op.params.merge : false;
 
@@ -67,13 +60,13 @@ export const recordUpdateExecutor: BulkOperationExecutor = {
     const updates = parsed.flatMap((row) => (row === null ? [] : [row]));
     if (updates.length === 0) return errors;
 
-    const owned = await ownedIds(
+    const { writable, refused } = await writableIds(
       op,
       updates.map((u) => u.id),
     );
     const { errors: validationErrors } = await bulkUpdateCollectionRecords({
       teamId: op.teamId,
-      updates: updates.filter((u) => owned.has(u.id)),
+      updates: updates.filter((u) => writable.has(u.id)),
       merge: mergeOf(op),
       dryRun: true,
     });
@@ -83,12 +76,10 @@ export const recordUpdateExecutor: BulkOperationExecutor = {
     const indexById = new Map(parsed.map((row, index) => [row?.id, index]));
     return [
       ...errors,
-      ...updates
-        .filter((u) => !owned.has(u.id))
-        .map((u) => ({
-          index: indexById.get(u.id) ?? -1,
-          error: `Record ${u.id} is not in ${op.params.collectionKey}.`,
-        })),
+      ...[...refused].map(([id, error]) => ({
+        index: indexById.get(id) ?? -1,
+        error,
+      })),
       ...validationErrors.map((e) => ({
         index: indexById.get(e.id) ?? -1,
         error: e.error,
@@ -104,21 +95,17 @@ export const recordUpdateExecutor: BulkOperationExecutor = {
     const updates = parsed.flatMap((row) => (row === null ? [] : [row]));
     const indexById = new Map(parsed.map((row, index) => [row?.id, index]));
 
-    const owned = await ownedIds(
+    const { writable, refused } = await writableIds(
       op,
       updates.map((u) => u.id),
     );
-    for (const update of updates) {
-      if (owned.has(update.id)) continue;
-      errors.push({
-        index: indexById.get(update.id) ?? -1,
-        error: `Record ${update.id} is not in ${op.params.collectionKey}.`,
-      });
+    for (const [id, error] of refused) {
+      errors.push({ index: indexById.get(id) ?? -1, error });
     }
 
     const result = await bulkUpdateCollectionRecords({
       teamId: op.teamId,
-      updates: updates.filter((u) => owned.has(u.id)),
+      updates: updates.filter((u) => writable.has(u.id)),
       merge: mergeOf(op),
       actor: actorFor(op),
     });

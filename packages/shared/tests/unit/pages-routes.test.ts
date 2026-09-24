@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 // `schemas/pages` reaches `common/params`, which calls `.openapi()` — patched
 // into Zod by this import, and only by it.
 import "@hono/zod-openapi";
+import { systemPrincipal } from "../../src/authz/principal";
 import {
   PAGE_FILE_PATH_RE,
   type PageDefinition,
@@ -14,6 +15,9 @@ import {
   derivePageRoutes,
   formatRouteTable,
 } from "../../src/services/pages/routes";
+
+/** These pages read no records, so who they are read as never matters. */
+const READER = systemPrincipal("unit test: a render over inline data");
 
 /**
  * A page with views of its own.
@@ -309,6 +313,7 @@ describe("what the review sees of a page's other views", () => {
       },
       teamId: "00000000-0000-7000-8000-000000000000",
       userId: null,
+      reader: READER,
       pageName: "Mini-app probe",
     });
 
@@ -364,6 +369,7 @@ describe("a page with views in a real browser", () => {
       definition: definitionFor(compileResult.compiled),
       teamId: "00000000-0000-7000-8000-000000000000",
       userId: null,
+      reader: READER,
       pageName: "Routes probe",
     });
 

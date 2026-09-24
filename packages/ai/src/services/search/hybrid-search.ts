@@ -47,6 +47,13 @@ export type { HybridCandidate } from "./fuse-arms";
  * AND (user_id IS NULL OR user_id = $userId)
  * AND (organization_id = $orgId OR organization_id IS NULL)
  *
+ * to every row WITHOUT an audience of its own (`acl_principals IS NULL`).
+ * A restricted or shared document, page or workflow carries its audience
+ * instead (`@fretik/shared/services/ai-vectors/acl`), and is kept when that
+ * overlaps the searcher's ids — themself, their active team, the
+ * organization — whatever team it belongs to: a page shared with someone in
+ * another team is found by them, a restricted document by nobody else.
+ *
  * This single predicate covers every legal row shape — tenant
  * documents, team-scope memories/context, user-scope memories
  * (team_id set, user_id = $userId), global skills (all three
@@ -224,29 +231,42 @@ const buildFilterClauses = (
   userId: string | undefined,
   filters: HybridSearchFilters | undefined,
 ): SQL[] => {
-  // Scope predicate — 3 symmetric AND-clauses validating every legal
-  // row shape per the `ai_vectors_scope_consistency` CHECK constraint
-  // (S3+S4). The CHECK guarantees that team_id and organization_id
-  // either co-NULL (skills) or co-set (everything else); we still
-  // state both clauses explicitly so the planner can pick the partial
-  // index that fits the result population (idx_ai_vectors_global for
-  // skills, idx_ai_vectors_team_user_partial for memories/context).
+  // Scope predicate, for rows without an audience of their own — 3
+  // symmetric AND-clauses validating every legal row shape per the
+  // `ai_vectors_scope_consistency` CHECK constraint (S3+S4). The CHECK
+  // guarantees that team_id and organization_id either co-NULL (skills)
+  // or co-set (everything else); we still state both clauses explicitly
+  // so the planner can pick the partial index that fits the result
+  // population (idx_ai_vectors_global for skills,
+  // idx_ai_vectors_team_user_partial for memories/context).
   //
   // When `userId` is undefined (system / internal flow with no acting
   // user), the user-scope clause collapses to `user_id IS NULL` —
-  // user-owned rows stay invisible, no leak.
+  // user-owned rows stay invisible, no leak — and a row with its own
+  // audience is kept only for the team or the organization.
   const userScopeClause = userId
     ? (or(isNull(aiVectors.userId), eq(aiVectors.userId, userId)) as SQL)
     : isNull(aiVectors.userId);
 
-  const clauses: SQL[] = [
-    or(eq(aiVectors.teamId, teamId), isNull(aiVectors.teamId)) as SQL,
+  const legacyScope = and(
+    isNull(aiVectors.aclPrincipals),
+    or(eq(aiVectors.teamId, teamId), isNull(aiVectors.teamId)),
     userScopeClause,
     or(
       eq(aiVectors.organizationId, organizationId),
       isNull(aiVectors.organizationId),
-    ) as SQL,
-  ];
+    ),
+  ) as SQL;
+
+  // A row with its own audience: the searcher, their active team, the
+  // organization. The active team and not all of theirs — search works in
+  // one team at a time, and what is simply another team's stays there.
+  const searcherIds = userId
+    ? [userId, teamId, organizationId]
+    : [teamId, organizationId];
+  const ownAudience = sql`(${aiVectors.aclPrincipals} && ${sql.param(searcherIds)}::uuid[] AND ${aiVectors.organizationId} = ${organizationId})`;
+
+  const clauses: SQL[] = [or(legacyScope, ownAudience) as SQL];
   if (!filters) return clauses;
 
   if (filters.sourceTypes && filters.sourceTypes.length > 0) {

@@ -10,6 +10,12 @@ import {
   sql,
   type SQL,
 } from "drizzle-orm";
+import {
+  DOCUMENT_ACCESS_COLUMNS,
+  driveVisibility,
+  type DriveVisibility,
+} from "../../authz/drive-sql";
+import type { Principal } from "../../authz/principal";
 import db from "../../db";
 import {
   collections,
@@ -61,36 +67,37 @@ const resolveDocumentTypeId = async (
 };
 
 /**
- * Retrieves the root drive for a team.
+ * Retrieves the root drive for a team: what the person can open there.
  */
 export const getRootDrive = async (data: {
+  principal: Principal;
   teamId: string;
   params: DriveListParams;
-}) => {
-  const { teamId, params } = data;
-  return getFolderExplorer({ folderId: null, teamId, params });
-};
+}) => getFolderExplorer({ ...data, folderId: null });
 
 /**
- * Retrieves a specific folder and its children.
+ * Retrieves a specific folder and what the person can open in it.
  */
 export const getFolder = async (data: {
+  principal: Principal;
   folderId: string;
   teamId: string;
   params: DriveListParams;
-}) => {
-  const { folderId, teamId, params } = data;
-  return getFolderExplorer({ folderId, teamId, params });
-};
+}) => getFolderExplorer(data);
 
 /**
  * Retrieves the breadcrumbs for a specific folder.
+ *
+ * Only the folders the person can open are named: above a folder shared
+ * with them inside one they cannot open, the path goes straight to the root,
+ * rather than reveal the names of what they were never given.
  */
 export const getFolderBreadcrumbs = async (data: {
   folderId: string | null;
   teamId: string;
+  visibility: DriveVisibility;
 }): Promise<FolderBreadcrumb[]> => {
-  const { folderId, teamId } = data;
+  const { folderId, teamId, visibility } = data;
   const breadcrumbs: FolderBreadcrumb[] = [{ id: null, name: "/" }];
 
   if (!folderId) {
@@ -116,11 +123,17 @@ export const getFolderBreadcrumbs = async (data: {
     SELECT id, name FROM folder_parents ORDER BY level DESC
   `);
 
+  // Root first: keep the folders from the last one the person cannot open.
+  const chain = breadcrumbsResult.rows;
+  let firstShown = chain.length;
+  while (
+    firstShown > 0 &&
+    visibility.canOpenFolder(chain[firstShown - 1]!.id)
+  ) {
+    firstShown -= 1;
+  }
   breadcrumbs.push(
-    ...breadcrumbsResult.rows.map((row) => ({
-      id: row.id,
-      name: row.name,
-    })),
+    ...chain.slice(firstShown).map((row) => ({ id: row.id, name: row.name })),
   );
 
   return breadcrumbs;
@@ -220,14 +233,16 @@ const documentFilterExists = (
 const getFilteredDocuments = async (data: {
   teamId: string;
   params: DriveListParams;
+  visibility: DriveVisibility;
 }): Promise<{ count: number; data: DriveItem[] }> => {
-  const { teamId, params } = data;
+  const { teamId, params, visibility } = data;
   const { page, limit, search } = params;
   const offset = page * limit;
 
   const baseConditions = [
     eq(documents.teamId, teamId),
     ne(documents.status, "error"),
+    visibility.document(DOCUMENT_ACCESS_COLUMNS),
   ];
   if (search) {
     baseConditions.push(ilike(documents.originalFilename, `%${search}%`));
@@ -321,16 +336,23 @@ const getFilteredDocuments = async (data: {
 
 /**
  * Retrieves folder explorer data including folder details, children, and breadcrumbs.
+ *
+ * Only what the person can open is listed and counted (`authz/drive-sql.ts`):
+ * a restricted folder or file is invisible to whoever it is not shared with,
+ * and so is everything inside a restricted folder. The folders' stored
+ * counts include what the person may not see, so the page counts its own.
  */
 const getFolderExplorer = async (data: {
+  principal: Principal;
   folderId: string | null;
   teamId: string;
   params: DriveListParams;
 }) => {
-  const { folderId, teamId, params } = data;
+  const { principal, folderId, teamId, params } = data;
+  const visibility = await driveVisibility(principal, teamId);
 
   if (hasAdvancedFilter(params)) {
-    const children = await getFilteredDocuments({ teamId, params });
+    const children = await getFilteredDocuments({ teamId, params, visibility });
     return {
       folder: null,
       children,
@@ -340,128 +362,105 @@ const getFolderExplorer = async (data: {
 
   const { page, limit, search } = params;
   const offset = page * limit;
-  const isRoot = !folderId;
 
   let currentFolder: FolderResponse | null = null;
-
   if (folderId) {
     const folder = await db.query.folders.findFirst({
       where: { id: folderId, teamId },
     });
-    if (!folder) {
+    if (!folder || !visibility.canOpenFolder(folder.id)) {
       return throwHttpError(404, notFound());
     }
     currentFolder = folder;
   }
 
-  const breadcrumbs = await getFolderBreadcrumbs({ folderId, teamId });
-
-  let totalFoldersCount = 0;
-  let totalDocumentsCount = 0;
-
-  if (isRoot) {
-    const [subFoldersCountResult] = await db
-      .select({ count: count() })
-      .from(folders)
-      .where(
-        and(
-          eq(folders.teamId, teamId),
-          isNull(folders.parentFolderId),
-          ...(search ? [ilike(folders.name, `%${search}%`)] : []),
-        ),
-      );
-
-    const [documentsCountResult] = await db
-      .select({ count: count() })
-      .from(documents)
-      .where(
-        and(
-          eq(documents.teamId, teamId),
-          isNull(documents.folderId),
-          ne(documents.status, "error"),
-          ...(search ? [ilike(documents.originalFilename, `%${search}%`)] : []),
-        ),
-      );
-
-    totalFoldersCount = subFoldersCountResult?.count || 0;
-    totalDocumentsCount = documentsCountResult?.count || 0;
-  } else if (currentFolder) {
-    totalFoldersCount = currentFolder.subFolderCount;
-    totalDocumentsCount = currentFolder.documentCount;
-  }
-
-  const totalItemsCount = totalFoldersCount + totalDocumentsCount;
-  const children: DriveItem[] = [];
-
-  const docColumns = {
-    id: true,
-    originalFilename: true,
-    fileSize: true,
-    mimeType: true,
-    status: true,
-    source: true,
-    createdAt: true,
-    updatedAt: true,
-  } as const;
-
-  const docWhere = {
+  const breadcrumbs = await getFolderBreadcrumbs({
+    folderId,
     teamId,
-    folderId: isRoot ? ({ isNull: true } as const) : folderId,
-    status: { ne: "error" as const },
-    ...(search && { originalFilename: { ilike: `%${search}%` } }),
-  };
+    visibility,
+  });
 
+  const folderWhere = and(
+    eq(folders.teamId, teamId),
+    folderId === null
+      ? isNull(folders.parentFolderId)
+      : eq(folders.parentFolderId, folderId),
+    visibility.folder(folders.id),
+    ...(search ? [ilike(folders.name, `%${search}%`)] : []),
+  );
+  const documentWhere = and(
+    eq(documents.teamId, teamId),
+    folderId === null
+      ? isNull(documents.folderId)
+      : eq(documents.folderId, folderId),
+    ne(documents.status, "error"),
+    visibility.document(DOCUMENT_ACCESS_COLUMNS),
+    ...(search ? [ilike(documents.originalFilename, `%${search}%`)] : []),
+  );
+
+  const [[folderCount], [documentCount]] = await Promise.all([
+    db.select({ count: count() }).from(folders).where(folderWhere),
+    db.select({ count: count() }).from(documents).where(documentWhere),
+  ]);
+  const totalFoldersCount = folderCount?.count ?? 0;
+  const totalDocumentsCount = documentCount?.count ?? 0;
+
+  // Folders first, then documents, one page across both.
+  const children: DriveItem[] = [];
   if (offset < totalFoldersCount) {
-    const folderLimit = Math.min(limit, totalFoldersCount - offset);
-    const subFolders = await db.query.folders.findMany({
-      where: {
-        teamId,
-        parentFolderId: isRoot ? { isNull: true } : folderId,
-        ...(search && { name: { ilike: `%${search}%` } }),
-      },
-      orderBy: { updatedAt: "desc" },
-      limit: folderLimit,
-      offset: offset,
-    });
-
+    const subFolders = await db
+      .select()
+      .from(folders)
+      .where(folderWhere)
+      .orderBy(desc(folders.updatedAt))
+      .limit(Math.min(limit, totalFoldersCount - offset))
+      .offset(offset);
     children.push(
       ...subFolders.map((f) => ({ type: "folder" as const, data: f })),
     );
+  }
 
-    if (children.length < limit && totalDocumentsCount > 0) {
-      const remainingLimit = limit - children.length;
-      const subDocs = await db.query.documents.findMany({
-        columns: docColumns,
-        where: docWhere,
+  const documentLimit = limit - children.length;
+  if (documentLimit > 0 && totalDocumentsCount > 0) {
+    const documentOffset = Math.max(0, offset - totalFoldersCount);
+    const idRows = await db
+      .select({ id: documents.id })
+      .from(documents)
+      .where(documentWhere)
+      .orderBy(desc(documents.updatedAt))
+      .limit(documentLimit)
+      .offset(documentOffset);
+    const ids = idRows.map((row) => row.id);
+    if (ids.length > 0) {
+      const docs = await db.query.documents.findMany({
+        columns: {
+          id: true,
+          originalFilename: true,
+          fileSize: true,
+          mimeType: true,
+          status: true,
+          source: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+        where: { id: { in: ids } },
         with: {
           mirrorRecord: { columns: { id: true, collectionId: true } },
         },
-        orderBy: { updatedAt: "desc" },
-        limit: remainingLimit,
       });
-
-      children.push(...(await mapDocsToDriveItems(subDocs, teamId)));
+      const byId = new Map(docs.map((doc) => [doc.id, doc]));
+      const ordered = ids.flatMap((id) => {
+        const doc = byId.get(id);
+        return doc ? [doc] : [];
+      });
+      children.push(...(await mapDocsToDriveItems(ordered, teamId)));
     }
-  } else {
-    const docOffset = offset - totalFoldersCount;
-    const subDocs = await db.query.documents.findMany({
-      columns: docColumns,
-      where: docWhere,
-      with: {
-        mirrorRecord: { columns: { id: true, collectionId: true } },
-      },
-      orderBy: { updatedAt: "desc" },
-      limit: limit,
-      offset: docOffset,
-    });
-
-    children.push(...(await mapDocsToDriveItems(subDocs, teamId)));
   }
 
   return {
     folder: currentFolder,
     children: {
-      count: totalItemsCount,
+      count: totalFoldersCount + totalDocumentsCount,
       data: children,
     },
     breadcrumbs,

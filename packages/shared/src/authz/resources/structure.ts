@@ -26,10 +26,10 @@ export const collectionAdapter: ResourceAdapter = {
   type: "collection",
   offeredLevels: ["view", "edit"],
   shareablePrincipals: ["team", "organization"],
-  loadNodes: async (ids) => {
+  loadNodes: async (ids, executor = db) => {
     const unique = [...new Set(ids)];
     if (unique.length === 0) return new Map();
-    const rows = await db
+    const rows = await executor
       .select({
         id: collections.id,
         organizationId: collections.organizationId,
@@ -41,8 +41,8 @@ export const collectionAdapter: ResourceAdapter = {
     const rowIds = rows.map((row) => row.id);
 
     const [grants, legacy] = await Promise.all([
-      loadExplicitGrants("collection", rowIds),
-      db
+      loadExplicitGrants("collection", rowIds, executor),
+      executor
         .select({
           collectionId: collectionGrants.collectionId,
           organizationId: collectionGrants.organizationId,
@@ -106,10 +106,10 @@ export const projectAdapter: ResourceAdapter = {
   type: "project",
   offeredLevels: ["view", "use", "edit", "full"],
   shareablePrincipals: ["user", "team", "organization"],
-  loadNodes: async (ids) => {
+  loadNodes: async (ids, executor = db) => {
     const unique = [...new Set(ids)];
     if (unique.length === 0) return new Map();
-    const rows = await db
+    const rows = await executor
       .select({
         id: projects.id,
         organizationId: projects.organizationId,
@@ -123,6 +123,7 @@ export const projectAdapter: ResourceAdapter = {
     const grants = await loadExplicitGrants(
       "project",
       rows.map((row) => row.id),
+      executor,
     );
     return new Map(
       rows.map((row) => {

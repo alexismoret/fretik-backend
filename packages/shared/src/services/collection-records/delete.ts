@@ -1,4 +1,5 @@
 import { eq } from "drizzle-orm";
+import { teamOpenDriveItems } from "../../authz/drive-sql";
 import db, { type Transaction } from "../../db";
 import { collectionRecords } from "../../db/schema";
 import { notFound, throwHttpError } from "../../lib/errors";
@@ -11,12 +12,34 @@ import { hideEpisodesForRecords } from "../episodes/hide-for-source";
 import { deleteEpisodeVectors } from "../episodes/vectors";
 
 /**
+ * What `record.deleted` keeps of a record once the row is gone: its id and
+ * label, and for a file's mirror the file and whether its whole team could
+ * open it (`teamOpenDriveItems`, read before the file goes) — whoever may not
+ * open the file does not read its name in the journal either
+ * (`dashboard/get-activity.ts`).
+ */
+export const deletedRecordPayload = (
+  record: { id: string; label: string; documentId: string | null },
+  teamOpenDocuments: ReadonlySet<string>,
+): Record<string, unknown> => ({
+  recordId: record.id,
+  label: record.label,
+  ...(record.documentId === null
+    ? {}
+    : {
+        documentId: record.documentId,
+        teamOpen: teamOpenDocuments.has(record.documentId),
+      }),
+});
+
+/**
  * Delete a record and journal `record.deleted` in the same transaction.
  * The FK cascade removes its links (both directions) and the event-link
  * provenance rows, so the event keeps the id + label in its PAYLOAD (its
  * `subjectRecordId` is nulled by the cascade) — the deletion stays auditable
  * after the row is gone.
  */
+
 export const deleteCollectionRecord = async (data: {
   id: string;
   tx?: Transaction;
@@ -26,7 +49,13 @@ export const deleteCollectionRecord = async (data: {
 
   const run = async (tx: Transaction): Promise<{ id: string }> => {
     const existing = await tx.query.collectionRecords.findFirst({
-      columns: { id: true, organizationId: true, teamId: true, label: true },
+      columns: {
+        id: true,
+        organizationId: true,
+        teamId: true,
+        label: true,
+        documentId: true,
+      },
       where: { id: data.id },
     });
     if (!existing) {
@@ -39,7 +68,14 @@ export const deleteCollectionRecord = async (data: {
       teamId: existing.teamId,
       type: "record.deleted",
       actor,
-      payload: { recordId: existing.id, label: existing.label },
+      payload: deletedRecordPayload(
+        existing,
+        await teamOpenDriveItems(
+          "document",
+          existing.documentId === null ? [] : [existing.documentId],
+          tx,
+        ),
+      ),
     });
 
     // Hide the record-activity episode anchored on this record BEFORE the row

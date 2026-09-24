@@ -1,5 +1,8 @@
 import { z } from "zod";
+import { driveVisibilityOfUser } from "../../authz/drive-sql";
 import { userHasCapability } from "../../authz/gates";
+import { loadPrincipal } from "../../authz/load-principal";
+import { partitionMirrorWrites } from "../../authz/mirror-writes";
 import type { BulkOperation, BulkOperationParams } from "../../db/schema";
 import { MAX_BULK_ITEMS } from "../../lib/db-bulk";
 import { audienceSchema } from "../../schemas/collection-sharing";
@@ -337,6 +340,37 @@ const bulkUpdateArgs = z.object({
   merge: z.boolean().optional(),
 });
 
+/**
+ * A batch naming a record that mirrors a file kept from the person this runs
+ * for (`authz/mirror-writes.ts`) is refused whole, before any card is drawn:
+ * the card would show the file's name and fields to someone who cannot open
+ * it. The agent retries without the ids named.
+ */
+const refuseKeptMirrors = async (
+  ctx: ExecContext,
+  recordIds: readonly string[],
+): Promise<SandboxExecResponse | null> => {
+  const principal = await loadPrincipal({
+    organizationId: ctx.organizationId,
+    userId: ctx.userId,
+  });
+  if (principal === null) {
+    return {
+      status: "error",
+      message:
+        "ACCESS_DENIED: the person this runs for is no longer in the organization. Tell the user; do not retry.",
+    };
+  }
+  const { refused } = await partitionMirrorWrites({ principal, recordIds });
+  if (refused.length === 0) return null;
+  return {
+    status: "error",
+    message: `RECORDS_REFUSED: ${refused
+      .map((r) => `${r.id} (${r.error})`)
+      .join("; ")}. Nothing was written. Retry without these records.`,
+  };
+};
+
 const bulkUpdate = async (
   ctx: ExecContext,
   actor: EventActor,
@@ -345,6 +379,11 @@ const bulkUpdate = async (
   rawArgs: Record<string, unknown>,
 ): Promise<SandboxExecResponse> => {
   const { updates, merge } = bulkUpdateArgs.parse(rawArgs);
+  const kept = await refuseKeptMirrors(
+    ctx,
+    updates.map((u) => u.id),
+  );
+  if (kept !== null) return kept;
 
   return gateRecordWriteApproval({
     ctx,
@@ -419,6 +458,8 @@ const bulkDelete = async (
   rawArgs: Record<string, unknown>,
 ): Promise<SandboxExecResponse> => {
   const { recordIds } = bulkDeleteArgs.parse(rawArgs);
+  const kept = await refuseKeptMirrors(ctx, recordIds);
+  if (kept !== null) return kept;
 
   return gateRecordWriteApproval({
     ctx,
@@ -788,6 +829,8 @@ const queryRecords = async (
   const records = await queryCollectionRecords({
     teamId: ctx.teamId,
     collectionId,
+    // The script reads what the person it runs for can open.
+    drive: await driveVisibilityOfUser(ctx),
     filters,
     page,
     limit: limit ?? 200,

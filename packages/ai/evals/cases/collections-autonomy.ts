@@ -1,3 +1,5 @@
+import { driveVisibility } from "@fretik/shared/authz/drive-sql";
+import { SYSTEM } from "@fretik/shared/authz/system-principals";
 import db from "@fretik/shared/db";
 import type {
   FieldDefinitionConfig,
@@ -320,6 +322,7 @@ const partialUpdate: EvalCase = {
           id,
           teamId: ctx.teamId,
           organizationId: ctx.organizationId,
+          drive: await driveVisibility(SYSTEM.operatorScript, ctx.teamId),
         });
         if (rec.data.phone !== NEW_PHONE)
           return `phone not updated: ${JSON.stringify(rec.data)}`;
@@ -448,6 +451,7 @@ const richCreate: EvalCase = {
             id,
             teamId: ctx.teamId,
             organizationId: ctx.organizationId,
+            drive: await driveVisibility(SYSTEM.operatorScript, ctx.teamId),
           })
         ).data;
         const fail = (m: string) => `${m} — got ${JSON.stringify(d)}`;
@@ -625,6 +629,7 @@ const bulkCsvImport: EvalCase = {
             id,
             teamId: ctx.teamId,
             organizationId: ctx.organizationId,
+            drive: await driveVisibility(SYSTEM.operatorScript, ctx.teamId),
           })
         ).data;
         if (d.plan !== "pro")
@@ -826,6 +831,7 @@ const locationCreate: EvalCase = {
             id,
             teamId: ctx.teamId,
             organizationId: ctx.organizationId,
+            drive: await driveVisibility(SYSTEM.operatorScript, ctx.teamId),
           })
         ).data;
         const loc = d.location;
@@ -972,6 +978,7 @@ const formulaMargin: EvalCase = {
             id,
             teamId: ctx.teamId,
             organizationId: ctx.organizationId,
+            drive: await driveVisibility(SYSTEM.operatorScript, ctx.teamId),
           })
         ).data[margin.key];
         if (value !== 600)
@@ -981,6 +988,7 @@ const formulaMargin: EvalCase = {
         const listed = await listCollectionRecords({
           teamId: ctx.teamId,
           collectionId: found.typeId,
+          drive: await driveVisibility(SYSTEM.operatorScript, ctx.teamId),
           sortBy: `field:${margin.key}`,
           sortDir: "desc",
           limit: 2,
@@ -1068,6 +1076,7 @@ const formulaReadOnly: EvalCase = {
             id,
             teamId: ctx.teamId,
             organizationId: ctx.organizationId,
+            drive: await driveVisibility(SYSTEM.operatorScript, ctx.teamId),
           })
         ).data;
         if (d.margin !== 600)
@@ -1409,6 +1418,7 @@ const syncColumnRefused: EvalCase = {
             id,
             teamId: ctx.teamId,
             organizationId: ctx.organizationId,
+            drive: await driveVisibility(SYSTEM.operatorScript, ctx.teamId),
           })
         ).data;
         if (data.amount !== 1200) {

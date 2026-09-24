@@ -375,6 +375,23 @@ export const aiVectors = pgTable(
     // always leave this NULL.
     userId: uuid("user_id").references(() => user.id, { onDelete: "cascade" }),
 
+    /**
+     * Who may find this row, when that is not simply its team and its user:
+     * the ids of the people, teams, projects or organization that reach the
+     * resource it describes — for a restricted or shared document, page or
+     * workflow. NULL keeps the scope above (`team_id`, `user_id`), which is
+     * every other row.
+     *
+     * Written by `services/ai-vectors/acl.ts` in the same transaction as the
+     * change that moves it (a grant, a restriction, a move), from the engine's
+     * own rules, so the assistant never finds what the person could not open.
+     * Search keeps a row when this overlaps the searcher's ids.
+     *
+     * Not indexed: the embedding and full-text indexes pick the candidates,
+     * and this only filters them.
+     */
+    aclPrincipals: uuid("acl_principals").array(),
+
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

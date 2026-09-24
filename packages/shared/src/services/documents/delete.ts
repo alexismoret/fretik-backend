@@ -1,4 +1,6 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
+import { driveVisibility } from "../../authz/drive-sql";
+import { SYSTEM } from "../../authz/system-principals";
 import db from "../../db";
 import { aiVectors, folders, teamSettings } from "../../db/schema";
 import { documents } from "../../db/schema/documents";
@@ -92,7 +94,13 @@ export const deleteDocuments = async (data: {
     // fileless "Document" orphan. Same tx, so both commit or neither does.
     const mirrorIds = [
       ...(
-        await resolveDocumentRecordIds({ documentIds: ownedIds, teamId, tx })
+        await resolveDocumentRecordIds({
+          documentIds: ownedIds,
+          teamId,
+          // Every file going takes its mirror with it, seen or not.
+          drive: await driveVisibility(SYSTEM.documentPipeline, teamId),
+          tx,
+        })
       ).values(),
     ];
     if (mirrorIds.length > 0) {

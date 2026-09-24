@@ -1,4 +1,5 @@
 import { and, eq, sql } from "drizzle-orm";
+import type { DriveVisibility } from "../../authz/drive-sql";
 import db from "../../db";
 import type { FieldDefinition, OntologyStatus } from "../../db/schema";
 import { collectionRecords, isMultiMember } from "../../db/schema";
@@ -123,6 +124,9 @@ const assertSummable = (
 export const aggregateRecordsByGroup = async (data: {
   teamId: string;
   collectionId: string;
+  /** What the person can open in the Drive: a hidden file's mirror is out. */
+  drive: DriveVisibility;
+
   groupKey: string;
   status?: OntologyStatus;
   sumKey?: string;
@@ -155,7 +159,9 @@ export const aggregateRecordsByGroup = async (data: {
     eq(collectionRecords.collectionId, collectionId),
     eq(collectionRecords.status, status),
   ];
-  conditions.push(recordVisibilityCondition({ teamId, scope }));
+  conditions.push(
+    recordVisibilityCondition({ teamId, scope, drive: data.drive }),
+  );
 
   const table = qualifiedCollectionTable(collectionId);
   const groupCol = sql.raw(`e."${groupKey}"`);

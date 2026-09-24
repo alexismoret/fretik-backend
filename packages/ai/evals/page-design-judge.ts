@@ -30,6 +30,7 @@
  * the built page ask for it — the ten structural cases stay free.
  */
 
+import { SYSTEM } from "@fretik/shared/authz/system-principals";
 import type { PageDefinition } from "@fretik/shared/schemas/pages";
 import { renderPage } from "@fretik/shared/services/pages/render/render-page";
 import { evaluatePageDesign } from "../src/services/page-review/evaluate";
@@ -98,6 +99,7 @@ const run = async (params: {
     definition: params.definition,
     teamId: params.ctx.teamId,
     userId: params.ctx.userId ?? null,
+    reader: SYSTEM.operatorScript,
     pageName: params.pageName,
   });
 

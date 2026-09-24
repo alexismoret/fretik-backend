@@ -1,5 +1,5 @@
 import { and, eq, gt, inArray, isNull, ne, or } from "drizzle-orm";
-import db from "../../db";
+import db, { type Executor } from "../../db";
 import { accessGrants } from "../../db/schema";
 import type { AccessResourceType } from "../../schemas/access";
 import type { GrantFact } from "../principal";
@@ -13,11 +13,12 @@ import type { GrantFact } from "../principal";
 export const loadExplicitGrants = async (
   type: AccessResourceType,
   ids: readonly string[],
+  executor: Executor = db,
 ): Promise<Map<string, GrantFact[]>> => {
   const byResource = new Map<string, GrantFact[]>();
   if (ids.length === 0) return byResource;
 
-  const rows = await db
+  const rows = await executor
     .select({
       resourceId: accessGrants.resourceId,
       principalType: accessGrants.principalType,

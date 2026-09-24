@@ -1,5 +1,6 @@
 import { requireAccessForEach } from "@fretik/shared/authz/access";
 import { requireFolderToAddTo } from "@fretik/shared/authz/drive";
+import { driveVisibility } from "@fretik/shared/authz/drive-sql";
 import { access } from "@fretik/shared/authz/http";
 import type { Document, DocumentVersion } from "@fretik/shared/db/schema";
 import {
@@ -149,7 +150,7 @@ const listRecentDocumentsRoute = createRoute({
   method: "get",
   path: "",
   middleware: access.session(
-    "The active team's recent Drive documents; Drive items are open to their team.",
+    "The active team's recent Drive documents, only those the caller can open (authz/drive-sql).",
   ),
   summary: "List recent documents",
   description:
@@ -493,7 +494,6 @@ const downloadDocumentVersionRoute = createRoute({
  * --
  */
 documentRoutes.openapi(uploadDocumentRoute, async (c) => {
-  const user = c.get("user");
   const team = c.get("team");
   const organization = c.get("organization");
 
@@ -508,7 +508,7 @@ documentRoutes.openapi(uploadDocumentRoute, async (c) => {
     file,
     organization.id,
     team.id,
-    user.id,
+    c.get("principal"),
     folderId,
     onConflict,
   );
@@ -799,7 +799,11 @@ documentRoutes.openapi(listRecentDocumentsRoute, async (c) => {
   }
 
   const params = c.req.valid("query");
-  const result = await listRecentDocuments({ teamId: team.id, params });
+  const result = await listRecentDocuments({
+    principal: c.get("principal"),
+    teamId: team.id,
+    params,
+  });
 
   return c.json(result, 200);
 });
@@ -820,8 +824,9 @@ documentRoutes.openapi(getDocumentDetailsRoute, async (c) => {
 
   const { id } = c.req.valid("param");
 
+  const visibility = await driveVisibility(c.get("principal"), team.id);
   const { document, fileUrl, fieldValues, fieldDefinitions } =
-    await getDocumentDetails({ id, teamId: team.id });
+    await getDocumentDetails({ id, teamId: team.id, visibility });
 
   const breadcrumbs = await getDocumentBreadcrumbs({
     document: {
@@ -830,6 +835,7 @@ documentRoutes.openapi(getDocumentDetailsRoute, async (c) => {
       folderId: document.folderId,
     },
     teamId: team.id,
+    visibility,
   });
 
   // Drizzle returns numeric/decimal as string — coerce before serialising

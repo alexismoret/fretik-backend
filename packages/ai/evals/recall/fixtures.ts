@@ -15,6 +15,8 @@
  * down (`--cleanup`).
  */
 
+import { driveVisibility } from "@fretik/shared/authz/drive-sql";
+import { SYSTEM } from "@fretik/shared/authz/system-principals";
 import db from "@fretik/shared/db";
 import type {
   DocumentVectorMetadata,
@@ -602,6 +604,7 @@ export const ensureRecallFixtures = async (
     await createLink({
       organizationId: scope.organizationId,
       teamId: scope.teamId,
+      drive: await driveVisibility(SYSTEM.operatorScript, scope.teamId),
       linkTypeId,
       fromRecordId: nordwind,
       toRecordId: horizon,

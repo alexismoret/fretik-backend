@@ -1,7 +1,17 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, not, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
+import {
+  type DriveVisibility,
+  mirrorRecordVisible,
+} from "../../authz/drive-sql";
 import db, { type Executor } from "../../db";
 import type { FieldDefinition } from "../../db/schema";
-import { fieldDefinitions, linkTypes } from "../../db/schema";
+import {
+  collectionRecords,
+  fieldDefinitions,
+  links,
+  linkTypes,
+} from "../../db/schema";
 import {
   assertSafeKey,
   qualifiedCollectionTable,
@@ -35,7 +45,26 @@ const SYSTEM_PROJECTION: Partial<Record<FieldDefinition["type"], string>> = {
 };
 
 /** Relation field → jsonb array of `{id,label}` for its active edges. */
-const relationProjection = (def: FieldDefinition, teamId: string): string => {
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The far ends a projection leaves out — the mirrors of files the person
+ * cannot open — as a clause on `rt`. Inlined, because the projections are
+ * text: every id is checked to be a uuid first, and a malformed one would
+ * only ever come from the database itself.
+ */
+const excludeFarEnds = (hidden: readonly string[]): string => {
+  const ids = hidden.filter((id) => UUID.test(id));
+  return ids.length === 0
+    ? ""
+    : `AND rt.id <> ALL('{${ids.join(",")}}'::uuid[])`;
+};
+
+const relationProjection = (
+  def: FieldDefinition,
+  teamId: string,
+  hidden: readonly string[],
+): string => {
   const linkTypeKey =
     "linkTypeKey" in def.config ? def.config.linkTypeKey : undefined;
   if (!linkTypeKey || !SAFE_IDENT.test(linkTypeKey)) return `'[]'::jsonb`;
@@ -48,6 +77,7 @@ const relationProjection = (def: FieldDefinition, teamId: string): string => {
       AND lt.normalized_key = '${linkTypeKey}'
       AND lt.team_id = '${teamId}'::uuid
       AND l.valid_to IS NULL AND l.invalidated_at IS NULL
+      ${excludeFarEnds(hidden)}
   ), '[]'::jsonb)`;
 };
 
@@ -57,6 +87,7 @@ const rollupProjection = (
   fields: FieldDefinition[],
   linkTargets: LinkTargetMap,
   teamId: string,
+  hidden: readonly string[],
 ): string => {
   const cfg = def.config;
   const relationFieldKey =
@@ -140,8 +171,36 @@ const rollupProjection = (
       AND lt.normalized_key = '${linkTypeKey}'
       AND lt.team_id = '${teamId}'::uuid
       AND l.valid_to IS NULL AND l.invalidated_at IS NULL
+      ${excludeFarEnds(hidden)}
   )`;
   return zeroDefault ? `COALESCE(${body}, 0)` : body;
+};
+
+const farEnd = alias(collectionRecords, "far_end");
+
+/**
+ * The records linked FROM these ones that mirror a file the person cannot
+ * open: few (restrictions are rare, and only this page's links count), and
+ * none at all for a system caller.
+ */
+const hiddenFarEnds = async (
+  exec: Executor,
+  recordIds: readonly string[],
+  drive: DriveVisibility,
+): Promise<string[]> => {
+  if (drive.all) return [];
+  const rows = await exec
+    .selectDistinct({ id: farEnd.id })
+    .from(links)
+    .innerJoin(farEnd, eq(farEnd.id, links.toRecordId))
+    .where(
+      and(
+        inArray(links.fromRecordId, [...recordIds]),
+        isNull(links.invalidatedAt),
+        not(mirrorRecordVisible(drive, farEnd.documentId)),
+      ),
+    );
+  return rows.map((row) => row.id);
 };
 
 /** linkType.normalizedKey → toCollectionId for the team (rollup target join). */
@@ -168,6 +227,8 @@ export const computeRelationRollupValues = async (input: {
   teamId: string;
   collectionId: string;
   recordIds: string[];
+  /** A related file's mirror the person cannot open is neither shown nor counted. */
+  drive: DriveVisibility;
   tx?: Executor;
 }): Promise<Map<string, Record<string, unknown>>> => {
   const empty = new Map<string, Record<string, unknown>>();
@@ -192,7 +253,10 @@ export const computeRelationRollupValues = async (input: {
   );
   if (computed.length === 0) return empty;
 
-  const linkTargets = await loadLinkTargets(exec, input.teamId);
+  const [linkTargets, hidden] = await Promise.all([
+    loadLinkTargets(exec, input.teamId),
+    hiddenFarEnds(exec, input.recordIds, input.drive),
+  ]);
   const cols = ["r.id::text AS _id"];
   for (const def of computed) {
     assertSafeKey(def.key, "field key");
@@ -200,8 +264,8 @@ export const computeRelationRollupValues = async (input: {
     const expr = system
       ? system
       : def.type === "relation"
-        ? relationProjection(def, input.teamId)
-        : rollupProjection(def, fields, linkTargets, input.teamId);
+        ? relationProjection(def, input.teamId, hidden)
+        : rollupProjection(def, fields, linkTargets, input.teamId, hidden);
     cols.push(`${expr} AS "${def.key}"`);
   }
 

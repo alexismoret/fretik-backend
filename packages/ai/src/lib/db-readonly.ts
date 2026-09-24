@@ -1,3 +1,7 @@
+import {
+  type SqlToolDriveScope,
+  sqlToolScopeStatement,
+} from "@fretik/shared/authz/sql-tool-scope";
 import { Pool } from "pg";
 
 /**
@@ -65,6 +69,12 @@ export interface RunReadonlyQueryArgs {
   teamId: string;
   /** Current org — sets `fretik.organization_id` for the identity view + field-definition templates. */
   organizationId: string;
+  /**
+   * The person the query reads for, as the Drive policies read them: the
+   * files and folders they cannot open stay out of every table, the records
+   * that mirror those files too.
+   */
+  drive: SqlToolDriveScope;
   params?: unknown[];
 }
 
@@ -81,6 +91,7 @@ export const runReadonlyQuery = async <
   sql,
   teamId,
   organizationId,
+  drive,
   params = [],
 }: RunReadonlyQueryArgs): Promise<T[]> => {
   const client = await readonlyPool.connect();
@@ -88,10 +99,8 @@ export const runReadonlyQuery = async <
     await client.query("BEGIN");
     // Transaction-local scope — `is_local => true` is the bind-parameter-safe
     // equivalent of `SET LOCAL`, so it never leaks across a pooled connection.
-    await client.query(
-      "SELECT set_config('fretik.team_id', $1, true), set_config('fretik.organization_id', $2, true)",
-      [teamId, organizationId],
-    );
+    const scope = sqlToolScopeStatement({ teamId, organizationId, drive });
+    await client.query(scope.text, scope.values);
     const result = await client.query<T>(sql, params);
     await client.query("COMMIT");
     return result.rows;

@@ -1,4 +1,10 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
+import {
+  type DriveVisibility,
+  driveVisibility,
+  visibleDocumentsWhere,
+} from "../../authz/drive-sql";
+import type { Principal } from "../../authz/principal";
 import db from "../../db";
 import type { DocumentStatus, FieldDefinition } from "../../db/schema";
 import { collections, documents, team } from "../../db/schema";
@@ -74,6 +80,8 @@ export interface SearchDocumentsFilters {
 }
 
 export interface SearchDocumentsOptions extends SearchDocumentsFilters {
+  /** Who is searching: only what they can open is found. */
+  principal: Principal;
   teamId: string;
   limit?: number;
   offset?: number;
@@ -111,6 +119,7 @@ export const searchDocuments = async (
   opts: SearchDocumentsOptions,
 ): Promise<SearchDocumentsResult> => {
   const {
+    principal,
     teamId,
     search,
     folderId,
@@ -137,6 +146,8 @@ export const searchDocuments = async (
         )
     : [];
 
+  const visibility = await driveVisibility(principal, teamId);
+  const visible = visibleDocumentsWhere(visibility);
   const rows = await db.query.documents.findMany({
     where: {
       teamId,
@@ -150,9 +161,8 @@ export const searchDocuments = async (
       ...(entityIds && entityIds.length > 0
         ? { mirrorRecord: { outgoingLinks: { toRecordId: { in: entityIds } } } }
         : {}),
-      ...(customFilterExists.length > 0
-        ? { RAW: and(...customFilterExists) }
-        : {}),
+      RAW: (table: Parameters<typeof visible.RAW>[0]) =>
+        and(visible.RAW(table), ...customFilterExists) ?? visible.RAW(table),
     },
     columns: {
       id: true,
@@ -219,7 +229,10 @@ export const searchDocuments = async (
         fileSize: r.fileSize,
         mimeType: r.mimeType,
         status: r.status,
-        folder: r.folder ? { id: r.folder.id, name: r.folder.name } : null,
+        folder:
+          r.folder && visibility.canOpenFolder(r.folder.id)
+            ? { id: r.folder.id, name: r.folder.name }
+            : null,
         pageCount: r.properties?.pageCount ?? null,
         entityCount: r.mirrorRecord?.outgoingLinks.length ?? 0,
         fieldValues: r.mirrorRecord
@@ -239,7 +252,8 @@ export const searchDocuments = async (
 };
 
 /**
- * Retrieves the breadcrumbs for a specific document based on its folder.
+ * Retrieves the breadcrumbs for a specific document based on its folder —
+ * naming only the folders the person can open (`getFolderBreadcrumbs`).
  */
 export const getDocumentBreadcrumbs = async (data: {
   document: {
@@ -248,12 +262,14 @@ export const getDocumentBreadcrumbs = async (data: {
     folderId: string | null;
   };
   teamId: string;
+  visibility: DriveVisibility;
 }): Promise<FolderBreadcrumb[]> => {
   const { document } = data;
   const breadcrumbs = document.folderId
     ? await getFolderBreadcrumbs({
         folderId: document.folderId,
         teamId: data.teamId,
+        visibility: data.visibility,
       })
     : [{ id: null, name: "/" }];
 
@@ -272,17 +288,25 @@ type LoadedDocument = NonNullable<Awaited<ReturnType<typeof loadDocument>>>;
 export const getDocumentDetails = async (data: {
   id: string;
   teamId: string;
+  /** Names the document's folder only when the person can open it. */
+  visibility: DriveVisibility;
 }): Promise<{
   document: LoadedDocument;
   fileUrl: string | null;
   fieldValues: Record<string, unknown>;
   fieldDefinitions: FieldDefinition[];
 }> => {
-  const document = await loadDocument(data);
+  const loaded = await loadDocument(data);
 
-  if (!document) {
+  if (!loaded) {
     return throwHttpError(404, notFound("Document not found"));
   }
+  // A document shared with someone inside a folder they cannot open does
+  // not tell them that folder's name.
+  const document =
+    loaded.folder && !data.visibility.canOpenFolder(loaded.folder.id)
+      ? { ...loaded, folder: null }
+      : loaded;
 
   // Signed as an attachment. The viewer reads this URL with `fetch`, which
   // ignores `Content-Disposition`, so inline rendering is unaffected — but the

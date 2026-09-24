@@ -3,6 +3,7 @@ import { eq, sql } from "drizzle-orm";
 import db, { type Executor, type Transaction } from "../../db";
 import type { FieldDefinition } from "../../db/schema";
 import { fieldDefinitions } from "../../db/schema";
+import { DOCUMENT_COLLECTION_KEY } from "../collections/constants";
 import { columnsForField } from "./columns";
 import { compileFormula } from "./formula/compile";
 import {
@@ -52,21 +53,36 @@ const ddl = async (exec: Executor, stmt: string): Promise<void> => {
  * enable RLS, (re)create the read policy for the SQL tool role, grant SELECT.
  * Idempotent — `DROP POLICY IF EXISTS` then `CREATE`. The policy text is
  * type-independent (`fretik_record_visible(id)` resolves the type + inherit flag
- * from the registry), so it is identical across every extension table.
+ * from the registry), so it is identical across every extension table — but
+ * the file collection's, whose rows mirror Drive files: a row whose file the
+ * reader may not open stays out (`fretik_record_mirror_visible`, migration
+ * `sql_tool_drive_scope`).
  */
 const armTableSecurity = async (
   exec: Executor,
   collectionId: string,
 ): Promise<void> => {
   const table = qualifiedCollectionTable(collectionId);
+  const collection = await exec.query.collections.findFirst({
+    columns: { key: true },
+    where: { id: collectionId },
+  });
+  const mirrorsFiles = collection?.key === DOCUMENT_COLLECTION_KEY;
   await ddl(exec, `ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY`);
   await ddl(exec, `DROP POLICY IF EXISTS sql_tool_read ON ${table}`);
   await ddl(
     exec,
     `CREATE POLICY sql_tool_read ON ${table} FOR SELECT TO ${SQL_TOOL_ROLE}
        USING (
-         ${SYS_COL.team} = fretik_team()
-         OR fretik_record_visible(${SYS_COL.id})
+         (
+           ${SYS_COL.team} = fretik_team()
+           OR fretik_record_visible(${SYS_COL.id})
+         )${
+           mirrorsFiles
+             ? `
+         AND fretik_record_mirror_visible(${SYS_COL.id})`
+             : ""
+         }
        )`,
   );
   await ddl(exec, `GRANT SELECT ON ${table} TO ${SQL_TOOL_ROLE}`);

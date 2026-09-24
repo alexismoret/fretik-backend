@@ -1,0 +1,1 @@
+ALTER TABLE "ai_vectors" ADD COLUMN "acl_principals" uuid[];

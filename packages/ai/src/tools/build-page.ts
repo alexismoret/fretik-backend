@@ -6,7 +6,10 @@ import { getPage } from "@fretik/shared/services/pages/retrieve";
 import type { Agent, ToolSet } from "ai";
 import { z } from "zod";
 import type { ChatbotCallOptions } from "../agents/chatbot";
-import { actingPrincipal } from "../agents/shared/acting-principal";
+import {
+  actingDrive,
+  actingPrincipal,
+} from "../agents/shared/acting-principal";
 import { buildChatbotTool } from "../agents/shared/chatbot-tool";
 import type { AgentRuntimeContext } from "../agents/shared/runtime-context";
 import { createSubAgentExecute } from "../agents/shared/sub-agent";
@@ -726,6 +729,7 @@ export const createBuildPageTool = <TTools extends ToolSet>(deps: {
         ? await describeRowTypes({
             organizationId: ctx.organizationId,
             teamId: ctx.teamId,
+            drive: await actingDrive(ctx),
             keys: collectionKeys,
           }).catch(() => "")
         : "";

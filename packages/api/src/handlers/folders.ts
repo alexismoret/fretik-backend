@@ -82,7 +82,7 @@ const getRootDriveRoute = createRoute({
   method: "get",
   path: "",
   middleware: access.session(
-    "The root of the active team's Drive; Drive items are open to their team.",
+    "The root of the active team's Drive, only what the caller can open (authz/drive-sql).",
   ),
   summary: "Get root drive",
   description: "Get root folder details and its children",
@@ -223,6 +223,7 @@ folderRoutes.openapi(getRootDriveRoute, async (c) => {
   const params = c.req.valid("query");
 
   const result = await getRootDrive({
+    principal: c.get("principal"),
     teamId: team.id,
     params,
   });
@@ -238,6 +239,7 @@ folderRoutes.openapi(getFolderExplorerRoute, async (c) => {
   const params = c.req.valid("query");
 
   const result = await getFolder({
+    principal: c.get("principal"),
     folderId: id,
     teamId: team.id,
     params,

@@ -1,3 +1,4 @@
+import type { DriveVisibility } from "../../authz/drive-sql";
 import { resolveDocumentRecordIds } from "../collection-records/resolve-document-record";
 import { resolveLinkTypes } from "../link-types/match";
 
@@ -33,6 +34,8 @@ export interface ResolvedRelationTarget {
 export const resolveRelationInputs = async (input: {
   organizationId: string;
   teamId: string;
+  /** The writer's Drive: a file they cannot open is not a target. */
+  drive: DriveVisibility;
   fromCollectionId: string;
   relations: RecordRelationInput[];
 }): Promise<{
@@ -65,6 +68,7 @@ export const resolveRelationInputs = async (input: {
     documentIds.length > 0
       ? await resolveDocumentRecordIds({
           teamId: input.teamId,
+          drive: input.drive,
           documentIds,
         })
       : new Map<string, string>();

@@ -18,8 +18,23 @@ export const SYSTEM = {
   workflowEngine: systemPrincipal(
     "workflow engine: triggers, turns, finalization and automatic guards",
   ),
-  /** A page served on its public link: the token is the authorisation. */
-  publicPage: systemPrincipal("published page, authorised by its public token"),
+  /**
+   * The document pipeline mirroring a file into the graph: its record, and
+   * the links to what it mentions. It writes what the file itself says, for
+   * the file; who may read the result is decided when it is read.
+   */
+  documentPipeline: systemPrincipal(
+    "document pipeline: a file's mirror record and the links to what it mentions",
+  ),
+  /**
+   * The memory pipeline linking what a journal entry's text asserts: the
+   * records it names, and the relations it states between them. Like the
+   * document pipeline it writes what its source says; who may read the
+   * result is decided when it is read.
+   */
+  memoryPipeline: systemPrincipal(
+    "memory pipeline: the records and relations a journal entry's text asserts",
+  ),
   /** Background upkeep that re-derives state (vectors, pins, digests). */
   maintenance: systemPrincipal(
     "background upkeep: re-indexing and reconciliation",

@@ -26,11 +26,11 @@ export const conversationAdapter: ResourceAdapter = {
   type: "conversation",
   offeredLevels: ["use"],
   shareablePrincipals: ["user"],
-  loadNodes: async (ids) => {
+  loadNodes: async (ids, executor = db) => {
     const unique = [...new Set(ids)];
     if (unique.length === 0) return new Map();
 
-    const rows = await db
+    const rows = await executor
       .select({
         id: aiConversations.id,
         organizationId: aiConversations.organizationId,
@@ -47,7 +47,7 @@ export const conversationAdapter: ResourceAdapter = {
     const rowIds = rows.map((row) => row.id);
 
     const [seats, explicit, runs] = await Promise.all([
-      db
+      executor
         .select({
           conversationId: aiConversationMembers.conversationId,
           userId: aiConversationMembers.userId,
@@ -55,8 +55,8 @@ export const conversationAdapter: ResourceAdapter = {
         })
         .from(aiConversationMembers)
         .where(inArray(aiConversationMembers.conversationId, rowIds)),
-      loadExplicitGrants("conversation", rowIds),
-      db
+      loadExplicitGrants("conversation", rowIds, executor),
+      executor
         .select({
           conversationId: workflowRuns.conversationId,
           workflowId: workflowRuns.workflowId,
@@ -84,9 +84,10 @@ export const conversationAdapter: ResourceAdapter = {
           : [[run.conversationId, run.workflowId] as const],
       ),
     );
-    const workflowNodes = await workflowAdapter.loadNodes([
-      ...new Set(workflowOf.values()),
-    ]);
+    const workflowNodes = await workflowAdapter.loadNodes(
+      [...new Set(workflowOf.values())],
+      executor,
+    );
 
     return new Map(
       rows.map((row) => {

@@ -1,3 +1,4 @@
+import type { Principal } from "@fretik/shared/authz/principal";
 import db from "@fretik/shared/db";
 import {
   eachPageFile,
@@ -68,6 +69,8 @@ export interface PageReviewRequest {
   page: { id: string; name: string; definition: PageDefinition };
   teamId: string;
   userId: string | null;
+  /** Who the fixtures are read as: the person the builder works for. */
+  reader: Principal;
   conversationId: string | undefined;
   /**
    * The run these reviews are counted against (a turn, a builder dispatch).
@@ -182,6 +185,7 @@ export const runPageReview = async (
     definition: page.definition,
     teamId: request.teamId,
     userId: request.userId,
+    reader: request.reader,
     pageName: page.name,
   });
 

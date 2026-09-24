@@ -1,3 +1,7 @@
+import {
+  type DriveVisibility,
+  driveVisibility,
+} from "@fretik/shared/authz/drive-sql";
 import { loadPrincipal } from "@fretik/shared/authz/load-principal";
 import type { UserPrincipal } from "@fretik/shared/authz/principal";
 import { forbidden, throwHttpError } from "@fretik/shared/lib/errors";
@@ -35,3 +39,13 @@ export const actingPrincipal = async (
   }
   return principal;
 };
+
+/**
+ * What the person the turn acts for can open in the team's Drive — the
+ * filter every read of records takes, so a file kept from them never reaches
+ * the assistant through its mirror record.
+ */
+export const actingDrive = async (
+  ctx: Pick<AgentRuntimeContext, "organizationId" | "teamId" | "userId">,
+): Promise<DriveVisibility> =>
+  driveVisibility(await actingPrincipal(ctx), ctx.teamId);

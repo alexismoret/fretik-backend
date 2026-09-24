@@ -7,6 +7,7 @@ import {
 import { promoteChatFilesToDrive } from "@fretik/shared/services/chat-files/promote-to-drive";
 import { tool } from "ai";
 import { z } from "zod";
+import { actingPrincipal } from "../agents/shared/acting-principal";
 import { gateBuiltinWriteTool } from "../agents/shared/policy-tool-gate";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
 import { requireTurnDriveAction } from "../agents/shared/turn-access";
@@ -277,6 +278,7 @@ export const createUploadToDriveTool = () =>
 
       // Workspace files: one promotion each (each is its own S3 read and its
       // own document row), but all under the single approval above.
+      const principal = await actingPrincipal(ctx);
       for (const entry of workspacePaths) {
         if (entry.source.kind !== "workspace") continue;
         try {
@@ -286,6 +288,7 @@ export const createUploadToDriveTool = () =>
             organizationId: ctx.organizationId,
             teamId: ctx.teamId,
             userId,
+            principal,
             folderId: parentFolderId ?? null,
             ...(replaceDocumentId ? { replaceDocumentId } : {}),
             actorContext: { actor: "agent", userId, conversationId },

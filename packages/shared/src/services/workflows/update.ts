@@ -12,6 +12,8 @@ import {
   type UpdateWorkflowInput,
   type WorkflowResponse,
 } from "../../schemas/workflows";
+import { recordAccessEvent } from "../access/record-event";
+import { refreshAclsAfterAccessChange } from "../ai-vectors/acl";
 import { resyncVectorUserScope } from "../ai-vectors/resync-user-scope";
 import { filterTeamMemberIds } from "../team/members";
 import { requireWorkflowSettingsAllowed } from "./capabilities";
@@ -198,6 +200,27 @@ export const updateWorkflow = async (params: {
         userId: updated.userId,
         tx,
       });
+      await refreshAclsAfterAccessChange({
+        executor: tx,
+        type: "workflow",
+        id: updated.id,
+      });
+      const wasRestricted =
+        existingRow.accessRestricted || existingRow.userId !== null;
+      if (wasRestricted !== restriction.restricted) {
+        await recordAccessEvent({
+          executor: tx,
+          organizationId: updated.organizationId,
+          actorUserId:
+            params.principal.kind === "user" ? params.principal.userId : null,
+          action: "restriction.changed",
+          resource: { type: "workflow", id: updated.id },
+          metadata: {
+            restricted: restriction.restricted,
+            resourceName: updated.name,
+          },
+        });
+      }
     }
     return updated;
   });

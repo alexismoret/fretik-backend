@@ -1,3 +1,5 @@
+import { driveVisibility } from "@fretik/shared/authz/drive-sql";
+import { SYSTEM } from "@fretik/shared/authz/system-principals";
 import db from "@fretik/shared/db";
 import { callAiService } from "@fretik/shared/lib/ai-service";
 import { createWorkerConnection } from "@fretik/shared/lib/queue/connection";
@@ -109,9 +111,14 @@ const resolveEvent = async (data: MemoryResolveJobData): Promise<void> => {
     }
   };
 
+  // Links what the entry's text names; who may read an edge is decided when
+  // it is read (`authz/system-principals.ts`).
+  const drive = await driveVisibility(SYSTEM.memoryPipeline, event.teamId);
+
   // Pass 1 — free n-gram dictionary matching.
   const dictionaryAnchors = await anchorTextToRecords({
     teamId: event.teamId,
+    drive,
     text,
     maxAnchors: MAX_ANCHORS,
   });
@@ -139,6 +146,7 @@ const resolveEvent = async (data: MemoryResolveJobData): Promise<void> => {
         }
         const matches = await matchSpansToRecords({
           teamId: event.teamId,
+          drive,
           spans: [...confidenceBySpan.keys()],
           maxAnchors: MAX_ANCHORS,
         });

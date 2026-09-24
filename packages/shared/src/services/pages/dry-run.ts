@@ -1,3 +1,4 @@
+import type { Principal } from "../../authz/principal";
 import type { PageDefinition, PageValue } from "../../schemas/pages";
 import { compilePageCode } from "./compile";
 import { profileRows, type PageFieldProfile } from "./profile";
@@ -93,6 +94,9 @@ export const dryRunPage = async (params: {
   /** The acting user — external datasets resolve THEIR connection, exactly as
    * the page will for that same person viewing it. Null when unknown. */
   userId: string | null;
+  /** Who the rows are read as (`runPageData`): the person the agent acts for,
+   * so a probe never samples a file they could not open. */
+  reader: Principal;
   /**
    * The caller already ran `sanitizePageDefinition` and is passing the result.
    * `create`/`update` do: they hand over the STORED definition, which is the
@@ -133,6 +137,7 @@ export const dryRunPage = async (params: {
     definition,
     teamId: params.teamId,
     userId: params.userId,
+    reader: params.reader,
     variables: {},
   });
 

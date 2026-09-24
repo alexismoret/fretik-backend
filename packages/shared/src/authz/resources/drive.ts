@@ -1,5 +1,5 @@
 import { eq, inArray, sql } from "drizzle-orm";
-import db from "../../db";
+import db, { type Executor } from "../../db";
 import { documents, team } from "../../db/schema";
 import type { GrantFact } from "../principal";
 import { loadExplicitGrants } from "./grants";
@@ -36,10 +36,11 @@ interface FolderRow extends Record<string, unknown> {
 /** The folders of `ids` and every ancestor of theirs, inside their team. */
 const loadFolderChains = async (
   ids: readonly string[],
+  executor: Executor,
 ): Promise<Map<string, FolderRow>> => {
   const unique = [...new Set(ids)];
   if (unique.length === 0) return new Map();
-  const result = await db.execute<FolderRow>(sql`
+  const result = await executor.execute<FolderRow>(sql`
     WITH RECURSIVE chain AS (
       SELECT f.id, f.parent_folder_id, f.team_id, f.project_id,
              COALESCE(f.owner_user_id, f.created_by_id) AS owner_user_id,
@@ -98,9 +99,10 @@ const buildFolderNodes = (
 
 const loadFolderNodes = async (
   ids: readonly string[],
+  executor: Executor,
 ): Promise<Map<string, LoadedNode>> => {
-  const rows = await loadFolderChains(ids);
-  const grants = await loadExplicitGrants("folder", [...rows.keys()]);
+  const rows = await loadFolderChains(ids, executor);
+  const grants = await loadExplicitGrants("folder", [...rows.keys()], executor);
   return buildFolderNodes(rows, grants);
 };
 
@@ -108,8 +110,8 @@ export const folderAdapter: ResourceAdapter = {
   type: "folder",
   offeredLevels: ["view", "edit", "full"],
   shareablePrincipals: ["user", "team", "project", "organization"],
-  loadNodes: async (ids) => {
-    const all = await loadFolderNodes(ids);
+  loadNodes: async (ids, executor = db) => {
+    const all = await loadFolderNodes(ids, executor);
     // Only the asked-for folders go back; their ancestors ride as `parent`.
     return new Map(
       ids.flatMap((id) => {
@@ -124,10 +126,10 @@ export const documentAdapter: ResourceAdapter = {
   type: "document",
   offeredLevels: ["view", "edit", "full"],
   shareablePrincipals: ["user", "team", "project", "organization"],
-  loadNodes: async (ids) => {
+  loadNodes: async (ids, executor = db) => {
     const unique = [...new Set(ids)];
     if (unique.length === 0) return new Map();
-    const rows = await db
+    const rows = await executor
       .select({
         id: documents.id,
         folderId: documents.folderId,
@@ -148,10 +150,11 @@ export const documentAdapter: ResourceAdapter = {
       row.folderId === null ? [] : [row.folderId],
     );
     const [folders, grants] = await Promise.all([
-      loadFolderNodes(folderIds),
+      loadFolderNodes(folderIds, executor),
       loadExplicitGrants(
         "document",
         rows.map((row) => row.id),
+        executor,
       ),
     ]);
 

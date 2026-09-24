@@ -1,4 +1,8 @@
 import { and, desc, eq, sql } from "drizzle-orm";
+import {
+  type DriveVisibility,
+  mirrorRecordVisible,
+} from "../../authz/drive-sql";
 import db from "../../db";
 import type { CollectionRecordWithData } from "../../db/schema";
 import { collectionRecords } from "../../db/schema";
@@ -22,6 +26,8 @@ import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
 export const queryCollectionRecords = async (data: {
   teamId: string;
   collectionId: string;
+  /** The reader's Drive: a record mirroring a file they cannot open is not a row. */
+  drive: DriveVisibility;
   filters?: Record<string, unknown>;
   page?: number;
   limit?: number;
@@ -33,6 +39,7 @@ export const queryCollectionRecords = async (data: {
     eq(collectionRecords.teamId, teamId),
     eq(collectionRecords.collectionId, collectionId),
     eq(collectionRecords.status, "confirmed"),
+    mirrorRecordVisible(data.drive, collectionRecords.documentId),
   ];
   for (const [key, value] of Object.entries(filters)) {
     const text = toFilterText(value);

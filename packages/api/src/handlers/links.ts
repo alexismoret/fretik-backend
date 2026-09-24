@@ -1,3 +1,4 @@
+import { driveVisibility } from "@fretik/shared/authz/drive-sql";
 import { access } from "@fretik/shared/authz/http";
 import {
   authMiddleware,
@@ -105,6 +106,7 @@ linkRoutes.openapi(listRoute, async (c) => {
     recordId,
     teamId: team.id,
     organizationId: team.organizationId,
+    drive: await driveVisibility(c.get("principal"), team.id),
   });
   return c.json(links, 200);
 });
@@ -125,6 +127,8 @@ linkRoutes.openapi(createRouteDef, async (c) => {
   const created = await createLink({
     organizationId: team.organizationId,
     teamId: team.id,
+    // Both ends must be records the person can see.
+    drive: await driveVisibility(c.get("principal"), team.id),
     linkTypeId: body.linkTypeId,
     fromRecordId: body.fromRecordId,
     toRecordId: body.toRecordId,

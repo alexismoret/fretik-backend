@@ -79,6 +79,7 @@ export const createPageReviewTool = () =>
         page,
         teamId: project.teamId,
         userId: project.userId,
+        reader: await project.principal(),
         conversationId: project.conversationId,
         scope: project.reviewScope,
         builderProfileKey: project.modelProfileKey,

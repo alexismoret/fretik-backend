@@ -1,5 +1,6 @@
 import { tool } from "ai";
 import { z } from "zod";
+import { actingPrincipal } from "../agents/shared/acting-principal";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
 import { executeSql } from "../services/sql/execute";
 
@@ -44,6 +45,7 @@ export const createSqlQueryTool = () =>
         sqlQuery: sql_query,
         teamId: ctx.teamId,
         organizationId: ctx.organizationId,
+        principal: await actingPrincipal(ctx),
         offset,
         conversationId: ctx.conversationId,
         toolCallId: options.toolCallId,

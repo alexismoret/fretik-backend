@@ -1,4 +1,5 @@
 import { and, eq, sql, type SQL } from "drizzle-orm";
+import type { DriveVisibility } from "../../authz/drive-sql";
 import db from "../../db";
 import type { FieldDefinitionType, OntologyStatus } from "../../db/schema";
 import { collectionRecords } from "../../db/schema";
@@ -114,6 +115,9 @@ const metricExpression = (
 export const aggregateRecords = async (data: {
   teamId: string;
   collectionId: string;
+  /** What the person can open in the Drive: a hidden file's mirror is out. */
+  drive: DriveVisibility;
+
   status?: OntologyStatus;
   filters?: RecordFilter[];
   /** Field to group by. Omitted → a single scalar row (the KPI case). */
@@ -179,7 +183,9 @@ export const aggregateRecords = async (data: {
     eq(collectionRecords.collectionId, collectionId),
     eq(collectionRecords.status, status),
   ];
-  conditions.push(recordVisibilityCondition({ teamId, scope }));
+  conditions.push(
+    recordVisibilityCondition({ teamId, scope, drive: data.drive }),
+  );
 
   // Filters compare columns on the extension table, which is already joined as
   // `e` below — so the predicates go straight into the WHERE, no correlated

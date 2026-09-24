@@ -148,14 +148,3 @@ const levelFromGrant = (
         : null;
   }
 };
-
-/**
- * The ids a person "is", for the denormalised ACL arrays (`ai_vectors`): a row
- * is visible when its array overlaps these. Guests are not the organization.
- */
-export const principalAclIds = (principal: UserPrincipal): string[] => [
-  principal.userId,
-  ...principal.teamRoles.keys(),
-  ...principal.projectLevels.keys(),
-  ...(principal.isGuest ? [] : [principal.organizationId]),
-];

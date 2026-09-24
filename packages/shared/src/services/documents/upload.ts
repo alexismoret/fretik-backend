@@ -1,5 +1,8 @@
 import { randomUUIDv7 } from "bun";
 import { eq, sql } from "drizzle-orm";
+import { requireAccess } from "../../authz/access";
+import { driveVisibility } from "../../authz/drive-sql";
+import type { UserPrincipal } from "../../authz/principal";
 
 import db, { type Transaction } from "../../db";
 import { folders, teamSettings } from "../../db/schema";
@@ -210,7 +213,8 @@ export const uploadDocument = async (
   file: File,
   organizationId: string,
   teamId: string,
-  userId: string,
+  /** Who uploads: they own the file, and only what they can open collides. */
+  principal: UserPrincipal,
   folderId: string | undefined,
   /**
    * What to do when the folder already holds a file with this name. `ask` (the
@@ -235,11 +239,14 @@ export const uploadDocument = async (
   await assertFolderInTeam({ folderId, teamId });
 
   // 2b. Same name, same folder — decide before any bytes move.
+  const userId = principal.userId;
+  const visibility = await driveVisibility(principal, teamId);
   const collision = await findNameCollision({
     teamId,
     folderId: folderId ?? null,
     filename: file.name,
     fileHash,
+    visibility,
   });
   let filename = file.name;
 
@@ -262,6 +269,13 @@ export const uploadDocument = async (
       );
     }
     if (onConflict === "replace") {
+      // A new version of someone's file takes edit on that file.
+      await requireAccess({
+        principal,
+        type: "document",
+        id: collision.documentId,
+        required: "edit",
+      });
       const result = await replaceDocumentContent({
         documentId: collision.documentId,
         teamId,
@@ -281,6 +295,7 @@ export const uploadDocument = async (
       teamId,
       folderId: folderId ?? null,
       filename: file.name,
+      visibility,
     });
   }
 

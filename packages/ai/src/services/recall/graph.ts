@@ -1,5 +1,7 @@
+import type { DriveVisibility } from "@fretik/shared/authz/drive-sql";
 import db from "@fretik/shared/db";
 import type { RecordAnchor } from "@fretik/shared/services/collection-records/anchor";
+import { listReadableRecordIds } from "@fretik/shared/services/collection-sharing/read-access";
 
 /**
  * Deterministic graph neighborhood of the records anchored in the user's
@@ -9,7 +11,9 @@ import type { RecordAnchor } from "@fretik/shared/services/collection-records/an
  * into the GRAPH section verbatim-ish, with provenance ids.
  *
  * Privacy: episode selection applies the same rule as `listEpisodes` —
- * team episodes (userId NULL) plus the caller's own private ones.
+ * team episodes (userId NULL) plus the caller's own private ones. A linked
+ * record the person may not read (another team's, the mirror of a file kept
+ * from them) is not a line: its label is exactly what is kept from them.
  */
 
 /**
@@ -132,6 +136,10 @@ const day = (d: Date | null): string =>
 
 export const gatherGraphNeighborhood = async (input: {
   anchors: RecordAnchor[];
+  organizationId: string;
+  teamId: string;
+  /** What the person can open in the Drive (`authz/drive-sql.ts`). */
+  drive: DriveVisibility;
   userId?: string;
 }): Promise<GraphNeighborhood | null> => {
   if (input.anchors.length === 0) return null;
@@ -188,6 +196,20 @@ export const gatherGraphNeighborhood = async (input: {
         ),
       ),
     ]);
+
+  const neighbourOf = (
+    link: { fromRecordId: string; toRecordId: string },
+    anchorId: string,
+  ): string =>
+    link.fromRecordId === anchorId ? link.toRecordId : link.fromRecordId;
+  const readableNeighbours = await listReadableRecordIds({
+    recordIds: linksPerAnchor.flatMap((links, i) =>
+      links.map((link) => neighbourOf(link, anchorIds[i] ?? "")),
+    ),
+    teamId: input.teamId,
+    organizationId: input.organizationId,
+    drive: input.drive,
+  });
 
   // Episode edges keep a global top-N (the block has one episode budget), but
   // each anchor still contributes its own candidates to that ranking.
@@ -272,6 +294,7 @@ export const gatherGraphNeighborhood = async (input: {
     // Positional: this anchor's own query result, already capped at
     // MAX_LINKS_PER_ANCHOR — no cross-anchor filtering left to do.
     for (const link of linksPerAnchor[i] ?? []) {
+      if (!readableNeighbours.has(neighbourOf(link, anchor.recordId))) continue;
       const fromId = link.fromRecord?.id;
       const toId = link.toRecord?.id;
       const from = link.fromRecord?.label ?? "?";

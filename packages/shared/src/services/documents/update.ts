@@ -4,6 +4,7 @@ import { documentProperties, documents, folders } from "../../db/schema";
 import { notFound, throwHttpError } from "../../lib/errors";
 import { deleteKeysByPrefix } from "../../lib/redis";
 import type { UpdateDocumentInput } from "../../schemas/documents";
+import { refreshAclsAfterAccessChange } from "../ai-vectors/acl";
 import { setRecordData } from "../collection-records/update";
 import { readRecordData } from "../collection-schema/record-io";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
@@ -99,6 +100,16 @@ export const updateDocument = async (data: {
       })
       .where(eq(documents.id, id))
       .returning();
+
+    // Moved: it now inherits from another folder, and the assistant's search
+    // follows it there (`acl.ts`).
+    if (folderHasChanged && doc) {
+      await refreshAclsAfterAccessChange({
+        executor: tx,
+        type: "document",
+        id,
+      });
+    }
 
     // Universal properties (summary + language). Industry-specific fields
     // go through documentFieldValues below.

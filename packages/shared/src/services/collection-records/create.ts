@@ -1,4 +1,5 @@
 import { eq, sql } from "drizzle-orm";
+import { driveVisibilityForWriter } from "../../authz/drive-sql";
 import db, { type Transaction } from "../../db";
 import type {
   CollectionRecordWithData,
@@ -106,11 +107,15 @@ export const createCollectionRecord = async (input: {
   // Resolve relation targets up front (the source type is known) — batched, and
   // before any write, so a bad relation fails fast with nothing created.
   const relations = input.relations ?? [];
+  // A relation to a file's mirror takes being able to open the file.
+  const drive =
+    relations.length > 0 ? await driveVisibilityForWriter(input) : null;
   let resolvedTargets: ResolvedRelationTarget[] = [];
-  if (relations.length > 0) {
+  if (drive !== null) {
     const { resolved, errors } = await resolveRelationInputs({
       organizationId: input.organizationId,
       teamId: input.teamId,
+      drive,
       fromCollectionId: input.collectionId,
       relations,
     });
@@ -187,10 +192,11 @@ export const createCollectionRecord = async (input: {
 
     // 3. Outgoing relations — same transaction (the edge writes see the record
     //    just inserted). A link failure rolls the whole create back.
-    if (resolvedTargets.length > 0) {
+    if (drive !== null && resolvedTargets.length > 0) {
       const { errors: linkErrors } = await bulkCreateLinks({
         organizationId: input.organizationId,
         teamId: input.teamId,
+        drive,
         links: resolvedTargets.map((t) => ({
           linkTypeId: t.linkTypeId,
           fromRecordId: row.id,

@@ -1,6 +1,10 @@
 import "@hono/zod-openapi";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { HTTPException } from "hono/http-exception";
+import {
+  type DriveVisibility,
+  driveVisibility,
+} from "../../../src/authz/drive-sql";
 import db from "../../../src/db";
 import { collectionGrants, recordShares } from "../../../src/db/schema";
 import { countRecordsForType } from "../../../src/services/collection-records/count";
@@ -43,11 +47,22 @@ import { rejection } from "../../lib/expect-rejection";
 let fx: WorkspaceFixture;
 let foreign: WorkspaceFixture;
 let otherTeamId: string;
+/** What a member of each team opens in its Drive: every record read takes it. */
+let viewerDrive: DriveVisibility;
+let foreignDrive: DriveVisibility;
 
 beforeAll(async () => {
   fx = await createWorkspaceFixture();
   foreign = await createWorkspaceFixture();
   otherTeamId = (await fx.createTeam()).id;
+  viewerDrive = await driveVisibility(
+    await fx.principalOf(fx.userIds[0]),
+    fx.teamId,
+  );
+  foreignDrive = await driveVisibility(
+    await foreign.principalOf(foreign.userIds[0]),
+    foreign.teamId,
+  );
 });
 
 afterAll(async () => {
@@ -58,6 +73,7 @@ afterAll(async () => {
 const viewer = () => ({
   teamId: fx.teamId,
   organizationId: fx.organizationId,
+  drive: viewerDrive,
 });
 
 const statusOf = async (promise: Promise<unknown>): Promise<number> => {
@@ -181,6 +197,7 @@ describe("listing another organization's type", () => {
       await countRecordsForType({
         collectionId: collection.id,
         teamId: fx.teamId,
+        drive: viewerDrive,
       }),
     ).toBe(0);
     // The owner still sees its own record: the predicate is not just `false`.
@@ -188,6 +205,7 @@ describe("listing another organization's type", () => {
       await countRecordsForType({
         collectionId: collection.id,
         teamId: foreign.teamId,
+        drive: foreignDrive,
       }),
     ).toBe(1);
   });

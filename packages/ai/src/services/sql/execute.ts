@@ -1,3 +1,5 @@
+import type { UserPrincipal } from "@fretik/shared/authz/principal";
+import { sqlToolDriveScope } from "@fretik/shared/authz/sql-tool-scope";
 import { runReadonlyQuery } from "../../lib/db-readonly";
 import {
   DOMAIN_TOOL_THRESHOLD_CHARS,
@@ -55,6 +57,8 @@ export interface ExecuteSqlArgs {
   sqlQuery: string;
   teamId: string;
   organizationId: string;
+  /** Who the query reads for: the Drive policies read their reach. */
+  principal: UserPrincipal;
   offset?: number;
   conversationId?: string;
   toolCallId: string;
@@ -110,6 +114,7 @@ export const executeSql = async (
       sql: paginated,
       teamId: args.teamId,
       organizationId: args.organizationId,
+      drive: await sqlToolDriveScope(args.principal, args.teamId),
     });
   } catch (err) {
     console.error("[sql-tool] query execution failed", err);

@@ -1,4 +1,6 @@
 import { eq, inArray } from "drizzle-orm";
+import { loadPrincipal } from "../../authz/load-principal";
+import { partitionMirrorWrites } from "../../authz/mirror-writes";
 import db from "../../db";
 import {
   collectionRecords,
@@ -17,6 +19,38 @@ import {
   REQUESTER_CANNOT_CONTRIBUTE,
   requesterMayContribute,
 } from "./requester-access";
+
+/**
+ * The chosen items whose record the requester may write; each other one is
+ * answered in `byIndex` with its reason.
+ */
+const withoutRefusedMirrors = async (
+  approval: ToolApprovalRequest,
+  chosen: { index: number; item: ToolApprovalRecordWriteItem }[],
+  byIndex: Map<number, ToolApprovalRecordResult>,
+): Promise<{ index: number; item: ToolApprovalRecordWriteItem }[]> => {
+  const principal = await loadPrincipal({
+    organizationId: approval.organizationId,
+    userId: approval.userId,
+  });
+  const recordIds = chosen.flatMap((c) =>
+    c.item.recordId === undefined ? [] : [c.item.recordId],
+  );
+  const refused = new Map(
+    principal === null
+      ? recordIds.map((id) => [id, REQUESTER_CANNOT_CONTRIBUTE] as const)
+      : (await partitionMirrorWrites({ principal, recordIds })).refused.map(
+          (r) => [r.id, r.error] as const,
+        ),
+  );
+  return chosen.filter((c) => {
+    const error =
+      c.item.recordId === undefined ? undefined : refused.get(c.item.recordId);
+    if (error === undefined) return true;
+    byIndex.set(c.index, { ok: false, error });
+    return false;
+  });
+};
 
 /**
  * Execute a granted `record_write` approval — the user-selected subset of one
@@ -84,6 +118,14 @@ export const executeRecordWriteApproval = async (params: {
 
   const byIndex = new Map<number, ToolApprovalRecordResult>();
 
+  // A record that mirrors a file kept from the requester takes `edit` on the
+  // file (`authz/mirror-writes.ts`) — asked again now, since access may have
+  // moved between the card and the grant.
+  const writable =
+    payload.op === "create"
+      ? chosen
+      : await withoutRefusedMirrors(params.approval, chosen, byIndex);
+
   if (payload.op === "create" && payload.collectionId !== undefined) {
     const collectionId = payload.collectionId;
     const rows = chosen.map((c) => ({
@@ -124,7 +166,7 @@ export const executeRecordWriteApproval = async (params: {
       );
     });
   } else if (payload.op === "update") {
-    const updates = chosen
+    const updates = writable
       .filter((c) => c.item.recordId !== undefined)
       .map((c) => ({ id: c.item.recordId ?? "", data: c.item.data ?? {} }));
     const { updatedIds, errors } = await bulkUpdateCollectionRecords({
@@ -135,7 +177,7 @@ export const executeRecordWriteApproval = async (params: {
     });
     const updated = new Set(updatedIds);
     const errById = new Map(errors.map((e) => [e.id, e.error]));
-    for (const c of chosen) {
+    for (const c of writable) {
       const recordId = c.item.recordId;
       if (recordId === undefined) {
         byIndex.set(c.index, { ok: false, error: "Missing record id." });
@@ -153,7 +195,7 @@ export const executeRecordWriteApproval = async (params: {
       }
     }
   } else if (payload.op === "delete") {
-    const ids = chosen
+    const ids = writable
       .map((c) => c.item.recordId)
       .filter((id): id is string => id !== undefined);
     const { deletedIds, errors } = await bulkDeleteCollectionRecords({
@@ -163,7 +205,7 @@ export const executeRecordWriteApproval = async (params: {
     });
     const deleted = new Set(deletedIds);
     const errById = new Map(errors.map((e) => [e.id, e.error]));
-    for (const c of chosen) {
+    for (const c of writable) {
       const recordId = c.item.recordId;
       if (recordId === undefined) {
         byIndex.set(c.index, { ok: false, error: "Missing record id." });

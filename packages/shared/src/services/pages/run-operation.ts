@@ -94,6 +94,7 @@ export const runPageOperation = async (params: {
       organizationId: params.organizationId,
       teamId: params.teamId,
       userId: params.userId,
+      principal: params.principal,
       state,
     });
   }

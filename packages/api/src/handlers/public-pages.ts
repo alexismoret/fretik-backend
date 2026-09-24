@@ -1,4 +1,5 @@
 import { access } from "@fretik/shared/authz/http";
+import { teamAgentPrincipal } from "@fretik/shared/authz/team-agent";
 import db from "@fretik/shared/db";
 import { type HonoLoggedAppType } from "@fretik/shared/lib/auth-middleware";
 import {
@@ -231,7 +232,7 @@ publicPageRoutes.openapi(postDataRoute, async (c) => {
   // covers the window and ordering too: two viewers on different pages of the
   // same table must never share an entry.
   const data = await selectOrCache(
-    () =>
+    async () =>
       runPageData({
         // The frozen snapshot — edits made since publishing never reach an
         // anonymous viewer.
@@ -242,6 +243,12 @@ publicPageRoutes.openapi(postDataRoute, async (c) => {
         // the null makes the resolver refuse rather than guess.
         teamId: result.page.teamId,
         userId: null,
+        // Read as the team's agent: a public link shows what the team can
+        // see, never a file private to one of its people.
+        reader: await teamAgentPrincipal({
+          organizationId: result.page.organizationId,
+          teamId: result.page.teamId,
+        }),
         variables,
         ...(datasetIds !== undefined ? { datasetIds } : {}),
         ...(queries !== undefined ? { queries } : {}),

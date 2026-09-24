@@ -1,3 +1,4 @@
+import type { DriveVisibility } from "../../authz/drive-sql";
 import db from "../../db";
 import type { PageFieldDescriptor } from "../../schemas/pages";
 import { countRecordsForType } from "../collection-records/count";
@@ -123,6 +124,8 @@ export const renderRowType = (params: {
 export const describeRowTypes = async (params: {
   organizationId: string;
   teamId: string;
+  /** The builder's reader: a count never includes a file they cannot open. */
+  drive: DriveVisibility;
   keys: string[];
 }): Promise<string> => {
   const keys = [...new Set(params.keys.map((key) => key.trim()))].filter(
@@ -155,7 +158,11 @@ export const describeRowTypes = async (params: {
         teamId: params.teamId,
         collectionId: type.id,
       }),
-      countRecordsForType({ collectionId: type.id, teamId: params.teamId }),
+      countRecordsForType({
+        collectionId: type.id,
+        teamId: params.teamId,
+        drive: params.drive,
+      }),
     ]);
     if (fields.length === 0) {
       unknown.push(key);

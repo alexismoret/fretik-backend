@@ -2,10 +2,14 @@ import { describe, expect, test } from "bun:test";
 // Same side-effect import as page-render.test.ts: `schemas/pages` needs the
 // patched Zod before it loads.
 import "@hono/zod-openapi";
+import { systemPrincipal } from "../../src/authz/principal";
 import type { PageDefinition } from "../../src/schemas/pages";
 import { compilePageCode } from "../../src/services/pages/compile";
 import { renderPage } from "../../src/services/pages/render/render-page";
 import { closeRenderViews } from "../../src/services/pages/render/webview";
+
+/** These pages read no records, so who they are read as never matters. */
+const READER = systemPrincipal("unit test: a render over inline data");
 
 /**
  * The drag pass, proven against real Pragmatic boards — one wired the way the
@@ -152,6 +156,7 @@ const renderBoard = async (bindImplementation: string) => {
     definition,
     teamId: "00000000-0000-7000-8000-000000000000",
     userId: null,
+    reader: READER,
     pageName: "Drag probe board",
   });
 };

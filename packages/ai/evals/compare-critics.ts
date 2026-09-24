@@ -100,6 +100,7 @@ const main = async (): Promise<void> => {
       definition: page.definition,
       teamId,
       userId: process.env.EVAL_USER_ID ?? null,
+      reader: SYSTEM.operatorScript,
       pageName: page.name,
     });
     if (render.degraded !== undefined || !render.mounted) {

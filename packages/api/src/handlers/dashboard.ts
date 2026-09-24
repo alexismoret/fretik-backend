@@ -108,7 +108,11 @@ dashboardRoutes.openapi(activityRoute, async (c) => {
   if (!team) return throwHttpError(403, teamRequired());
 
   const { limit } = c.req.valid("query");
-  const activity = await getDashboardActivity({ teamId: team.id, limit });
+  const activity = await getDashboardActivity({
+    teamId: team.id,
+    userId: c.get("user").id,
+    limit,
+  });
 
   return c.json(activity, 200);
 });

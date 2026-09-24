@@ -43,7 +43,10 @@ export const pages = pgTable(
     teamId: uuid("team_id")
       .notNull()
       .references(() => team.id, { onDelete: "cascade" }),
-    userId: uuid("user_id").references(() => user.id, { onDelete: "set null" }),
+    // The private owner. CASCADE, not SET NULL: `userId` NULL means
+    // "team-shared", so nulling it on an account deletion published every
+    // private page of the departed person to their whole team.
+    userId: uuid("user_id").references(() => user.id, { onDelete: "cascade" }),
 
     name: varchar("name", { length: 120 }).notNull(),
     description: text("description").notNull().default(""),

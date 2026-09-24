@@ -123,7 +123,11 @@ export const loadSuggestionSources = async (
       "attention",
     ),
     soft(
-      getDashboardActivity({ teamId: scope.teamId, limit: RECENT_ACTIVITY }),
+      getDashboardActivity({
+        teamId: scope.teamId,
+        userId: scope.userId,
+        limit: RECENT_ACTIVITY,
+      }),
       { items: [] },
       "activity",
     ),

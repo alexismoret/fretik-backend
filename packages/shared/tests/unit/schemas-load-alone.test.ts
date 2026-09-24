@@ -24,10 +24,21 @@ const loadAlone = async (
   const proc = Bun.spawn(
     [
       "bun",
+      // No `.env` from the cwd. Locally it quietly supplied what CI does not
+      // have, which is how this passed on a laptop and failed in CI.
+      "--env-file=/dev/null",
       "-e",
       `await import(${JSON.stringify(SCHEMA_DIR + relative)}); process.exit(0);`,
     ],
-    { stdout: "ignore", stderr: "pipe" },
+    {
+      // The environment the preload built, passed on explicitly: a spawned
+      // process inherits the one this process STARTED with, not what the
+      // preload set since. Without it, a schema module that reaches the
+      // database handle (`bulk-operations.ts`) died on a missing DATABASE_URL.
+      env: { ...process.env },
+      stdout: "ignore",
+      stderr: "pipe",
+    },
   );
   const [code, stderr] = await Promise.all([
     proc.exited,

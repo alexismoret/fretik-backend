@@ -27,3 +27,13 @@ an outdated Bun is not a result; never push past the hook with `--no-verify`.
   cp "$(npm root -g)/bun/bin/bun.exe" "$(readlink -f "$(command -v bun)")"
   bun --version
   ```
+
+## Access control: one engine, every door
+
+Who may do what is decided by the access engine (`@fretik/shared/authz`) for
+every route, service, assistant tool and list. Read `docs/ACCESS-CONTROL.md`
+before adding a route (each declares an `access.*` rule, and the coverage test
+fails without one), a service that reads or writes someone's content (it takes
+a principal and asks the engine), or a new shareable type. Better Auth's
+endpoints that change who belongs where are closed: membership changes go
+through our routes, Better Auth's adapter and the access journal.

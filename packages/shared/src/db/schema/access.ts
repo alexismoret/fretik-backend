@@ -307,13 +307,14 @@ export const accessRequests = pgTable(
 );
 
 /**
- * The organization's access journal: every change to who may do what —
- * grants, restrictions, ownership, team roles, policies, requests. Read by
- * admins from the audit page; written by `authz/audit` next to each change,
- * never from a trigger, because the actor and the reason live in the request.
+ * The organization's access journal: every change to who may do what:
+ * memberships, invitations, teams, grants, restrictions, requests, projects,
+ * policies. Written next to each change (`services/access/record-event.ts`),
+ * never from a trigger, because the actor and the reason live in the request;
+ * read by the organization's admins (`services/access/journal/`).
  *
- * Append-only. The actor and the subject are `set null` so the trail outlives
- * the people in it, like `auth_audit_log`.
+ * Append-only. The actor is `set null` so the trail outlives the people in it,
+ * like `auth_audit_log`.
  */
 export const accessAuditLog = pgTable(
   "access_audit_log",

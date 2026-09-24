@@ -305,7 +305,12 @@ const listRunsRoute = createRoute({
     200: {
       content: {
         "application/json": {
-          schema: responseListSchema(WorkflowRunResponseSchema),
+          schema: responseListSchema(WorkflowRunResponseSchema).extend({
+            filteredCount: z.number().int().nonnegative().openapi({
+              description:
+                "The workflow's launches the trigger gate filtered out, whatever `hideFiltered` says.",
+            }),
+          }),
         },
       },
       description: "Runs, newest first",

@@ -1,5 +1,4 @@
 import { requireAccess } from "@fretik/shared/authz/access";
-import { requireCapability } from "@fretik/shared/authz/gates";
 import db from "@fretik/shared/db";
 import { readSessionFile } from "@fretik/shared/lib/chatbot-session-storage";
 import {
@@ -46,6 +45,7 @@ import { z } from "zod";
 import { actingPrincipal } from "../agents/shared/acting-principal";
 import { listConversationFiles } from "../agents/shared/fragments";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
+import { requireTurnPlacement } from "../agents/shared/turn-access";
 import { workflowToolHintNames } from "../agents/workflow/tools";
 import { liftAccessRefusal } from "../lib/access-refusal";
 import { WORKSPACE_DIRS } from "../lib/conversation-storage";
@@ -490,14 +490,14 @@ export const createManageWorkflowTool = () =>
                   : {}),
                 ...(input.scope === "private" ? { userId } : {}),
               };
-              await requireCapability({
-                principal,
-                capability: "team.content.create",
-                teamId,
-              });
+              // Where it is made, as the API's route decides it: in the
+              // chat's project when there is one (taking part in it), else
+              // in the team (contributing to it).
+              const placement = await requireTurnPlacement(ctx, {});
               const workflow = await createWorkflow({
                 organizationId,
-                teamId,
+                teamId: placement.teamId,
+                projectId: placement.projectId,
                 createdByUserId: userId,
                 principal,
                 input: createInput,

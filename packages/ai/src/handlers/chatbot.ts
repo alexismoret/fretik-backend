@@ -1,4 +1,5 @@
 import { access, teamOfResource } from "@fretik/shared/authz/http";
+import { isProjectArchived } from "@fretik/shared/authz/placement";
 import db, { type Transaction } from "@fretik/shared/db";
 import { aiChatFiles, aiMessages } from "@fretik/shared/db/schema";
 import {
@@ -17,12 +18,17 @@ import {
   ChatStreamRequestSchema,
   UiMessageSchema,
 } from "@fretik/shared/schemas/ai";
+import { ERROR_CODES } from "@fretik/shared/schemas/errors";
 import {
   clearConversationActiveStream,
   getConversationActiveStream,
   setConversationActiveStream,
 } from "@fretik/shared/services/ai/active-stream";
-import { chatAudience } from "@fretik/shared/services/ai/audience";
+import {
+  chatAudience,
+  userWorksInTeam,
+  worksInTeam,
+} from "@fretik/shared/services/ai/audience";
 import { loadCatchUpContext } from "@fretik/shared/services/ai/catch-up";
 import {
   publishConversationEvent,
@@ -199,6 +205,7 @@ import {
   buildRecallRecentTail,
   isRecallMode,
   prefetchRecallGather,
+  recallsIn,
   runUnifiedRecall,
   type RecallGathered,
   type RecallMode,
@@ -915,9 +922,10 @@ const buildTurnCallOptions = async (
   // `propagateAttributes` callback closure below (a const can't change, so
   // TS keeps the `string` narrowing; a property access would widen back).
   const activeMemoryUserId = params.contextUserId ?? params.callOptions.userId;
-  const activeMemoryInputs = activeMemoryUserId
-    ? buildActiveMemoryInputs(params.history, filenames)
-    : null;
+  const activeMemoryInputs =
+    activeMemoryUserId && recallsIn(params.callOptions)
+      ? buildActiveMemoryInputs(params.history, filenames)
+      : null;
   // The three scope-based fragments (context manifest, team objects, skills)
   // are assembled by the shared `assembleContextFragments` — same soft
   // timeouts and soft-fail semantics as the historical inline version (C4:
@@ -986,6 +994,9 @@ const buildTurnCallOptions = async (
                   teamId: params.callOptions.teamId,
                   organizationId: params.callOptions.organizationId,
                   userId: activeMemoryUserId,
+                  ...(params.callOptions.projectId === undefined
+                    ? {}
+                    : { projectId: params.callOptions.projectId }),
                   conversationId: params.conversationId,
                   agentType: "chatbot",
                   // Started at the top of the route when there was one — the
@@ -1020,6 +1031,8 @@ const buildTurnCallOptions = async (
           organizationId: params.callOptions.organizationId,
           teamId: params.callOptions.teamId,
           userId: activeMemoryUserId,
+          projectId: params.callOptions.projectId,
+          outsideTeam: params.callOptions.outsideTeam,
           logPrefix: params.logPrefix,
         },
         { mode: standingMode },
@@ -2954,9 +2967,10 @@ chatbotRoutes.post(
       retriedMessageId,
     } = parsed.data;
 
-    // The turn runs in the chat's own team, whichever one the caller has
-    // open: taking part is only ever for the people of that team
-    // (`authz/rules.ts`), and its context is the one the assistant answers in.
+    // The turn runs in the chat's own place, whichever team the caller has
+    // open: its team, and its project when it has one. Taking part is for the
+    // people who work there (`authz/rules.ts`: the project's, else the
+    // team's), and its context is the one the assistant answers in.
     const { resource, conversation } = await timeStage(
       preludeTimings,
       "getConversation",
@@ -2967,10 +2981,29 @@ chatbotRoutes.post(
       }),
     );
     const teamId = conversation.teamId;
+    const projectId = conversation.projectId ?? undefined;
+    // An archived project reads as it was and takes nothing new, a message
+    // included, until it is restored. Not 409, like everywhere else the
+    // project refuses: on this route the client transport reads a 409 as "a
+    // turn is already streaming, attach to it", which would swallow it.
+    if (projectId !== undefined && (await isProjectArchived(projectId))) {
+      return c.json(
+        {
+          code: ERROR_CODES.PROJECT_ARCHIVED,
+          message:
+            "This project is archived. Restore it to write in its chats.",
+        },
+        423,
+      );
+    }
+    // Someone who takes part in a project of another team: the team's own
+    // context stays out of their turns.
+    const outsideTeam = !worksInTeam(c.get("principal"), teamId);
     // What the assistant gathers by itself (recall, memory, the persistent
     // context) is read for everyone the answer reaches: the sender's own when
-    // nobody else reads the chat, the team's otherwise — never one person's
-    // private memory or files where others will read what it writes.
+    // nobody else reads the chat, the team's (in a project, the project's)
+    // otherwise — never one person's private memory or files where others
+    // will read what it writes.
     const audience = chatAudience(resource.node, user.id);
     const contextUserId = audience.others
       ? await timeStage(preludeTimings, "contextUser", getTeamBotUserId(teamId))
@@ -3004,7 +3037,7 @@ chatbotRoutes.post(
     // an embedding of "what is the Nordwind delivery cadence". Solo
     // conversations, the overwhelming majority, are byte-identical either way.
     const prefetchedGather =
-      lastUser && organization
+      lastUser && organization && recallsIn({ projectId, outsideTeam })
         ? prefetchRecallGather({
             userMessage: uiMessageText(lastUser),
             attachedFiles: extractLastUserFileFilenames([lastUser]).map(
@@ -3019,6 +3052,7 @@ chatbotRoutes.post(
             teamId,
             organizationId: organization.id,
             userId: contextUserId,
+            ...(projectId === undefined ? {} : { projectId }),
             conversationId,
             agentType: "chatbot",
           })
@@ -3272,6 +3306,8 @@ chatbotRoutes.post(
       userId: user.id,
       userName: user.name,
       conversationId,
+      projectId,
+      outsideTeam,
       timeZone: c.req.header("X-Client-Timezone"),
       participantsBlock,
       openToReaders: audience.readers,
@@ -3924,15 +3960,26 @@ chatbotInternalRoutes.post(
     // key — but a conversation named in the body is still checked against them:
     // a caller that mixes up one id must fail, not replay another team's history
     // under this team's identity.
+    // A conversation also brings its place: a project chat's turns work in
+    // the project, here as on the user-facing route.
+    let projectId: string | undefined;
     if (conversationId) {
       const conversation = await db.query.aiConversations.findFirst({
-        columns: { id: true },
+        columns: { id: true, projectId: true },
         where: { id: conversationId, teamId: context.teamId },
       });
       if (!conversation) {
         return throwHttpError(404, notFound("Conversation not found"));
       }
+      projectId = conversation.projectId ?? undefined;
     }
+    const outsideTeam =
+      context.userId !== undefined &&
+      !(await userWorksInTeam({
+        organizationId: context.organizationId,
+        teamId: context.teamId,
+        userId: context.userId,
+      }));
 
     const window = conversationId
       ? await loadAgentWindow(conversationId)
@@ -3951,6 +3998,8 @@ chatbotInternalRoutes.post(
       userId: context.userId,
       userName: context.userName,
       conversationId,
+      projectId,
+      outsideTeam,
       timeZone: context.timeZone,
       // Internal `/invoke` callers don't generate a resumable streamId,
       // so mint a fresh trace id here. Without it the agent-builder

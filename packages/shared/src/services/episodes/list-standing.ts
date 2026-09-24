@@ -68,6 +68,12 @@ export interface StandingEpisodesInput {
   teamId: string;
   /** The reader. Required — the block is scoped to who is asking. */
   userId: string;
+  /**
+   * Whether the team's shared episodes are read too. `false` in a project
+   * chat, which stands on the project rather than on its team, and whose
+   * reader may not be one of the team's people: only the reader's own.
+   */
+  teamWide?: boolean;
 }
 
 /** `db.execute` hands back timestamptz as a string, never a Date. */
@@ -107,7 +113,7 @@ export const listStandingEpisodes = async (
         -- The privacy boundary. Deleting this clause is the one mutation that
         -- turns this function into a leak, so it is the one the integration
         -- test deletes.
-        AND (user_id IS NULL OR user_id = ${input.userId})
+        AND (${input.teamWide === false ? sql`false` : sql`user_id IS NULL`} OR user_id = ${input.userId})
         AND coalesce(occurred_to, created_at) >= now() - make_interval(days => ${WINDOW_DAYS})
     ),
     decisions AS (

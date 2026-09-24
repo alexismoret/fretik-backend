@@ -25,6 +25,8 @@ export const salvagePageProject = async (params: {
   /** The dead run's scope — the builder's trace id. */
   scope: string;
   teamId: string;
+  /** The project the dead run worked in: a new page is made in it. */
+  projectId?: string;
   organizationId: string;
   userId: string | null;
   conversationId?: string;
@@ -38,11 +40,13 @@ export const salvagePageProject = async (params: {
     organizationId: params.organizationId,
     teamId: params.teamId,
     ...(params.userId !== null ? { userId: params.userId } : {}),
+    ...(params.projectId === undefined ? {} : { projectId: params.projectId }),
   });
 
   const built = await buildPageProject({
     state,
     teamId: params.teamId,
+    projectId: params.projectId,
     organizationId: params.organizationId,
     userId: params.userId,
     conversationId: params.conversationId,

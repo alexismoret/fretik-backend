@@ -1,4 +1,4 @@
-import { and, eq, isNull, not, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, not, sql } from "drizzle-orm";
 import { requireAccess } from "../../authz/access";
 import { bumpAccessVersion } from "../../authz/load-principal";
 import type { UserPrincipal } from "../../authz/principal";
@@ -7,12 +7,16 @@ import db, { type Executor } from "../../db";
 import {
   accessGrants,
   aiConversations,
+  aiMemories,
+  aiMemoryHistory,
+  aiVectors,
   documents,
   folders,
   pages,
   projects,
   workflows,
 } from "../../db/schema";
+import { chunkForBulk } from "../../lib/db-bulk";
 import type { AccessResourceType } from "../../schemas/access";
 import { recordAccessEvent } from "../access/record-event";
 import {
@@ -43,6 +47,9 @@ export interface ReleasedContent {
  *     it. A workflow restricted this way runs as its owner, like any other.
  *   - Files and folders land at the root of the team's Drive, each folder
  *     with everything in it.
+ *
+ * Only what it kept for the assistant goes with it: its instructions, and
+ * its notes with their history and search vectors.
  *
  * The project's members lose what they reached only through it, and what
  * was shared with the project is no longer shared with anyone. All of it in
@@ -96,6 +103,7 @@ export const deleteProject = async (input: {
     const documentIds = await releaseDocuments(tx, projectId, restrict);
     const pageIds = await releaseFlat(tx, pages, projectId, restrict);
     const workflowIds = await releaseFlat(tx, workflows, projectId, restrict);
+    await forgetProjectNotes(tx, projectId);
 
     await tx.delete(projects).where(eq(projects.id, projectId));
 
@@ -141,6 +149,36 @@ export const deleteProject = async (input: {
   });
   await bumpAccessVersion(principal.organizationId);
   return released;
+};
+
+/**
+ * The project's notes, gone with it. Their rows go by cascade with the
+ * project; their history and their search vectors, which hold their content
+ * but no key to the project, go first.
+ */
+const forgetProjectNotes = async (
+  tx: Executor,
+  projectId: string,
+): Promise<void> => {
+  const notes = await tx
+    .select({ id: aiMemories.id })
+    .from(aiMemories)
+    .where(eq(aiMemories.projectId, projectId));
+  for (const chunk of chunkForBulk(notes.map((note) => note.id))) {
+    // oxlint-disable-next-line no-await-in-loop -- one statement per chunk, in this transaction
+    await tx
+      .delete(aiMemoryHistory)
+      .where(inArray(aiMemoryHistory.memoryId, chunk));
+    // oxlint-disable-next-line no-await-in-loop -- same
+    await tx
+      .delete(aiVectors)
+      .where(
+        and(
+          eq(aiVectors.sourceType, "memories"),
+          inArray(aiVectors.sourceId, chunk),
+        ),
+      );
+  }
 };
 
 /** The kinds of items whose audience the assistant's search keeps. */

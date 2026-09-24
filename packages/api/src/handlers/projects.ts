@@ -33,6 +33,7 @@ import {
 } from "@fretik/shared/services/projects/read";
 import { updateProject } from "@fretik/shared/services/projects/update";
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
+import { projectMemoryRoutes } from "./project-memories";
 
 /**
  * `/projects` — a team's containers for one subject each: their chats, files,
@@ -44,7 +45,8 @@ import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
  * files), `edit` adds its instructions, `full` its members, its settings,
  * archiving and deleting it. A project is reached from any team: the rules
  * are decided on the project, never on the team the caller has open. Only
- * creating one happens in the active team.
+ * creating one happens in the active team. Its notes for the assistant are
+ * under `/projects/{id}/memories` (`project-memories.ts`).
  */
 const projectRoutes = new OpenAPIHono<HonoLoggedAppType>();
 projectRoutes.use("*", authMiddleware);
@@ -385,5 +387,7 @@ projectRoutes.openapi(conversationsRoute, async (c) => {
   });
   return c.json({ data }, 200);
 });
+
+projectRoutes.route("/", projectMemoryRoutes);
 
 export { projectRoutes };

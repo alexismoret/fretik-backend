@@ -4,6 +4,7 @@ import type { ResourceNode } from "../../authz/rules";
 import type { Executor } from "../../db";
 import {
   type AiVectorSourceType,
+  aiMemories,
   aiVectors,
   collectionRecords,
 } from "../../db/schema";
@@ -36,6 +37,10 @@ import { deleteEpisodeVectors } from "../episodes/vectors";
  * document's list, so the assistant never finds through the record a file it
  * could not open. And the record's activity digest — a TEAM memory — goes
  * when the team as a whole can no longer open the file.
+ *
+ * A project's note (`ai_memories.project_id`) is read by the people of the
+ * project, not by its team: its vectors name the project, from the moment
+ * they are written. A note never changes project, so that is the only time.
  */
 
 /** The resource types whose vectors can carry their own audience. */
@@ -218,13 +223,28 @@ export const refreshVectorAcls = async (input: {
 
 /**
  * The same, for the vectors of one source just written (`/internal/vectorize`).
- * A record's vectors take its document's audience when it mirrors one.
+ * A record's vectors take its document's audience when it mirrors one, a
+ * project's note its project.
  */
 export const refreshSourceVectorAcl = async (input: {
   executor: Executor;
   sourceType: AiVectorSourceType;
   sourceId: string;
 }): Promise<void> => {
+  if (input.sourceType === "memories") {
+    const [memory] = await input.executor
+      .select({ projectId: aiMemories.projectId })
+      .from(aiMemories)
+      .where(eq(aiMemories.id, input.sourceId));
+    if (memory?.projectId == null) return;
+    await writeVectorAcl({
+      executor: input.executor,
+      sourceType: "memories",
+      sourceIds: [input.sourceId],
+      acl: [memory.projectId],
+    });
+    return;
+  }
   if (input.sourceType === "records") {
     const [record] = await input.executor
       .select({ documentId: collectionRecords.documentId })

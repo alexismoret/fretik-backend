@@ -1,8 +1,8 @@
-import { and, eq, isNull, like, or } from "drizzle-orm";
+import { and, eq, like, or } from "drizzle-orm";
 import db from "../../db";
-import { aiMemories } from "../../db/schema/ai-memory";
+import { aiMemories, type AiMemoryScope } from "../../db/schema/ai-memory";
 import { createApiError, throwHttpError } from "../../lib/errors";
-import { findMemoryByPath } from "./lookup";
+import { findMemoryByPath, memoryNamespaceConditions } from "./lookup";
 import { formatMemoryPath, parseMemoryPath } from "./paths";
 import type { MemoryScopeKey } from "./types";
 
@@ -79,21 +79,14 @@ const renderFileView = (args: {
  * is collapsed into a "<dir>/  N files" line.
  */
 const renderDirectoryView = async (args: {
-  scope: "user" | "team";
+  scope: AiMemoryScope;
   relativePrefix: string; // empty for root namespace listing
   scopeKey: MemoryScopeKey;
   displayPath: string;
 }): Promise<string> => {
   const { scope, relativePrefix, scopeKey, displayPath } = args;
 
-  const conditions = [
-    eq(aiMemories.organizationId, scopeKey.organizationId),
-    eq(aiMemories.teamId, scopeKey.teamId),
-    eq(aiMemories.scope, scope),
-    scope === "user"
-      ? eq(aiMemories.userId, scopeKey.userId)
-      : isNull(aiMemories.userId),
-  ];
+  const conditions = memoryNamespaceConditions(scope, scopeKey);
   if (relativePrefix !== "") {
     // We want both the directory prefix and any nested files.
     // Drizzle's `like` is case-sensitive, which is what we want here.
@@ -215,12 +208,7 @@ export const viewMemory = async (args: {
     .from(aiMemories)
     .where(
       and(
-        eq(aiMemories.organizationId, args.scopeKey.organizationId),
-        eq(aiMemories.teamId, args.scopeKey.teamId),
-        eq(aiMemories.scope, parsed.scope),
-        parsed.scope === "user"
-          ? eq(aiMemories.userId, args.scopeKey.userId)
-          : isNull(aiMemories.userId),
+        ...memoryNamespaceConditions(parsed.scope, args.scopeKey),
         or(
           eq(aiMemories.path, parsed.relativePath),
           like(aiMemories.path, `${parsed.relativePath}/%`),

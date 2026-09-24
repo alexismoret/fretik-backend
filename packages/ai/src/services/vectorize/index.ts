@@ -1,4 +1,5 @@
 import type {
+  AiMemoryScope,
   AiVectorMetadata,
   AiVectorSourceType,
   ContextVectorMetadata,
@@ -155,11 +156,16 @@ const isPageMetadata = (
  * Tags chosen to be unique and easily greppable in retrieval logs:
  *   `[TEAM_MEMORY] path:vendors/acme.md`
  *   `[USER_MEMORY] path:preferences.md`
+ *   `[PROJECT_MEMORY] path:decisions.md`
  */
-const buildMemorySemanticHeader = (metadata: MemoryVectorMetadata): string => {
-  const tag = metadata.scope === "team" ? "[TEAM_MEMORY]" : "[USER_MEMORY]";
-  return `${tag} path:${metadata.path}`;
+const MEMORY_TAGS: Record<AiMemoryScope, string> = {
+  user: "[USER_MEMORY]",
+  team: "[TEAM_MEMORY]",
+  project: "[PROJECT_MEMORY]",
 };
+
+const buildMemorySemanticHeader = (metadata: MemoryVectorMetadata): string =>
+  `${MEMORY_TAGS[metadata.scope]} path:${metadata.path}`;
 
 /**
  * Source-aware contextual header for skills. Same rationale as

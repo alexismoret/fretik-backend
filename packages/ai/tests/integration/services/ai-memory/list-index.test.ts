@@ -14,11 +14,15 @@ import db from "@fretik/shared/db";
 import { aiMemories } from "@fretik/shared/db/schema";
 import { createMemory } from "@fretik/shared/services/ai-memory/create";
 import { buildMemoryIndexManifest } from "@fretik/shared/services/ai-memory/list-index";
+import { memoryNamespacesFor } from "@fretik/shared/services/ai-memory/namespaces";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
   createMemoryTestFixture,
   type MemoryTestFixture,
 } from "../../lib/db-fixtures";
+
+/** What a team's chat reads: the writer's own notes and the team's. */
+const TEAM_CHAT = memoryNamespacesFor({});
 
 describe("buildMemoryIndexManifest", () => {
   let fx: MemoryTestFixture;
@@ -39,11 +43,14 @@ describe("buildMemoryIndexManifest", () => {
     // second and it read back `preferences.md` and `carriers/dhl.md`.
     const emptyFx = await createMemoryTestFixture();
     try {
-      const out = await buildMemoryIndexManifest({
-        organizationId: emptyFx.organizationId,
-        teamId: emptyFx.teamId,
-        userId: emptyFx.userIds[0],
-      });
+      const out = await buildMemoryIndexManifest(
+        {
+          organizationId: emptyFx.organizationId,
+          teamId: emptyFx.teamId,
+          userId: emptyFx.userIds[0],
+        },
+        TEAM_CHAT,
+      );
       expect(out).toContain("(no memories yet");
       expect(out).toContain("<memory_index>");
     } finally {
@@ -77,11 +84,14 @@ describe("buildMemoryIndexManifest", () => {
       actor: { actor: "human", userId: userA },
     });
 
-    const out = await buildMemoryIndexManifest({
-      organizationId: fx.organizationId,
-      teamId: fx.teamId,
-      userId: userA,
-    });
+    const out = await buildMemoryIndexManifest(
+      {
+        organizationId: fx.organizationId,
+        teamId: fx.teamId,
+        userId: userA,
+      },
+      TEAM_CHAT,
+    );
     expect(out).toContain("/memories/user/");
     expect(out).toContain("preferences.md");
     expect(out).toContain("/memories/team/");
@@ -111,11 +121,14 @@ describe("buildMemoryIndexManifest", () => {
     }));
     await db.insert(aiMemories).values(rows);
 
-    const out = await buildMemoryIndexManifest({
-      organizationId: otherFx.organizationId,
-      teamId: otherFx.teamId,
-      userId: userA,
-    });
+    const out = await buildMemoryIndexManifest(
+      {
+        organizationId: otherFx.organizationId,
+        teamId: otherFx.teamId,
+        userId: userA,
+      },
+      TEAM_CHAT,
+    );
     expect(out).toContain("big/  35 files");
     await otherFx.cleanup();
   });

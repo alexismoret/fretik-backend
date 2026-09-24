@@ -134,6 +134,16 @@ export const createRagSearchTool = () =>
           ? `Ignored unsupported sourceType(s): ${droppedTypes.join(", ")}. Supported: ${AI_VECTOR_SOURCE_TYPES.join(", ")}.`
           : undefined;
 
+      // Someone outside the team, in a chat of the team that is in no
+      // project, has nothing to search here: the team's rows are its
+      // people's (`recallsIn`).
+      if (ctx.outsideTeam === true && ctx.projectId === undefined) {
+        return {
+          results: [],
+          ...(sourceTypeNotice ? { notice: sourceTypeNotice } : {}),
+        };
+      }
+
       let result: Awaited<ReturnType<typeof searchRAG>>;
       try {
         result = await searchRAG({
@@ -141,6 +151,12 @@ export const createRagSearchTool = () =>
           teamId: ctx.teamId,
           organizationId: ctx.organizationId,
           userId: ctx.userId,
+          // Someone outside the team searches the project, never the rows
+          // that are simply the team's. The team's own people search all
+          // they can open, from the project as from anywhere.
+          ...(ctx.outsideTeam === true && ctx.projectId !== undefined
+            ? { withinProject: ctx.projectId }
+            : {}),
           filters: effectiveFilters,
           topK: TOP_K,
           debug: RAG_DEBUG,

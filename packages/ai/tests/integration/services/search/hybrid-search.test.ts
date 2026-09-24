@@ -589,3 +589,123 @@ describe("hybridSearch: rows with their own audience", () => {
     expect(found.has(ids.sharedWithTeamB)).toBe(false);
   }, 60_000);
 });
+
+/**
+ * A project chat's search: what names the project (or the searcher) as its
+ * audience, and the searcher's own rows — never what is simply its team's.
+ * Its reader may come from another team; the team's own knowledge is its
+ * people's.
+ */
+describe("hybridSearch: within one project", () => {
+  let fx: MemoryTestFixture;
+  let queryEmbedding: number[];
+  const projectId = randomUUID();
+  const otherProjectId = randomUUID();
+
+  const ids = {
+    projectDoc: randomUUID(),
+    projectNote: randomUUID(),
+    otherProjectDoc: randomUUID(),
+    teamDoc: randomUUID(),
+    teamNote: randomUUID(),
+    ownNote: randomUUID(),
+    sharedWithReader: randomUUID(),
+  } as const;
+
+  beforeAll(async () => {
+    fx = await createMemoryTestFixture();
+    const [userA] = fx.userIds;
+    const contents = [
+      QUERY,
+      "carrier rates kept in the project",
+      "freight notes the project keeps for its chats",
+      "shipping contracts of another project",
+      "carrier directory of the whole team",
+      "team convention: freight quotes need two carriers",
+      "my own shipping shortcuts for carrier rates",
+      "freight information shared with the reader directly",
+    ];
+    const vectors = await embedBatch(contents);
+    queryEmbedding = vectors[0]!;
+
+    const row = (
+      sourceType: SeededSourceType,
+      sourceId: string,
+      vIdx: number,
+      audience: { userId?: string; aclPrincipals?: string[] },
+    ): Omit<SeedRowInput, "embedding"> & { vIdx: number } => ({
+      sourceType,
+      sourceId,
+      teamId: fx.teamId,
+      organizationId: fx.organizationId,
+      userId: audience.userId ?? null,
+      content: contents[vIdx]!,
+      metadata: buildMetadata(sourceType),
+      aclPrincipals: audience.aclPrincipals ?? null,
+      vIdx,
+    });
+    const seeds = [
+      row("documents", ids.projectDoc, 1, { aclPrincipals: [projectId] }),
+      row("memories", ids.projectNote, 2, { aclPrincipals: [projectId] }),
+      row("documents", ids.otherProjectDoc, 3, {
+        aclPrincipals: [otherProjectId],
+      }),
+      row("documents", ids.teamDoc, 4, {}),
+      row("memories", ids.teamNote, 5, {}),
+      row("memories", ids.ownNote, 6, { userId: userA }),
+      row("documents", ids.sharedWithReader, 7, { aclPrincipals: [userA] }),
+    ];
+    for (const seed of seeds) {
+      // oxlint-disable-next-line no-await-in-loop
+      await insertSeedRow({ ...seed, embedding: vectors[seed.vIdx]! });
+    }
+  }, 60_000);
+
+  afterAll(async () => {
+    await fx.cleanup();
+  });
+
+  test("finds the project's and the reader's own, nothing of the team's", async () => {
+    const [userA] = fx.userIds;
+    const found = new Set(
+      (
+        await hybridSearch({
+          query: QUERY,
+          queryEmbedding,
+          teamId: fx.teamId,
+          organizationId: fx.organizationId,
+          userId: userA,
+          withinProject: projectId,
+        })
+      ).map((row) => row.sourceId),
+    );
+    expect(found.has(ids.projectDoc)).toBe(true);
+    expect(found.has(ids.projectNote)).toBe(true);
+    expect(found.has(ids.ownNote)).toBe(true);
+    expect(found.has(ids.sharedWithReader)).toBe(true);
+    expect(found.has(ids.teamDoc)).toBe(false);
+    expect(found.has(ids.teamNote)).toBe(false);
+    expect(found.has(ids.otherProjectDoc)).toBe(false);
+  }, 60_000);
+
+  test("from the team, a project's people find it beside the team's", async () => {
+    const [userA] = fx.userIds;
+    const found = new Set(
+      (
+        await hybridSearch({
+          query: QUERY,
+          queryEmbedding,
+          teamId: fx.teamId,
+          organizationId: fx.organizationId,
+          userId: userA,
+          projectIds: [projectId],
+        })
+      ).map((row) => row.sourceId),
+    );
+    expect(found.has(ids.projectDoc)).toBe(true);
+    expect(found.has(ids.projectNote)).toBe(true);
+    expect(found.has(ids.teamDoc)).toBe(true);
+    expect(found.has(ids.teamNote)).toBe(true);
+    expect(found.has(ids.otherProjectDoc)).toBe(false);
+  }, 60_000);
+});

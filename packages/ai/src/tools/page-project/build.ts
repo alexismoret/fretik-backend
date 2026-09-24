@@ -94,6 +94,7 @@ export const buildFromContext = async (
   const result = await buildPageProject({
     state: project.state,
     teamId: project.teamId,
+    projectId: project.projectId,
     organizationId: project.organizationId,
     userId: project.userId,
     conversationId: project.conversationId,

@@ -1,9 +1,11 @@
 import db from "../../../db";
 import { type ExternalAppConnection } from "../../../db/schema";
+import { reachesTeamSharedConnections } from "./team-shared-reach";
 
 /**
- * Connections visible to a member of `teamId` acting as `userId`:
- *  - every team-scoped connection (`user_id IS NULL`),
+ * Connections visible to `userId` in `teamId`:
+ *  - every team-scoped connection (`user_id IS NULL`), for the team's own
+ *    people (`reachesTeamSharedConnections`),
  *  - plus connections the caller scoped to themselves.
  *
  * Returned newest-first. Used by `/settings/external-apps` and by the
@@ -12,11 +14,15 @@ import { type ExternalAppConnection } from "../../../db/schema";
 export const listConnections = async (
   teamId: string,
   userId: string,
-): Promise<ExternalAppConnection[]> =>
-  db.query.externalAppConnections.findMany({
+): Promise<ExternalAppConnection[]> => {
+  const teamShared = await reachesTeamSharedConnections(teamId, userId);
+  return db.query.externalAppConnections.findMany({
     where: {
       teamId,
-      OR: [{ userId: { isNull: true } }, { userId }],
+      ...(teamShared
+        ? { OR: [{ userId: { isNull: true } }, { userId }] }
+        : { userId }),
     },
     orderBy: { createdAt: "desc" },
   });
+};

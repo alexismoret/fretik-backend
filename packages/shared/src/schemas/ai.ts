@@ -3,6 +3,7 @@ import type { UIMessage } from "ai";
 import {
   aiAgentTypeEnum,
   aiConversationMemberRoleEnum,
+  aiMemoryScopeEnum,
   aiVectorSourceTypeEnum,
   CONVERSATION_TASK_KINDS,
 } from "../db/schema";
@@ -106,7 +107,7 @@ export const documentVectorMetadataSchema = z.object({
  * `source_type`, `source_id` stay on dedicated columns.
  */
 export const memoryVectorMetadataSchema = z.object({
-  scope: z.enum(["user", "team"]),
+  scope: z.enum(aiMemoryScopeEnum.enumValues),
   path: z.string().min(1),
   size_bytes: z.number().int().nonnegative(),
   created_at: z.string(),

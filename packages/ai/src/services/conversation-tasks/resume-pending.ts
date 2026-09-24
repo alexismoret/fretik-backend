@@ -8,6 +8,7 @@ import {
   clearConversationActiveStream,
   setConversationActiveStream,
 } from "@fretik/shared/services/ai/active-stream";
+import { userWorksInTeam } from "@fretik/shared/services/ai/audience";
 import { publishConversationEvent } from "@fretik/shared/services/ai/conversation-events";
 import { saveMessages } from "@fretik/shared/services/ai/messages";
 import { openTurnLog } from "@fretik/shared/services/ai/turn-log";
@@ -81,6 +82,7 @@ const runResume = async (params: { conversationId: string }): Promise<void> => {
       id: true,
       organizationId: true,
       teamId: true,
+      projectId: true,
       userId: true,
       agentType: true,
       modelProfileKey: true,
@@ -149,12 +151,24 @@ const runResume = async (params: { conversationId: string }): Promise<void> => {
 
     const history = (await loadAgentWindow(conversationId)).messages;
     const actingUserId = built.actingUserId ?? conversation.userId;
+    // The resumed turn works where the chat lives, for the same person: a
+    // project chat's in the project, with the team's own context kept from
+    // someone outside the team.
+    const outsideTeam =
+      actingUserId !== null &&
+      !(await userWorksInTeam({
+        organizationId: conversation.organizationId,
+        teamId: conversation.teamId,
+        userId: actingUserId,
+      }));
     const callOptions: ChatbotCallOptions = {
       organizationId: conversation.organizationId,
       teamId: conversation.teamId,
       conversationId,
       traceId: streamId,
       ...(actingUserId ? { userId: actingUserId } : {}),
+      ...(conversation.projectId ? { projectId: conversation.projectId } : {}),
+      outsideTeam,
     };
     const { profileKey } = resolveFlagshipProfileKey(
       conversation.modelProfileKey,

@@ -25,6 +25,7 @@ import {
   forceSetConversationActiveStream,
 } from "@fretik/shared/services/ai/active-stream";
 import { approvalPendingId } from "@fretik/shared/services/ai/approval-pending";
+import { userWorksInTeam } from "@fretik/shared/services/ai/audience";
 import { saveMessage, saveMessages } from "@fretik/shared/services/ai/messages";
 import {
   endTurnLog,
@@ -380,6 +381,17 @@ const executeTurn = async (params: {
     throw new Error(`run ${run.id} has no conversation`);
   }
   const actingUserId = run.actingUserId ?? undefined;
+  // A restricted workflow runs as its owner, who may take part in a project
+  // of this team without being one of its people: the run then reads none of
+  // the team's own context, as their chats would not. The team's agent is
+  // always one of them.
+  const outsideTeam =
+    actingUserId !== undefined &&
+    !(await userWorksInTeam({
+      organizationId: run.organizationId,
+      teamId: run.teamId,
+      userId: actingUserId,
+    }));
   const traceId = randomUUIDv7();
 
   // Which model serves this run: the workflow's own pin → the team's flagship
@@ -470,6 +482,8 @@ const executeTurn = async (params: {
         organizationId: run.organizationId,
         teamId: run.teamId,
         userId: actingUserId,
+        ...(workflow.projectId ? { projectId: workflow.projectId } : {}),
+        outsideTeam,
         logPrefix,
       },
       // The memory surfaces ride turn 1's steering message and then replay
@@ -495,6 +509,8 @@ const executeTurn = async (params: {
           teamId: run.teamId,
           conversationId,
           actingUserId,
+          ...(workflow.projectId ? { projectId: workflow.projectId } : {}),
+          outsideTeam,
           workflowName: workflow.name,
           playbookGoal: workflow.playbook.goal,
           triggerPayload: run.triggerPayload,
@@ -535,6 +551,10 @@ const executeTurn = async (params: {
     teamId: run.teamId,
     userId: actingUserId,
     conversationId,
+    // A workflow of a project works in it: what it reads is the project's,
+    // and what it creates lands there (`actingPrincipal`).
+    ...(workflow.projectId ? { projectId: workflow.projectId } : {}),
+    outsideTeam,
     traceId,
     workflowRunId: run.id,
     workflowAutonomy: workflow.autonomy,

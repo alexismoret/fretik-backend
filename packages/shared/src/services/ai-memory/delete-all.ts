@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, inArray } from "drizzle-orm";
 import db from "../../db";
 import {
   aiMemories,
@@ -8,6 +8,7 @@ import {
 import { forbidden, throwHttpError } from "../../lib/errors";
 import { toDomainEventActor } from "../domain-events/emit";
 import { emitDomainEventsBulk } from "../domain-events/emit-bulk";
+import { memoryNamespaceConditions } from "./lookup";
 import type { MemoryScopeKey } from "./types";
 import { deleteMemoryVectorsBulk } from "./vector-refresh";
 
@@ -18,6 +19,8 @@ import { deleteMemoryVectorsBulk } from "./vector-refresh";
  *   - `scope='team'` (`team.memory.manage`, decided by the caller) deletes
  *     the team's shared notes. Members' personal notes stay: they are theirs,
  *     and each member can reset their own.
+ *   - `scope='project'` (`full` on the project, decided by the caller)
+ *     deletes the notes of the scope key's project.
  * Each removed file leaves a final `delete` history row + a `memory.deleted`
  * journal entry so the activity panel still explains the wipe, then their RAG
  * vectors are dropped in one set-based DELETE (no FK from `ai_vectors`).
@@ -26,6 +29,8 @@ export const deleteAllMemories = async (input: {
   scopeKey: MemoryScopeKey;
   scope: AiMemoryScope;
   canManageTeamMemory: boolean;
+  /** The caller manages the scope key's project (`full` on it). */
+  canManageProjectMemory?: boolean;
 }): Promise<{ deleted: number }> => {
   if (input.scope === "team" && !input.canManageTeamMemory) {
     return throwHttpError(
@@ -33,17 +38,14 @@ export const deleteAllMemories = async (input: {
       forbidden("Only a team lead can delete team memory"),
     );
   }
-
-  const conditions = [
-    eq(aiMemories.organizationId, input.scopeKey.organizationId),
-    eq(aiMemories.teamId, input.scopeKey.teamId),
-  ];
-  if (input.scope === "user") {
-    conditions.push(eq(aiMemories.scope, "user"));
-    conditions.push(eq(aiMemories.userId, input.scopeKey.userId));
-  } else {
-    conditions.push(eq(aiMemories.scope, "team"));
+  if (input.scope === "project" && input.canManageProjectMemory !== true) {
+    return throwHttpError(
+      403,
+      forbidden("Only someone who manages the project can clear its notes"),
+    );
   }
+
+  const conditions = memoryNamespaceConditions(input.scope, input.scopeKey);
 
   const targets = await db
     .select({

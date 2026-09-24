@@ -19,6 +19,12 @@ import { aiMemoryActorEnum, aiMemoryScopeEnum } from "../db/schema/ai-memory";
 export const aiMemoryScopeSchema = z.enum(aiMemoryScopeEnum.enumValues);
 export type AiMemoryScopeValue = z.infer<typeof aiMemoryScopeSchema>;
 
+/**
+ * The namespaces `/ai-memory` reads and writes: a person's own notes and the
+ * team's. A project's notes live under `/projects/{id}/memories`.
+ */
+export const teamMemoryScopeSchema = aiMemoryScopeSchema.exclude(["project"]);
+
 export const aiMemoryActorSchema = z.enum(aiMemoryActorEnum.enumValues);
 export type AiMemoryActorValue = z.infer<typeof aiMemoryActorSchema>;
 
@@ -60,7 +66,7 @@ export const MEMORY_LIST_DEFAULT_LIMIT = 20;
 export const MEMORY_LIST_MAX_LIMIT = 100;
 
 export const memoryListQuerySchema = z.object({
-  scope: aiMemoryScopeSchema.optional(),
+  scope: teamMemoryScopeSchema.optional(),
   limit: z.coerce
     .number()
     .int()
@@ -76,7 +82,7 @@ export const memoryListQuerySchema = z.object({
 // ==================== //
 
 export const createMemoryBodySchema = z.object({
-  scope: aiMemoryScopeSchema,
+  scope: teamMemoryScopeSchema,
   /**
    * Path inside the namespace, e.g. `preferences.md` or
    * `vendors/acme.md`. **Optional** — when omitted the API calls
@@ -111,7 +117,7 @@ export const deleteAllMemoriesBodySchema = z.object({
    * `user` = the caller's own user-scope notes; `team` = the team's shared
    * notes (`team.memory.manage`, decided in the handler).
    */
-  scope: aiMemoryScopeSchema,
+  scope: teamMemoryScopeSchema,
 });
 
 export type DeleteAllMemoriesInput = z.infer<
@@ -132,6 +138,29 @@ export const feedbackQuerySchema = z.object({
     .default(20),
   offset: z.coerce.number().int().min(0).optional().default(0),
 });
+
+// ==================== //
+// A PROJECT'S NOTES    //
+// ==================== //
+
+/** `/projects/{id}/memories/{memoryId}`: the project, then one of its notes. */
+export const projectMemoryParamsSchema = z.object({
+  id: z.uuid().openapi({ param: { name: "id", in: "path" } }),
+  memoryId: z.uuid().openapi({ param: { name: "memoryId", in: "path" } }),
+});
+
+export const projectMemoryListQuerySchema = memoryListQuerySchema.omit({
+  scope: true,
+});
+
+/** A note written from the project: its namespace is the project's. */
+export const createProjectMemoryBodySchema = createMemoryBodySchema.omit({
+  scope: true,
+});
+
+export type CreateProjectMemoryInput = z.infer<
+  typeof createProjectMemoryBodySchema
+>;
 
 // ==================== //
 // RESPONSE SHAPES      //

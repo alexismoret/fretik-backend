@@ -4,6 +4,10 @@ import {
 } from "@fretik/shared/authz/drive-sql";
 import { loadPrincipal } from "@fretik/shared/authz/load-principal";
 import type { UserPrincipal } from "@fretik/shared/authz/principal";
+import {
+  confineToProject,
+  isTeamAgent,
+} from "@fretik/shared/authz/project-agent";
 import { forbidden, throwHttpError } from "@fretik/shared/lib/errors";
 import { getTeamBotUserId } from "@fretik/shared/services/auth/bot-user";
 import type { AgentRuntimeContext } from "./runtime-context";
@@ -19,12 +23,20 @@ import type { AgentRuntimeContext } from "./runtime-context";
  * agent too: it reaches what the team reaches, and nothing private. There is
  * no path to "no one, so everything".
  *
+ * In a project, the team's agent works for the project alone
+ * (`confineToProject`): a workflow of the project, or a project chat several
+ * people read, reaches what everyone in the project reads and nothing else of
+ * the team. A person keeps their own access wherever they write.
+ *
  * Loaded through the principal cache, so a tool asking on every call costs
  * one Redis round trip. Someone removed from the organization mid-conversation
  * is refused, like at the API's door.
  */
 export const actingPrincipal = async (
-  ctx: Pick<AgentRuntimeContext, "organizationId" | "teamId" | "userId">,
+  ctx: Pick<
+    AgentRuntimeContext,
+    "organizationId" | "teamId" | "userId" | "projectId"
+  >,
 ): Promise<UserPrincipal> => {
   const userId = ctx.userId ?? (await getTeamBotUserId(ctx.teamId));
   const principal = await loadPrincipal({
@@ -37,7 +49,9 @@ export const actingPrincipal = async (
       forbidden("You are no longer a member of this organization"),
     );
   }
-  return principal;
+  return ctx.projectId !== undefined && isTeamAgent(principal)
+    ? confineToProject(principal, ctx.projectId)
+    : principal;
 };
 
 /**
@@ -46,6 +60,9 @@ export const actingPrincipal = async (
  * the assistant through its mirror record.
  */
 export const actingDrive = async (
-  ctx: Pick<AgentRuntimeContext, "organizationId" | "teamId" | "userId">,
+  ctx: Pick<
+    AgentRuntimeContext,
+    "organizationId" | "teamId" | "userId" | "projectId"
+  >,
 ): Promise<DriveVisibility> =>
   driveVisibility(await actingPrincipal(ctx), ctx.teamId);

@@ -2,6 +2,7 @@ import { requireDriveAction } from "../../authz/drive";
 import { driveVisibility } from "../../authz/drive-sql";
 import { loadPrincipal } from "../../authz/load-principal";
 import type { UserPrincipal } from "../../authz/principal";
+import { confineToProject, isTeamAgent } from "../../authz/project-agent";
 import { forbidden, throwHttpError } from "../../lib/errors";
 import { recordSharingSchema } from "../../schemas/collection-sharing";
 import {
@@ -64,7 +65,18 @@ export interface ToolCallApplyContext {
   teamId: string;
   userId: string;
   conversationId: string;
+  /**
+   * The project the chat works in, as it is when the grant is applied: what
+   * the write creates at a root lands at the project's.
+   */
+  projectId: string | null;
 }
+
+/** Where something created at a root lands: the chat's project, if any. */
+const rootProjectOf = (
+  ctx: ToolCallApplyContext,
+  folderId: string | null,
+): string | null => (folderId === null ? ctx.projectId : null);
 
 export type ToolCallApplyFn = (
   ctx: ToolCallApplyContext,
@@ -113,7 +125,9 @@ const agentActor = (ctx: ToolCallApplyContext): EventActor => ({
  * The tool asked the same questions before the card opened; a grant can come
  * hours later, after the person was made a viewer or left, so each apply asks
  * them again (the same rules as the tool's, `authz/drive.ts` and
- * `collection-sharing/write-access.ts`).
+ * `collection-sharing/write-access.ts`). The team's agent, in a project's
+ * run, works for the project alone, as it did when it asked
+ * (`confineToProject`).
  */
 const principalOf = async (
   ctx: ToolCallApplyContext,
@@ -128,7 +142,9 @@ const principalOf = async (
       forbidden("The person this was for is no longer in the organization."),
     );
   }
-  return principal;
+  return ctx.projectId !== null && isTeamAgent(principal)
+    ? confineToProject(principal, ctx.projectId)
+    : principal;
 };
 
 // ---- manageLink -----------------------------------------------------------
@@ -170,14 +186,18 @@ const applyManageDrive: ToolCallApplyFn = async (ctx, args) => {
   const principal = await principalOf(ctx);
 
   if (action === "createFolder") {
+    const parentFolderId = strOrNull(args, "parentFolderId");
+    const projectId = rootProjectOf(ctx, parentFolderId);
     await requireDriveAction(principal, {
       kind: "createFolder",
       teamId: ctx.teamId,
-      parentFolderId: strOrNull(args, "parentFolderId"),
+      parentFolderId,
+      projectId,
     });
     const folder = await createFolder({
       name: str(args, "name"),
-      parentFolderId: strOrNull(args, "parentFolderId"),
+      parentFolderId,
+      projectId,
       teamId: ctx.teamId,
       userId: ctx.userId,
       actor,
@@ -267,10 +287,13 @@ const applyManageDocument: ToolCallApplyFn = async (ctx, args) => {
   const principal = await principalOf(ctx);
 
   if (action === "create") {
+    const folderId = strOrNull(args, "folderId");
+    const projectId = rootProjectOf(ctx, folderId);
     await requireDriveAction(principal, {
       kind: "addDocument",
       teamId: ctx.teamId,
-      folderId: strOrNull(args, "folderId"),
+      folderId,
+      projectId,
     });
     const document = await createAuthoredDocument({
       organizationId: ctx.organizationId,
@@ -278,7 +301,8 @@ const applyManageDocument: ToolCallApplyFn = async (ctx, args) => {
       userId: ctx.userId,
       title: str(args, "title"),
       content: strOrNull(args, "content") ?? "",
-      folderId: strOrNull(args, "folderId"),
+      folderId,
+      projectId,
       actorContext,
       eventActor: {
         actorType: "agent",
@@ -374,11 +398,13 @@ const applyUploadToDrive: ToolCallApplyFn = async (ctx, args) => {
   const folderId = strOrNull(args, "folderId");
   const replaceDocumentId = strOrNull(args, "replaceDocumentId");
 
+  const projectId = rootProjectOf(ctx, folderId);
   const principal = await principalOf(ctx);
   await requireDriveAction(principal, {
     kind: "addDocument",
     teamId: ctx.teamId,
     folderId,
+    projectId,
   });
   if (replaceDocumentId !== null) {
     await requireDriveAction(principal, {
@@ -400,6 +426,7 @@ const applyUploadToDrive: ToolCallApplyFn = async (ctx, args) => {
         userId: ctx.userId,
         principal,
         folderId,
+        projectId,
         ...(replaceDocumentId !== null ? { replaceDocumentId } : {}),
         actorContext: {
           actor: "agent",
@@ -431,6 +458,7 @@ const applyUploadToDrive: ToolCallApplyFn = async (ctx, args) => {
         teamId: ctx.teamId,
         userId: ctx.userId,
         folderId,
+        projectId,
       });
     for (const ok of promoted) {
       saved.push({

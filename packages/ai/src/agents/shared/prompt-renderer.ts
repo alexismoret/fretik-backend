@@ -12,15 +12,27 @@ import type { AgentRuntimeContext } from "./runtime-context";
 import type { RenderedAgentPrompt } from "./turn-context";
 
 /**
- * Dynamic-suffix note listing the tools the team disabled via tool-permission
- * settings — so the model can tell the user WHY it can't do something instead
- * of silently lacking the tool. Empty (byte-identical to today) when nothing is
- * blocked. Below the cache marker; the tools are already pruned from the menu.
+ * Dynamic-suffix note listing the tools withheld from this turn — so the model
+ * can tell the user WHY it can't do something instead of silently lacking the
+ * tool: the ones the team disabled via tool-permission settings, and the
+ * team's data for a writer outside the team. Empty (byte-identical to today)
+ * when nothing is withheld. Below the cache marker; the tools are already
+ * pruned from the menu.
  */
 const buildBlockedToolsNote = (ctx: AgentRuntimeContext): string => {
   const blocked = [...policyHiddenToolNames(ctx)];
-  if (blocked.length === 0) return "";
-  return `These tools are disabled by the team's permission settings and cannot be called: ${blocked.join(", ")}. If the user asks for one: ${TOOL_PERMISSIONS_REMEDIATION}`;
+  const lines: string[] = [];
+  if (blocked.length > 0) {
+    lines.push(
+      `These tools are disabled by the team's permission settings and cannot be called: ${blocked.join(", ")}. If the user asks for one: ${TOOL_PERMISSIONS_REMEDIATION}`,
+    );
+  }
+  if (ctx.outsideTeam === true) {
+    lines.push(
+      "The person writing is not one of this team's people: the team's collections, records and SQL, and its own instructions, files and notes, are not available in this chat. Work from the project and what was shared with them.",
+    );
+  }
+  return lines.join("\n");
 };
 
 /**

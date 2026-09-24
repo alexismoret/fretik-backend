@@ -90,6 +90,7 @@ export const pickDomainRegistry = (
         description: t.description,
         searchHint: t.searchHint,
         category: t.category,
+        ...(t.teamData === undefined ? {} : { teamData: t.teamData }),
       };
     }
   }

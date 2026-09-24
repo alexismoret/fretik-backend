@@ -12,6 +12,7 @@ import {
   canBrokerSandboxJwt,
   signSandboxJwt,
 } from "@fretik/shared/lib/external-apps/sandbox-jwt";
+import { memoryNamespacesFor } from "@fretik/shared/services/ai-memory/namespaces";
 import { applySandboxEgress } from "@fretik/shared/services/e2b/apply-egress";
 import {
   buildSandboxNetworkPolicy,
@@ -24,7 +25,9 @@ import { eq } from "drizzle-orm";
 import { extname } from "node:path";
 import {
   loadAccessibleContext,
+  teamContextReach,
   type AccessibleContextFile,
+  type TeamContextReach,
 } from "../services/chatbot-context/load-context";
 import {
   fileExists,
@@ -67,6 +70,8 @@ interface HydrationContext {
   userId: string | undefined;
   teamId: string;
   organizationId: string;
+  /** How much of the team's context the turn reads (`load-context.ts`). */
+  teamReach?: TeamContextReach;
 }
 
 /**
@@ -170,6 +175,7 @@ export const hydrateContextFiles = async (
     userId: ctx.userId,
     teamId: ctx.teamId,
     organizationId: ctx.organizationId,
+    ...(ctx.teamReach === undefined ? {} : { teamReach: ctx.teamReach }),
   });
 
   const usable = accessible.files.filter(
@@ -370,6 +376,10 @@ export const prepareSandboxForCode = async (ctx: {
   organizationId: string;
   teamId: string;
   userId: string | undefined;
+  /** The turn's project: its notes are mirrored, the team's files are not. */
+  projectId?: string | undefined;
+  /** Someone outside the team: none of the team's context is mirrored. */
+  outsideTeam?: boolean | undefined;
   traceId: string | undefined;
   /** Provider keys of the team's active connections, for the egress tier. */
   providerKeys?: readonly string[];
@@ -403,6 +413,7 @@ export const prepareSandboxForCode = async (ctx: {
         userId: ctx.userId,
         teamId: ctx.teamId,
         organizationId: ctx.organizationId,
+        teamReach: teamContextReach(ctx),
       });
       if (ctx.traceId !== undefined) {
         lastHydratedTurnBySandbox.set(lease.sandboxId, ctx.traceId);
@@ -430,7 +441,9 @@ export const prepareSandboxForCode = async (ctx: {
           organizationId: ctx.organizationId,
           teamId: ctx.teamId,
           userId: ctx.userId,
+          projectId: ctx.projectId ?? null,
         },
+        namespaces: memoryNamespacesFor(ctx),
       });
     } catch (err) {
       console.warn(

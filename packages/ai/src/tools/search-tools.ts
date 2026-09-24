@@ -4,7 +4,7 @@ import type {
   SearchableTool,
   SearchableToolRegistry,
 } from "../agents/shared/chatbot-tool";
-import { policyHiddenToolNames } from "../agents/shared/policy-tool-gate";
+import { hiddenToolNames } from "../agents/shared/policy-tool-gate";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
 import { workflowMainHiddenToolNames } from "../agents/shared/workflow-tool-gate";
 
@@ -262,11 +262,12 @@ export const createSearchToolsTool = (domainTools: SearchableToolRegistry) =>
       const maxResults = max_results ?? DEFAULT_MAX_RESULTS;
 
       // A withheld tool must not be resurfaced or activated (the model would
-      // see it as callable but the step-gate strips it — wasted turn). Two
+      // see it as callable but the step-gate strips it — wasted turn). Three
       // sources: the workflow autonomy write-gate (`read_only` /
-      // `approval_required`) AND the team's `blocked` tool policy (chat OR
-      // workflow). Union both.
-      const gated = new Set<string>(policyHiddenToolNames(ctx));
+      // `approval_required`), the team's `blocked` tool policy (chat OR
+      // workflow), and the team's data for a writer outside the team. Union
+      // them.
+      const gated = hiddenToolNames(ctx, domainTools);
       if (ctx.workflowAutonomy) {
         for (const n of workflowMainHiddenToolNames(ctx.workflowAutonomy))
           gated.add(n);

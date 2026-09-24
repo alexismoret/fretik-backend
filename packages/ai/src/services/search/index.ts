@@ -63,6 +63,11 @@ export interface SearchRagInput {
    * user-scope row leaks.
    */
   userId?: string;
+  /**
+   * Search this project and nothing of its team (`hybridSearch`): what a
+   * project chat gathers by itself, and what someone outside the team finds.
+   */
+  withinProject?: string;
   filters?: HybridSearchFilters;
   /** Final number of results after rerank. Default 20. */
   topK?: number;
@@ -197,6 +202,7 @@ export const searchRAG = async (
     teamId,
     organizationId,
     userId,
+    withinProject,
     filters,
     topK = DEFAULT_TOP_K,
     debug = false,
@@ -212,8 +218,12 @@ export const searchRAG = async (
   const startedAt = Date.now();
 
   // What a project holds is found by the people of the project. Read through
-  // the principal cache while the query variants are generated.
-  const searcherProjects = projectsOfSearcher(organizationId, userId);
+  // the principal cache while the query variants are generated. A search of
+  // one project names it itself.
+  const searcherProjects =
+    withinProject === undefined
+      ? projectsOfSearcher(organizationId, userId)
+      : Promise.resolve([]);
 
   const trimmed = query.trim();
   if (trimmed.length === 0) {
@@ -281,6 +291,7 @@ export const searchRAG = async (
           organizationId,
           userId,
           projectIds,
+          ...(withinProject === undefined ? {} : { withinProject }),
           filters,
         }),
       ),

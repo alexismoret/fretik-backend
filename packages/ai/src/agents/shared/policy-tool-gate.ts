@@ -56,6 +56,26 @@ export const policyHiddenToolNames = (
   return hidden;
 };
 
+/**
+ * Every tool withheld from this turn: the ones the team's policy blocks and,
+ * for a writer who is not one of the team's people, the team's data tools
+ * (`teamData`: its collections, records and SQL). What `prepareStep`, the
+ * domain-tool catalogue and `searchTools` read, so a withheld tool is neither
+ * offered nor activatable; the tool wrapper refuses it if called anyway.
+ */
+export const hiddenToolNames = (
+  ctx: AgentRuntimeContext,
+  tools: Readonly<Record<string, { teamData?: boolean }>>,
+): Set<string> => {
+  const hidden = new Set<string>(policyHiddenToolNames(ctx));
+  if (ctx.outsideTeam === true) {
+    for (const [name, definition] of Object.entries(tools)) {
+      if (definition.teamData === true) hidden.add(name);
+    }
+  }
+  return hidden;
+};
+
 /** The `approval_pending` marker a gated tool returns so the turn pauses and
  * the frontend renders the approval card (detected by shape, not tool name). */
 interface ApprovalPendingOutput {

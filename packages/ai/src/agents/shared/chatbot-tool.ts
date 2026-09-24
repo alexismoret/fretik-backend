@@ -43,6 +43,7 @@ const toJsonSafeOutput = <TOutput>(result: TOutput): TOutput => {
  */
 const guardToolExecute = <TInput, TOutput, TContext>(
   execute: ToolExecuteFunction<TInput, TOutput, TContext>,
+  opts: { teamData: boolean },
 ): ToolExecuteFunction<TInput, TOutput, TContext> => {
   /**
    * What a throw becomes. An access refusal is not a fault — the person the
@@ -64,11 +65,24 @@ const guardToolExecute = <TInput, TOutput, TContext>(
     TOutput | ToolErrorOutput,
     TContext
   > = (input, options) => {
+    const runtime = tryGetRuntimeContext(options);
+    // The team's structured data is its people's. The step-gate prunes these
+    // tools from the menu of someone outside the team, but the SDK still runs
+    // a call the model emits by name, so this is where the rule holds.
+    if (opts.teamData && runtime?.outsideTeam === true) {
+      return Promise.resolve(
+        toolError(
+          TOOL_ERROR_CODES.TEAM_DATA_UNAVAILABLE,
+          "The team's collections, records and SQL are for its people, and the person writing in this chat is not one of them. Nothing was read or changed.",
+          "Work from this chat's project: its files, pages and notes.",
+        ),
+      );
+    }
     // The ONE place every tool call passes through, which is why the per-step
     // cap is claimed here rather than in a loop hook: `stopWhen` and
     // `prepareStep` both run BETWEEN steps and cannot see, let alone stop, a
     // step that emits 1 450 calls (measured 2026-09-09).
-    const budget = tryGetRuntimeContext(options)?.stepCallBudget;
+    const budget = runtime?.stepCallBudget;
     if (budget !== undefined && !budget.tryAcquire()) {
       return Promise.resolve(
         toolError(
@@ -180,6 +194,13 @@ export type ChatbotToolDefinition<TInput, TOutput> = Tool<TInput, TOutput> & {
    * model that returns a description.
    */
   microcompactable?: boolean;
+  /**
+   * Reads or changes the team's structured data: its collections, their
+   * records, fields, links and syncs, SQL over them. Withheld from a turn
+   * whose writer is not one of the team's people (`outsideTeam`): pruned from
+   * its menus (`hiddenToolNames`) and refused if called anyway.
+   */
+  teamData?: boolean;
 };
 
 /**
@@ -196,6 +217,7 @@ export type ChatbotTool<TInput = unknown, TOutput = unknown> = Tool<
   isReadOnly: boolean;
   microcompactable: boolean;
   shouldDefer: boolean;
+  teamData: boolean;
 };
 
 /**
@@ -292,11 +314,12 @@ export const buildChatbotTool = <TInput, TOutput>(
   definition: ChatbotToolDefinition<TInput, TOutput>,
 ): ChatbotTool<TInput, TOutput> => {
   const isReadOnly = definition.isReadOnly ?? true;
+  const teamData = definition.teamData ?? false;
   const enrichedDefinition = {
     ...definition,
     inputSchema: injectCaptionField(definition.inputSchema),
     execute: definition.execute
-      ? guardToolExecute(definition.execute)
+      ? guardToolExecute(definition.execute, { teamData })
       : undefined,
   };
   const resolved: ChatbotTool<TInput, TOutput> = {
@@ -304,6 +327,7 @@ export const buildChatbotTool = <TInput, TOutput>(
     isReadOnly,
     microcompactable: definition.microcompactable ?? isReadOnly,
     shouldDefer: definition.category === "domain",
+    teamData,
   };
   return resolved;
 };
@@ -330,6 +354,8 @@ export interface SearchableTool {
   description?: ChatbotTool["description"];
   searchHint: string;
   category: ChatbotToolCategory;
+  /** See `ChatbotToolDefinition.teamData`. */
+  teamData?: boolean;
 }
 
 export type SearchableToolRegistry = Record<string, SearchableTool>;

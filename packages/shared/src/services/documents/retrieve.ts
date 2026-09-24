@@ -64,6 +64,7 @@ const resolveDocumentTypeId = async (
  * - `customFilters`: equality on `(fieldKey, value)` against the document
  *   mirror record's `data`. Each entry produces an `EXISTS` sub-select
  *   correlated on the document id — AND semantics across entries.
+ * - `projectId`: only one project's files, wherever they sit in its tree.
  * - `includeThumbnailUrl` (default `false`): generates presigned S3
  *   thumbnail URLs for `ready` documents. Off by default because
  *   presigning is remote, serial, and only the drive UI needs it.
@@ -77,6 +78,7 @@ export interface SearchDocumentsFilters {
   status?: DocumentStatus;
   entityIds?: string[];
   customFilters?: { fieldKey: string; value: unknown }[];
+  projectId?: string;
 }
 
 export interface SearchDocumentsOptions extends SearchDocumentsFilters {
@@ -126,6 +128,7 @@ export const searchDocuments = async (
     status,
     entityIds,
     customFilters,
+    projectId,
     limit = 20,
     offset = 0,
     includeThumbnailUrl = false,
@@ -158,6 +161,7 @@ export const searchDocuments = async (
         : typeof folderId === "string"
           ? { folderId }
           : {}),
+      ...(projectId === undefined ? {} : { projectId }),
       ...(entityIds && entityIds.length > 0
         ? { mirrorRecord: { outgoingLinks: { toRecordId: { in: entityIds } } } }
         : {}),

@@ -107,18 +107,40 @@ export const projectOfTree = (node: LoadedNode): string | null => {
   return top.projectId;
 };
 
-/** Refuse when the project is archived: it takes nothing new until restored. */
-export const assertProjectOpenForContent = async (
+/** Whether the project is archived: it takes nothing new until restored. */
+export const isProjectArchived = async (
   projectId: string,
-): Promise<void> => {
+): Promise<boolean> => {
   const [row] = await db
     .select({ archivedAt: projects.archivedAt })
     .from(projects)
     .where(eq(projects.id, projectId));
-  if (row?.archivedAt != null) {
+  return row?.archivedAt != null;
+};
+
+/** Refuse when the project is archived: it takes nothing new until restored. */
+export const assertProjectOpenForContent = async (
+  projectId: string,
+): Promise<void> => {
+  if (await isProjectArchived(projectId)) {
     throwHttpError(409, {
       code: ERROR_CODES.PROJECT_ARCHIVED,
       message: "This project is archived. Restore it to add to it.",
+    });
+  }
+};
+
+/**
+ * Refuse any change to what the project keeps for the assistant (its notes)
+ * while it is archived: it reads as it was until restored.
+ */
+export const assertProjectNotArchived = async (
+  projectId: string,
+): Promise<void> => {
+  if (await isProjectArchived(projectId)) {
+    throwHttpError(409, {
+      code: ERROR_CODES.PROJECT_ARCHIVED,
+      message: "This project is archived. Restore it to change it.",
     });
   }
 };

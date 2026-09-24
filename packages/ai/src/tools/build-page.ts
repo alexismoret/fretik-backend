@@ -621,6 +621,7 @@ export const createBuildPageTool = <TTools extends ToolSet>(deps: {
   salvagePage: (params: {
     scope: string;
     teamId: string;
+    projectId?: string;
     organizationId: string;
     userId: string | null;
     conversationId?: string;
@@ -646,6 +647,7 @@ export const createBuildPageTool = <TTools extends ToolSet>(deps: {
     await deps.salvagePage({
       scope: builderScope(ctx),
       teamId: ctx.teamId,
+      ...(ctx.projectId === undefined ? {} : { projectId: ctx.projectId }),
       organizationId: ctx.organizationId,
       userId: ctx.userId ?? null,
       ...(ctx.conversationId ? { conversationId: ctx.conversationId } : {}),
@@ -780,6 +782,9 @@ export const createBuildPageTool = <TTools extends ToolSet>(deps: {
       userId: ctx.userId,
       userName: ctx.userName,
       conversationId: ctx.conversationId,
+      // The page lands where the chat lives, built as its writer may.
+      projectId: ctx.projectId,
+      outsideTeam: ctx.outsideTeam,
       timeZone: ctx.timeZone,
       traceId: ctx.traceId ? `${ctx.traceId}.page` : undefined,
       workflowAutonomy: ctx.workflowAutonomy,

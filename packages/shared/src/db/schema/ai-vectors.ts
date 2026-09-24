@@ -12,6 +12,7 @@ import {
   timestamp,
   uuid,
 } from "drizzle-orm/pg-core";
+import type { AiMemoryScope } from "./ai-memory";
 import { organization, team, user } from "./auth-schema";
 
 /*
@@ -118,7 +119,7 @@ type DocumentVectorMetadata = {
  * and apply scope-aware UX without an extra round-trip.
  */
 type MemoryVectorMetadata = {
-  scope: "user" | "team";
+  scope: AiMemoryScope;
   path: string;
   size_bytes: number;
   created_at: string;

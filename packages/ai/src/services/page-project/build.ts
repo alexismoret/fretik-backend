@@ -1,5 +1,8 @@
 import { requireAccess } from "@fretik/shared/authz/access";
-import { requireCapability } from "@fretik/shared/authz/gates";
+import {
+  requirePlacement,
+  type Placement,
+} from "@fretik/shared/authz/placement";
 import type { Principal } from "@fretik/shared/authz/principal";
 import { parseApiError } from "@fretik/shared/schemas/errors";
 import type { PageDefinition } from "@fretik/shared/schemas/pages";
@@ -58,6 +61,8 @@ export interface BuildPageProjectInput {
    * one takes `team.content.create` — the same as in the app.
    */
   principal: Principal;
+  /** The project the turn works in: a new page is made in it. */
+  projectId?: string | undefined;
   /** The turn, so the version can be priced later (`PageVersionMeta.traceId`). */
   traceId?: string | undefined;
   /**
@@ -224,8 +229,11 @@ export const buildPageProject = async (
   const name = sections.name ?? nameFromSource(code.source) ?? "Untitled page";
 
   // The build writes for someone, and is refused as the app would refuse
-  // them: saving over a page takes edit on it, creating one takes
-  // `team.content.create`. Thrown, not listed: no edit to the files fixes it.
+  // them: saving over a page takes edit on it; creating one is placing it,
+  // in the turn's project when there is one (taking part in it), else in the
+  // team (`team.content.create`). Thrown, not listed: no edit to the files
+  // fixes it.
+  let placement: Placement | undefined;
   if (state.pageId !== undefined) {
     await requireAccess({
       principal: input.principal,
@@ -235,10 +243,10 @@ export const buildPageProject = async (
       notFoundMessage: "Page not found",
     });
   } else {
-    await requireCapability({
+    placement = await requirePlacement({
       principal: input.principal,
-      capability: "team.content.create",
-      teamId: input.teamId,
+      activeTeamId: input.teamId,
+      projectId: input.projectId ?? null,
     });
   }
 
@@ -270,7 +278,8 @@ export const buildPageProject = async (
             ...(versionMeta === undefined ? {} : { versionMeta }),
           })
         : await createPage({
-            teamId: input.teamId,
+            teamId: placement?.teamId ?? input.teamId,
+            projectId: placement?.projectId ?? null,
             organizationId: input.organizationId,
             createdByUserId: input.userId ?? "",
             input: {

@@ -24,6 +24,7 @@ import { memberRoutes } from "../../src/handlers/members";
 import { organizationRoutes } from "../../src/handlers/organization";
 import { pageRoutes } from "../../src/handlers/pages";
 import { pinRoutes } from "../../src/handlers/pins";
+import { projectRoutes } from "../../src/handlers/projects";
 import { publicFormRoutes } from "../../src/handlers/public-forms";
 import { publicPageRoutes } from "../../src/handlers/public-pages";
 import { signupAccessRoutes } from "../../src/handlers/signup-access";
@@ -86,6 +87,7 @@ export const MOUNTED_ROUTERS: Record<string, Probeable> = {
   "/p": publicPageRoutes,
   "/pages": pageRoutes,
   "/pins": pinRoutes,
+  "/projects": projectRoutes,
   "/sandbox": sandboxRoutes,
   "/signup-access": signupAccessRoutes,
   "/skills": skillsRoutes,

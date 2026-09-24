@@ -25,7 +25,7 @@ import {
 } from "../shared/agent-builder";
 import { memoizeAgentSets, stopOnPendingApproval } from "../shared/agent-set";
 import { parseIntEnv } from "../shared/env";
-import { policyHiddenToolNames } from "../shared/policy-tool-gate";
+import { hiddenToolNames } from "../shared/policy-tool-gate";
 import {
   computeCoreToolNames,
   pickDomainRegistry,
@@ -104,6 +104,19 @@ export const ChatbotCallOptionsSchema = z.object({
   userId: z.uuid().optional(),
   userName: z.string().optional(),
   conversationId: z.uuid().optional(),
+  /**
+   * The project the conversation lives in. What the turn gathers by itself
+   * is the project's, and what it creates lands there. Absent for a team's
+   * chat.
+   */
+  projectId: z.uuid().optional(),
+  /**
+   * The person the turn acts for is not one of the team's people: they take
+   * part in one of its projects. The team's own context (its instructions,
+   * files, memory, collections and shared connections) stays out of the
+   * turn. Absent means in the team: a workflow, an internal invocation.
+   */
+  outsideTeam: z.boolean().optional(),
   timeZone: z.string().optional(),
   /**
    * Pre-rendered fragment describing the files attached to the user
@@ -144,8 +157,8 @@ export const ChatbotCallOptionsSchema = z.object({
    */
   activeMemoryBlock: z.string().optional(),
   /**
-   * Memory INDEX — the tree of `/memories/{user,team}/` paths and sizes, no
-   * content. Always present (one indexed SELECT in the fragment batch), where
+   * Memory INDEX — the tree of paths and sizes in the namespaces the turn
+   * uses (`memoryNamespacesFor`), no content. Always present (one indexed SELECT in the fragment batch), where
    * `activeMemoryBlock` only appears when the message matched something.
    * Substituted into `{{memoryIndex}}`.
    */
@@ -283,7 +296,7 @@ const chatbotSystemPrompt = (
   // filtering happens HERE (downstream) — a `blocked` domain tool must not
   // appear in `{{deferredToolList}}`.
   const domain = pickDomainRegistry(tools, isToolSuppressed);
-  const hidden = policyHiddenToolNames(ctx);
+  const hidden = hiddenToolNames(ctx, tools);
   const visible =
     hidden.size === 0
       ? domain
@@ -316,7 +329,7 @@ const chatbotPrepareStep = (
         ctx,
         tools,
         coreNames,
-        policyHiddenToolNames(ctx),
+        hiddenToolNames(ctx, tools),
       ),
       toolsContext: buildToolsContext(tools, ctx),
     };
@@ -336,6 +349,8 @@ export const buildChatbotRuntimeContextBase = (
   userId: options.userId,
   userName: options.userName,
   conversationId: options.conversationId,
+  projectId: options.projectId,
+  outsideTeam: options.outsideTeam,
   timeZone: options.timeZone,
   attachedFilesBlock: options.attachedFilesBlock,
   nativeIngestion: options.nativeIngestion,
@@ -393,13 +408,17 @@ const subAgentSystemPrompt = (ctx: AgentRuntimeContext): Promise<string> =>
   buildSubAgentSystemPrompt(ctx);
 
 /**
- * Which tools a DELEGATE may not call. Team-policy blocked tools are hidden in
- * every context (chat + workflow); a delegate dispatched INSIDE a workflow run
- * additionally prunes the writes/memory the main workflow agent would, so
+ * Which tools a DELEGATE may not call. What the turn withholds is hidden in
+ * every context (chat + workflow): team-policy blocked tools, and the team's
+ * data for a writer outside the team. A delegate dispatched INSIDE a workflow
+ * run additionally prunes the writes/memory the main workflow agent would, so
  * delegation cannot bypass the run's write gate.
  */
-const delegateHiddenToolNames = (ctx: AgentRuntimeContext): Set<string> => {
-  const hidden = new Set<string>(policyHiddenToolNames(ctx));
+const delegateHiddenToolNames = (
+  ctx: AgentRuntimeContext,
+  tools: Readonly<Record<string, { teamData?: boolean }>>,
+): Set<string> => {
+  const hidden = hiddenToolNames(ctx, tools);
   if (ctx.workflowAutonomy !== undefined) {
     for (const name of workflowSubAgentHiddenToolNames(ctx.workflowAutonomy))
       hidden.add(name);
@@ -428,7 +447,7 @@ const subAgentPrepareStep = (
   const allNames = Object.keys(tools) as (keyof SubAgentTools)[];
   return (stepContext) => {
     const ctx = getRuntimeContext(stepContext);
-    const hidden = delegateHiddenToolNames(ctx);
+    const hidden = delegateHiddenToolNames(ctx, tools);
     return {
       activeTools: allNames.filter((name) => !hidden.has(name)),
       toolsContext: buildToolsContext(tools, ctx),
@@ -473,7 +492,7 @@ const pageBuilderPrepareStep = (
   return (stepContext) => {
     const ctx = getRuntimeContext(stepContext);
     const hidden = pageBuilderHiddenTools(
-      delegateHiddenToolNames(ctx),
+      delegateHiddenToolNames(ctx, tools),
       stepContext.messages,
     );
     const pruned = prunePageWriteHistory(stepContext.messages, pricing);

@@ -15,7 +15,10 @@ import {
   agentEventActor,
   getRuntimeContext,
 } from "../agents/shared/runtime-context";
-import { requireTurnDriveAction } from "../agents/shared/turn-access";
+import {
+  requireTurnDriveAction,
+  turnRootProject,
+} from "../agents/shared/turn-access";
 import { workflowWriteBackstop } from "../agents/shared/workflow-write-backstop";
 import { liftAccessRefusal } from "../lib/access-refusal";
 import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
@@ -70,12 +73,17 @@ export const manageDriveInputSchema = z.object({
  */
 const driveActionOf = (
   input: z.infer<typeof manageDriveInputSchema>,
-  teamId: string,
+  place: { teamId: string; rootProjectId: string | null },
 ): DriveAction | null => {
   const parentFolderId = input.parentFolderId ?? null;
   switch (input.action) {
     case "createFolder":
-      return { kind: "createFolder", teamId, parentFolderId };
+      return {
+        kind: "createFolder",
+        teamId: place.teamId,
+        parentFolderId,
+        projectId: place.rootProjectId,
+      };
     case "renameFolder":
       return input.folderId
         ? { kind: "renameFolder", folderId: input.folderId }
@@ -165,7 +173,7 @@ export const createManageDriveTool = () =>
     description: [
       "Organise the Drive: folders and where documents live. Journaled and team-scoped.",
       "",
-      "- createFolder: name (+ optional parentFolderId). Creates a folder; omit parentFolderId for the root.",
+      "- createFolder: name (+ optional parentFolderId). Creates a folder; omit parentFolderId for the root (in a project's chat, the project's root).",
       "- renameFolder: folderId + name.",
       "- moveFolder: folderId + parentFolderId (new parent; null = root).",
       "- deleteFolder: folderId. Deletes the folder AND its documents/subfolders — confirm with the user first.",
@@ -200,8 +208,13 @@ export const createManageDriveTool = () =>
         }
 
         // The person the turn acts for may do this — the rules of the Drive's
-        // own routes — before a card could ask anyone to approve it.
-        const driveAction = driveActionOf(input, ctx.teamId);
+        // own routes — before a card could ask anyone to approve it. A folder
+        // made at the root lands at the root of the chat's project, if any.
+        const rootProjectId = turnRootProject(ctx, input.parentFolderId);
+        const driveAction = driveActionOf(input, {
+          teamId: ctx.teamId,
+          rootProjectId,
+        });
         if (driveAction !== null) {
           await requireTurnDriveAction(ctx, driveAction);
         }
@@ -244,6 +257,7 @@ export const createManageDriveTool = () =>
           const folder = await createFolder({
             name: input.name,
             parentFolderId: input.parentFolderId ?? null,
+            projectId: rootProjectId,
             teamId: ctx.teamId,
             userId: ctx.userId,
             actor,

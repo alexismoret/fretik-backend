@@ -1,6 +1,11 @@
 import db from "../../db";
 import { createApiError, throwHttpError } from "../../lib/errors";
-import type { MemorySummary } from "./list-for-ui";
+import {
+  MEMORY_SUMMARY_RELATIONS,
+  type MemorySummary,
+  type MemorySummaryRow,
+  toMemorySummary,
+} from "./list-for-ui";
 
 /**
  * Settings UI payload for the "Voir" / "Éditer" modal — the full
@@ -36,35 +41,20 @@ export const getMemoryContent = async (args: {
       teamId: args.teamId,
       OR: [{ scope: "team" }, { scope: "user", userId: args.currentUserId }],
     },
-    with: {
-      createdBy: { columns: { id: true, name: true } },
-      lastModifiedBy: { columns: { id: true, name: true } },
-    },
+    with: MEMORY_SUMMARY_RELATIONS,
   });
-  if (!row) return null;
-
-  return {
-    id: row.id,
-    scope: row.scope,
-    path: row.path,
-    sizeBytes: row.sizeBytes,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-    createdBy: {
-      userId: row.createdByUserId,
-      name: row.createdBy?.name ?? null,
-      actor: row.createdByActor,
-      conversationId: row.createdByConversationId,
-    },
-    lastModifiedBy: {
-      userId: row.lastModifiedByUserId,
-      name: row.lastModifiedBy?.name ?? null,
-      actor: row.lastModifiedByActor,
-      conversationId: row.lastModifiedByConversationId,
-    },
-    content: row.content,
-  };
+  return row ? toMemoryContent(row) : null;
 };
+
+const toMemoryContent = (
+  row: MemorySummaryRow & { content: string },
+): MemoryContent => ({ ...toMemorySummary(row), content: row.content });
+
+const memoryNotFound = (): never =>
+  throwHttpError(
+    404,
+    createApiError("MEMORY_FILE_NOT_FOUND", "Memory file not found"),
+  );
 
 /**
  * Convenience wrapper around `getMemoryContent` that throws 404 if the
@@ -78,11 +68,35 @@ export const requireMemoryContent = async (args: {
   currentUserId: string;
 }): Promise<MemoryContent> => {
   const row = await getMemoryContent(args);
-  if (!row) {
-    return throwHttpError(
-      404,
-      createApiError("MEMORY_FILE_NOT_FOUND", "Memory file not found"),
-    );
-  }
-  return row;
+  return row ?? memoryNotFound();
 };
+
+/**
+ * One of a project's notes, for someone the caller has decided reaches the
+ * project. `null` when the id is not one of the project's notes, whatever
+ * else it is.
+ */
+export const getProjectMemoryContent = async (args: {
+  id: string;
+  organizationId: string;
+  projectId: string;
+}): Promise<MemoryContent | null> => {
+  const row = await db.query.aiMemories.findFirst({
+    where: {
+      id: args.id,
+      organizationId: args.organizationId,
+      scope: "project",
+      projectId: args.projectId,
+    },
+    with: MEMORY_SUMMARY_RELATIONS,
+  });
+  return row ? toMemoryContent(row) : null;
+};
+
+/** `getProjectMemoryContent`, 404 when the note is not the project's. */
+export const requireProjectMemoryContent = async (args: {
+  id: string;
+  organizationId: string;
+  projectId: string;
+}): Promise<MemoryContent> =>
+  (await getProjectMemoryContent(args)) ?? memoryNotFound();

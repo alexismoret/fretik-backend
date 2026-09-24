@@ -1,6 +1,6 @@
 import { propagateAttributes } from "@langfuse/tracing";
 import { withSoftTimeout } from "../../lib/stream-errors";
-import { runUnifiedRecall } from "../../services/recall/recall";
+import { recallsIn, runUnifiedRecall } from "../../services/recall/recall";
 
 /**
  * What a workflow run retrieves on its FIRST turn.
@@ -24,6 +24,10 @@ export const recallForWorkflowTurnOne = async (input: {
   teamId: string;
   conversationId: string;
   actingUserId: string | undefined;
+  /** A workflow of a project recalls the project's, not its team's. */
+  projectId?: string;
+  /** Its owner is not one of the team's people (`recallsIn`). */
+  outsideTeam?: boolean;
   workflowName: string;
   playbookGoal: string;
   triggerPayload: unknown;
@@ -36,7 +40,7 @@ export const recallForWorkflowTurnOne = async (input: {
    */
   bypassCache?: boolean;
 }): Promise<string | undefined> => {
-  if (input.actingUserId === undefined) return undefined;
+  if (input.actingUserId === undefined || !recallsIn(input)) return undefined;
   const result = await propagateAttributes(
     {
       traceName: "active-memory-recall",
@@ -56,6 +60,9 @@ export const recallForWorkflowTurnOne = async (input: {
           teamId: input.teamId,
           organizationId: input.organizationId,
           userId: input.actingUserId,
+          ...(input.projectId === undefined
+            ? {}
+            : { projectId: input.projectId }),
           conversationId: input.conversationId,
           agentType: "workflow",
           // This path takes the block and nothing else, and the steering

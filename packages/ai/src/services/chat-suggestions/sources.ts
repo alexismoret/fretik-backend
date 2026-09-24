@@ -5,6 +5,8 @@ import type {
   DashboardAttentionItem,
 } from "@fretik/shared/schemas/dashboard";
 import { listMemoryTreeWithContent } from "@fretik/shared/services/ai-memory/list-tree";
+import { memoryNamespacesFor } from "@fretik/shared/services/ai-memory/namespaces";
+import { worksInTeam } from "@fretik/shared/services/ai/audience";
 import type { SerializedConversation } from "@fretik/shared/services/ai/conversation-serializer";
 import { listConversations } from "@fretik/shared/services/ai/list";
 import {
@@ -30,7 +32,8 @@ import { withSoftTimeout } from "../../lib/stream-errors";
  * "what happened lately" would drift from the first one within a month.
  *
  * PER READER. `listStandingEpisodes` and `listMemoryTreeWithContent` both
- * filter `user_id IS NULL OR user_id = :caller`, and the workflows, pages and
+ * filter `user_id IS NULL OR user_id = :caller` (the team's notes for its
+ * people only), and the workflows, pages and
  * runs are read with the reader's own access (`authz/`), so a colleague's
  * private episodes, memories and restricted work cannot reach this pack —
  * which is also why the generated rows are stored per user and never shared.
@@ -131,7 +134,21 @@ export const loadSuggestionSources = async (
       { count: 0, data: [] },
       "conversations",
     ),
-    soft(listMemoryTreeWithContent(scope), [], "memories"),
+    soft(
+      readable(
+        principal,
+        (reader) =>
+          listMemoryTreeWithContent(
+            scope,
+            memoryNamespacesFor({
+              outsideTeam: !worksInTeam(reader, scope.teamId),
+            }),
+          ),
+        [],
+      ),
+      [],
+      "memories",
+    ),
     soft(
       readable(
         principal,

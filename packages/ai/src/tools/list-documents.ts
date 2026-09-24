@@ -40,6 +40,7 @@ export const createListDocumentsTool = () =>
       "- status: processing status ('ready' for usable docs).",
       "- entityIds: any-of match on linked organizations (record ids the document mentions).",
       "- customFilters: equality on the team's configured dynamic fields. Each entry is `{ fieldKey, value }`. Field keys (`document_type`, `category`, `invoice_number`, …) come from the team's field definitions and are visible on each returned document's `fieldValues` map. AND semantics across entries.",
+      "- inProject: in a project chat, only the project's documents.",
       "",
       "Pagination: `limit` defaults to 20, max 50. Pass the returned `nextOffset` on `hasMore: true` to fetch the next page.",
       "",
@@ -92,11 +93,24 @@ export const createListDocumentsTool = () =>
         .describe(
           "Per-field equality filters on the team's configured dynamic fields.",
         ),
+      inProject: z
+        .boolean()
+        .optional()
+        .describe("In a project chat, only the project's documents"),
       limit: z.number().int().min(1).max(50).optional(),
       offset: z.number().int().nonnegative().optional(),
     }),
     execute: async (
-      { search, folderId, status, entityIds, customFilters, limit, offset },
+      {
+        search,
+        folderId,
+        status,
+        entityIds,
+        customFilters,
+        inProject,
+        limit,
+        offset,
+      },
       options,
     ) => {
       const ctx = getRuntimeContext(options);
@@ -114,6 +128,9 @@ export const createListDocumentsTool = () =>
           status,
           entityIds,
           customFilters,
+          ...(inProject === true && ctx.projectId !== undefined
+            ? { projectId: ctx.projectId }
+            : {}),
           limit: effectiveLimit,
           offset: effectiveOffset,
         });

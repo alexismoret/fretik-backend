@@ -18,7 +18,7 @@ import {
 } from "../shared/agent-builder";
 import { memoizeAgentSets, stopOnPendingApproval } from "../shared/agent-set";
 import { parseIntEnv } from "../shared/env";
-import { policyHiddenToolNames } from "../shared/policy-tool-gate";
+import { hiddenToolNames } from "../shared/policy-tool-gate";
 import {
   computeCoreToolNames,
   pickDomainRegistry,
@@ -131,7 +131,7 @@ const workflowSystemPrompt = (
   // activate it (searchTools + step-gate withhold it), so listing it as
   // searchable only tempts a wasted turn. Stable per run (autonomy + policy are
   // fixed). Union the autonomy gate with the team's blocked-tool policy.
-  const hidden = new Set<string>(policyHiddenToolNames(ctx));
+  const hidden = hiddenToolNames(ctx, tools);
   if (ctx.workflowAutonomy) {
     for (const n of workflowMainHiddenToolNames(ctx.workflowAutonomy))
       hidden.add(n);
@@ -166,7 +166,7 @@ const workflowPrepareStep = (
     const ctx = getRuntimeContext(stepContext);
     // `workflowAutonomy` is always set for this agent (required in call
     // options); the guard just satisfies the optional context type.
-    const hidden = new Set<string>(policyHiddenToolNames(ctx));
+    const hidden = hiddenToolNames(ctx, tools);
     if (ctx.workflowAutonomy !== undefined) {
       for (const n of workflowMainHiddenToolNames(ctx.workflowAutonomy))
         hidden.add(n);

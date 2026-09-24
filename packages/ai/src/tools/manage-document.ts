@@ -12,7 +12,10 @@ import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { gateBuiltinWriteTool } from "../agents/shared/policy-tool-gate";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
-import { requireTurnDriveAction } from "../agents/shared/turn-access";
+import {
+  requireTurnDriveAction,
+  turnRootProject,
+} from "../agents/shared/turn-access";
 import { workflowWriteBackstop } from "../agents/shared/workflow-write-backstop";
 import { maybePersistLargeOutput } from "../lib/persisted-output";
 import {
@@ -185,8 +188,10 @@ export const createManageDocumentTool = () =>
 
       try {
         // The rules of the Drive's own routes, for the person the turn acts
-        // for: writing a new document is adding to a folder, reading takes
-        // view, and changing or restoring one takes edit.
+        // for: writing a new document is adding where it lands (the folder
+        // named, else the root of the chat's project, else the team's root),
+        // reading takes view, and changing or restoring one takes edit.
+        const rootProjectId = turnRootProject(ctx, input.folderId);
         await requireTurnDriveAction(
           ctx,
           input.action === "create"
@@ -194,6 +199,7 @@ export const createManageDocumentTool = () =>
                 kind: "addDocument",
                 teamId: ctx.teamId,
                 folderId: input.folderId ?? null,
+                projectId: rootProjectId,
               }
             : input.action === "get" || input.action === "history"
               ? { kind: "readDocument", documentId }
@@ -275,6 +281,7 @@ export const createManageDocumentTool = () =>
             title: input.title,
             content: input.content ?? "",
             folderId: input.folderId ?? null,
+            projectId: rootProjectId,
             actorContext,
             eventActor: {
               actorType: "agent",

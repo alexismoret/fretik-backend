@@ -34,6 +34,8 @@ import {
 
 export interface PageProjectContext {
   teamId: string;
+  /** The project the turn works in: a new page is made in it. */
+  projectId: string | undefined;
   userId: string | null;
   organizationId: string;
   conversationId: string | undefined;
@@ -102,6 +104,7 @@ export const loadPageProjectContext = async (
 
   return {
     teamId: ctx.teamId,
+    projectId: ctx.projectId,
     userId: ctx.userId ?? null,
     organizationId: ctx.organizationId,
     conversationId: ctx.conversationId,

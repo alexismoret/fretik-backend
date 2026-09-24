@@ -225,6 +225,14 @@ export interface HybridSearchInput {
    * found by the people of the project, whatever team they search from.
    */
   projectIds?: readonly string[];
+  /**
+   * Search one project and nothing of its team: what names the project as
+   * its audience, and the searcher's own rows (`userId`), when there is one.
+   * What a project chat gathers by itself: it stands on its project, and
+   * whoever reads it may not be one of the team's people. The team's records
+   * are not searched at all.
+   */
+  withinProject?: string;
   filters?: HybridSearchFilters;
 }
 
@@ -234,13 +242,33 @@ const serializeHalfvec = (embedding: number[]): string =>
 /** Whose rows a search may return: the searcher and where they search from. */
 type SearchScope = Pick<
   HybridSearchInput,
-  "teamId" | "organizationId" | "userId" | "projectIds"
+  "teamId" | "organizationId" | "userId" | "projectIds" | "withinProject"
 >;
 
-const buildFilterClauses = (
-  scope: SearchScope,
-  filters: HybridSearchFilters | undefined,
-): SQL[] => {
+/**
+ * Whose rows a search of one project returns: the rows naming the project
+ * (or the searcher) as their audience, and the searcher's own rows without
+ * one — their notes, their episodes, their own context. Never a row that is
+ * simply the team's.
+ */
+const projectScopeClause = (
+  scope: SearchScope & { withinProject: string },
+): SQL => {
+  const { teamId, organizationId, userId } = scope;
+  const audience = [scope.withinProject, ...(userId ? [userId] : [])];
+  const reached = sql`(${aiVectors.aclPrincipals} && ${sql.param(audience)}::uuid[] AND ${aiVectors.organizationId} = ${organizationId})`;
+  if (!userId) return reached;
+  const ownRows = and(
+    isNull(aiVectors.aclPrincipals),
+    eq(aiVectors.userId, userId),
+    or(eq(aiVectors.teamId, teamId), isNull(aiVectors.teamId)),
+    eq(aiVectors.organizationId, organizationId),
+  ) as SQL;
+  return or(reached, ownRows) as SQL;
+};
+
+/** Whose rows a search from a team returns: the team's, and what reaches the searcher. */
+const teamScopeClause = (scope: SearchScope): SQL => {
   const { teamId, organizationId, userId } = scope;
   const projectIds = scope.projectIds ?? [];
   // Scope predicate, for rows without an audience of their own — 3
@@ -282,7 +310,19 @@ const buildFilterClauses = (
   ];
   const ownAudience = sql`(${aiVectors.aclPrincipals} && ${sql.param(searcherIds)}::uuid[] AND ${aiVectors.organizationId} = ${organizationId})`;
 
-  const clauses: SQL[] = [or(legacyScope, ownAudience) as SQL];
+  return or(legacyScope, ownAudience) as SQL;
+};
+
+const buildFilterClauses = (
+  scope: SearchScope,
+  filters: HybridSearchFilters | undefined,
+): SQL[] => {
+  const scopeClause =
+    scope.withinProject === undefined
+      ? teamScopeClause(scope)
+      : projectScopeClause({ ...scope, withinProject: scope.withinProject });
+
+  const clauses: SQL[] = [scopeClause];
   if (!filters) return clauses;
 
   if (filters.sourceTypes && filters.sourceTypes.length > 0) {
@@ -483,6 +523,7 @@ export const hybridSearch = async (
     organizationId,
     userId: input.userId,
     projectIds: input.projectIds,
+    withinProject: input.withinProject,
   };
 
   // The two LEXICAL arms start now, without waiting for the embedding.
@@ -532,7 +573,8 @@ export const hybridSearch = async (
   const [semanticRows, bm25Rows, registryRows] = await Promise.all([
     timeStage(armTimings, "semantic", semanticPromise),
     timeStage(armTimings, "bm25", runBm25Search(query, scope, filters)),
-    wantsRecords(filters)
+    // The records are the team's: a search of one project leaves them out.
+    wantsRecords(filters) && scope.withinProject === undefined
       ? timeStage(
           armTimings,
           "registry",

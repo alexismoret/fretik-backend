@@ -84,6 +84,9 @@ const buildEventText = (
       .join("\n");
   }
   if (type.startsWith("memory.")) {
+    // A project's note is its people's: linked to a record, its path would
+    // show in the history of whoever reads the record.
+    if (stringField(payload, "scope") === "project") return "";
     return [stringField(payload, "path"), stringField(payload, "scope")]
       .filter((part) => part.length > 0)
       .join("\n");

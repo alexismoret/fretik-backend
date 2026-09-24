@@ -1,5 +1,6 @@
 import { hasCapability, requireCapability } from "@fretik/shared/authz/gates";
 import { access } from "@fretik/shared/authz/http";
+import type { AiMemoryScope } from "@fretik/shared/db/schema";
 import {
   authMiddleware,
   type HonoLoggedAppType,
@@ -100,12 +101,16 @@ const requireSession = (
 /**
  * Team notes are what the assistant reads for everyone in the team, so
  * writing one takes `team.context.edit` (members by default). A personal note
- * is the caller's alone and needs nothing more than the session.
+ * is the caller's alone and needs nothing more than the session. A project's
+ * notes are never reached here (`/projects/{id}/memories`).
  */
 const assertCanWriteScope = async (
   c: Parameters<Parameters<typeof aiMemoryRoutes.openapi>[1]>[0],
-  scope: "user" | "team",
+  scope: AiMemoryScope,
 ): Promise<void> => {
+  if (scope === "project") {
+    return throwHttpError(404, notFound("Memory file not found"));
+  }
   if (scope !== "team") return;
   await requireCapability({
     principal: c.get("principal"),

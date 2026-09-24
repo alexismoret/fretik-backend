@@ -130,6 +130,12 @@ export const TOOL_ERROR_CODES = {
   // Memory
   MEMORY_INVALID_INPUT: "MEMORY_INVALID_INPUT",
   MEMORY_HTTP_ERROR: "MEMORY_HTTP_ERROR",
+  // A namespace this turn does not use: the team's for someone outside it,
+  // a project's outside a project's chats.
+  MEMORY_NAMESPACE_UNAVAILABLE: "MEMORY_NAMESPACE_UNAVAILABLE",
+  // The team's structured data (collections, records, SQL), called for
+  // someone who is not one of the team's people.
+  TEAM_DATA_UNAVAILABLE: "TEAM_DATA_UNAVAILABLE",
 
   // Web. One timeout code for every provider: the model's recourse is the
   // same whoever was slow — narrow the call or try a different route — and a

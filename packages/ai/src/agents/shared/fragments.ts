@@ -8,6 +8,7 @@ import {
 } from "@fretik/shared/file-types";
 import { renderSnapshot } from "@fretik/shared/lib/chat-file-snapshot";
 import { buildMemoryIndexManifest } from "@fretik/shared/services/ai-memory/list-index";
+import { memoryNamespacesFor } from "@fretik/shared/services/ai-memory/namespaces";
 import { describeTeamSchema } from "@fretik/shared/services/collections/describe-team-schema";
 import { listStandingEpisodes } from "@fretik/shared/services/episodes/list-standing";
 import { listConnections } from "@fretik/shared/services/external-apps/connections/list";
@@ -16,7 +17,10 @@ import { listEnabledSkillsForTeam } from "@fretik/shared/services/skills/list-en
 import { and, eq, inArray, ne } from "drizzle-orm";
 import { withSoftTimeout } from "../../lib/stream-errors";
 import { buildChatbotContextManifest } from "../../services/chatbot-context/build-manifest";
+import { teamContextReach } from "../../services/chatbot-context/load-context";
+import type { ProjectContextArgs } from "../../services/chatbot-context/project-context";
 import { formatTeamCollectionsBlock } from "../chatbot/team-collections-block";
+import { actingPrincipal } from "./acting-principal";
 import type { ExternalAppConnectionLite } from "./runtime-context";
 import type { StandingMode } from "./standing-memory";
 import { renderStandingEpisodes, STANDING_MODE } from "./standing-memory";
@@ -34,9 +38,37 @@ import { renderStandingEpisodes, STANDING_MODE } from "./standing-memory";
 export interface FragmentScope {
   organizationId: string;
   teamId: string;
+  /**
+   * Whose own context is read: the writer's when nobody else reads the chat,
+   * the team's agent's otherwise (in a project, confined to it).
+   */
   userId?: string;
+  /** The project the turn works in: its instructions, files and notes. */
+  projectId?: string;
+  /**
+   * The person writing is not one of the team's people: none of the team's
+   * own context (instructions, files, collections, memory) is read.
+   */
+  outsideTeam?: boolean;
   logPrefix: string;
 }
+
+/** Who the project's files are listed for: the scope's own reader. */
+const projectContextOf = async (
+  scope: FragmentScope,
+): Promise<ProjectContextArgs | undefined> =>
+  scope.projectId === undefined
+    ? undefined
+    : {
+        projectId: scope.projectId,
+        teamId: scope.teamId,
+        principal: await actingPrincipal({
+          organizationId: scope.organizationId,
+          teamId: scope.teamId,
+          userId: scope.userId,
+          projectId: scope.projectId,
+        }),
+      };
 
 export interface ContextFragments {
   chatbotContextManifest?: string;
@@ -92,6 +124,9 @@ const readStandingBlock = async (
         organizationId: scope.organizationId,
         teamId: scope.teamId,
         userId: scope.userId,
+        // A project chat stands on the project, and its reader may not be
+        // one of the team's people: the reader's own episodes only.
+        teamWide: scope.projectId === undefined && scope.outsideTeam !== true,
       }),
     );
   } catch (error: unknown) {
@@ -123,46 +158,55 @@ export const assembleContextFragments = async (
     standingMemoryBlock,
   ] = await Promise.all([
     withSoftTimeout(
-      buildChatbotContextManifest({
-        userId: scope.userId,
-        teamId: scope.teamId,
-        organizationId: scope.organizationId,
-      }).catch((error: unknown) => {
-        // Never let a missing/corrupt manifest block a turn.
-        console.warn(
-          `${scope.logPrefix} buildChatbotContextManifest failed, continuing without persistent context:`,
-          error,
-        );
-        return {
-          manifest: "",
-          totalChars: 0,
-          fileCount: 0,
-          inlinedFileCount: 0,
-        };
-      }),
+      projectContextOf(scope)
+        .then((project) =>
+          buildChatbotContextManifest({
+            userId: scope.userId,
+            teamId: scope.teamId,
+            organizationId: scope.organizationId,
+            teamReach: teamContextReach(scope),
+            ...(project === undefined ? {} : { project }),
+          }),
+        )
+        .catch((error: unknown) => {
+          // Never let a missing/corrupt manifest block a turn.
+          console.warn(
+            `${scope.logPrefix} buildChatbotContextManifest failed, continuing without persistent context:`,
+            error,
+          );
+          return {
+            manifest: "",
+            totalChars: 0,
+            fileCount: 0,
+            inlinedFileCount: 0,
+          };
+        }),
       4000,
       { manifest: "", totalChars: 0, fileCount: 0, inlinedFileCount: 0 },
       "context-manifest",
     ),
     // Compact `- key (type)` catalogue for the dynamic suffix.
-    // Redis-cached (30 min TTL) so the per-turn cost is one HGET.
-    withSoftTimeout(
-      describeTeamSchema({
-        organizationId: scope.organizationId,
-        teamId: scope.teamId,
-      })
-        .then((types) => formatTeamCollectionsBlock(types))
-        .catch((error: unknown) => {
-          console.warn(
-            `${scope.logPrefix} describeTeamSchema failed, continuing without team objects:`,
-            error instanceof Error ? error.message : error,
-          );
-          return "";
-        }),
-      3000,
-      "",
-      "team-objects",
-    ),
+    // Redis-cached (30 min TTL) so the per-turn cost is one HGET. The team's
+    // collections are its people's: someone outside it gets no catalogue.
+    scope.outsideTeam === true
+      ? Promise.resolve("")
+      : withSoftTimeout(
+          describeTeamSchema({
+            organizationId: scope.organizationId,
+            teamId: scope.teamId,
+          })
+            .then((types) => formatTeamCollectionsBlock(types))
+            .catch((error: unknown) => {
+              console.warn(
+                `${scope.logPrefix} describeTeamSchema failed, continuing without team objects:`,
+                error instanceof Error ? error.message : error,
+              );
+              return "";
+            }),
+          3000,
+          "",
+          "team-objects",
+        ),
     // Team-filtered L1 skills listing — disabled skills never reach the
     // prompt (the agent has no path to invoke them).
     withSoftTimeout(
@@ -183,8 +227,8 @@ export const assembleContextFragments = async (
       "",
       "enabled-skills",
     ),
-    // The memory INDEX — paths and sizes of everything under
-    // `/memories/{user,team}/`, no content. It answers the one question
+    // The memory INDEX — paths and sizes of everything in the namespaces
+    // the turn reads (`memoryNamespacesFor`), no content. It answers the one question
     // per-turn recall cannot: what does this team know AT ALL. Recall is
     // query-shaped, so a memory only surfaces when the message happens to
     // match it; the agent had no way to learn that a process file exists
@@ -196,11 +240,15 @@ export const assembleContextFragments = async (
     scope.userId === undefined || !wantsMemory
       ? Promise.resolve("")
       : withSoftTimeout(
-          buildMemoryIndexManifest({
-            organizationId: scope.organizationId,
-            teamId: scope.teamId,
-            userId: scope.userId,
-          }).catch((error: unknown) => {
+          buildMemoryIndexManifest(
+            {
+              organizationId: scope.organizationId,
+              teamId: scope.teamId,
+              userId: scope.userId,
+              projectId: scope.projectId ?? null,
+            },
+            memoryNamespacesFor(scope),
+          ).catch((error: unknown) => {
             console.warn(
               `${scope.logPrefix} buildMemoryIndexManifest failed, continuing without the memory index:`,
               error instanceof Error ? error.message : error,

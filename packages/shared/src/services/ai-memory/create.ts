@@ -3,7 +3,7 @@ import { aiMemories, type AiMemory } from "../../db/schema/ai-memory";
 import { createApiError, throwHttpError } from "../../lib/errors";
 import { emitDomainEvent, toDomainEventActor } from "../domain-events/emit";
 import { trimMemoryHistory, writeHistoryRow } from "./history";
-import { findMemoryByPath } from "./lookup";
+import { findMemoryByPath, memoryOwnerColumns } from "./lookup";
 import {
   formatMemoryPath,
   MEMORY_MAX_BYTES,
@@ -72,7 +72,7 @@ export const createMemory = async (args: {
           organizationId: args.scopeKey.organizationId,
           teamId: args.scopeKey.teamId,
           scope: parsed.scope,
-          userId: parsed.scope === "user" ? args.scopeKey.userId : null,
+          ...memoryOwnerColumns(parsed.scope, args.scopeKey),
           path: parsed.relativePath,
           content: args.content,
           sizeBytes,

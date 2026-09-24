@@ -686,6 +686,8 @@ const resourceUrl = (resource: {
       return `${appUrl}/workflows/${resource.id}`;
     case "conversation":
       return `${appUrl}/chatbot/${resource.id}`;
+    case "project":
+      return `${appUrl}/projects/${resource.id}`;
     // Never asked for by name (`isRequestableResourceType`); a collection
     // is reached by its key, which is not in the request.
     case "collection":

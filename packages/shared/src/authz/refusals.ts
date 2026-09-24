@@ -44,7 +44,7 @@ const LEVEL_CAP_MESSAGES: Partial<Record<AccessResourceType, string>> = {
   workflow:
     "A restricted workflow runs with its owner's access: only its owner runs or changes it.",
   conversation:
-    "Only the people of this chat's team take part in it. You can read it.",
+    "Only the people of this chat's project, or of its team when it is in no project, take part in it. You can read it.",
 };
 
 /** Why a refusal above a type's ceiling can't be lifted by sharing. */

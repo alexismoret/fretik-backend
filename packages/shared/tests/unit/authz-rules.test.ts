@@ -297,6 +297,28 @@ describe("type ceilings", () => {
     ).toBe("full");
   });
 
+  test("in a project, taking part is for the project's participants, whatever their team", () => {
+    const conversation = node({
+      type: "conversation",
+      projectId: PROJECT,
+      restricted: true,
+      grants: [{ principalType: "user", principalId: ME, level: "use" }],
+    });
+    const participant = person({
+      teams: { [OTHER_TEAM]: "member" },
+      projects: { [PROJECT]: "use" },
+    });
+    expect(computeLevel(participant, conversation)).toBe("use");
+    // A viewer of the project reads, even from the chat's own team.
+    const projectViewer = person({
+      teams: { [TEAM]: "member" },
+      projects: { [PROJECT]: "view" },
+    });
+    expect(computeLevel(projectViewer, conversation)).toBe("view");
+    // Being in the team is not taking part in the project.
+    expect(computeLevel(member, conversation)).toBe("view");
+  });
+
   test("a workflow running with its owner's access can only be shown to others", () => {
     const privateRun = node({
       type: "workflow",

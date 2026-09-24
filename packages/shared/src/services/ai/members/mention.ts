@@ -1,12 +1,12 @@
 import { and, eq, inArray } from "drizzle-orm";
 import type { ResolvedResource } from "../../../authz/access";
 import type { UserPrincipal } from "../../../authz/principal";
-import { throwNotVisible } from "../../../authz/refusals";
 import db from "../../../db";
 import { aiConversationMembers } from "../../../db/schema";
 import { resolvePrincipals } from "../../access/sharing/principals";
 import { writeShares } from "../../access/sharing/share";
-import { listTeamMembers, type TeamMember } from "../../team/members";
+import type { TeamMember } from "../../team/members";
+import { takingPartCandidates } from "./candidates";
 
 /**
  * Apply the @mentions carried by a user message. Each mentioned teammate is:
@@ -15,10 +15,11 @@ import { listTeamMembers, type TeamMember } from "../../team/members";
  *  - flagged with `mentionedAt = now` so their conversation list shows an
  *    "action required" badge until they read.
  *
- * The author is never mentioned to themselves, and only real (non-bot)
- * people of the conversation's team are honoured. Returns the mentioned
- * members so the caller (the AI handler) can send the notification emails —
- * keeping email I/O out of the data layer.
+ * The author is never mentioned to themselves, and only the real people who
+ * may take part are honoured: the conversation's project participants when
+ * it is in one, else its team's people. Returns the mentioned members so the
+ * caller (the AI handler) can send the notification emails — keeping email
+ * I/O out of the data layer.
  */
 export const applyMentions = async (data: {
   principal: UserPrincipal;
@@ -27,12 +28,13 @@ export const applyMentions = async (data: {
 }): Promise<TeamMember[]> => {
   const { principal, resource, mentionedUserIds } = data;
   if (mentionedUserIds.length === 0) return [];
-  const teamId =
-    resource.node.teamId ?? throwNotVisible("Conversation not found");
   const conversationId = resource.node.id;
 
   const byId = new Map(
-    (await listTeamMembers(teamId)).map((m) => [m.userId, m]),
+    (await takingPartCandidates(resource.node, mentionedUserIds)).map((m) => [
+      m.userId,
+      m,
+    ]),
   );
   const mentioned = [...new Set(mentionedUserIds)]
     .filter((id) => id !== principal.userId && byId.has(id))

@@ -1,5 +1,9 @@
 import { requireAccess } from "@fretik/shared/authz/access";
 import { access, teamOfResource } from "@fretik/shared/authz/http";
+import {
+  requirePlacement,
+  teamOfProject,
+} from "@fretik/shared/authz/placement";
 import type { UserPrincipal } from "@fretik/shared/authz/principal";
 import type { WorkflowRun } from "@fretik/shared/db/schema";
 import {
@@ -121,13 +125,14 @@ const listRoute = createRoute({
   method: "get",
   path: "/",
   middleware: access.session(
-    "The active team's workflows the caller can see: a restricted one only through its owner or a grant.",
+    "The active team's workflows the caller can see, or a project's (`projectId`, view on it): a restricted one only through its owner or a grant.",
   ),
   summary: "List the team's workflows",
   tags: ["Workflows"],
   request: {
     query: z.object({
       includeArchived: z.coerce.boolean().optional().default(false),
+      projectId: z.uuid().optional(),
     }),
   },
   responses: {
@@ -147,12 +152,20 @@ const listRoute = createRoute({
 const createRouteDef = createRoute({
   method: "post",
   path: "/",
-  middleware: access.capability("team.content.create"),
+  middleware: access.handler(
+    "Where it lands (`authz/placement.ts`): a project the caller takes part in (`projectId`), or the active team, which they contribute to.",
+  ),
   summary: "Create a workflow (draft)",
   tags: ["Workflows"],
   request: {
     body: {
-      content: { "application/json": { schema: CreateWorkflowSchema } },
+      content: {
+        "application/json": {
+          schema: CreateWorkflowSchema.extend({
+            projectId: z.uuid().optional(),
+          }),
+        },
+      },
       required: true,
     },
   },
@@ -486,27 +499,37 @@ const realtimeTokenRoute = createRoute({
 // ---- Handlers --------------------------------------------------------
 
 workflowRoutes.openapi(listRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return c.json(teamRequired(), 403);
-  const { includeArchived } = c.req.valid("query");
+  const principal = c.get("principal");
+  const { includeArchived, projectId } = c.req.valid("query");
+  const teamId =
+    projectId === undefined
+      ? c.get("team")?.id
+      : await teamOfProject(principal, projectId);
+  if (!teamId) return c.json(teamRequired(), 403);
   const data = await listWorkflows({
-    teamId: team.id,
+    teamId,
     includeArchived,
-    principal: c.get("principal"),
+    principal,
+    ...(projectId === undefined ? {} : { projectId }),
   });
   return c.json({ data }, 200);
 });
 
 workflowRoutes.openapi(createRouteDef, async (c) => {
-  const team = c.get("team");
-  if (!team) return c.json(teamRequired(), 403);
-  const body = c.req.valid("json");
+  const principal = c.get("principal");
+  const { projectId, ...input } = c.req.valid("json");
+  const placement = await requirePlacement({
+    principal,
+    activeTeamId: c.get("team")?.id,
+    projectId,
+  });
   const workflow = await createWorkflow({
-    organizationId: team.organizationId,
-    teamId: team.id,
+    organizationId: principal.organizationId,
+    teamId: placement.teamId,
+    projectId: placement.projectId,
     createdByUserId: c.get("user").id,
-    principal: c.get("principal"),
-    input: body,
+    principal,
+    input,
   });
   return c.json(workflow, 201);
 });

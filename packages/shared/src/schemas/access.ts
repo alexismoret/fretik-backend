@@ -174,6 +174,11 @@ export const ACCESS_AUDIT_ACTIONS = [
   "owner.transferred",
   "request.created",
   "request.decided",
+  "project.created",
+  "project.archived",
+  "project.restored",
+  "project.deleted",
+  "project.content_moved",
 ] as const;
 export type AccessAuditAction = (typeof ACCESS_AUDIT_ACTIONS)[number];
 export const accessAuditActionSchema = z.enum(ACCESS_AUDIT_ACTIONS);

@@ -48,15 +48,26 @@ export const validateWorkflowExternalApps = async (params: {
   const ids = [...new Set(params.connectionIds)];
   if (ids.length === 0) return ids;
 
+  // A team's shared apps are its people's to name — not someone who only
+  // takes part in one of its projects (its administrators manage them).
+  const namesShared =
+    params.actor.kind === "system" ||
+    params.actor.isOrgAdmin ||
+    params.actor.teamRoles.has(params.teamId);
   const rows = await db.query.externalAppConnections.findMany({
     columns: { id: true, userId: true, displayName: true },
     where: {
       id: { in: ids },
       teamId: params.teamId,
       ...(params.actor.kind === "user"
-        ? {
-            OR: [{ userId: { isNull: true } }, { userId: params.actor.userId }],
-          }
+        ? namesShared
+          ? {
+              OR: [
+                { userId: { isNull: true } },
+                { userId: params.actor.userId },
+              ],
+            }
+          : { userId: params.actor.userId }
         : {}),
     },
   });

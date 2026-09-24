@@ -182,7 +182,11 @@ describe("sharing a chat", () => {
     expect(model.owner?.userId).toBe(ownerId);
     expect(model.offeredLevels).toEqual(["view", "use"]);
     expect(model.groupLevels).toEqual(["view"]);
-    expect(model.ceilings).toEqual({ team: "full", outsider: "view" });
+    expect(model.ceilings).toEqual({
+      team: "full",
+      outsider: "view",
+      insiders: null,
+    });
     expect(model.general.inheritedLevel).toBe("view");
 
     await revokeGrant({

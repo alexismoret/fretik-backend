@@ -1,4 +1,5 @@
 import { access, teamOfResource } from "@fretik/shared/authz/http";
+import { requirePlacement } from "@fretik/shared/authz/placement";
 import {
   authMiddleware,
   type HonoLoggedAppType,
@@ -103,7 +104,7 @@ const createConversationRoute = createRoute({
   method: "post",
   path: "/",
   middleware: access.session(
-    "Starts a conversation in the active team, with the caller as its owner.",
+    "Starts a conversation with the caller as its owner: in the active team, or in a project they take part in (`authz/placement.ts`).",
   ),
   summary: "Create an AI conversation",
   description: "Create a new conversation scoped to the current user and team.",
@@ -385,15 +386,21 @@ conversationRoutes.openapi(listConversationsRoute, async (c) => {
 
 conversationRoutes.openapi(createConversationRoute, async (c) => {
   const user = c.get("user");
-  const team = c.get("team");
   const organization = c.get("organization");
-  if (!team) return throwHttpError(403, teamRequired());
+  const { title, agentType, modelProfileKey, projectId } = c.req.valid("json");
 
-  const { title, agentType, modelProfileKey } = c.req.valid("json");
+  // A chat is no contribution to the team: a viewer starts one too.
+  const placement = await requirePlacement({
+    principal: c.get("principal"),
+    activeTeamId: c.get("team")?.id,
+    projectId,
+    contributes: false,
+  });
 
   const row = await createConversation({
     organizationId: organization.id,
-    teamId: team.id,
+    teamId: placement.teamId,
+    projectId: placement.projectId,
     userId: user.id,
     title,
     agentType,

@@ -7,6 +7,7 @@ import type {
 } from "../../../schemas/access-sharing";
 import { refreshAclsAfterAccessChange } from "../../ai-vectors/acl";
 import { recordAccessEvent } from "../record-event";
+import { afterAccessChange } from "./after-change";
 import { describeResourceAccess } from "./describe";
 import {
   assertSomeoneKeepsFullAccess,
@@ -57,6 +58,7 @@ export const revokeGrant = async (input: {
     });
     await refreshAclsAfterAccessChange({ executor: tx, type, id });
   });
+  await afterAccessChange({ organizationId: principal.organizationId, type });
 
   try {
     return await describeResourceAccess({ principal, type, id });

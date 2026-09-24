@@ -21,6 +21,8 @@ export const listPages = async (params: {
   limit?: number;
   /** Only the pages this conversation built (their provenance). */
   sourceConversationId?: string;
+  /** Only this project's pages; the team's and its projects' when omitted. */
+  projectId?: string;
 }): Promise<PageSummary[]> => {
   const rows = await db.query.pages.findMany({
     where: {
@@ -30,6 +32,9 @@ export const listPages = async (params: {
       ...(params.sourceConversationId === undefined
         ? {}
         : { sourceConversationId: params.sourceConversationId }),
+      ...(params.projectId === undefined
+        ? {}
+        : { projectId: params.projectId }),
     },
     orderBy: { updatedAt: "desc" },
     limit: params.limit ?? 100,

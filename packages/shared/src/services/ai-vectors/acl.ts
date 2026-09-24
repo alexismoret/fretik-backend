@@ -55,13 +55,16 @@ const RESOURCE_OF: Partial<Record<AiVectorSourceType, AclResourceType>> = {
 
 /**
  * Who reaches a node at `view`, as ids, or null when that is exactly its
- * container — nothing restricted on the way up, nothing shared.
+ * team — nothing restricted on the way up, nothing shared, no project.
  *
  * The walk is `rules.ts`'s: the owner and the grants of the node, then of its
  * folder, and so on, stopping at the first restricted node; when none is,
  * the container (the top node's project, else its team) reads it too. Every
  * grant reaches `view` at least, so its principal is in the list whatever
  * its level; a team's viewers read what their team is given.
+ *
+ * A vector row carries its team, never its project, so what sits in a project
+ * always gets its own list: the project is its audience, not its team.
  */
 export const aclOfNode = (node: ResourceNode): string[] | null => {
   const ids = new Set<string>();
@@ -78,7 +81,7 @@ export const aclOfNode = (node: ResourceNode): string[] | null => {
     top = current;
     current = current.parent;
   }
-  if (!shared) return null;
+  if (!shared && top.projectId === null) return null;
   const container = top.projectId ?? top.teamId;
   if (container !== null) ids.add(container);
   return [...ids].sort();
@@ -273,12 +276,19 @@ export const documentsUnderFolders = async (
  */
 export const refreshAclsAfterAccessChange = async (input: {
   executor: Executor;
-  type: AclResourceType | "folder" | "conversation" | "collection";
+  type: AclResourceType | "folder" | "conversation" | "collection" | "project";
   id: string;
 }): Promise<void> => {
   // A chat has no vectors of its own in the assistant's search index, and a
-  // collection's records are searched in their own team only.
-  if (input.type === "conversation" || input.type === "collection") return;
+  // collection's records are searched in their own team only. What a project
+  // holds names the project as its audience, whoever reaches the project.
+  if (
+    input.type === "conversation" ||
+    input.type === "collection" ||
+    input.type === "project"
+  ) {
+    return;
+  }
   if (input.type === "folder") {
     await refreshVectorAcls({
       executor: input.executor,

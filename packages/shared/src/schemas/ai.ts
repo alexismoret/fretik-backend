@@ -247,6 +247,10 @@ export const CreateConversationSchema = z.object({
     description:
       "Flagship model picked for this conversation (chantier C8). Stamped at creation, immutable. Omitted → team default → code default.",
   }),
+  projectId: z.uuid().optional().openapi({
+    description:
+      "Start it in this project, which the caller takes part in, whatever team they have open. Omitted, it starts in the active team.",
+  }),
 });
 export type CreateConversationInput = z.infer<typeof CreateConversationSchema>;
 
@@ -282,6 +286,8 @@ export const ConversationResponseSchema = z.object({
   id: z.uuid(),
   organizationId: z.uuid(),
   teamId: z.uuid(),
+  /** The project it lives in; null for its team's. */
+  projectId: z.uuid().nullable(),
   userId: z.uuid().nullable(),
   agentType: aiAgentTypeSchema,
   title: z.string(),

@@ -16,22 +16,26 @@ import { notFound, throwHttpError } from "../../lib/errors";
  *
  * 404, not 403: a folder of another team must be indistinguishable from one
  * that does not exist.
+ *
+ * Returns the folder's project — what a file filed there belongs to — or
+ * null for a root, which the caller places itself.
  */
 export const assertFolderInTeam = async (params: {
   folderId: string | null | undefined;
   teamId: string;
   /** Run inside the caller's transaction when it has one. */
   executor?: Executor;
-}): Promise<void> => {
+}): Promise<{ readonly projectId: string | null } | null> => {
   const { folderId, teamId } = params;
-  if (folderId === null || folderId === undefined) return;
+  if (folderId === null || folderId === undefined) return null;
 
   const executor = params.executor ?? db;
   const folder = await executor.query.folders.findFirst({
-    columns: { id: true },
+    columns: { id: true, projectId: true },
     where: { id: folderId, teamId },
   });
   if (!folder) {
     return throwHttpError(404, notFound("Folder not found"));
   }
+  return { projectId: folder.projectId };
 };

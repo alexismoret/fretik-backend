@@ -2,8 +2,12 @@ import {
   idsByTeam,
   requireAccessForEachResolved,
 } from "@fretik/shared/authz/access";
-import { requireFolderToAddTo } from "@fretik/shared/authz/drive";
+import { requireDriveMove } from "@fretik/shared/authz/drive";
 import { access, teamOfResource } from "@fretik/shared/authz/http";
+import {
+  requirePlacement,
+  teamOfProject,
+} from "@fretik/shared/authz/placement";
 import {
   authMiddleware,
   type HonoLoggedAppType,
@@ -59,7 +63,9 @@ folderRoutes.use("*", authMiddleware);
 const createFolderRoute = createRoute({
   method: "post",
   path: "",
-  middleware: access.capability("team.content.create"),
+  middleware: access.handler(
+    "Where it lands (`authz/placement.ts`): edit on its parent, taking part in its project, or contributing to the active team at its root.",
+  ),
   summary: "Create a folder",
   description: "Create a new folder",
   tags: ["Folders"],
@@ -85,10 +91,11 @@ const getRootDriveRoute = createRoute({
   method: "get",
   path: "",
   middleware: access.session(
-    "The root of the active team's Drive, only what the caller can open (authz/drive-sql).",
+    "The root of the active team's Drive, or of a project the caller reaches (`projectId`, view on it); only what the caller can open (authz/drive-sql).",
   ),
   summary: "Get root drive",
-  description: "Get root folder details and its children",
+  description:
+    "Get root folder details and its children: the active team's root (what is in no project), or a project's (`projectId`).",
   tags: ["Folders"],
   request: {
     query: driveListParamsSchema,
@@ -197,21 +204,19 @@ const deleteFoldersRoute = createRoute({
 
 folderRoutes.openapi(createFolderRoute, async (c) => {
   const user = c.get("user");
-  const team = c.get("team");
-
-  // Require active team
-  if (!team) {
-    return throwHttpError(403, teamRequired());
-  }
-
-  // Get input
-  const { name, parentFolderId } = c.req.valid("json");
-  await requireFolderToAddTo(c.get("principal"), parentFolderId);
+  const { name, parentFolderId, projectId } = c.req.valid("json");
+  const placement = await requirePlacement({
+    principal: c.get("principal"),
+    activeTeamId: c.get("team")?.id,
+    folderId: parentFolderId,
+    projectId,
+  });
 
   const newFolder = await createFolder({
     name,
     parentFolderId,
-    teamId: team.id,
+    teamId: placement.teamId,
+    projectId: placement.projectId,
     userId: user.id,
     actor: { actorType: "user", actorUserId: user.id },
   });
@@ -220,14 +225,26 @@ folderRoutes.openapi(createFolderRoute, async (c) => {
 });
 
 folderRoutes.openapi(getRootDriveRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
-
+  const principal = c.get("principal");
   const params = c.req.valid("query");
 
+  // A project's root is in its team's Drive, reached through the project.
+  if (params.projectId !== undefined) {
+    const result = await getRootDrive({
+      principal,
+      teamId: await teamOfProject(principal, params.projectId),
+      projectId: params.projectId,
+      params,
+    });
+    return c.json(result, 200);
+  }
+
+  const team = c.get("team");
+  if (!team) return throwHttpError(403, teamRequired());
   const result = await getRootDrive({
-    principal: c.get("principal"),
+    principal,
     teamId: team.id,
+    projectId: null,
     params,
   });
 
@@ -256,7 +273,13 @@ folderRoutes.openapi(updateFolderRoute, async (c) => {
 
   const { id } = c.req.valid("param");
   const updates = c.req.valid("json");
-  await requireFolderToAddTo(c.get("principal"), updates.parentFolderId);
+  if (updates.parentFolderId !== undefined) {
+    await requireDriveMove(c.get("principal"), {
+      type: "folder",
+      id,
+      folderId: updates.parentFolderId,
+    });
+  }
 
   const updatedFolder = await updateFolder({
     id,

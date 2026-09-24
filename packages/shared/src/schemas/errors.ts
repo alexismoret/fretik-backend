@@ -118,10 +118,13 @@ export const ERROR_CODES = {
    */
   LAST_FULL_ACCESS: "LAST_FULL_ACCESS",
   /**
-   * 400 — taking part in a chat is for the people of its team. Someone
-   * outside it can be given the chat to read.
+   * 400 — taking part in a chat is for the people who work where it lives:
+   * its project's participants when it is in one, else its team's people.
+   * Anyone else can be given the chat to read.
    */
   PARTICIPANT_OUTSIDE_TEAM: "PARTICIPANT_OUTSIDE_TEAM",
+  /** 409 — an archived project takes nothing new; restore it first. */
+  PROJECT_ARCHIVED: "PROJECT_ARCHIVED",
   /** An access request that was already answered, withdrawn or orphaned. */
   ACCESS_REQUEST_CLOSED: "ACCESS_REQUEST_CLOSED",
 

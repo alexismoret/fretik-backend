@@ -79,6 +79,7 @@ const storeFor = (type: SharingResourceType): GrantStore => {
     case "document":
     case "page":
     case "workflow":
+    case "project":
       return accessGrantStore;
   }
 };

@@ -58,6 +58,11 @@ export const createAuthoredDocument = async (args: {
   title: string;
   content: string;
   folderId?: string | null;
+  /**
+   * The project whose root it lands at when no folder is given; one written
+   * into a folder belongs to the folder's project.
+   */
+  projectId?: string | null;
   actorContext: DocumentVersionActorContext;
   /** Attribution for the `document.uploaded` journal entry + mirror record. */
   eventActor?: EventActor;
@@ -105,6 +110,7 @@ export const createAuthoredDocument = async (args: {
     userId,
     source: "authored",
     status: "ready",
+    projectId: args.projectId ?? null,
   });
 
   // v1's storageKey is the live original — the newest version always is. So

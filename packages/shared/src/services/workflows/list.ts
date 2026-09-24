@@ -13,12 +13,17 @@ export const listWorkflows = async (params: {
   teamId: string;
   includeArchived?: boolean;
   principal: Principal;
+  /** Only this project's workflows; the team's and its projects' when omitted. */
+  projectId?: string;
 }): Promise<WorkflowResponse[]> => {
   const rows = await db.query.workflows.findMany({
     where: {
       teamId: params.teamId,
       ...(params.includeArchived ? {} : { status: { ne: "archived" } }),
       ...workflowAccessWhere(params.principal, "view"),
+      ...(params.projectId === undefined
+        ? {}
+        : { projectId: params.projectId }),
     },
     orderBy: { updatedAt: "desc" },
   });

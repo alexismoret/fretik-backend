@@ -32,6 +32,8 @@ import { trimPageVersions, writePageVersion } from "./versions";
 export const createPage = async (params: {
   organizationId: string;
   teamId: string;
+  /** The project it is made in; null or omitted for its team's. */
+  projectId?: string | null;
   createdByUserId: string;
   input: CreatePageInput;
   /** Who is writing, for the history. Defaults to the human doing the create. */
@@ -91,6 +93,7 @@ export const createPage = async (params: {
       .values({
         organizationId: params.organizationId,
         teamId: params.teamId,
+        projectId: params.projectId ?? null,
         ...restrictionColumns({
           restricted: input.userId !== undefined && input.userId !== null,
           ownerUserId: params.createdByUserId,

@@ -11,6 +11,7 @@ import {
   accessGrants,
   documents,
   pages,
+  projects,
   team,
   user,
   workflows,
@@ -28,7 +29,8 @@ import type {
 
 /**
  * What others have shared with this person, where they find it again: the
- * folders, documents, pages, workflows and chats shared with them by name — and
+ * folders, documents, pages, workflows, chats and projects shared with them by
+ * name — and
  * those shared with a team or project they are in, or with the whole
  * organization, from a team they are not part of. What sits in one of their
  * own teams, they browse to there; what they own, or shared themselves, is
@@ -178,7 +180,7 @@ const resolveShares = async (
       .filter((share) => share.type === type)
       .map((share) => share.id);
     if (ids.length === 0) continue;
-    // oxlint-disable-next-line no-await-in-loop -- one read per type, four at most
+    // oxlint-disable-next-line no-await-in-loop -- one read per shareable type
     for (const [id, resource] of await resolveAccessMany(
       principal,
       type,
@@ -202,32 +204,41 @@ const loadDetails = async (
 ): Promise<Map<string, Detail>> => {
   const idsOf = (type: SharingResourceType) =>
     shares.filter((share) => share.type === type).map((share) => share.id);
-  const [documentIds, pageIds, workflowIds] = [
+  const [documentIds, pageIds, workflowIds, projectIds] = [
     idsOf("document"),
     idsOf("page"),
     idsOf("workflow"),
+    idsOf("project"),
   ];
 
-  const [documentRows, pageRows, workflowRows] = await Promise.all([
-    documentIds.length === 0
-      ? []
-      : db
-          .select({ id: documents.id, mimeType: documents.mimeType })
-          .from(documents)
-          .where(inArray(documents.id, documentIds)),
-    pageIds.length === 0
-      ? []
-      : db
-          .select({ id: pages.id, archivedAt: pages.archivedAt })
-          .from(pages)
-          .where(inArray(pages.id, pageIds)),
-    workflowIds.length === 0
-      ? []
-      : db
-          .select({ id: workflows.id, status: workflows.status })
-          .from(workflows)
-          .where(inArray(workflows.id, workflowIds)),
-  ]);
+  const [documentRows, pageRows, workflowRows, projectRows] = await Promise.all(
+    [
+      documentIds.length === 0
+        ? []
+        : db
+            .select({ id: documents.id, mimeType: documents.mimeType })
+            .from(documents)
+            .where(inArray(documents.id, documentIds)),
+      pageIds.length === 0
+        ? []
+        : db
+            .select({ id: pages.id, archivedAt: pages.archivedAt })
+            .from(pages)
+            .where(inArray(pages.id, pageIds)),
+      workflowIds.length === 0
+        ? []
+        : db
+            .select({ id: workflows.id, status: workflows.status })
+            .from(workflows)
+            .where(inArray(workflows.id, workflowIds)),
+      projectIds.length === 0
+        ? []
+        : db
+            .select({ id: projects.id, archivedAt: projects.archivedAt })
+            .from(projects)
+            .where(inArray(projects.id, projectIds)),
+    ],
+  );
 
   const details = new Map<string, Detail>();
   for (const share of shares) {
@@ -247,6 +258,9 @@ const loadDetails = async (
       mimeType: null,
       archived: row.status === "archived",
     });
+  }
+  for (const row of projectRows) {
+    details.set(row.id, { mimeType: null, archived: row.archivedAt !== null });
   }
   return details;
 };

@@ -23,6 +23,8 @@ import { refreshWorkflowVectors } from "./vector-refresh";
 export const createWorkflow = async (params: {
   organizationId: string;
   teamId: string;
+  /** The project it is made in; null or omitted for its team's. */
+  projectId?: string | null;
   createdByUserId: string;
   /** The creator, as the engine sees them (bounds the connections it names). */
   principal: Principal;
@@ -64,6 +66,7 @@ export const createWorkflow = async (params: {
     .values({
       organizationId: params.organizationId,
       teamId: params.teamId,
+      projectId: params.projectId ?? null,
       ...access,
       name: input.name,
       description: input.description,

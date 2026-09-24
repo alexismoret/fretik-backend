@@ -192,7 +192,11 @@ describe("the share dialog's model", () => {
       ownerRestrictsOnly: false,
     });
     expect(model.offeredLevels).toEqual(["view", "edit", "full"]);
-    expect(model.ceilings).toEqual({ team: "full", outsider: "full" });
+    expect(model.ceilings).toEqual({
+      team: "full",
+      outsider: "full",
+      insiders: null,
+    });
     expect(model.canManage).toBe(true);
   });
 
@@ -291,7 +295,11 @@ describe("restricting", () => {
       ownerRestrictsOnly: true,
     });
     // Restricted, it runs as its owner: nobody else can be given more.
-    expect(model.ceilings).toEqual({ team: "view", outsider: "view" });
+    expect(model.ceilings).toEqual({
+      team: "view",
+      outsider: "view",
+      insiders: null,
+    });
     const row = await db.query.workflows.findFirst({
       columns: { userId: true, accessRestricted: true },
       where: { id: workflowId },

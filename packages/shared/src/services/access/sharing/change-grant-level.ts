@@ -9,6 +9,7 @@ import type {
 import { recordAccessEvent } from "../record-event";
 import { tellRequestersAnswered } from "../requests/answered-by-share";
 import { settleRequestsAnsweredBy } from "../requests/settle-requests";
+import { afterAccessChange } from "./after-change";
 import { describeResourceAccess } from "./describe";
 import {
   assertSomeoneKeepsFullAccess,
@@ -78,6 +79,7 @@ export const changeGrantLevel = async (input: {
       deciderUserId: principal.userId,
     });
   });
+  await afterAccessChange({ organizationId: principal.organizationId, type });
   await tellRequestersAnswered({
     principal,
     settled,

@@ -1,5 +1,5 @@
 import type { AccessLevel, AccessResourceType } from "../schemas/access";
-import { capLevel, maxLevel } from "./levels";
+import { atLeast, capLevel, maxLevel } from "./levels";
 import {
   type GrantFact,
   levelFromGrants,
@@ -106,10 +106,13 @@ const inheritedLevel = (
  * To work on it together, it is opened to the team, and then it runs as the
  * team's agent.
  *
- * Taking part in a chat is for the people of its team: the assistant answers
- * there in the team's context (its connections, its memory), which a seat
- * would lend to anyone outside it. Whoever else reaches the chat, because it
- * was given to them or because they have left the team since, reads it.
+ * Taking part in a chat is for the people who work where it lives: the
+ * assistant answers there in that place's context (its instructions, its
+ * memory, its connections), which a seat would lend to anyone else. A chat in
+ * a project is for the people who take part in the project (`use`), whatever
+ * their team; any other chat, for the people of its team. Whoever else
+ * reaches the chat, because it was given to them or because they have left
+ * since, reads it.
  */
 export const levelCeiling = (
   principal: UserPrincipal,
@@ -117,22 +120,38 @@ export const levelCeiling = (
 ): AccessLevel =>
   ceilingFor(node, {
     isOwner: node.ownerUserId === principal.userId,
-    inTeam: node.teamId !== null && principal.teamRoles.has(node.teamId),
+    worksThere: worksWhere(principal, node),
   });
 
 /**
+ * Whether the person works where the node lives: in its project, taking part
+ * in it, when it has one; else in its team, whatever their role there.
+ */
+export const worksWhere = (
+  principal: UserPrincipal,
+  node: ResourceNode,
+): boolean =>
+  node.projectId !== null
+    ? atLeast(principal.projectLevels.get(node.projectId) ?? null, "use")
+    : node.teamId !== null && principal.teamRoles.has(node.teamId);
+
+/**
  * `levelCeiling` from the two facts it reads about the person — whether they
- * own the node, whether they are in its team — so the share dialog can say
- * what a kind of person may be given before anyone is picked.
+ * own the node, whether they work where it lives — so the share dialog can
+ * say what a kind of person may be given before anyone is picked.
  */
 export const ceilingFor = (
   node: ResourceNode,
-  person: { readonly isOwner: boolean; readonly inTeam: boolean },
+  person: { readonly isOwner: boolean; readonly worksThere: boolean },
 ): AccessLevel => {
   if (node.type === "workflow" && node.restricted && !person.isOwner) {
     return "view";
   }
-  if (node.type === "conversation" && node.teamId !== null && !person.inTeam) {
+  if (
+    node.type === "conversation" &&
+    node.teamId !== null &&
+    !person.worksThere
+  ) {
     return "view";
   }
   return "full";

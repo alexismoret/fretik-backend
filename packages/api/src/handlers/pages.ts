@@ -1,5 +1,9 @@
 import { access, teamOfResource } from "@fretik/shared/authz/http";
 import {
+  requirePlacement,
+  teamOfProject,
+} from "@fretik/shared/authz/placement";
+import {
   authMiddleware,
   type HonoLoggedAppType,
 } from "@fretik/shared/lib/auth-middleware";
@@ -123,15 +127,16 @@ const listRoute = createRoute({
   method: "get",
   path: "/",
   middleware: access.session(
-    "The active team's pages the caller can see: a restricted one only through its owner or a grant.",
+    "The active team's pages the caller can see, or a project's (`projectId`, view on it): a restricted one only through its owner or a grant.",
   ),
   summary: "List the team's pages",
   description:
-    "Summaries only — node/dataset counts instead of the full tree. Newest-touched first. `conversationId` keeps the pages that conversation built (their `sourceConversationId`) — what the chat header's Pages control lists.",
+    "Summaries only — node/dataset counts instead of the full tree. Newest-touched first. `conversationId` keeps the pages that conversation built (their `sourceConversationId`) — what the chat header's Pages control lists. `projectId` keeps one project's, wherever the caller's team.",
   tags: ["Pages"],
   request: {
     query: z.object({
       conversationId: z.uuid().optional(),
+      projectId: z.uuid().optional(),
     }),
   },
   responses: {
@@ -151,14 +156,20 @@ const listRoute = createRoute({
 const createRouteDef = createRoute({
   method: "post",
   path: "/",
-  middleware: access.capability("team.content.create"),
+  middleware: access.handler(
+    "Where it lands (`authz/placement.ts`): a project the caller takes part in (`projectId`), or the active team, which they contribute to.",
+  ),
   summary: "Create a page",
   description:
     "Always created unpublished. The definition is sanitized, not rejected: off-catalog props are dropped and reported as warnings.",
   tags: ["Pages"],
   request: {
     body: {
-      content: { "application/json": { schema: CreatePageSchema } },
+      content: {
+        "application/json": {
+          schema: CreatePageSchema.extend({ projectId: z.uuid().optional() }),
+        },
+      },
       required: true,
     },
   },
@@ -500,29 +511,39 @@ const errorsRoute = createRoute({
 // ---- Handlers --------------------------------------------------------
 
 pageRoutes.openapi(listRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return c.json(teamRequired(), 403);
-  const { conversationId } = c.req.valid("query");
+  const principal = c.get("principal");
+  const { conversationId, projectId } = c.req.valid("query");
+  const teamId =
+    projectId === undefined
+      ? c.get("team")?.id
+      : await teamOfProject(principal, projectId);
+  if (!teamId) return c.json(teamRequired(), 403);
   const data = await listPages({
-    teamId: team.id,
-    principal: c.get("principal"),
+    teamId,
+    principal,
     ...(conversationId === undefined
       ? {}
       : { sourceConversationId: conversationId }),
+    ...(projectId === undefined ? {} : { projectId }),
   });
   return c.json({ data }, 200);
 });
 
 pageRoutes.openapi(createRouteDef, async (c) => {
-  const team = c.get("team");
-  if (!team) return c.json(teamRequired(), 403);
+  const principal = c.get("principal");
   const user = c.get("user");
-  const body = c.req.valid("json");
+  const { projectId, ...input } = c.req.valid("json");
+  const placement = await requirePlacement({
+    principal,
+    activeTeamId: c.get("team")?.id,
+    projectId,
+  });
   const { page, warnings } = await createPage({
-    organizationId: team.organizationId,
-    teamId: team.id,
+    organizationId: principal.organizationId,
+    teamId: placement.teamId,
+    projectId: placement.projectId,
     createdByUserId: user.id,
-    input: body,
+    input,
   });
   return c.json({ page, warnings }, 201);
 });

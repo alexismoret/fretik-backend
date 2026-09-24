@@ -3,7 +3,12 @@ import type { UserPrincipal } from "../../../authz/principal";
 import { throwForbidden } from "../../../authz/refusals";
 import type { LoadedNode } from "../../../authz/resources/types";
 import db from "../../../db";
-import { aiConversations, documents, folders } from "../../../db/schema";
+import {
+  aiConversations,
+  documents,
+  folders,
+  projects,
+} from "../../../db/schema";
 import { badRequest, throwHttpError } from "../../../lib/errors";
 import type {
   ResourceAccess,
@@ -14,6 +19,7 @@ import { updatePage } from "../../pages/update";
 import { updateWorkflow } from "../../workflows/update";
 import { keepAccessAfterRestricting } from "../keep-access";
 import { recordAccessEvent } from "../record-event";
+import { afterAccessChange } from "./after-change";
 import { describeResourceAccess } from "./describe";
 import { requireSharingRights } from "./manage-rights";
 
@@ -29,7 +35,8 @@ import { requireSharingRights } from "./manage-rights";
  * column in step and re-checks the apps a workflow may use; Drive items are
  * written here. Either way the change, the journal entry and the assistant's
  * search index move in one transaction. A chat opened to its team is read
- * there; taking part in it stays a seat someone gives.
+ * there; taking part in it stays a seat someone gives. A project restricted
+ * is reached by its members only, and everything open in it with it.
  */
 export const setGeneralAccess = async (input: {
   principal: UserPrincipal;
@@ -74,6 +81,9 @@ export const setGeneralAccess = async (input: {
       case "document":
         await restrictDriveItem({ principal, type, node, restricted });
         break;
+      case "project":
+        await restrictProject({ principal, node, restricted });
+        break;
       case "conversation":
         await restrictConversation({ principal, node, restricted });
         break;
@@ -85,6 +95,7 @@ export const setGeneralAccess = async (input: {
           ),
         );
     }
+    await afterAccessChange({ organizationId: principal.organizationId, type });
   }
 
   return describeResourceAccess({ principal, type, id });
@@ -136,6 +147,44 @@ const restrictDriveItem = async (input: {
       metadata: { restricted, resourceName: node.name },
     });
     await refreshAclsAfterAccessChange({ executor: tx, type, id: node.id });
+  });
+};
+
+/**
+ * Keep a project to its members, or open it to its team again. The one who
+ * restricts it keeps what they had (`keepAccessAfterRestricting`). Nothing in
+ * the assistant's search index moves: what the project holds carries the
+ * project as its audience, and who reaches the project is read per searcher.
+ */
+const restrictProject = async (input: {
+  principal: UserPrincipal;
+  node: LoadedNode;
+  restricted: boolean;
+}): Promise<void> => {
+  const { principal, node, restricted } = input;
+  await db.transaction(async (tx) => {
+    await tx
+      .update(projects)
+      .set({ accessRestricted: restricted })
+      .where(eq(projects.id, node.id));
+    if (restricted) {
+      await keepAccessAfterRestricting({
+        tx,
+        resourceType: "project",
+        resourceId: node.id,
+        organizationId: node.organizationId,
+        ownerUserId: node.ownerUserId,
+        actingUserId: principal.userId,
+      });
+    }
+    await recordAccessEvent({
+      executor: tx,
+      organizationId: node.organizationId,
+      actorUserId: principal.userId,
+      action: "restriction.changed",
+      resource: { type: "project", id: node.id },
+      metadata: { restricted, resourceName: node.name },
+    });
   });
 };
 

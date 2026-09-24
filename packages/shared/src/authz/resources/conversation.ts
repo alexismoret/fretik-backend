@@ -15,11 +15,12 @@ import type { LoadedNode, ResourceAdapter } from "./types";
  *
  * A chat's participants are its SEATS (`ai_conversation_members`): the owner
  * has full access, every other participant takes part (`use`). It can also be
- * given to read (`view`) through a grant, to people, teams or the whole
- * organization; taking part is always a person's seat, and only for the
- * people of its team (`levelCeiling`). A chat is private to the people it is
- * given to unless it is opened to its container — then everyone in the team
- * (or project) can read it.
+ * given to read (`view`) through a grant, to people, teams, projects or the
+ * whole organization; taking part is always a person's seat, and only for the
+ * people who work where it lives — its project's, when it is in one, else its
+ * team's (`levelCeiling`). A chat is private to the people it is given to
+ * unless it is opened to its container — then everyone in the project (or
+ * team) can read it.
  *
  * A workflow run's conversation has no seats: it belongs to its workflow, and
  * reads through it (`parent`), capped at `view` like any inherited access to a
@@ -29,7 +30,7 @@ export const conversationAdapter: ResourceAdapter = {
   type: "conversation",
   offeredLevels: ["view", "use"],
   groupLevels: ["view"],
-  shareablePrincipals: ["user", "team", "organization"],
+  shareablePrincipals: ["user", "team", "project", "organization"],
   loadNodes: async (ids, executor = db) => {
     const unique = [...new Set(ids)];
     if (unique.length === 0) return new Map();

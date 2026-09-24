@@ -2,9 +2,10 @@ import {
   idsByTeam,
   requireAccessForEachResolved,
 } from "@fretik/shared/authz/access";
-import { requireFolderToAddTo } from "@fretik/shared/authz/drive";
+import { requireDriveMove } from "@fretik/shared/authz/drive";
 import { driveVisibility } from "@fretik/shared/authz/drive-sql";
 import { access, teamOfResource } from "@fretik/shared/authz/http";
+import { requirePlacement } from "@fretik/shared/authz/placement";
 import type { Document, DocumentVersion } from "@fretik/shared/db/schema";
 import {
   authMiddleware,
@@ -68,6 +69,7 @@ import { uploadDocument } from "@fretik/shared/services/documents/upload";
 import { getDocumentVersionDownloadUrl } from "@fretik/shared/services/documents/versions/download";
 import { listDocumentVersions } from "@fretik/shared/services/documents/versions/list";
 import { restoreDocumentVersion } from "@fretik/shared/services/documents/versions/restore";
+import { readProjectName } from "@fretik/shared/services/projects/read";
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import { streamSSE } from "hono/streaming";
 
@@ -92,6 +94,7 @@ const formatDocumentResponse = (doc: Document) => ({
   id: doc.id,
   teamId: doc.teamId,
   folderId: doc.folderId,
+  projectId: doc.projectId,
   status: doc.status,
   source: doc.source,
   errorMessage: doc.errorMessage,
@@ -122,7 +125,9 @@ const formatVersionResponse = (version: DocumentVersion) => ({
 const uploadDocumentRoute = createRoute({
   method: "post",
   path: "/upload",
-  middleware: access.capability("team.content.create"),
+  middleware: access.handler(
+    "Where it lands (`authz/placement.ts`): edit on its folder, taking part in its project, or contributing to the active team at its root.",
+  ),
   summary: "Upload a document",
   description:
     "Uploads a single file, saves it to DB with 'uploading' status, and starts background processing (S3, thumbnail, pre-extraction).",
@@ -297,7 +302,9 @@ const reextractDocumentRoute = createRoute({
 const createAuthoredDocumentRoute = createRoute({
   method: "post",
   path: "/authored",
-  middleware: access.capability("team.content.create"),
+  middleware: access.handler(
+    "Where it lands (`authz/placement.ts`): edit on its folder, taking part in its project, or contributing to the active team at its root.",
+  ),
   summary: "Create a written document",
   description:
     "Creates a markdown document authored in Fretik. Unlike an upload it is `ready` immediately — nothing to convert or OCR — and is mirrored into the graph and indexed for search like any other document.",
@@ -497,24 +504,24 @@ const downloadDocumentVersionRoute = createRoute({
  * --
  */
 documentRoutes.openapi(uploadDocumentRoute, async (c) => {
-  const team = c.get("team");
-  const organization = c.get("organization");
-
-  if (!team) {
-    return c.json(teamRequired(), 403);
-  }
-
-  const { file, folderId, onConflict } = c.req.valid("form");
-  await requireFolderToAddTo(c.get("principal"), folderId);
-
-  const result = await uploadDocument(
-    file,
-    organization.id,
-    team.id,
-    c.get("principal"),
+  const principal = c.get("principal");
+  const { file, folderId, projectId, onConflict } = c.req.valid("form");
+  const placement = await requirePlacement({
+    principal,
+    activeTeamId: c.get("team")?.id,
     folderId,
+    projectId,
+  });
+
+  const result = await uploadDocument({
+    file,
+    organizationId: principal.organizationId,
+    teamId: placement.teamId,
+    principal,
+    folderId,
+    projectId: placement.projectId,
     onConflict,
-  );
+  });
 
   // `outcome` rides on the document rather than wrapping it: every existing
   // caller reads `id` / `status` off the top level, and a same-name upload that
@@ -589,7 +596,13 @@ documentRoutes.openapi(updateDocumentRoute, async (c) => {
 
   const { id } = c.req.valid("param");
   const updates = c.req.valid("json");
-  await requireFolderToAddTo(c.get("principal"), updates.folderId);
+  if (updates.folderId !== undefined) {
+    await requireDriveMove(c.get("principal"), {
+      type: "document",
+      id,
+      folderId: updates.folderId,
+    });
+  }
 
   const updatedDocument = await updateDocument({
     id,
@@ -632,21 +645,23 @@ documentRoutes.openapi(reextractDocumentRoute, async (c) => {
  */
 documentRoutes.openapi(createAuthoredDocumentRoute, async (c) => {
   const user = c.get("user");
-  const team = c.get("team");
-  if (!team) {
-    return throwHttpError(403, teamRequired());
-  }
-
-  const { title, content, folderId } = c.req.valid("json");
-  await requireFolderToAddTo(c.get("principal"), folderId);
+  const principal = c.get("principal");
+  const { title, content, folderId, projectId } = c.req.valid("json");
+  const placement = await requirePlacement({
+    principal,
+    activeTeamId: c.get("team")?.id,
+    folderId,
+    projectId,
+  });
 
   const document = await createAuthoredDocument({
-    organizationId: team.organizationId,
-    teamId: team.id,
+    organizationId: principal.organizationId,
+    teamId: placement.teamId,
     userId: user.id,
     title,
     content,
     folderId: folderId ?? null,
+    projectId: placement.projectId,
     actorContext: { actor: "human", userId: user.id },
     eventActor: { actorType: "user", actorUserId: user.id },
   });
@@ -829,11 +844,18 @@ documentRoutes.openapi(getDocumentDetailsRoute, async (c) => {
       }
     : null;
 
+  const project =
+    document.projectId === null
+      ? null
+      : await readProjectName(document.projectId);
+
   return c.json(
     {
       id: document.id,
       teamId: document.teamId,
       folderId: document.folderId,
+      projectId: document.projectId,
+      project,
       status: document.status,
       source: document.source,
       errorMessage: document.errorMessage,

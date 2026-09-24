@@ -23,6 +23,7 @@ export const SHARING_RESOURCE_TYPES = [
   "workflow",
   "conversation",
   "collection",
+  "project",
 ] as const;
 export type SharingResourceType = (typeof SHARING_RESOURCE_TYPES)[number];
 export const sharingResourceTypeSchema = z.enum(SHARING_RESOURCE_TYPES);
@@ -168,14 +169,22 @@ export const resourceAccessSchema = z
     /** The levels a team, a project or the organization can be given. */
     groupLevels: z.array(accessLevelSchema),
     /**
-     * The most a person can hold on it, whatever is shared with them: one of
-     * its team, and anyone else. Below full on a restricted workflow, which
-     * runs as its owner (`view` for all), and on a chat, which only its
-     * team's people take part in (`view` for anyone else).
+     * The most a person can hold on it, whatever is shared with them: one who
+     * works where it lives (`team`), and anyone else. Below full on a
+     * restricted workflow, which runs as its owner (`view` for all), and on a
+     * chat, which only the people who work where it lives take part in
+     * (`view` for anyone else).
      */
     ceilings: z.object({
+      /** Someone of its team, or of its project when it is in one. */
       team: accessLevelSchema,
       outsider: accessLevelSchema,
+      /**
+       * Who `team` applies to, when that is not simply the people of its
+       * team: for a chat in a project, the people who take part in the
+       * project, whatever their team. Null otherwise.
+       */
+      insiders: z.array(z.string()).nullable(),
     }),
     /** Who this type can be shared with. */
     shareablePrincipals: z.array(shareablePrincipalTypeSchema),

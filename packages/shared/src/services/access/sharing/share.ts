@@ -13,6 +13,7 @@ import { refreshAclsAfterAccessChange } from "../../ai-vectors/acl";
 import { type AccessEvent, recordAccessEvents } from "../record-event";
 import { tellRequestersAnswered } from "../requests/answered-by-share";
 import { settleRequestsAnsweredBy } from "../requests/settle-requests";
+import { afterAccessChange } from "./after-change";
 import { describeResourceAccess } from "./describe";
 import { lockGrants, upsertGrants } from "./grant-store";
 import { requireSharingRights } from "./manage-rights";
@@ -145,6 +146,7 @@ export const writeShares = async (input: {
       deciderUserId: principal.userId,
     });
   });
+  await afterAccessChange({ organizationId: principal.organizationId, type });
   await tellRequestersAnswered({
     principal,
     settled,

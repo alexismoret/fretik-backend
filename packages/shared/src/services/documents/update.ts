@@ -44,17 +44,32 @@ const keepFileExtension = (
  * Update a document and its associated data.
  * Handles folder changes (counts), universal property edits (summary,
  * language) and dynamic field values (per-team configured fields).
+ *
+ * A file belongs to its folder's project: moved into a folder, it joins that
+ * folder's place; moved to a root, the root named (`projectId`) — else it
+ * stays in its own. Who may move it there is the caller's gate
+ * (`authz/drive.ts`, `requireDriveMove`).
  */
 export const updateDocument = async (data: {
   id: string;
   teamId: string;
   organizationId: string;
   updates: UpdateDocumentInput;
+  /**
+   * The project whose root the file moves to, when it moves to a root: a
+   * project's, or null for its team's. Omitted, it stays in its own place.
+   */
+  projectId?: string | null;
 }) => {
   const { id, teamId, organizationId, updates } = data;
 
   const existingDocument = await db.query.documents.findFirst({
-    columns: { id: true, folderId: true, originalFilename: true },
+    columns: {
+      id: true,
+      folderId: true,
+      projectId: true,
+      originalFilename: true,
+    },
     where: { id, teamId },
   });
   if (!existingDocument) {
@@ -67,9 +82,20 @@ export const updateDocument = async (data: {
   const folderHasChanged =
     updates.folderId !== undefined &&
     existingDocument.folderId !== updates.folderId;
-  if (folderHasChanged) {
-    await assertFolderInTeam({ folderId: updates.folderId, teamId });
-  }
+  const folderId =
+    updates.folderId === undefined
+      ? existingDocument.folderId
+      : updates.folderId;
+  const destination = folderHasChanged
+    ? await assertFolderInTeam({ folderId, teamId })
+    : null;
+  const projectId =
+    destination !== null
+      ? destination.projectId
+      : folderId === null && data.projectId !== undefined
+        ? data.projectId
+        : existingDocument.projectId;
+  const moved = folderHasChanged || projectId !== existingDocument.projectId;
   const originalFilename = keepFileExtension(
     existingDocument.originalFilename,
     updates.originalFilename,
@@ -97,13 +123,14 @@ export const updateDocument = async (data: {
       .set({
         originalFilename,
         folderId: updates.folderId,
+        ...(projectId === existingDocument.projectId ? {} : { projectId }),
       })
       .where(eq(documents.id, id))
       .returning();
 
-    // Moved: it now inherits from another folder, and the assistant's search
-    // follows it there (`acl.ts`).
-    if (folderHasChanged && doc) {
+    // Moved: it now inherits from another folder or another place, and the
+    // assistant's search follows it there (`acl.ts`).
+    if (moved && doc) {
       await refreshAclsAfterAccessChange({
         executor: tx,
         type: "document",

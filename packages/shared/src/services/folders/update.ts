@@ -1,7 +1,12 @@
-import { and, eq, like, sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import db from "../../db";
 import { folders } from "../../db/schema";
-import { internalError, notFound, throwHttpError } from "../../lib/errors";
+import {
+  badRequest,
+  internalError,
+  notFound,
+  throwHttpError,
+} from "../../lib/errors";
 import type { UpdateFolderInput } from "../../schemas/folders";
 import { refreshAclsAfterAccessChange } from "../ai-vectors/acl";
 import {
@@ -9,14 +14,29 @@ import {
   type EventActor,
   SYSTEM_ACTOR,
 } from "../domain-events/emit";
+import { relocateFolderTree } from "./relocate";
+import { listFolderSubtreeIds } from "./subtree";
 
 /**
  * Updates a folder, handling name changes, parent changes, and path updates.
+ *
+ * A folder belongs to its tree's project, and so does everything in it: a
+ * move into another project's folder, or to a root of another place
+ * (`projectId`), takes the whole subtree with it — every folder and file
+ * below carries the project the Drive's lists read. Who may move it there,
+ * and whether crossing into or out of a project takes full access, is the
+ * caller's gate (`authz/drive.ts`, `requireDriveMove`).
  */
 export const updateFolder = async (data: {
   id: string;
   teamId: string;
   updates: UpdateFolderInput;
+  /**
+   * The project whose root the folder moves to, when it moves to a root: a
+   * project's, or null for its team's. Omitted, a folder moved to a root
+   * stays in its own place (the root of its project, or its team's).
+   */
+  projectId?: string | null;
   actor?: EventActor;
 }) => {
   const { id, teamId, updates } = data;
@@ -31,31 +51,61 @@ export const updateFolder = async (data: {
     return throwHttpError(404, notFound());
   }
 
-  // Handle move/rename (recompute fullPath)
-  let newFullPath = existingFolder.fullPath;
   const oldFullPath = existingFolder.fullPath;
   const nameChanged =
     updates.name !== undefined && updates.name !== existingFolder.name;
   const parentChanged =
     updates.parentFolderId !== undefined &&
     updates.parentFolderId !== existingFolder.parentFolderId;
+  const parentFolderId = parentChanged
+    ? (updates.parentFolderId ?? null)
+    : existingFolder.parentFolderId;
 
-  if (nameChanged || parentChanged) {
-    const parentFolderId = parentChanged
-      ? updates.parentFolderId
-      : existingFolder.parentFolderId;
-
-    const parentFolderFullPath = parentFolderId
-      ? await getParentFolderFullPath(parentFolderId, teamId)
+  // Its parent is read only when its path or its place may change.
+  const parent =
+    parentFolderId !== null && (nameChanged || parentChanged)
+      ? await getParentFolder(parentFolderId, teamId)
       : null;
+  // The place it lands in: its new parent's project, or at a root the one
+  // named — else where it already is.
+  const projectId =
+    parentFolderId !== null
+      ? parentChanged && parent !== null
+        ? parent.projectId
+        : existingFolder.projectId
+      : data.projectId !== undefined
+        ? data.projectId
+        : existingFolder.projectId;
+  const projectChanged = projectId !== existingFolder.projectId;
+  const moved = parentChanged || projectChanged;
 
-    newFullPath = computeFolderFullPath(
-      updates.name ?? existingFolder.name,
-      parentFolderFullPath,
-    );
-  }
+  const newFullPath =
+    nameChanged || parentChanged
+      ? computeFolderFullPath(
+          updates.name ?? existingFolder.name,
+          parent?.fullPath ?? null,
+        )
+      : oldFullPath;
 
   const updatedFolder = await db.transaction(async (tx) => {
+    // A folder moved into itself, or under one of its own folders, would
+    // leave its whole tree hanging from nothing.
+    if (parentChanged && parentFolderId !== null) {
+      const subtree = await listFolderSubtreeIds({
+        rootIds: [id],
+        teamId,
+        executor: tx,
+      });
+      if (subtree.includes(parentFolderId)) {
+        return throwHttpError(
+          400,
+          badRequest(
+            "A folder cannot be moved into itself or one of its folders.",
+          ),
+        );
+      }
+    }
+
     // If parent changed, update subFolderCount
     if (parentChanged) {
       // Decrement old parent
@@ -66,11 +116,11 @@ export const updateFolder = async (data: {
           .where(eq(folders.id, existingFolder.parentFolderId));
       }
       // Increment new parent
-      if (updates.parentFolderId) {
+      if (parentFolderId) {
         await tx
           .update(folders)
           .set({ subFolderCount: sql`${folders.subFolderCount} + 1` })
-          .where(eq(folders.id, updates.parentFolderId));
+          .where(eq(folders.id, parentFolderId));
       }
     }
 
@@ -79,29 +129,27 @@ export const updateFolder = async (data: {
       .set({
         ...updates,
         fullPath: newFullPath,
+        ...(projectChanged ? { projectId } : {}),
       })
       .where(eq(folders.id, id))
       .returning();
 
-    // Moved: the folder and everything below it now inherit from another
-    // parent, so the assistant's search follows them there (`acl.ts`).
-    if (parentChanged && updated) {
-      await refreshAclsAfterAccessChange({ executor: tx, type: "folder", id });
+    // Everything below follows: its paths, and the place it now belongs to.
+    if (updated && (newFullPath !== oldFullPath || projectChanged)) {
+      await relocateFolderTree(tx, {
+        folderId: id,
+        teamId,
+        oldFullPath,
+        newFullPath,
+        ...(projectChanged ? { projectId } : {}),
+      });
     }
 
-    // If fullPath changed, update all sub-folders paths
-    if (newFullPath !== oldFullPath) {
-      await tx
-        .update(folders)
-        .set({
-          fullPath: sql`REPLACE(${folders.fullPath}, ${oldFullPath}, ${newFullPath})`,
-        })
-        .where(
-          and(
-            like(folders.fullPath, `${oldFullPath}/%`),
-            eq(folders.teamId, teamId),
-          ),
-        );
+    // Moved: the folder and everything below it now inherit from another
+    // parent or another place, so the assistant's search follows them there
+    // (`acl.ts`).
+    if (moved && updated) {
+      await refreshAclsAfterAccessChange({ executor: tx, type: "folder", id });
     }
 
     if (updated) {
@@ -140,14 +188,11 @@ export const updateFolder = async (data: {
 };
 
 /**
- * Retrieves the full path of a parent folder.
+ * The new parent's path, and the project a folder moved into it joins.
  */
-const getParentFolderFullPath = async (
-  parentFolderId: string,
-  teamId: string,
-) => {
+const getParentFolder = async (parentFolderId: string, teamId: string) => {
   const parentFolder = await db.query.folders.findFirst({
-    columns: { fullPath: true },
+    columns: { fullPath: true, projectId: true },
     where: { id: parentFolderId, teamId },
   });
 
@@ -158,7 +203,7 @@ const getParentFolderFullPath = async (
     });
   }
 
-  return parentFolder.fullPath;
+  return parentFolder;
 };
 
 /**

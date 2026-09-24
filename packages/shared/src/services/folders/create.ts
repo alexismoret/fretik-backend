@@ -10,23 +10,29 @@ import {
 
 /**
  * Creates a new folder with proper path computation and parent updates.
+ *
+ * A folder belongs to its parent's project; one created at a root belongs to
+ * the project named (`projectId`), or to its team's Drive when none is. Who
+ * may create it there is `authz/placement.ts`'s decision, taken before.
  */
 export const createFolder = async (data: {
   name: string;
   parentFolderId: string | null | undefined;
   teamId: string;
   userId: string;
+  /** The project whose root it is created at, when it has no parent. */
+  projectId?: string | null;
   actor?: EventActor;
 }) => {
   const { name, parentFolderId, teamId, userId } = data;
   const actor = data.actor ?? SYSTEM_ACTOR;
 
   // Assert parent folder + Get full path
-  const parentFolderFullPath = parentFolderId
-    ? await getParentFolderFullPath(parentFolderId, teamId)
+  const parent = parentFolderId
+    ? await getParentFolder(parentFolderId, teamId)
     : null;
 
-  const fullPath = computeFolderFullPath(name, parentFolderFullPath);
+  const fullPath = computeFolderFullPath(name, parent?.fullPath ?? null);
 
   const newFolder = await db.transaction(async (tx) => {
     const [inserted] = await tx
@@ -36,6 +42,8 @@ export const createFolder = async (data: {
         parentFolderId,
         fullPath,
         teamId,
+        projectId:
+          parent === null ? (data.projectId ?? null) : parent.projectId,
         createdById: userId,
       })
       .returning();
@@ -79,14 +87,11 @@ export const createFolder = async (data: {
 };
 
 /**
- * Retrieves the full path of a parent folder.
+ * The parent folder's path, and the project a folder created in it joins.
  */
-const getParentFolderFullPath = async (
-  parentFolderId: string,
-  teamId: string,
-) => {
+const getParentFolder = async (parentFolderId: string, teamId: string) => {
   const parentFolder = await db.query.folders.findFirst({
-    columns: { fullPath: true },
+    columns: { fullPath: true, projectId: true },
     where: { id: parentFolderId, teamId },
   });
 
@@ -97,7 +102,7 @@ const getParentFolderFullPath = async (
     });
   }
 
-  return parentFolder.fullPath;
+  return parentFolder;
 };
 
 /**

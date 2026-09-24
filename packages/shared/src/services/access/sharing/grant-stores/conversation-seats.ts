@@ -1,4 +1,5 @@
 import { and, eq, inArray, ne } from "drizzle-orm";
+import { projectParticipants } from "../../../../authz/project-people";
 import type { Executor } from "../../../../db";
 import {
   aiConversationMembers,
@@ -21,7 +22,9 @@ import { accessGrantStore } from "./access-grants";
  *
  * The owner's seat is not a holder: the owner is the chat's owner, as every
  * resource's is, never someone to change or remove. And a seat is only ever
- * given to someone of the chat's team (`authz/rules.ts` says why).
+ * given to someone who works where the chat lives: its project's
+ * participants when it is in one, else its team's people
+ * (`authz/rules.ts` says why).
  */
 
 const peopleOf = (refs: readonly PrincipalRef[]): string[] =>
@@ -53,8 +56,49 @@ const lockSeats = async (
 };
 
 /**
+ * Of these people, those who work where the chat lives: the participants of
+ * its project when it is in one, else the people of its team.
+ */
+const whoWorksThere = async (
+  tx: Executor,
+  conversationId: string,
+  userIds: readonly string[],
+): Promise<{ readonly inProject: boolean; readonly ids: Set<string> }> => {
+  const [chat] = await tx
+    .select({
+      organizationId: aiConversations.organizationId,
+      teamId: aiConversations.teamId,
+      projectId: aiConversations.projectId,
+    })
+    .from(aiConversations)
+    .where(eq(aiConversations.id, conversationId));
+  if (!chat) return { inProject: false, ids: new Set() };
+  if (chat.projectId !== null) {
+    return {
+      inProject: true,
+      ids: await projectParticipants({
+        organizationId: chat.organizationId,
+        projectId: chat.projectId,
+        userIds,
+        executor: tx,
+      }),
+    };
+  }
+  const inTeam = await tx
+    .select({ userId: teamMember.userId })
+    .from(teamMember)
+    .where(
+      and(
+        eq(teamMember.teamId, chat.teamId),
+        inArray(teamMember.userId, [...userIds]),
+      ),
+    );
+  return { inProject: false, ids: new Set(inTeam.map((row) => row.userId)) };
+};
+
+/**
  * Seat these people as participants; a seat held stays as it is. Refused
- * when one of them is not in the chat's team: they can read it.
+ * when one of them does not work where the chat lives: they can read it.
  */
 const takeSeats = async (
   tx: Executor,
@@ -62,22 +106,13 @@ const takeSeats = async (
   userIds: readonly string[],
 ): Promise<void> => {
   if (userIds.length === 0) return;
-  const inTeam = await tx
-    .select({ userId: teamMember.userId })
-    .from(aiConversations)
-    .innerJoin(teamMember, eq(teamMember.teamId, aiConversations.teamId))
-    .where(
-      and(
-        eq(aiConversations.id, conversationId),
-        inArray(teamMember.userId, [...userIds]),
-      ),
-    );
-  const members = new Set(inTeam.map((row) => row.userId));
-  if (userIds.some((userId) => !members.has(userId))) {
+  const insiders = await whoWorksThere(tx, conversationId, userIds);
+  if (userIds.some((userId) => !insiders.ids.has(userId))) {
     throwHttpError(400, {
       code: ERROR_CODES.PARTICIPANT_OUTSIDE_TEAM,
-      message:
-        "Only people of the chat's team can take part in it. Give the others access to read it.",
+      message: insiders.inProject
+        ? "Only people who take part in the chat's project can take part in it. Give the others access to read it."
+        : "Only people of the chat's team can take part in it. Give the others access to read it.",
     });
   }
   await tx

@@ -1,6 +1,12 @@
-import { requireAccess } from "@fretik/shared/authz/access";
-import { requireCapability } from "@fretik/shared/authz/gates";
+import {
+  requireAccess,
+  type ResolvedResource,
+} from "@fretik/shared/authz/access";
 import { access, teamOfResource } from "@fretik/shared/authz/http";
+import {
+  type Placement,
+  requirePlacement,
+} from "@fretik/shared/authz/placement";
 import type { UserPrincipal } from "@fretik/shared/authz/principal";
 import db from "@fretik/shared/db";
 import { aiChatFiles } from "@fretik/shared/db/schema";
@@ -14,11 +20,7 @@ import {
   listSessionPaths,
   readSessionFile,
 } from "@fretik/shared/lib/chatbot-session-storage";
-import {
-  notFound,
-  teamRequired,
-  throwHttpError,
-} from "@fretik/shared/lib/errors";
+import { notFound, throwHttpError } from "@fretik/shared/lib/errors";
 import { getPresignedUrl } from "@fretik/shared/lib/s3";
 import {
   PromoteSandboxFileError,
@@ -104,33 +106,42 @@ const DOWNLOADABLE_DIRS = new Set<string>([
  * names the level it takes on the conversation (`access.resource`): reading
  * its files takes `view`, adding or removing one takes part in it (`use`).
  * A file belongs to the conversation, whichever team the caller has open.
- * Filing one into the Drive is the exception: it lands in the Drive of the
- * team the caller has open, and takes creating content there — or edit on a
- * document it lands on as a new version.
+ * Filing one into the Drive is the exception: it lands at the root of the
+ * chat's project when it is in one, else in the Drive of the team the caller
+ * has open, and takes adding content there (`authz/placement.ts`) — or edit
+ * on a document it lands on as a new version.
  */
 const READ = access.resource("conversation", "view");
 const TAKE_PART = access.resource("conversation", "use");
 
-/** Refuse filing into the Drive for someone who may not add to it. */
-const requireDriveFiling = async (
-  principal: UserPrincipal,
-  teamId: string,
-  replaceDocumentId?: string,
-): Promise<void> => {
-  if (replaceDocumentId !== undefined) {
-    await requireAccess({
-      principal,
+/**
+ * Where a chat's file is filed, for someone who may add it there: the chat's
+ * project, else the team the caller has open.
+ */
+const requireDriveFiling = async (input: {
+  principal: UserPrincipal;
+  activeTeamId: string | undefined;
+  resource: ResolvedResource;
+  replaceDocumentId?: string;
+}): Promise<Placement> => {
+  if (input.replaceDocumentId !== undefined) {
+    const { node } = await requireAccess({
+      principal: input.principal,
       type: "document",
-      id: replaceDocumentId,
+      id: input.replaceDocumentId,
       required: "edit",
       notFoundMessage: "Document not found",
     });
-    return;
+    return {
+      teamId:
+        node.teamId ?? throwHttpError(404, notFound("Document not found")),
+      projectId: node.projectId,
+    };
   }
-  await requireCapability({
-    principal,
-    capability: "team.content.create",
-    teamId,
+  return requirePlacement({
+    principal: input.principal,
+    activeTeamId: input.activeTeamId,
+    projectId: input.resource.node.projectId,
   });
 };
 
@@ -206,14 +217,12 @@ chatFilesRoutes.post("/conversation/:id/files", TAKE_PART, async (c) => {
  * attachment rows the prompt bar counts against its cap.
  */
 chatFilesRoutes.get("/conversation/:id/workspace", READ, async (c) => {
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
-
   const conversationId = c.req.param("id");
 
+  // Its files are filed in its own team's Drive, wherever the caller is.
   const files = await listConversationWorkspaceFiles({
     conversationId,
-    teamId: team.id,
+    teamId: teamOfResource(c.get("resource")),
   });
   return c.json({ files });
 });
@@ -229,9 +238,6 @@ chatFilesRoutes.get(
   "/conversation/:id/workspace/drive-state",
   READ,
   async (c) => {
-    const team = c.get("team");
-    if (!team) return throwHttpError(403, teamRequired());
-
     const conversationId = c.req.param("id");
 
     const path = c.req.query("path");
@@ -255,7 +261,7 @@ chatFilesRoutes.get(
 
     const state = await resolveDriveState({
       conversationId,
-      teamId: team.id,
+      teamId: teamOfResource(c.get("resource")),
       path: resolved.relative,
       principal: c.get("principal"),
     });
@@ -276,9 +282,7 @@ chatFilesRoutes.get(
  */
 chatFilesRoutes.post("/conversation/:id/workspace/promote", READ, async (c) => {
   const user = c.get("user");
-  const team = c.get("team");
   const organization = c.get("organization");
-  if (!team) return throwHttpError(403, teamRequired());
 
   const conversationId = c.req.param("id");
 
@@ -303,7 +307,12 @@ chatFilesRoutes.post("/conversation/:id/workspace/promote", READ, async (c) => {
     typeof parsed.replaceDocumentId === "string"
       ? parsed.replaceDocumentId
       : undefined;
-  await requireDriveFiling(c.get("principal"), team.id, replaceDocumentId);
+  const placement = await requireDriveFiling({
+    principal: c.get("principal"),
+    activeTeamId: c.get("team")?.id,
+    resource: c.get("resource"),
+    ...(replaceDocumentId !== undefined ? { replaceDocumentId } : {}),
+  });
 
   const resolved = resolveWorkspacePath(path);
   if (
@@ -331,7 +340,8 @@ chatFilesRoutes.post("/conversation/:id/workspace/promote", READ, async (c) => {
       fileIds: [row.id],
       conversationId,
       organizationId: organization.id,
-      teamId: team.id,
+      teamId: placement.teamId,
+      projectId: placement.projectId,
       userId: user.id,
     });
     const promoted = result.promoted[0];
@@ -359,7 +369,8 @@ chatFilesRoutes.post("/conversation/:id/workspace/promote", READ, async (c) => {
       conversationId,
       path: resolved.relative,
       organizationId: organization.id,
-      teamId: team.id,
+      teamId: placement.teamId,
+      projectId: placement.projectId,
       userId: user.id,
       principal: c.get("principal"),
       ...(replaceDocumentId !== undefined ? { replaceDocumentId } : {}),
@@ -383,9 +394,7 @@ chatFilesRoutes.post(
   READ,
   async (c) => {
     const user = c.get("user");
-    const team = c.get("team");
     const organization = c.get("organization");
-    if (!team) return throwHttpError(403, teamRequired());
 
     const conversationId = c.req.param("id");
 
@@ -422,12 +431,17 @@ chatFilesRoutes.post(
       );
     }
 
-    await requireDriveFiling(c.get("principal"), team.id);
+    const placement = await requireDriveFiling({
+      principal: c.get("principal"),
+      activeTeamId: c.get("team")?.id,
+      resource: c.get("resource"),
+    });
     const result = await promoteChatFilesToDrive({
       fileIds,
       conversationId,
       organizationId: organization.id,
-      teamId: team.id,
+      teamId: placement.teamId,
+      projectId: placement.projectId,
       userId: user.id,
     });
 

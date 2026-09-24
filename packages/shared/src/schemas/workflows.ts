@@ -679,6 +679,8 @@ export const WorkflowResponseSchema = z.object({
   teamId: z.uuid(),
   organizationId: z.uuid(),
   userId: z.uuid().nullable(),
+  /** The project it belongs to; null for its team's. */
+  projectId: z.uuid().nullable(),
   name: z.string(),
   description: z.string(),
   icon: z.string().nullable(),

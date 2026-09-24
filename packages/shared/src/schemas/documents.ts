@@ -28,6 +28,10 @@ export const UploadDocumentSchema = z.object({
     description: "Optional folder ID to associate with the document",
     example: "018f3a3a-3a3a-3a3a-3a3a-3a3a3a3a3a3a",
   }),
+  projectId: z.uuid().optional().openapi({
+    description:
+      "The project whose root the file lands at when no folder is given. A folder decides for itself.",
+  }),
   onConflict: z.enum(["ask", "replace", "keepBoth"]).optional().openapi({
     description:
       "What to do when the folder already holds a different file with this name. `ask` (default) answers 409 DOCUMENT_NAME_CONFLICT with the existing document's id in `details`; `replace` files the bytes as a new version of it; `keepBoth` uploads under `name (2).ext`. Identical bytes are never a conflict.",
@@ -43,6 +47,8 @@ export const DocumentResponseSchema = z.object({
   id: z.uuid(),
   teamId: z.uuid(),
   folderId: z.uuid().nullable(),
+  /** The project it belongs to, with its folder's tree; null for a team's Drive. */
+  projectId: z.uuid().nullable(),
   status: documentStatusSchema,
   source: documentSourceSchema,
   errorMessage: z.string().nullable(),
@@ -77,6 +83,10 @@ export const CreateAuthoredDocumentSchema = z.object({
   content: authoredContentSchema.default(""),
   folderId: z.uuid().nullish().openapi({
     description: "Destination folder. Omit for the Drive root.",
+  }),
+  projectId: z.uuid().nullish().openapi({
+    description:
+      "The project whose root it lands at when no folder is given. Omit for the root of the active team's Drive.",
   }),
 });
 
@@ -205,6 +215,8 @@ export const GetDocumentDetailsResponseSchema = DocumentResponseSchema.extend({
     })
     .nullable(),
   breadcrumbs: z.array(FolderBreadcrumbSchema),
+  /** The project it belongs to, named so its path can start there. */
+  project: z.object({ id: z.uuid(), name: z.string() }).nullable(),
   /**
    * Per-document custom field values, keyed by `fieldDefinitions.key`.
    * Values are JSON primitives or arrays (multi_select) — the type is

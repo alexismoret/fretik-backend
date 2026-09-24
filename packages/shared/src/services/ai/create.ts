@@ -11,6 +11,10 @@ import { getConversation } from "./get";
  * as unread to themselves. Further participants join later through
  * `addConversationMembers`, an @mention or the share dialog — the same seats,
  * journaled the same way (`writeShares`).
+ *
+ * Private to its owner wherever it is started, a project included: sharing
+ * it, with the project or with people, is its owner's choice. Where it may be
+ * started is `authz/placement.ts`'s decision, taken before.
  */
 export const createConversation = async (data: {
   organizationId: string;
@@ -18,6 +22,8 @@ export const createConversation = async (data: {
   userId: string;
   title: string;
   agentType?: AiAgentType;
+  /** The project it is started in; null or omitted for its team's. */
+  projectId?: string | null;
   /**
    * EXPLICIT flagship pin for this conversation — nothing else. A caller
    * that omits it leaves the column null, and every turn then resolves the
@@ -44,6 +50,7 @@ export const createConversation = async (data: {
         title,
         agentType: agentType ?? "chatbot",
         modelProfileKey: modelProfileKey ?? null,
+        projectId: data.projectId ?? null,
       })
       .returning({ id: aiConversations.id });
 

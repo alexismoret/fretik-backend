@@ -36,16 +36,24 @@ export type NameCollision =
 /**
  * Folder scoping is by EQUALITY, and the root is `NULL` — which `=` never
  * matches in SQL. Two files named the same in two folders are not a collision;
- * two at the root are.
+ * two at the same root are. A team's root and each of its projects' roots are
+ * different places: the project tells them apart.
  */
-const inSameFolder = (folderId: string | null) =>
+const inSameFolder = (folderId: string | null, projectId: string | null) =>
   folderId === null
-    ? isNull(documents.folderId)
+    ? and(
+        isNull(documents.folderId),
+        projectId === null
+          ? isNull(documents.projectId)
+          : eq(documents.projectId, projectId),
+      )
     : eq(documents.folderId, folderId);
 
 export const findNameCollision = async (args: {
   teamId: string;
   folderId: string | null;
+  /** The project whose root is meant when `folderId` is null. */
+  projectId: string | null;
   filename: string;
   fileHash: string;
   visibility: DriveVisibility;
@@ -55,8 +63,15 @@ export const findNameCollision = async (args: {
       teamId: args.teamId,
       // The root is NULL, and `= NULL` matches nothing — the relational filter
       // needs `isNull` rather than the value.
-      folderId:
-        args.folderId === null ? { isNull: true } : { eq: args.folderId },
+      ...(args.folderId === null
+        ? {
+            folderId: { isNull: true },
+            projectId:
+              args.projectId === null
+                ? { isNull: true }
+                : { eq: args.projectId },
+          }
+        : { folderId: { eq: args.folderId } }),
       originalFilename: args.filename,
       ...visibleDocumentsWhere(args.visibility),
     },
@@ -112,6 +127,8 @@ export const withNameSuffix = (filename: string, n: number): string => {
 export const nextAvailableFilename = async (args: {
   teamId: string;
   folderId: string | null;
+  /** The project whose root is meant when `folderId` is null. */
+  projectId: string | null;
   filename: string;
   /** Only names the uploader can see are taken: see the header. */
   visibility: DriveVisibility;
@@ -124,7 +141,7 @@ export const nextAvailableFilename = async (args: {
     .where(
       and(
         eq(documents.teamId, args.teamId),
-        inSameFolder(args.folderId),
+        inSameFolder(args.folderId, args.projectId),
         args.visibility.document(DOCUMENT_ACCESS_COLUMNS),
         // `%` and `_` are LIKE wildcards; a stem containing either would match
         // more than it should. Over-matching is harmless here — the set is only

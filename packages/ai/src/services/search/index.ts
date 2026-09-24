@@ -1,3 +1,4 @@
+import { loadPrincipal } from "@fretik/shared/authz/load-principal";
 import {
   type StageTimings,
   formatTimings,
@@ -104,6 +105,29 @@ export interface SearchRagResult {
 const DEFAULT_TOP_K = 20;
 
 /**
+ * The projects the searcher reaches, whose content names the project as its
+ * audience. None for a search with no person behind it, nor for someone who
+ * is no longer in the organization. A search never throws: without them, it
+ * finds less, never more.
+ */
+const projectsOfSearcher = async (
+  organizationId: string,
+  userId: string | undefined,
+): Promise<string[]> => {
+  if (userId === undefined) return [];
+  try {
+    const principal = await loadPrincipal({ organizationId, userId });
+    return principal === null ? [] : [...principal.projectLevels.keys()];
+  } catch (err) {
+    console.warn(
+      "[search] projects of the searcher unavailable, searching without them:",
+      err instanceof Error ? err.message : err,
+    );
+    return [];
+  }
+};
+
+/**
  * Fuses several `HybridCandidate[]` lists — one per query variant —
  * into a single ranked list. Each chunk's score is the sum of the
  * per-variant RRF scores already computed by `hybridSearch`, so a
@@ -187,6 +211,10 @@ export const searchRAG = async (
   const timings: StageTimings = {};
   const startedAt = Date.now();
 
+  // What a project holds is found by the people of the project. Read through
+  // the principal cache while the query variants are generated.
+  const searcherProjects = projectsOfSearcher(organizationId, userId);
+
   const trimmed = query.trim();
   if (trimmed.length === 0) {
     return {
@@ -218,6 +246,11 @@ export const searchRAG = async (
     };
   }
 
+  // Resolved by now: it ran while the variants were generated. Awaited
+  // BEFORE the embedding promise below exists, which must have its handlers
+  // attached the moment it is created (see the note on stage 2).
+  const projectIds = await searcherProjects;
+
   // Stage 2 — batch-embed all variants at once. Routed through the
   // Phase 8 Redis-backed query cache so a repeated query (follow-up,
   // typo retry, popular question across users) skips the OpenRouter
@@ -247,6 +280,7 @@ export const searchRAG = async (
           teamId,
           organizationId,
           userId,
+          projectIds,
           filters,
         }),
       ),

@@ -33,6 +33,10 @@ export const driveListParamsSchema = paramsListSchema.extend({
       description:
         "Field filters on the documents' `document` object mirror. JSON-encoded `RecordFilter[]` — each `{ key, op, value }`, AND across entries.",
     }),
+  projectId: z.uuid().optional().openapi({
+    description:
+      "The project whose Drive root to list. Omitted, the root of the team the caller has open. Ignored inside a folder, which belongs to its own place.",
+  }),
 });
 
 export type DriveListParams = z.infer<typeof driveListParamsSchema>;
@@ -43,14 +47,23 @@ export type DriveListParams = z.infer<typeof driveListParamsSchema>;
 export const CreateFolderSchema = z.object({
   name: z.string().min(1).max(100),
   parentFolderId: z.uuid().nullish(),
+  /**
+   * The project whose root it is created at, when it has no parent. A folder
+   * created in another belongs to that folder's project.
+   */
+  projectId: z.uuid().nullish(),
 });
 
 export type CreateFolderInput = z.infer<typeof CreateFolderSchema>;
 
 /**
- * Schéma de validation pour la mise à jour d'un dossier
+ * Schéma de validation pour la mise à jour d'un dossier. Moving it into or
+ * out of a project goes through `/projects/move`; a parent change keeps it
+ * in the place its new parent is in.
  */
-export const UpdateFolderSchema = CreateFolderSchema.partial();
+export const UpdateFolderSchema = CreateFolderSchema.omit({
+  projectId: true,
+}).partial();
 
 export type UpdateFolderInput = z.infer<typeof UpdateFolderSchema>;
 
@@ -58,6 +71,8 @@ export const FolderResponseSchema = z.object({
   id: z.uuid(),
   name: z.string(),
   teamId: z.uuid(),
+  /** The project it belongs to, with everything in its tree; null for a team's Drive. */
+  projectId: z.uuid().nullable(),
   parentFolderId: z.uuid().nullable(),
   subFolderCount: z.number().int().min(0),
   documentCount: z.number().int().min(0),
@@ -118,6 +133,11 @@ export const FolderDriveResponseSchema = z.object({
   folder: FolderResponseSchema.nullable(), // null for root
   children: responseListSchema(DriveItemSchema),
   breadcrumbs: z.array(FolderBreadcrumbSchema),
+  /**
+   * The project whose Drive this is — its root, or a folder of its tree —
+   * named so the path can start there. Null for a team's Drive.
+   */
+  project: z.object({ id: z.uuid(), name: z.string() }).nullable(),
 });
 
 export type FolderDriveResponse = z.infer<typeof FolderDriveResponseSchema>;

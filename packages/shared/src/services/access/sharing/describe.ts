@@ -3,6 +3,7 @@ import { adapterFor, requireAccess } from "../../../authz/access";
 import { decideCapability } from "../../../authz/capabilities";
 import { levelRank } from "../../../authz/levels";
 import type { UserPrincipal } from "../../../authz/principal";
+import { projectParticipants } from "../../../authz/project-people";
 import type { LoadedNode } from "../../../authz/resources/types";
 import { ceilingFor, inheritedCap } from "../../../authz/rules";
 import db from "../../../db";
@@ -44,19 +45,21 @@ export const describeResourceAccess = async (input: {
   const adapter = adapterFor(type);
   const canManage = level === "full" && !principal.isGuest;
 
-  const [holders, owner, inheritsFrom, policy, requests] = await Promise.all([
-    loadHolders(principal, type, node),
-    loadOwner(node.ownerUserId),
-    inheritanceSourceOf(node),
-    getOrganizationAccessPolicy(principal.organizationId),
-    canManage
-      ? listResourceRequests({
-          organizationId: principal.organizationId,
-          type,
-          id,
-        })
-      : [],
-  ]);
+  const [holders, owner, inheritsFrom, policy, requests, insiders] =
+    await Promise.all([
+      loadHolders(principal, type, node),
+      loadOwner(node.ownerUserId),
+      inheritanceSourceOf(node),
+      getOrganizationAccessPolicy(principal.organizationId),
+      canManage
+        ? listResourceRequests({
+            organizationId: principal.organizationId,
+            type,
+            id,
+          })
+        : [],
+      insidersOf(type, node),
+    ]);
 
   return {
     resource: { type, id, name: node.name, teamId: node.teamId },
@@ -81,8 +84,9 @@ export const describeResourceAccess = async (input: {
     groupLevels: [...(adapter.groupLevels ?? adapter.offeredLevels)],
     // Nobody picked is its owner: the owner is never given anything.
     ceilings: {
-      team: ceilingFor(node, { isOwner: false, inTeam: true }),
-      outsider: ceilingFor(node, { isOwner: false, inTeam: false }),
+      team: ceilingFor(node, { isOwner: false, worksThere: true }),
+      outsider: ceilingFor(node, { isOwner: false, worksThere: false }),
+      insiders,
     },
     shareablePrincipals: [...adapter.shareablePrincipals],
     policy: {
@@ -134,6 +138,23 @@ const loadHolders = async (
     (a, b) =>
       levelRank(b.level) - levelRank(a.level) || a.name.localeCompare(b.name),
   );
+};
+
+/**
+ * Who works where a chat in a project lives: the project's participants,
+ * whatever their team — the only people who can take part in it. Null for
+ * everything else, whose insiders are simply the people of its team.
+ */
+const insidersOf = async (
+  type: SharingResourceType,
+  node: LoadedNode,
+): Promise<string[] | null> => {
+  if (type !== "conversation" || node.projectId === null) return null;
+  const participants = await projectParticipants({
+    organizationId: node.organizationId,
+    projectId: node.projectId,
+  });
+  return [...participants].sort();
 };
 
 const loadOwner = async (

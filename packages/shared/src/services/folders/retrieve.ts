@@ -46,6 +46,7 @@ import { qualifiedCollectionTable } from "../collection-schema/identifiers";
 import { readRecordDataBatch } from "../collection-schema/record-io";
 import { DOCUMENT_COLLECTION_KEY } from "../collections/constants";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
+import { readProjectName } from "../projects/read";
 
 /** Resolve a team's org-scoped `document` object-type id (its extension table). */
 const resolveDocumentTypeId = async (
@@ -67,11 +68,14 @@ const resolveDocumentTypeId = async (
 };
 
 /**
- * Retrieves the root drive for a team: what the person can open there.
+ * Retrieves a Drive's root: a team's, or a project's (`projectId`) — what the
+ * person can open there. A team's root holds what is in no project; each
+ * project's root holds its own, and the caller has checked they reach it.
  */
 export const getRootDrive = async (data: {
   principal: Principal;
   teamId: string;
+  projectId?: string | null;
   params: DriveListParams;
 }) => getFolderExplorer({ ...data, folderId: null });
 
@@ -346,6 +350,8 @@ const getFolderExplorer = async (data: {
   principal: Principal;
   folderId: string | null;
   teamId: string;
+  /** At a root: whose root, a project's or (null) the team's. */
+  projectId?: string | null;
   params: DriveListParams;
 }) => {
   const { principal, folderId, teamId, params } = data;
@@ -357,6 +363,7 @@ const getFolderExplorer = async (data: {
       folder: null,
       children,
       breadcrumbs: [{ id: null, name: "/" }] satisfies FolderBreadcrumb[],
+      project: null,
     };
   }
 
@@ -373,17 +380,23 @@ const getFolderExplorer = async (data: {
     }
     currentFolder = folder;
   }
+  // The place listed: a folder's own, else the root asked for.
+  const projectId = currentFolder
+    ? currentFolder.projectId
+    : (data.projectId ?? null);
 
-  const breadcrumbs = await getFolderBreadcrumbs({
-    folderId,
-    teamId,
-    visibility,
-  });
+  const [breadcrumbs, project] = await Promise.all([
+    getFolderBreadcrumbs({ folderId, teamId, visibility }),
+    projectId === null ? null : readProjectName(projectId),
+  ]);
 
   const folderWhere = and(
     eq(folders.teamId, teamId),
     folderId === null
-      ? isNull(folders.parentFolderId)
+      ? and(
+          isNull(folders.parentFolderId),
+          rootOf(folders.projectId, projectId),
+        )
       : eq(folders.parentFolderId, folderId),
     visibility.folder(folders.id),
     ...(search ? [ilike(folders.name, `%${search}%`)] : []),
@@ -391,7 +404,7 @@ const getFolderExplorer = async (data: {
   const documentWhere = and(
     eq(documents.teamId, teamId),
     folderId === null
-      ? isNull(documents.folderId)
+      ? and(isNull(documents.folderId), rootOf(documents.projectId, projectId))
       : eq(documents.folderId, folderId),
     ne(documents.status, "error"),
     visibility.document(DOCUMENT_ACCESS_COLUMNS),
@@ -464,5 +477,12 @@ const getFolderExplorer = async (data: {
       data: children,
     },
     breadcrumbs,
+    project,
   };
 };
+
+/** The items at one root: a project's, or the team's own (in no project). */
+const rootOf = (
+  column: typeof folders.projectId | typeof documents.projectId,
+  projectId: string | null,
+) => (projectId === null ? isNull(column) : eq(column, projectId));

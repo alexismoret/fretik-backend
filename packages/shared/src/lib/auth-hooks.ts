@@ -11,6 +11,7 @@ import {
   INVITATION_EXPIRY_SECONDS,
   MAX_MEMBERS_PER_TEAM,
 } from "./auth-constants";
+import { onMembershipChanged } from "./auth-membership";
 
 /**
  * Better Auth request hooks.
@@ -305,6 +306,10 @@ export const organizationTeamInvitationHooks = createAuthMiddleware(
           return refuse("TEAM_MEMBER_LIMIT_REACHED");
         }
       }
+
+      // Written through the adapter, so no organization hook fired: the
+      // cached principals learn of the new team here.
+      await onMembershipChanged(invitation.organizationId);
 
       // The member row is returned UNCHANGED — the whole point of intercepting
       // this endpoint. Which team the invitee lands in is the client's call

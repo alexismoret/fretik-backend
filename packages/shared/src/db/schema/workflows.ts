@@ -36,6 +36,7 @@ import {
   WORKFLOW_STATUS_VALUES,
   WORKFLOW_TRIGGER_TYPE_VALUES,
 } from "../../schemas/workflows";
+import { projects } from "./access";
 import { aiConversations } from "./ai";
 import { organization, team, user } from "./auth-schema";
 
@@ -155,6 +156,19 @@ export const workflows = pgTable(
     createdByUserId: uuid("created_by_user_id").references(() => user.id, {
       onDelete: "set null",
     }),
+
+    // Access (see `db/schema/access.ts`). `userId` above is the LEGACY form
+    // of the same decision — "private to this person" — and stays the one
+    // code before the access engine reads. So the two are kept in step:
+    // written as `userId = accessRestricted ? ownerUserId : null`, and read as
+    // restricted when EITHER says so (`authz/resources`), which is what keeps
+    // a row an older container writes during a deploy private.
+    ownerUserId: uuid("owner_user_id").references(() => user.id, {
+      onDelete: "set null",
+    }),
+    projectId: uuid("project_id").references(() => projects.id),
+    accessRestricted: boolean("access_restricted").notNull().default(false),
+
     // Denormalized for the card list ordering / "last run" chip.
     lastRunAt: timestamp("last_run_at", { withTimezone: true }),
 
@@ -171,6 +185,9 @@ export const workflows = pgTable(
     index("workflows_team_trigger_active_idx")
       .on(t.teamId, t.triggerType)
       .where(sql`status = 'active'`),
+    index("workflows_project_idx")
+      .on(t.projectId)
+      .where(sql`project_id IS NOT NULL`),
   ],
 );
 

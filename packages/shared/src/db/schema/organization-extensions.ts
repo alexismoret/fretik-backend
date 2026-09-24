@@ -9,6 +9,10 @@ import {
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
+import type {
+  OrganizationAccessPolicy,
+  TeamAccessPolicy,
+} from "../../schemas/access-policy";
 import type { OrganizationSandboxPolicy } from "../../schemas/sandbox-policy";
 import { organization, team, user } from "./auth-schema";
 
@@ -44,6 +48,15 @@ export const organizationSettings = pgTable("organization_settings", {
   // `resolveSandboxPolicy` reads as the default, so no backfill is needed.
   sandboxPolicy: jsonb("sandbox_policy")
     .$type<Partial<OrganizationSandboxPolicy>>()
+    .default({})
+    .notNull(),
+
+  // Who may do what beyond their role: create teams and projects, share
+  // outside their team, publish, invite guests… Sparse like `sandboxPolicy`:
+  // `{}` resolves to the defaults, which reproduce what the product allowed
+  // before policies existed (`resolveOrganizationAccessPolicy`).
+  accessPolicy: jsonb("access_policy")
+    .$type<Partial<OrganizationAccessPolicy>>()
     .default({})
     .notNull(),
 
@@ -88,6 +101,13 @@ export const teamSettings = pgTable("team_settings", {
     .notNull(),
 
   lang: varchar("lang", { length: 8 }).default("en").notNull(),
+
+  // The team's own access defaults — what its members get on its content.
+  // Sparse, resolved by `resolveTeamAccessPolicy`.
+  accessPolicy: jsonb("access_policy")
+    .$type<Partial<TeamAccessPolicy>>()
+    .default({})
+    .notNull(),
 
   // Status
   isActive: boolean("is_active").default(true).notNull(),

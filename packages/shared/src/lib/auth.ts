@@ -21,7 +21,6 @@ import { applyDocumentFieldTemplate } from "../services/field-definitions/apply-
 import { duplicateOrgDefsToTeam } from "../services/field-definitions/duplicate-org-to-team";
 import { getTeamLocale } from "../services/field-definitions/get-locale";
 import { sendOrganizationInvitationEmail } from "../services/invitations/send-invitation-email";
-import { pauseWorkflowsOfDepartedMember } from "../services/workflows/owner-presence";
 import { scrubWorkflowNotificationRecipient } from "../services/workflows/scrub-notification-recipient";
 import { accountSecurity } from "./auth-account-security";
 import { recordAuthEvent } from "./auth-audit";
@@ -31,12 +30,14 @@ import {
   OTP_EXPIRY_SECONDS,
 } from "./auth-constants";
 import { organizationTeamInvitationHooks } from "./auth-hooks";
-import { passkeyOptions } from "./auth-passkey";
 import {
-  invalidateMemberRoleCache,
-  invalidateOrgTeamMembershipCache,
-  invalidateTeamMembershipCache,
-} from "./auth-roles";
+  onMemberLeftOrganization,
+  onMemberLeftTeam,
+  onMembershipChanged,
+  organizationMembershipAfterHooks,
+} from "./auth-membership";
+import { passkeyOptions } from "./auth-passkey";
+import { invalidateMemberRoleCache } from "./auth-roles";
 import { sendEmail } from "./email";
 import { redis } from "./redis";
 
@@ -60,40 +61,20 @@ const electronScheme = process.env.ELECTRON_PROTOCOL_SCHEME ?? "com.fretik.app";
 const electronOrigins = [`${electronScheme}:/`, "app://fretik"];
 
 /**
- * Best-effort scrub of workflow email-recipient lists when a user loses
- * access (leaves a team / the org, or deletes their account). Never blocks
- * the removal itself — the send path re-checks the team roster anyway
- * (`filterTeamMemberIds`), so a missed scrub can't leak an email.
+ * Best-effort scrub of workflow email-recipient lists when a user deletes
+ * their account. Never blocks the deletion — the send path re-checks the team
+ * roster anyway (`filterTeamMemberIds`), so a missed scrub can't leak an
+ * email. Leaving a team or the organization is handled in
+ * `auth-membership.ts`.
  */
 const scrubNotificationRecipient = async (params: {
   userId: string;
-  teamId?: string;
-  organizationId?: string;
 }): Promise<void> => {
   try {
     await scrubWorkflowNotificationRecipient(params);
   } catch (err) {
     console.warn(
       `[workflow-notifications] failed to scrub recipient ${params.userId}:`,
-      err,
-    );
-  }
-};
-
-/**
- * Best-effort pause of the private workflows a departing member owns in the
- * given teams — they run AS that person (see `workflows/owner-presence.ts`).
- * Never blocks the removal: run creation re-checks the owner anyway.
- */
-const pauseDepartedOwnerWorkflows = async (params: {
-  userId: string;
-  teamIds: string[];
-}): Promise<void> => {
-  try {
-    await pauseWorkflowsOfDepartedMember(params);
-  } catch (err) {
-    console.warn(
-      `[workflows] failed to pause workflows owned by departing ${params.userId}:`,
       err,
     );
   }
@@ -226,6 +207,8 @@ const options = {
    */
   hooks: {
     before: organizationTeamInvitationHooks,
+    // The one membership change with no organization hook: leaving.
+    after: organizationMembershipAfterHooks,
   },
 
   databaseHooks: {
@@ -319,35 +302,33 @@ const options = {
             organizationId: data.team.organizationId,
             teamId: data.team.id,
           });
+          await onMembershipChanged(data.team.organizationId);
         },
-        // Workflow notification recipients are stored as jsonb userId lists
-        // (no FK) — drop the departing user from them so the config doesn't
-        // accumulate stale ids.
+        afterDeleteTeam: async (data) => {
+          await onMembershipChanged(data.team.organizationId);
+        },
+        // Who belongs where changed: every cached principal of the
+        // organization is stale (`authz/load-principal.ts`).
+        afterAddMember: async (data) => {
+          await onMembershipChanged(data.organization.id);
+        },
+        afterAddTeamMember: async (data) => {
+          await onMembershipChanged(data.organization.id);
+        },
+        afterAcceptInvitation: async (data) => {
+          await onMembershipChanged(data.organization.id);
+        },
         afterRemoveMember: async (data) => {
-          const { userId } = data.member;
-          const organizationId = data.organization.id;
-          await scrubNotificationRecipient({ userId, organizationId });
-          // `authMiddleware` caches team membership; removing an org member
-          // also drops their `team_member` rows, so their live session would
-          // keep team access until the TTL expires. Same for their role.
-          await invalidateOrgTeamMembershipCache(organizationId, userId);
-          await invalidateMemberRoleCache(organizationId, userId);
-          const teams = await db.query.team.findMany({
-            columns: { id: true },
-            where: { organizationId },
-          });
-          await pauseDepartedOwnerWorkflows({
-            userId,
-            teamIds: teams.map((t) => t.id),
+          await onMemberLeftOrganization({
+            organizationId: data.organization.id,
+            userId: data.member.userId,
           });
         },
         afterRemoveTeamMember: async (data) => {
-          const { userId } = data.teamMember;
-          await scrubNotificationRecipient({ userId, teamId: data.team.id });
-          await invalidateTeamMembershipCache(data.team.id, userId);
-          await pauseDepartedOwnerWorkflows({
-            userId,
-            teamIds: [data.team.id],
+          await onMemberLeftTeam({
+            organizationId: data.organization.id,
+            teamId: data.team.id,
+            userId: data.teamMember.userId,
           });
         },
         // A demoted admin loses admin rights on their next request, not when
@@ -357,6 +338,7 @@ const options = {
             data.organization.id,
             data.member.userId,
           );
+          await onMembershipChanged(data.organization.id);
         },
       },
 

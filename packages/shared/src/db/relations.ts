@@ -122,6 +122,8 @@ export const relations = defineRelations(schema, (r) => ({
     ownedSkills: r.many.skills({ alias: "skillTeamOwner" }),
     externalAppConnections: r.many.externalAppConnections(),
     toolApprovalRequests: r.many.toolApprovalRequests(),
+    projects: r.many.projects(),
+    memberRoles: r.many.teamMemberRoles(),
   },
 
   teamMember: {
@@ -132,6 +134,12 @@ export const relations = defineRelations(schema, (r) => ({
     user: r.one.user({
       from: r.teamMember.userId,
       to: r.user.id,
+    }),
+    // No row = `member` (see `db/schema/access.ts`).
+    roleRow: r.one.teamMemberRoles({
+      from: r.teamMember.id,
+      to: r.teamMemberRoles.teamMemberId,
+      optional: true,
     }),
   },
 
@@ -212,6 +220,17 @@ export const relations = defineRelations(schema, (r) => ({
       to: r.user.id,
       optional: true,
     }),
+    owner: r.one.user({
+      from: r.folders.ownerUserId,
+      to: r.user.id,
+      alias: "folderOwner",
+      optional: true,
+    }),
+    project: r.one.projects({
+      from: r.folders.projectId,
+      to: r.projects.id,
+      optional: true,
+    }),
     documents: r.many.documents(),
   },
 
@@ -232,6 +251,17 @@ export const relations = defineRelations(schema, (r) => ({
     uploadedBy: r.one.user({
       from: r.documents.uploadedById,
       to: r.user.id,
+      optional: true,
+    }),
+    owner: r.one.user({
+      from: r.documents.ownerUserId,
+      to: r.user.id,
+      alias: "documentOwner",
+      optional: true,
+    }),
+    project: r.one.projects({
+      from: r.documents.projectId,
+      to: r.projects.id,
       optional: true,
     }),
     properties: r.one.documentProperties({
@@ -606,6 +636,11 @@ export const relations = defineRelations(schema, (r) => ({
     user: r.one.user({
       from: r.aiConversations.userId,
       to: r.user.id,
+      optional: true,
+    }),
+    project: r.one.projects({
+      from: r.aiConversations.projectId,
+      to: r.projects.id,
       optional: true,
     }),
     messages: r.many.aiMessages(),
@@ -1011,6 +1046,17 @@ export const relations = defineRelations(schema, (r) => ({
       alias: "workflowCreator",
       optional: true,
     }),
+    owner: r.one.user({
+      from: r.workflows.ownerUserId,
+      to: r.user.id,
+      alias: "workflowAccessOwner",
+      optional: true,
+    }),
+    project: r.one.projects({
+      from: r.workflows.projectId,
+      to: r.projects.id,
+      optional: true,
+    }),
     runs: r.many.workflowRuns(),
   },
 
@@ -1033,6 +1079,17 @@ export const relations = defineRelations(schema, (r) => ({
       from: r.pages.createdByUserId,
       to: r.user.id,
       alias: "pageCreator",
+      optional: true,
+    }),
+    owner: r.one.user({
+      from: r.pages.ownerUserId,
+      to: r.user.id,
+      alias: "pageAccessOwner",
+      optional: true,
+    }),
+    project: r.one.projects({
+      from: r.pages.projectId,
+      to: r.projects.id,
       optional: true,
     }),
     versions: r.many.pageVersions(),
@@ -1139,6 +1196,97 @@ export const relations = defineRelations(schema, (r) => ({
     operation: r.one.bulkOperations({
       from: r.bulkOperationChunks.operationId,
       to: r.bulkOperations.id,
+    }),
+  },
+
+  // ============================================================================
+  // Access control (authz)
+  // ============================================================================
+
+  teamMemberRoles: {
+    teamMember: r.one.teamMember({
+      from: r.teamMemberRoles.teamMemberId,
+      to: r.teamMember.id,
+    }),
+    team: r.one.team({
+      from: r.teamMemberRoles.teamId,
+      to: r.team.id,
+    }),
+    user: r.one.user({
+      from: r.teamMemberRoles.userId,
+      to: r.user.id,
+      alias: "teamRoleHolder",
+    }),
+  },
+
+  projects: {
+    organization: r.one.organization({
+      from: r.projects.organizationId,
+      to: r.organization.id,
+    }),
+    team: r.one.team({
+      from: r.projects.teamId,
+      to: r.team.id,
+    }),
+    owner: r.one.user({
+      from: r.projects.ownerUserId,
+      to: r.user.id,
+      alias: "projectOwner",
+      optional: true,
+    }),
+    folders: r.many.folders(),
+    documents: r.many.documents(),
+    pages: r.many.pages(),
+    workflows: r.many.workflows(),
+    conversations: r.many.aiConversations(),
+  },
+
+  accessGrants: {
+    organization: r.one.organization({
+      from: r.accessGrants.organizationId,
+      to: r.organization.id,
+    }),
+    grantedBy: r.one.user({
+      from: r.accessGrants.grantedByUserId,
+      to: r.user.id,
+      alias: "accessGrantAuthor",
+      optional: true,
+    }),
+  },
+
+  accessRequests: {
+    organization: r.one.organization({
+      from: r.accessRequests.organizationId,
+      to: r.organization.id,
+    }),
+    requester: r.one.user({
+      from: r.accessRequests.requesterUserId,
+      to: r.user.id,
+      alias: "accessRequester",
+    }),
+    decidedBy: r.one.user({
+      from: r.accessRequests.decidedByUserId,
+      to: r.user.id,
+      alias: "accessRequestDecider",
+      optional: true,
+    }),
+    team: r.one.team({
+      from: r.accessRequests.teamId,
+      to: r.team.id,
+      optional: true,
+    }),
+  },
+
+  accessAuditLog: {
+    organization: r.one.organization({
+      from: r.accessAuditLog.organizationId,
+      to: r.organization.id,
+    }),
+    actor: r.one.user({
+      from: r.accessAuditLog.actorUserId,
+      to: r.user.id,
+      alias: "accessAuditActor",
+      optional: true,
     }),
   },
 }));

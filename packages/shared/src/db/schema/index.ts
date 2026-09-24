@@ -10,6 +10,10 @@ export * from "./auth-audit";
 // Organization extensions (enterprise_settings, agency_settings)
 export * from "./organization-extensions";
 
+// Access control: team roles, projects, grants, access requests and the
+// access journal — the tables behind `authz/`.
+export * from "./access";
+
 // Per-team AI model selection (chantier C8)
 export * from "./team-ai-settings";
 

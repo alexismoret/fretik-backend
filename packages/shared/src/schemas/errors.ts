@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { accessDenialSchema } from "./access";
 
 /**
  * Known error codes used throughout the API
@@ -100,6 +101,13 @@ export const ERROR_CODES = {
   /** A private workflow's owner left its team: it acts as them, so it stops. */
   WORKFLOW_OWNER_GONE: "WORKFLOW_OWNER_GONE",
 
+  /**
+   * Refused by the access engine, with the reason and who to ask in the
+   * body's `access` field (`AccessDenial`). The client explains it and, when
+   * `access.requestable`, offers "Request access".
+   */
+  ACCESS_DENIED: "ACCESS_DENIED",
+
   // Generic
   INTERNAL_ERROR: "INTERNAL_ERROR",
 } as const;
@@ -113,6 +121,8 @@ export const ErrorSchema = z.object({
   code: z.string(),
   message: z.string().optional(),
   details: z.union([z.string(), z.array(z.string())]).optional(),
+  /** Present on an `ACCESS_DENIED` refusal: why, and who can grant it. */
+  access: accessDenialSchema.optional(),
 });
 
 export type ApiError = z.infer<typeof ErrorSchema>;

@@ -1,4 +1,6 @@
 import { createMiddleware } from "hono/factory";
+import { loadPrincipal } from "../authz/load-principal";
+import type { UserPrincipal } from "../authz/principal";
 import db from "../db";
 import type { organization, team, user } from "../db/schema";
 import { auth } from "./auth";
@@ -14,6 +16,8 @@ export type HonoLoggedAppType = {
     session: typeof auth.$Infer.Session.session;
     organization: typeof organization.$inferSelect;
     team: typeof team.$inferSelect | null;
+    /** Who is asking, as the access engine sees them (`authz/`). */
+    principal: UserPrincipal;
   };
 };
 
@@ -61,6 +65,24 @@ export const authMiddleware = createMiddleware<HonoLoggedAppType>(
       );
     }
 
+    // The session remembers its active organization after the person is
+    // removed from it (or leaves from another device). Membership is checked
+    // here, once, for every route: nothing below may serve an organization
+    // the caller no longer belongs to.
+    const principal = await loadPrincipal({
+      organizationId: org.id,
+      userId: authUser.id,
+    });
+    if (!principal) {
+      return c.json(
+        {
+          message: "You are not a member of the active organization",
+          code: "ORGANIZATION_REQUIRED",
+        },
+        403,
+      );
+    }
+
     const activeTeamId = authSession.activeTeamId;
     let activeTeam: typeof team.$inferSelect | undefined = undefined;
 
@@ -98,6 +120,7 @@ export const authMiddleware = createMiddleware<HonoLoggedAppType>(
     c.set("session", authSession);
     c.set("organization", org);
     c.set("team", activeTeam ?? null);
+    c.set("principal", principal);
 
     await next();
   },

@@ -9,6 +9,8 @@ import { applyAntiBufferingHeaders } from "@fretik/shared/lib/sse-headers";
 import { workflowAbortChannel } from "@fretik/shared/lib/workflow-abort";
 import {
   currentWorkflowTask,
+  isNoOpOutcome,
+  isTerminalRunStatus,
   WORKFLOW_DEFAULT_MAX_TOTAL_TOKENS,
   WorkflowFinalizeRequestSchema,
   WorkflowParkRequestSchema,
@@ -949,7 +951,18 @@ const executeTurn = async (params: {
       const { transitioned } = await finalizeRun({
         tx,
         runId: run.id,
-        status: result.status === "completed" ? "succeeded" : result.status,
+        // A completed turn is not automatically a useful one. `isNoOpOutcome`
+        // reads the task states the executor closed with: everything skipped
+        // means it looked at the trigger input and found nothing of its own to
+        // do. Splitting that off here — the only call site that ever writes
+        // `succeeded` — keeps the turn protocol and the separately deployed
+        // Trigger.dev orchestrator untouched.
+        status:
+          result.status === "completed"
+            ? isNoOpOutcome(freshTasks)
+              ? "not_applicable"
+              : "succeeded"
+            : result.status,
         outputSummary: result.outputSummary ?? null,
         ...(runOutputs !== undefined ? { outputs: runOutputs } : {}),
         error: result.error ?? null,
@@ -1082,14 +1095,16 @@ workflowTriggerRoutes.post("/runs/:runId/turn", async (c) => {
           );
           return;
         }
-        // Terminal runs answer terminally (e.g. canceled mid-loop).
-        if (
-          run.status === "succeeded" ||
-          run.status === "failed" ||
-          run.status === "canceled"
-        ) {
+        // Terminal runs answer terminally (e.g. canceled mid-loop). The turn
+        // protocol is deliberately narrower than the run statuses — the
+        // orchestrator only needs "keep going or stop" — so everything that
+        // ended without failing reports `completed`.
+        if (isTerminalRunStatus(run.status)) {
           await send("result", {
-            status: run.status === "succeeded" ? "completed" : run.status,
+            status:
+              run.status === "failed" || run.status === "canceled"
+                ? run.status
+                : "completed",
             turnIndex,
             taskStates: run.taskStates,
             usage: run.usage,

@@ -1,16 +1,22 @@
 import { and, eq, notInArray } from "drizzle-orm";
 import db, { type Transaction } from "../../db";
 import { workflowRuns, workflows } from "../../db/schema";
-import type {
-  WorkflowRunError,
-  WorkflowRunOutput,
-  WorkflowRunUsage,
+import {
+  WORKFLOW_RUN_TERMINAL_STATUSES,
+  type WorkflowRunError,
+  type WorkflowRunOutput,
+  type WorkflowRunUsage,
 } from "../../schemas/workflows";
 import { emitDomainEvent } from "../domain-events/emit";
 import { closePausedWindow } from "./paused-clock";
 
-/** Terminal run statuses `finalizeRun` may set. */
-export type FinalRunStatus = "succeeded" | "failed" | "canceled";
+/**
+ * Terminal run statuses `finalizeRun` may set. `filtered` is absent on purpose:
+ * a gated launch never becomes a run, so it is written by the gate worker at
+ * creation time and has nothing to finalize.
+ */
+export type FinalRunStatus =
+  "succeeded" | "failed" | "canceled" | "not_applicable";
 
 /**
  * Close a run: set its terminal status + summary/outputs/error, stamp
@@ -63,7 +69,7 @@ export const finalizeRun = async (params: {
       .where(
         and(
           eq(workflowRuns.id, params.runId),
-          notInArray(workflowRuns.status, ["succeeded", "failed", "canceled"]),
+          notInArray(workflowRuns.status, [...WORKFLOW_RUN_TERMINAL_STATUSES]),
         ),
       )
       .returning({

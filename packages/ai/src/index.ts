@@ -47,6 +47,8 @@ import packagejson from "../package.json";
 import { chatFilesRoutes } from "./handlers/chat-files";
 import { chatSuggestionsRoutes } from "./handlers/chat-suggestions";
 import { chatbotInternalRoutes, chatbotRoutes } from "./handlers/chatbot";
+import { decisionRoutes } from "./handlers/decisions";
+import { folderDescriptionRoutes } from "./handlers/folder-description";
 import { linkPreviewRoutes } from "./handlers/link-preview";
 import { memoryRoutes } from "./handlers/memory";
 import { modelAdminRoutes } from "./handlers/model-admin";
@@ -145,6 +147,16 @@ app.route("/internal/vectorize", vectorizeRoutes);
 // Internal pre-extraction endpoint — OCR + structured classification +
 // entity extraction. Consumed by @fretik/shared upload pipeline.
 app.route("/internal/pre-extract", preExtractRoutes);
+
+// Internal decision endpoint — typed questions answered with a probability by
+// the decision model. Consumed by the @fretik/jobs workflow trigger gate,
+// which cannot import this package and must not hold a provider key.
+app.route("/internal/decisions", decisionRoutes);
+
+// Internal folder-description endpoint — one sentence per Drive folder,
+// derived from the extraction summaries of what is already inside it. The
+// material the Drive filer compares a document against.
+app.route("/internal/folder-description", folderDescriptionRoutes);
 
 // Internal mention extraction for the @fretik/jobs event→graph resolver.
 app.route("/internal/memory", memoryRoutes);

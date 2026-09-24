@@ -12,6 +12,7 @@ import { z } from "zod";
 import { telemetryFor } from "../../lib/langfuse";
 import { resolveMemoryModel } from "../../lib/model-registry/team-model";
 import { withNamedTrace } from "../../lib/trace-tool";
+import { inProcessEvaluator } from "../decisions/in-process";
 
 /**
  * Relation extraction (P8.4) — the second pass of the async resolver, run only
@@ -228,6 +229,7 @@ export const extractRelations = async (input: {
         rawKey: r.predicate,
         fromCollectionId: from.collectionId,
         toCollectionId: to.collectionId,
+        byMeaning: inProcessEvaluator,
       }));
     } catch (err) {
       console.warn(

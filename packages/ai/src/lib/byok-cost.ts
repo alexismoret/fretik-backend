@@ -50,6 +50,16 @@ import {
  * provider, the token breakdown and the reasoning details that four other
  * readers depend on.
  */
+/**
+ * A plain JSON object, narrowed in a way `Array.isArray` cannot manage here:
+ * the SDK's `JSONValue` admits READONLY arrays, and TypeScript's
+ * `Array.isArray` guard does not remove `readonly T[]` from a union — so the
+ * inline three-part check reads as correct and still leaves an array in the
+ * narrowed type.
+ */
+const isJsonRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
 const withByokCost = (
   metadata: SharedV4ProviderMetadata | undefined,
   rawUsage: unknown,
@@ -57,12 +67,15 @@ const withByokCost = (
   const byok = readByokUpstreamCost(rawUsage);
   if (byok === undefined || metadata?.openrouter === undefined) return metadata;
   const openrouter = metadata.openrouter;
-  const usage = openrouter.usage;
+  // The namespace has to be a plain object before it can be spread. `Array`
+  // is a legal `JSONValue`, and spreading one into an object position yields
+  // `{ "0": …, "1": … }` — a metadata shape none of the four readers
+  // downstream would recognise, produced silently.
+  if (!isJsonRecord(openrouter)) return metadata;
+  const usage = openrouter["usage"];
   // A provider that answered with no usage block at all told us nothing to
   // extend, and inventing one would put a cost on a call with no tokens.
-  if (typeof usage !== "object" || usage === null || Array.isArray(usage)) {
-    return metadata;
-  }
+  if (!isJsonRecord(usage)) return metadata;
   return {
     ...metadata,
     openrouter: {

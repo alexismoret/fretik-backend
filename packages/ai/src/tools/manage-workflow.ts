@@ -9,11 +9,13 @@ import { describeFormFieldsForAgent } from "@fretik/shared/schemas/workflow-form
 import {
   buildTriggerCatalog,
   describeTriggerConfigForAgent,
+  describeTriggerCriterionForAgent,
 } from "@fretik/shared/schemas/workflow-triggers";
 import {
   type CreateWorkflowInput,
   type UpdateWorkflowInput,
   WORKFLOW_MAX_EXTERNAL_APPS,
+  WORKFLOW_TRIGGER_CRITERION_MAX_CHARS,
   WorkflowPlaybookSchema,
   WorkflowTriggerConfigSchema,
   workflowAutonomySchema,
@@ -25,6 +27,10 @@ import type { RunAttachment } from "@fretik/shared/services/workflows/attach-run
 import { countTestRuns } from "@fretik/shared/services/workflows/count-test-runs";
 import { createWorkflow } from "@fretik/shared/services/workflows/create";
 import { createWorkflowRun } from "@fretik/shared/services/workflows/create-run";
+import {
+  goalWantsCriterion,
+  lintCriterion,
+} from "@fretik/shared/services/workflows/criterion-lint";
 import {
   getWorkflow,
   getWorkflowRow,
@@ -48,6 +54,7 @@ import { workflowToolHintNames } from "../agents/workflow/tools";
 import { WORKSPACE_DIRS } from "../lib/conversation-storage";
 import { maybePersistLargeOutput } from "../lib/persisted-output";
 import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
+import { inProcessEvaluator } from "../services/decisions/in-process";
 import { materializeRunOutputs } from "../services/workflow-runs/materialize-run-outputs";
 
 /**
@@ -301,7 +308,7 @@ export const createManageWorkflowTool = () =>
     description: [
       "Build and manage workflows — autonomous agents that run a playbook of tasks on a schedule, an event, or on demand, with the same tools you have. Deciding WHETHER a workflow is the right feature (vs a team skill, a collection, or just doing the task now) — and how features compose — is `skills/platform-guide/SKILL.md` territory: read it before proposing.",
       "",
-      "- create_draft: name + playbook (one goal + 1-20 ordered tasks; each task = title + instructions, optional expectedOutput + toolHints) + icon + color — set both at creation, best-guess is safe (an off-catalog value is dropped with a warning, never an error). Optional description, triggerType (manual|cron|event|form) + triggerConfig, autonomy (read_only|approval_required|autonomous, default approval_required), modelProfileKey, scope (team|private, default team). Starts as draft. The user sets run time/token limits themselves on the workflow page.",
+      "- create_draft: name + playbook (one goal + 1-20 ordered tasks; each task = title + instructions, optional expectedOutput + toolHints) + icon + color — set both at creation, best-guess is safe (an off-catalog value is dropped with a warning, never an error). Optional description, triggerType (manual|cron|event|form) + triggerConfig + triggerCriterion, autonomy (read_only|approval_required|autonomous, default approval_required), modelProfileKey, scope (team|private, default team). Starts as draft. The user sets run time/token limits themselves on the workflow page.",
       "- update: workflowId + any field, including scope (re-scope anytime). Safe anytime — runs snapshot the playbook, so edits never disturb a running or past run. `triggerConfig` is REPLACED, never merged: send the whole config you want, since a partial one narrows what the workflow listens to. The result echoes the resulting trigger — read it back rather than assuming the patch landed as meant.",
       "- list / get: the team's workflows (+ your private ones), each with what it does / one workflow's full playbook. Each result carries `scope`. Before create_draft, ALWAYS check list (and `searchKnowledge` with sourceTypes ['workflows']) for one that already covers the need — run it, extend it, or tell the user it exists, rather than building a second one.",
       "- get_trigger_catalog: the machine-readable catalog of trigger kinds + each event type's editable filter params. Read it before setting triggerType/triggerConfig.",
@@ -315,6 +322,8 @@ export const createManageWorkflowTool = () =>
       "Activation gate: activate needs ≥1 succeeded run. To skip testing, confirm with the user first (askUserQuestion), then pass confirm: true.",
       "",
       "Event trigger (triggerType 'event'): triggerConfig.event = { events: [{ type, filter? }] } — a LIST, matched as an OR. Subscribe to every event that carries the input the playbook needs, not just the obvious one: replacing an existing document emits `document.revised`, never `document.uploaded`, so 'run when a document arrives' is both. Same type twice with different filters (two watched folders) is a normal shape. Activating with an empty list is refused.",
+      "",
+      "`triggerCriterion` — does the goal say WHICH inputs it is for ('when it is a supplier invoice')? Write that kind as the criterion: firings that fail it become `filtered` runs, and the playbook never sorts them itself. Does the goal take every input ('whatever it is')? Omit the field — a sentence that accepts everything is a check paid on every firing.",
       "",
       "Form trigger (triggerType 'form'): a person fills a form; each submission starts a run whose triggerPayload is the answers, with uploaded files attached to the run — write the playbook to consume triggerPayload. triggerConfig.form = { title, description?, fields[] (≥1 to activate), visibility ('public' = anyone with the link, 'private' = the workflow's team/owner), submitLabel?, successMessage? }. Each field = { key (snake_case, unique), type, label, required, +per-type constraints (minLength/maxLength, min/max/step, options[{value,label}], accept/maxFiles/maxFileSizeMb) }.",
       describeFormFieldsForAgent(),
@@ -372,6 +381,12 @@ export const createManageWorkflowTool = () =>
       triggerConfig: WorkflowTriggerConfigSchema.optional().describe(
         describeTriggerConfigForAgent(),
       ),
+      triggerCriterion: z
+        .string()
+        .max(WORKFLOW_TRIGGER_CRITERION_MAX_CHARS)
+        .nullable()
+        .optional()
+        .describe(describeTriggerCriterionForAgent()),
       playbook: WorkflowPlaybookSchema.optional().describe(
         "The plan: goal + ordered tasks. Required for create_draft.",
       ),
@@ -435,6 +450,29 @@ export const createManageWorkflowTool = () =>
           input.color,
         );
 
+        // The criterion lint the editor applies at activation, applied at once:
+        // the editor autosaves half-typed sentences, the agent writes a whole
+        // one per call, and learning at activation that it named a file or
+        // meant "every input" costs a test run.
+        const criterion = input.triggerCriterion?.trim();
+        if (
+          (input.action === "create_draft" || input.action === "update") &&
+          criterion
+        ) {
+          const lint = await lintCriterion({
+            criterion,
+            context: { teamId, organizationId },
+            evaluator: inProcessEvaluator,
+          });
+          if (lint !== null) {
+            return toolError(
+              TOOL_ERROR_CODES.WORKFLOW_ERROR,
+              lint,
+              "Rewrite triggerCriterion on the kind of input, or omit it so every firing runs.",
+            );
+          }
+        }
+
         try {
           switch (input.action) {
             case "create_draft": {
@@ -464,6 +502,9 @@ export const createManageWorkflowTool = () =>
                 playbook,
                 triggerType: input.triggerType ?? "manual",
                 triggerConfig: input.triggerConfig ?? {},
+                ...(input.triggerCriterion !== undefined
+                  ? { triggerCriterion: input.triggerCriterion }
+                  : {}),
                 autonomy: input.autonomy ?? "approval_required",
                 limits: {},
                 ...(safeIcon ? { icon: safeIcon } : {}),
@@ -482,6 +523,23 @@ export const createManageWorkflowTool = () =>
                 createdByUserId: userId,
                 input: createInput,
               });
+              // An event workflow written without a criterion whose goal is
+              // for one kind of input would run on every firing and sort in
+              // its playbook. A hint, never a refusal: the goal is judged by
+              // the decision model, and no answer means no hint.
+              const wantsCriterion =
+                createInput.triggerType === "event" &&
+                !criterion &&
+                (await goalWantsCriterion({
+                  workflow: {
+                    name: createInput.name,
+                    goal: playbook.goal,
+                    description: createInput.description,
+                  },
+                  triggerConfig: createInput.triggerConfig,
+                  context: { teamId, organizationId },
+                  evaluator: inProcessEvaluator,
+                }));
               return {
                 ok: true,
                 workflow: {
@@ -492,7 +550,9 @@ export const createManageWorkflowTool = () =>
                   ...(workflow.formUrl ? { formUrl: workflow.formUrl } : {}),
                 },
                 ...(warnings.length > 0 ? { warnings } : {}),
-                next: "Test it with run_test, then get_run to review, before activate.",
+                next: wantsCriterion
+                  ? "Its goal is for one kind of input, yet every firing will run it: set that kind as triggerCriterion (update), then test it with run_test before activate."
+                  : "Test it with run_test, then get_run to review, before activate.",
               };
             }
 
@@ -526,6 +586,9 @@ export const createManageWorkflowTool = () =>
                 ...(input.triggerConfig !== undefined
                   ? { triggerConfig: input.triggerConfig }
                   : {}),
+                ...(input.triggerCriterion !== undefined
+                  ? { triggerCriterion: input.triggerCriterion }
+                  : {}),
                 ...(sanitized ? { playbook: sanitized.playbook } : {}),
                 ...(input.autonomy !== undefined
                   ? { autonomy: input.autonomy }
@@ -547,6 +610,7 @@ export const createManageWorkflowTool = () =>
                 teamId,
                 input: patch,
                 requester,
+                evaluator: inProcessEvaluator,
               });
               if (!workflow) {
                 return toolError(
@@ -572,6 +636,7 @@ export const createManageWorkflowTool = () =>
                   // the caller can see what it actually left behind.
                   triggerType: workflow.triggerType,
                   triggerConfig: workflow.triggerConfig,
+                  triggerCriterion: workflow.triggerCriterion,
                 },
                 ...(updateWarnings.length > 0
                   ? { warnings: updateWarnings }
@@ -643,6 +708,7 @@ export const createManageWorkflowTool = () =>
                   status: workflow.status,
                   triggerType: workflow.triggerType,
                   triggerConfig: workflow.triggerConfig,
+                  triggerCriterion: workflow.triggerCriterion,
                   autonomy: workflow.autonomy,
                   modelProfileKey: workflow.modelProfileKey,
                   limits: workflow.limits,
@@ -658,6 +724,9 @@ export const createManageWorkflowTool = () =>
             }
 
             case "get_trigger_catalog": {
+              // The catalog now carries `facts` — what a criterion may be
+              // judged against. Without it the agent writes one against facts
+              // it imagines rather than the ones the gate will actually see.
               return { ok: true, catalog: buildTriggerCatalog() };
             }
 
@@ -944,6 +1013,7 @@ export const createManageWorkflowTool = () =>
                 id: input.workflowId,
                 teamId,
                 requester,
+                evaluator: inProcessEvaluator,
               });
               if (!workflow) {
                 return toolError(

@@ -1,7 +1,7 @@
 import { deleteKeysByPrefix, redis } from "@fretik/shared/lib/redis";
 import {
   EMBEDDING_DIMENSIONS,
-  embedBatch,
+  embedQueries,
   embedQuery,
 } from "../../lib/embeddings";
 import { withSoftTimeout } from "../../lib/stream-errors";
@@ -73,14 +73,27 @@ const MAX_ENTRIES = 1000;
  *
  * A normal 3-entry batch is 200-500 ms, and the recall gather's own p90 is
  * ~1 s; but the gather has been measured at 6.3 s and 12.4 s on two turns out
- * of 230, and both were this call with no ceiling on it. 2.5 s is past the
- * slowest healthy call by a wide margin and well inside a turn's budget.
+ * of 230, and both were this call with no ceiling on it, hence a ceiling.
+ *
+ * It was 2.5 s, and the provider's tail made that a real loss: measured in
+ * production over 7 days (2026-09-24, Langfuse), 274 query embeddings timed
+ * out, each a search served without its semantic arm. Of the unbounded calls
+ * of the same size that ran past 2.5 s, 20 % were done by 3 s, 50 % by 4 s,
+ * 69 % by 5 s. 5 s saves two thirds of those searches: a person waits a few
+ * seconds longer on a turn the provider was already slow on, rather than get
+ * an answer that never saw what their team wrote. The median call (0.21 s)
+ * does not move.
+ *
+ * It is the net, not the plan: the embedding itself is raced across every
+ * provider measured for the model (`lib/embedding-routes.ts`), which in the
+ * same measurement never took longer than 2.6 s. The deadline covers the race
+ * as a whole — when it fires, every route is cancelled at once.
  *
  * Timing out is not a failure of the search: `hybridSearch` catches the
  * rejection and serves the two lexical arms, which have already answered by
  * then. That path exists and is tested — this only makes it reachable.
  */
-const QUERY_EMBED_TIMEOUT_MS = 2_500;
+const QUERY_EMBED_TIMEOUT_MS = 5_000;
 
 /**
  * How long the query path will wait for Redis.
@@ -230,8 +243,8 @@ export const getCachedOrEmbed = async (query: string): Promise<number[]> => {
 
 /**
  * Batch variant — hits are served from cache, misses are batch-embedded
- * in a single OpenRouter call, and the result is returned in the input
- * order. Used by `services/search/index.ts` for the multi-query (3
+ * in one request per measured route (`embedQueries`, first answer wins), and
+ * the result is returned in the input order. Used by `services/search/index.ts` for the multi-query (3
  * variants) expansion: the original query is almost always cached by the
  * second turn in a conversation, so this typically degrades to a 2-entry
  * batch (or even a 0-entry no-op).
@@ -378,7 +391,7 @@ const resolveThroughCache = async (queries: string[]): Promise<number[][]> => {
 
   if (missList.length > 0) {
     misses += missList.length;
-    const fresh = await embedBatch(
+    const fresh = await embedQueries(
       missList.map((m) => m.query),
       {
         abortSignal: AbortSignal.timeout(QUERY_EMBED_TIMEOUT_MS),

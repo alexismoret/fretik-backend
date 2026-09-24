@@ -57,6 +57,13 @@ const gateway = (): ReturnType<typeof createGateway> => {
   return client;
 };
 
+/**
+ * The same memoized client, for the one caller outside the model registry:
+ * the decision engine's fallback transport (`services/decisions/evaluate.ts`),
+ * which needs `evaluationModel()` rather than a registry-built language model.
+ */
+export const gatewayClient = gateway;
+
 /** Whether a key is configured. Read by the probe and the admin CLI. */
 export const gatewayConfigured = (): boolean => gatewayApiKey !== undefined;
 

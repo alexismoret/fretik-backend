@@ -1,7 +1,8 @@
 import type { DomainEvent, Workflow } from "@fretik/shared/db/schema";
 import { describe, expect, test } from "bun:test";
 import {
-  buildTriggerJobs,
+  buildGateJobs,
+  buildTriggerPayload,
   isImportedRecord,
   isWorkflowOriginated,
   matchesEvent,
@@ -54,6 +55,7 @@ const workflow = (over: Partial<Workflow>): Workflow => ({
   status: "active",
   triggerType: "event",
   triggerConfig: {},
+  triggerCriterion: null,
   playbook: {
     goal: "g",
     tasks: [{ key: "t", title: "T", description: "", instructions: "i" }],
@@ -356,66 +358,99 @@ describe("pairWorkflowsWithEvents", () => {
   });
 });
 
-describe("buildTriggerJobs", () => {
+describe("buildGateJobs", () => {
   const pair = {
     workflow: workflow({ id: "w1" }),
     event: event({ id: "e1", payload: { collection: "invoices" } }),
   };
 
-  test("the jobId IS the dedup key the database enforces", () => {
-    // Three mechanisms dedup a replayed sweep — the partial unique index on
-    // (workflow_id, source_event_id), the `existing` set, and this jobId — and
-    // they only work as one if they agree on the identity. If the jobId drifted
-    // from `(workflow, event)`, a replayed batch would enqueue duplicates that
-    // only Postgres would reject, after the Trigger.dev call had been paid for.
-    const [job] = buildTriggerJobs([pair], new Set());
-    expect(job?.opts?.jobId).toBe("wfrun-w1-e1");
-    expect(triggerRunKey("w1", "e1")).toBe("w1:e1");
+  test("the jobId is the EVENT's, because one decision covers every workflow", () => {
+    // The gate asks one question per workflow about ONE shared state, so the
+    // unit of work is the event. Batching by pair instead would re-send the
+    // state — the expensive half, since output tokens are free on that
+    // endpoint — once per listening workflow.
+    const [job] = buildGateJobs([pair], new Set());
+    expect(job?.opts?.jobId).toBe("wfgate-e1");
+    expect(job?.data.workflowIds).toEqual(["w1"]);
   });
 
-  test("a pair that already has a run is skipped", () => {
-    expect(
-      buildTriggerJobs([pair], new Set([triggerRunKey("w1", "e1")])),
-    ).toEqual([]);
-  });
-
-  test("the job carries the event payload, and which event it was", () => {
-    // A workflow can listen for several events whose payloads look alike, so
-    // the payload alone does not say what the run is answering.
-    const [job] = buildTriggerJobs([pair], new Set());
-    expect(job?.data).toEqual({
-      workflowId: "w1",
-      teamId: "team-1",
-      sourceEventId: "e1",
-      triggerPayload: { collection: "invoices", event_type: "record.created" },
-    });
-  });
-
-  test("the real event type wins over one carried in the payload", () => {
-    const [job] = buildTriggerJobs(
+  test("workflows matching one event ride a single job", () => {
+    const jobs = buildGateJobs(
       [
-        {
-          workflow: workflow({ id: "w1" }),
-          event: event({
-            id: "e1",
-            type: "record.updated",
-            payload: { event_type: "something-else" },
-          }),
-        },
+        pair,
+        { workflow: workflow({ id: "w2" }), event: pair.event },
+        { workflow: workflow({ id: "w3" }), event: pair.event },
       ],
       new Set(),
     );
-    expect(job?.data.triggerPayload).toEqual({ event_type: "record.updated" });
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]?.data.workflowIds).toEqual(["w1", "w2", "w3"]);
+  });
+
+  test("the run identity stays per pair — only the survivors ride the job", () => {
+    // The dedup key the database enforces is still (workflow, event); the gate
+    // job just carries several of them. A pair that already has a run is
+    // dropped HERE, so its workflow is never asked about again.
+    const jobs = buildGateJobs(
+      [pair, { workflow: workflow({ id: "w2" }), event: pair.event }],
+      new Set([triggerRunKey("w1", "e1")]),
+    );
+    expect(jobs[0]?.data.workflowIds).toEqual(["w2"]);
+    expect(triggerRunKey("w1", "e1")).toBe("w1:e1");
+  });
+
+  test("an event whose every pair already ran produces no job at all", () => {
+    expect(buildGateJobs([pair], new Set([triggerRunKey("w1", "e1")]))).toEqual(
+      [],
+    );
   });
 
   test("retries are bounded and both retention caps are set", () => {
-    // An unbounded `attempts` on a job that calls Trigger.dev turns one bad
-    // event into a permanent retry loop; a missing retention cap grows the
-    // BullMQ key set without limit. Neither surfaces as a failure — the queue
-    // just gets slower and Redis gets bigger.
-    const [job] = buildTriggerJobs([pair], new Set());
+    // An unbounded `attempts` on a job that calls the decision service turns
+    // one bad event into a permanent retry loop; a missing retention cap grows
+    // the BullMQ key set without limit. Neither surfaces as a failure — the
+    // queue just gets slower and Redis gets bigger.
+    const [job] = buildGateJobs([pair], new Set());
     expect(job?.opts?.attempts).toBe(3);
     expect(job?.opts?.removeOnComplete).toEqual({ count: 500 });
     expect(job?.opts?.removeOnFail).toEqual({ count: 500 });
+  });
+});
+
+describe("buildTriggerPayload", () => {
+  test("resolved facts ride alongside the event's own payload", () => {
+    // Everything a playbook could read before the fact sheet existed still
+    // reads the same — nothing written against `documentId` had to change.
+    const payload = buildTriggerPayload(
+      event({ id: "e1", payload: { documentId: "d1" } }),
+      { filename: "invoice.pdf", pageCount: 2 },
+    );
+    expect(payload).toEqual({
+      documentId: "d1",
+      filename: "invoice.pdf",
+      pageCount: 2,
+      event_type: "record.created",
+    });
+  });
+
+  test("a resolved fact wins over the same key on the payload", () => {
+    // The fact was read from the row; the payload key is whatever the emitter
+    // stamped, possibly months ago.
+    const payload = buildTriggerPayload(
+      event({ payload: { filename: "stale.pdf" } }),
+      { filename: "current.pdf" },
+    );
+    expect(payload["filename"]).toBe("current.pdf");
+  });
+
+  test("the real event type wins over one carried in the payload", () => {
+    const payload = buildTriggerPayload(
+      event({
+        type: "record.updated",
+        payload: { event_type: "something-else" },
+      }),
+      {},
+    );
+    expect(payload["event_type"]).toBe("record.updated");
   });
 });

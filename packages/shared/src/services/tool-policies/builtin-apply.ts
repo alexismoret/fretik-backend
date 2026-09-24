@@ -122,14 +122,36 @@ const applyManageDrive: ToolCallApplyFn = async (ctx, args) => {
   const action = str(args, "action");
 
   if (action === "createFolder") {
+    const description = strOrNull(args, "description");
     const folder = await createFolder({
       name: str(args, "name"),
       parentFolderId: strOrNull(args, "parentFolderId"),
       teamId: ctx.teamId,
       userId: ctx.userId,
       actor,
+      ...(description
+        ? { description: { text: description, source: "agent" } }
+        : {}),
     });
     return { ok: true, folder: { id: folder.id, name: folder.name } };
+  }
+  if (action === "describeFolder") {
+    // `""` clears it, handing the folder back to the nightly generator.
+    const folder = await updateFolder({
+      id: str(args, "folderId"),
+      teamId: ctx.teamId,
+      updates: { description: strOrNull(args, "description") ?? "" },
+      actor,
+      descriptionSource: "agent",
+    });
+    return {
+      ok: true,
+      folder: {
+        id: folder.id,
+        name: folder.name,
+        description: folder.description,
+      },
+    };
   }
   if (action === "renameFolder") {
     const folder = await updateFolder({

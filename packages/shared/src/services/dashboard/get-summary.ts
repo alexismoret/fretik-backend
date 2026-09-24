@@ -99,7 +99,17 @@ export const getDashboardSummary = async (data: {
   const recordsSpark = recordSeries.map((d) => d.count);
 
   const runsByStatus = new Map(runRows.map((r) => [r.status, r.count]));
-  const runsTotal = runRows.reduce((a, r) => a + r.count, 0);
+  // Launches that never executed are not runs the team made: counting a
+  // refused one here would make a workflow look busier the better its
+  // trigger criterion got.
+  const runsTotal = runRows
+    .filter((r) => r.status !== "filtered")
+    .reduce((a, r) => a + r.count, 0);
+  // "Of the runs that tried, how many did their job." `not_applicable` and
+  // `filtered` are left out of BOTH sides on purpose: neither attempted the
+  // playbook, so counting them as failures would make a healthy workflow read
+  // as broken the moment its trigger is broad — which is precisely the
+  // situation the gate exists to create.
   const terminal =
     (runsByStatus.get("succeeded") ?? 0) +
     (runsByStatus.get("failed") ?? 0) +

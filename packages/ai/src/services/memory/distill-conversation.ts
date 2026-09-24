@@ -1,20 +1,29 @@
 import db from "@fretik/shared/db";
 import type { EpisodeVectorMetadata } from "@fretik/shared/db/schema";
 import { parseLlmJsonObject } from "@fretik/shared/lib/llm-json";
+import { recordDecisions } from "@fretik/shared/services/decisions/journal";
+import type { DecisionEvaluator } from "@fretik/shared/services/decisions/remote";
 import { upsertEpisode } from "@fretik/shared/services/episodes/upsert";
 import { generateText, type UIMessage } from "ai";
 import { z } from "zod";
 import { telemetryFor } from "../../lib/langfuse";
 import { resolveMemoryModel } from "../../lib/model-registry/team-model";
 import { withNamedTrace } from "../../lib/trace-tool";
+import { inProcessEvaluator } from "../decisions/in-process";
 import { vectorizeSource } from "../vectorize";
+import {
+  readWorth,
+  WORTH_POINT,
+  WORTH_QUESTION,
+  worthJournalEntry,
+} from "./distill-worth";
 
 /**
  * Conversation → episode distillation (P4). One utility-tier LLM call turns a
  * quiet conversation's transcript into a compact episodic memory
  * (`ai_episodes`, kind `conversation`), anchored on the records its journal
- * events resolved to — the distiller PICKS salient ids from that candidate
- * list, never invents them. Re-runs are full replaces through
+ * events resolved to — the distiller PICKS salient records from that
+ * candidate list by handle (R1, R2…), never invents them. Re-runs are full replaces through
  * `upsertEpisode`; an unchanged `contentHash` skips the re-embed.
  *
  * Privacy: a single-member conversation distills to a PRIVATE episode
@@ -91,13 +100,13 @@ const distillOutputSchema = z.object({
 
 const SYSTEM_PROMPT = `Distill one workplace-assistant conversation into a compact episodic memory. Future turns retrieve it to recall what was discussed, decided, and produced.
 
-Output strict JSON, nothing else:
-{"title":"...","summary":"...","salientRecordIds":["..."]}
+Output strict JSON, nothing else, keys in this order:
+{"salientRecordIds":["R1"],"title":"...","summary":"..."}
 
 - title: ≤100 chars, specific enough to identify this conversation among hundreds.
 - summary: markdown, target ~1500 characters. Capture what the user wanted, what was concluded or produced, decisions and their reasons, unresolved points, and durable facts or preferences revealed. Skip pleasantries, tool mechanics, step-by-step narration.
 - The transcript is an excerpt: assistant and user messages only (no tool calls), newest kept first, […] where text was omitted. Report what the messages show — never a gap, or the excerpt's edge, as work left undone.
-- salientRecordIds: ids picked FROM the candidate_records list only — the records this conversation is genuinely about, most salient first. Never invent an id; unsure → omit it. None → [].
+- salientRecordIds: handles (R1, R2…) picked FROM the candidate_records list only — the records this conversation is genuinely about, most salient first. Never invent a handle; unsure → omit it. None → [].
 - NEVER copy secrets (passwords, API keys, tokens) or personal data unrelated to the work into the summary — describe that they were handled, not their values.
 - Write title and summary in the conversation's language.`;
 
@@ -240,6 +249,8 @@ export const distillConversation = async (input: {
   organizationId: string;
   /** Force a registry profile — EVAL/BENCH ONLY (model bake-off). */
   modelProfileKey?: string;
+  /** The decision engine for the "worth remembering?" check. Tests inject one. */
+  evaluator?: DecisionEvaluator;
 }): Promise<DistillConversationResult> => {
   const { conversationId, teamId, organizationId } = input;
 
@@ -287,6 +298,36 @@ export const distillConversation = async (input: {
   const minLines = workflowRun ? WORKFLOW_MIN_MESSAGES : MIN_MESSAGES;
   if (lines.length < minLines) return { distilled: false };
 
+  // Anything worth remembering? Asked only before the FIRST episode: once
+  // one exists, re-distilling keeps it current whatever the answer.
+  const existing = await db.query.aiEpisodes.findFirst({
+    where: { conversationId },
+    columns: { id: true },
+  });
+  if (!existing) {
+    const response = await (input.evaluator ?? inProcessEvaluator)(
+      {
+        point: WORTH_POINT,
+        subject: { type: "conversation", id: conversationId },
+        sessionId: conversationId,
+        state: { transcript: renderTranscript(lines) },
+        questions: { worth: WORTH_QUESTION },
+      },
+      { teamId, organizationId },
+    );
+    const skip = readWorth(response);
+    await recordDecisions([
+      worthJournalEntry({
+        organizationId,
+        teamId,
+        conversationId,
+        response,
+        skip,
+      }),
+    ]);
+    if (skip) return { distilled: false };
+  }
+
   const first = rows[0];
   const last = rows[rows.length - 1];
   const occurredFrom = first ? first.createdAt : null;
@@ -331,13 +372,23 @@ export const distillConversation = async (input: {
   const candidateList = [...candidates.entries()]
     .sort((a, b) => Number(b[1].confirmed) - Number(a[1].confirmed))
     .slice(0, MAX_CANDIDATE_RECORDS);
+  // Handles, never uuids: the model copies a 36-character id wrong often
+  // enough to lose the anchor — measured 2026-09-24, `mem-distill-conversation`
+  // anchored its one supplier in 7/30 runs on main, the rest dropping a
+  // group ("01a0d0db-72d6-…" for "01a0d0db-3b79-72d6-…") that the candidate
+  // filter below then rightly refused. Same fix as the recall judge's
+  // provenance handles. The key comes FIRST in the output: after a long
+  // summary the model closed the object without it in 2 runs of 30.
+  const handleToId = new Map(
+    candidateList.map(([id], i) => [`R${(i + 1).toString()}`, id]),
+  );
 
   const prompt = [
     `<transcript>\n${renderTranscript(lines)}\n</transcript>`,
     ...(candidateList.length > 0
       ? [
           `<candidate_records>\n${candidateList
-            .map(([id, c]) => `- ${id} — ${c.label}`)
+            .map(([, c], i) => `- R${(i + 1).toString()} — ${c.label}`)
             .join("\n")}\n</candidate_records>`,
         ]
       : []),
@@ -382,11 +433,16 @@ export const distillConversation = async (input: {
   );
   if (!output) return { distilled: false };
 
-  // Structural guard on top of the prompt rule: only candidate ids pass.
-  const candidateIds = new Set(candidateList.map(([id]) => id));
-  const recordIds = output.salientRecordIds.filter((id) =>
-    candidateIds.has(id),
-  );
+  // Structural guard on top of the prompt rule: only a candidate's handle
+  // resolves, so an invented or mangled one anchors nothing.
+  const recordIds = [
+    ...new Set(
+      output.salientRecordIds.flatMap((handle) => {
+        const id = handleToId.get(handle.trim());
+        return id === undefined ? [] : [id];
+      }),
+    ),
+  ];
 
   const { episode, contentChanged } = await upsertEpisode({
     organizationId,

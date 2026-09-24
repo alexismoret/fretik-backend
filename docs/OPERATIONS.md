@@ -166,6 +166,7 @@ that is not `APP_URL`'s host or one of its parents. Mirror it in the frontend's
 | `PERPLEXITY_API_KEY`, `PARALLEL_API_KEY`               | Web research, and availability is **per tool**: a missing key prunes only what it backs. Search runs on whichever of the two is keyed (`AI_WEB_SEARCH_PROVIDER` picks the preferred one, default `perplexity`, and the other becomes the automatic fallback); `webFetch` needs Parallel specifically, for its server-side headless browser; `webMap` needs no key at all. See `docs/WEB-RESEARCH.md`.                                        |
 | `AI_WEB_*`                                             | Opt-in egress tightening (`AI_WEB_BLOCKED_DOMAINS`, `AI_WEB_ALLOWED_DOMAINS`, `AI_WEB_FETCH_MAX_URL_LEN`, `AI_WEB_TOOLS_ENABLED`), plus timeouts, cache TTLs and the price table used for the Langfuse cost trace. Always-on hygiene — scheme, private-IP/metadata, length, punycode — applies regardless, and is now load-bearing: `webMap` fetches `robots.txt`/`sitemap.xml` from the service itself and re-validates every redirect hop. |
 | `LANGFUSE_*`                                           | Optional; tracing is a no-op without them.                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `AI_GATEWAY_API_KEY`                                   | Also the decision engine's fallback: background points retry an OpenRouter outage once on the Gateway (`typesafe-ai/jev`, zero-retention requested per call). Unset, that retry fails and they fall open instead. The decision engine has no other setting: every point in `packages/shared/src/decisions/points.ts` decides, and its bars change by pull request.                                                                           |
 
 ### `@fretik/jobs` — five keys people forget
 
@@ -183,6 +184,20 @@ container, not the AI one, so jobs needs its own copies:
 `packages/shared/src/services/model-registry/sync/` or
 `packages/shared/src/services/collection-sync/` onto the jobs service** — that
 code runs wherever the sync runs.
+
+The **workflow trigger gate** and the **Drive filer** also live here, and both
+call the AI service rather than a provider directly — so jobs needs
+`AI_SERVICE_URL` and `INTERNAL_KEY`, the same pair the document pipeline
+already uses. Without them every decision fails, and both callers fall open:
+workflows fire on everything (the behaviour that shipped before the gate) and
+documents stay at the Drive root. Nothing breaks loudly, which is exactly why
+it is written here.
+
+Neither has a threshold to set here. A threshold is a measurement against one
+pinned model, so it lives with its decision point in
+`packages/shared/src/decisions/points.ts` and changes by pull request, like a
+role binding. The AI service echoes the bars it asked under in every answer,
+so a worker still on the previous deploy reads a verdict by the same bar.
 
 ### One-off, on the production database
 

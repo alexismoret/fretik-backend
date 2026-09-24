@@ -17,6 +17,9 @@ export const updateFolder = async (data: {
   teamId: string;
   updates: UpdateFolderInput;
   actor?: EventActor;
+  /** Who is writing `updates.description`: a person (default) or the
+   * assistant. Either way the generator leaves it alone afterwards. */
+  descriptionSource?: "manual" | "agent";
 }) => {
   const { id, teamId, updates } = data;
   const actor = data.actor ?? SYSTEM_ACTOR;
@@ -73,10 +76,35 @@ export const updateFolder = async (data: {
       }
     }
 
+    // A description the user typed is MANUAL from then on, and the nightly
+    // generator skips manual folders for good — their statement of where
+    // things should go outranks anything inferred from what is already
+    // inside. Clearing it back to empty hands the folder back to the
+    // generator rather than pinning it blank, which is what someone deleting
+    // the text means.
+    const { description, ...rest } = updates;
+    const descriptionPatch =
+      description === undefined
+        ? {}
+        : description === null || description.trim().length === 0
+          ? {
+              description: null,
+              descriptionSource: null,
+              descriptionGeneratedAt: null,
+              descriptionDocumentCount: null,
+            }
+          : {
+              description: description.trim(),
+              descriptionSource: data.descriptionSource ?? "manual",
+              descriptionGeneratedAt: new Date(),
+              descriptionDocumentCount: null,
+            };
+
     const [updated] = await tx
       .update(folders)
       .set({
-        ...updates,
+        ...rest,
+        ...descriptionPatch,
         fullPath: newFullPath,
       })
       .where(eq(folders.id, id))

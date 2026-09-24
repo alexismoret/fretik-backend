@@ -84,6 +84,7 @@ export const fakeEmbedding = (text: string): number[] => {
 export const installEmbeddingDoubles = async (): Promise<void> => {
   await mockModule("../../src/lib/embeddings", {
     embedQuery: async (value: string) => fakeEmbedding(value),
+    embedQueries: async (texts: string[]) => texts.map(fakeEmbedding),
     embedBatch: async (texts: string[]) => texts.map(fakeEmbedding),
   });
 

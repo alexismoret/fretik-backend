@@ -49,6 +49,11 @@ interface OrganizationInvitationParams {
    */
   existingMember?: boolean;
   /**
+   * The address already has a Fretik account, in another organization: the
+   * email says to sign in with it, and where the organization will appear.
+   */
+  existingAccount?: boolean;
+  /**
    * The item the invitation was sent for, when it was sent from the share
    * dialog: the email names it, and accepting opens it. A guest's invitation
    * always has one — it is the only reason they are invited at all.
@@ -67,7 +72,8 @@ export interface InvitationItem {
 /**
  * Generate the email data for an organization invitation.
  * If a teamId is provided, the team name is fetched and displayed.
- * `lang` is the invitee's team language (falls back to `en`).
+ * `lang` is the invitee's own language when the address has an account, the
+ * inviting team's otherwise (`services/invitations/send-invitation-email.ts`).
  */
 export const generateOrganizationInvitation = async (
   params: OrganizationInvitationParams,
@@ -149,6 +155,12 @@ export const generateOrganizationInvitation = async (
         : isTeamAccessForMember
           ? ""
           : t("organizationInvitation.roleLabel", { roleName: params.role }),
+      accountNote:
+        params.existingAccount && !params.existingMember
+          ? t("organizationInvitation.existingAccount", {
+              organizationName: params.organizationName,
+            })
+          : "",
       acceptUrl,
       cta: item
         ? t("organizationInvitation.ctaItem")

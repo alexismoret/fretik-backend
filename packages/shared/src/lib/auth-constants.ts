@@ -24,6 +24,14 @@ export const INVITATION_EXPIRY_SECONDS = 60 * 60 * 24 * 7;
 export const PENDING_INVITATION_LIMIT = 100;
 
 /**
+ * How many people an organization holds at most. Feeds the organization
+ * plugin's `membershipLimit` through `services/organization/membership-limit.ts`,
+ * which leaves out the members who take no seat: the teams' agents and the
+ * guests.
+ */
+export const MAX_PEOPLE_PER_ORGANIZATION = 100;
+
+/**
  * Seat limit per team. Feeds the organization plugin's
  * `teams.maximumMembersPerTeam` AND every path that seats someone through the
  * adapter (the team invitation accept hook, `services/team/*`), which must

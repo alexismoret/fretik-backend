@@ -68,6 +68,7 @@ import { teamSettingsRoutes } from "./handlers/team-settings";
 import { teamRoutes } from "./handlers/teams";
 import { toolPoliciesRoutes } from "./handlers/tool-policies";
 import { workflowRoutes } from "./handlers/workflows";
+import { workspaceRoutes } from "./handlers/workspaces";
 
 const VERSION = packagejson.version;
 
@@ -130,6 +131,7 @@ app.route("/account", accountRoutes);
 app.route("/organization", organizationRoutes);
 // Who may do what: the caller's decisions, the policy, the roles grid.
 app.route("/access", accessRoutes);
+app.route("/workspaces", workspaceRoutes);
 app.route("/members", memberRoutes);
 app.route("/teams", teamRoutes);
 app.route("/projects", projectRoutes);

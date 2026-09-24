@@ -22,6 +22,35 @@ export type HonoLoggedAppType = {
   };
 };
 
+/** A signed-in person, in no organization in particular (`sessionMiddleware`). */
+export type HonoSessionAppType = {
+  Variables: {
+    user: typeof user.$inferSelect;
+    session: typeof auth.$Infer.Session.session;
+  };
+};
+
+/**
+ * The session alone, for the few routes about the person rather than one of
+ * their organizations: the organizations they belong to and the invitations
+ * addressed to them, which the app needs before any organization is open.
+ * Everything else goes through `authMiddleware`, which also requires the
+ * active organization and loads the principal.
+ */
+export const sessionMiddleware = createMiddleware<HonoSessionAppType>(
+  async (c, next) => {
+    const sessionData = await auth.api.getSession({
+      headers: c.req.raw.headers,
+    });
+    if (!sessionData) {
+      return c.json({ message: "Unauthorized" }, 401);
+    }
+    c.set("user", sessionData.user as typeof user.$inferSelect);
+    c.set("session", sessionData.session);
+    await next();
+  },
+);
+
 /**
  * Handles Better Auth session and populates organization/team context.
  * Shared between @fretik/api and @fretik/ai — any service that reads the

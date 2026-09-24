@@ -34,6 +34,7 @@ import { teamSettingsRoutes } from "../../src/handlers/team-settings";
 import { teamRoutes } from "../../src/handlers/teams";
 import { toolPoliciesRoutes } from "../../src/handlers/tool-policies";
 import { workflowRoutes } from "../../src/handlers/workflows";
+import { workspaceRoutes } from "../../src/handlers/workspaces";
 
 /**
  * Every router `src/index.ts` mounts, keyed by its mount path.
@@ -97,4 +98,5 @@ export const MOUNTED_ROUTERS: Record<string, Probeable> = {
   "/tool-policies": toolPoliciesRoutes,
   "/webhooks": nangoWebhookRoutes,
   "/workflows": workflowRoutes,
+  "/workspaces": workspaceRoutes,
 };

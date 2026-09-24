@@ -39,7 +39,9 @@ import { throwNotVisible } from "./refusals";
  *               `teamCapability`, in the team the path names.
  *   session     any member of the organization; the service scopes what it
  *               returns to the principal (lists, "my" things, creation in the
- *               active team). The note says how.
+ *               active team). The note says how. Behind `sessionMiddleware`,
+ *               the signed-in person alone, about themselves, with no
+ *               organization open.
  *   handler     decided in the handler because it involves several resources
  *               or ids from the body. The reason says what is checked, and
  *               where.
@@ -189,7 +191,10 @@ export const access = {
       { kind: "capability", capability, param },
     ),
 
-  /** Any member; `note` says how the service scopes the answer. */
+  /**
+   * Any member, or behind `sessionMiddleware` the signed-in person about
+   * themselves; `note` says how the service scopes the answer.
+   */
   session: (note: string): MiddlewareHandler<Env> =>
     withRule(passThrough(), { kind: "session", note }),
 

@@ -19,6 +19,7 @@ import { seedSystemOntology } from "../services/collections/seed-system-types";
 import { applyDocumentFieldTemplate } from "../services/field-definitions/apply-template";
 import { getTeamLocale } from "../services/field-definitions/get-locale";
 import { withdrawInvitationsToDeletedTeam } from "../services/invitations/withdraw-for-deleted-team";
+import { membershipLimitFor } from "../services/organization/membership-limit";
 import { maximumTeamsFor } from "../services/organization/team-limit";
 import { scrubWorkflowNotificationRecipient } from "../services/workflows/scrub-notification-recipient";
 import { accountSecurity } from "./auth-account-security";
@@ -272,6 +273,9 @@ const options = {
       requireEmailVerificationOnInvitation: false,
       invitationExpiresIn: INVITATION_EXPIRY_SECONDS,
       invitationLimit: PENDING_INVITATION_LIMIT,
+      // People, not rows: the teams' agents and the guests take no seat.
+      membershipLimit: (user, { id: organizationId }) =>
+        membershipLimitFor({ organizationId, email: user.email }),
       cancelPendingInvitationsOnReInvite: true,
       organizationHooks: {
         afterCreateOrganization: async (data) => {

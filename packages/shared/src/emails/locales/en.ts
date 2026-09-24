@@ -61,6 +61,8 @@ export default {
     itemLabel: "Shared with you: {{itemName}}",
     guestLabel: "As a guest, you only see what is shared with you.",
     ctaItem: "Accept and open",
+    existingAccount:
+      "You already have a Fretik account with this address: sign in to accept. {{organizationName}} will then appear in your workspace switcher, next to the workspaces you already have.",
   },
 
   sharedWithGuest: {

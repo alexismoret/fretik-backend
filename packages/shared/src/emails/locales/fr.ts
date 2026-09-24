@@ -64,6 +64,8 @@ export default {
     guestLabel:
       "En tant qu'invité, vous ne voyez que ce qui est partagé avec vous.",
     ctaItem: "Accepter et ouvrir",
+    existingAccount:
+      "Vous avez déjà un compte Fretik avec cette adresse : connectez-vous pour accepter. {{organizationName}} apparaîtra ensuite dans votre sélecteur d'espaces de travail, à côté de ceux que vous avez déjà.",
   },
 
   sharedWithGuest: {

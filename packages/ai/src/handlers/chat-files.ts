@@ -1,6 +1,6 @@
 import { requireAccess } from "@fretik/shared/authz/access";
 import { requireCapability } from "@fretik/shared/authz/gates";
-import { access } from "@fretik/shared/authz/http";
+import { access, teamOfResource } from "@fretik/shared/authz/http";
 import type { UserPrincipal } from "@fretik/shared/authz/principal";
 import db from "@fretik/shared/db";
 import { aiChatFiles } from "@fretik/shared/db/schema";
@@ -103,8 +103,10 @@ const DOWNLOADABLE_DIRS = new Set<string>([
  * participants, a workflow run to whoever may see the workflow. Each route
  * names the level it takes on the conversation (`access.resource`): reading
  * its files takes `view`, adding or removing one takes part in it (`use`).
- * Filing a file into the Drive also takes creating content in the team, and
- * edit on a document it lands on as a new version.
+ * A file belongs to the conversation, whichever team the caller has open.
+ * Filing one into the Drive is the exception: it lands in the Drive of the
+ * team the caller has open, and takes creating content there — or edit on a
+ * document it lands on as a new version.
  */
 const READ = access.resource("conversation", "view");
 const TAKE_PART = access.resource("conversation", "use");
@@ -137,9 +139,6 @@ const requireDriveFiling = async (
 // ==================== //
 
 chatFilesRoutes.get("/conversation/:id/files", READ, async (c) => {
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
-
   const conversationId = c.req.param("id");
 
   const rows = await db
@@ -173,9 +172,6 @@ chatFilesRoutes.get("/conversation/:id/files", READ, async (c) => {
 
 chatFilesRoutes.post("/conversation/:id/files", TAKE_PART, async (c) => {
   const user = c.get("user");
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
-
   const conversationId = c.req.param("id");
   const form = await c.req.formData();
   const file = form.get("file");
@@ -193,7 +189,7 @@ chatFilesRoutes.post("/conversation/:id/files", TAKE_PART, async (c) => {
   const row = await uploadChatFile({
     file,
     conversationId,
-    teamId: team.id,
+    teamId: teamOfResource(c.get("resource")),
     userId: user.id,
   });
 
@@ -447,9 +443,6 @@ chatFilesRoutes.delete(
   "/conversation/:id/files/:filename",
   TAKE_PART,
   async (c) => {
-    const team = c.get("team");
-    if (!team) return throwHttpError(403, teamRequired());
-
     const conversationId = c.req.param("id");
     const filename = c.req.param("filename");
 
@@ -491,9 +484,6 @@ chatFilesRoutes.get(
   "/conversation/:id/files/:filename/download",
   READ,
   async (c) => {
-    const team = c.get("team");
-    if (!team) return throwHttpError(403, teamRequired());
-
     const conversationId = c.req.param("id");
     const filename = c.req.param("filename");
 

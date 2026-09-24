@@ -5,6 +5,7 @@ import {
   teamRoleSchema,
 } from "./access";
 import { teamAccessPolicySchema } from "./access-policy";
+import { personRoleSchema } from "./members";
 
 /**
  * Teams, as the settings pages and the team switcher see them.
@@ -43,6 +44,12 @@ export const teamMemberEntrySchema = z
     email: z.string(),
     image: z.string().nullable(),
     role: teamRoleSchema,
+    /**
+     * Their role in the organization: an owner or an admin manages every
+     * team whatever their role in it, which still decides what they get on
+     * the team's content.
+     */
+    organizationRole: personRoleSchema,
     joinedAt: z.date().nullable(),
   })
   .openapi("TeamMemberEntry");

@@ -165,9 +165,11 @@ describe("a team's people", () => {
       role: "viewer",
     });
 
-    expect(roster.map((m) => [m.userId, m.role])).toEqual([
-      [ownerId, "lead"],
-      [memberId, "viewer"],
+    // Each person also carries their organization role: the page marks the
+    // owner, who manages every team whatever their role in it.
+    expect(roster.map((m) => [m.userId, m.role, m.organizationRole])).toEqual([
+      [ownerId, "lead", "owner"],
+      [memberId, "viewer", "member"],
     ]);
     const viewer = await fx.principalOf(memberId);
     expect(viewer.teamRoles.get(teamId)).toBe("viewer");

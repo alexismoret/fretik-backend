@@ -106,6 +106,33 @@ describe("roles", () => {
     });
   });
 
+  test("a viewer is told the least role that would reach, not member", () => {
+    const viewer = person("member", "viewer");
+    // Inviting stays with admins by default: a member could not either.
+    expect(decide(viewer, "members.invite")).toEqual({
+      allowed: false,
+      reason: "ROLE_REQUIRED",
+      requiredRole: "admin",
+    });
+    expect(
+      decide(viewer, "team.context.edit", { teamContext: "leads" }),
+    ).toEqual({
+      allowed: false,
+      reason: "ROLE_REQUIRED",
+      requiredRole: "lead",
+    });
+    // Someone outside the team is told the same.
+    expect(
+      decide(person("member", null), "members.invite", {
+        memberInvitations: "leads",
+      }),
+    ).toEqual({
+      allowed: false,
+      reason: "ROLE_REQUIRED",
+      requiredRole: "lead",
+    });
+  });
+
   test("a guest is refused as a guest, whatever the policy", () => {
     const guest = person("guest", null);
     expect(

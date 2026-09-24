@@ -387,7 +387,15 @@ const options = {
         // address of a change-email OTP, or a not-yet-created user).
         const lang = await getUserLocaleByEmail(email);
         const { subject, html } = await generateOtpEmail(type, otp, lang);
-        void sendEmail({ to: { email }, subject, html });
+        // Not awaited, so the response takes the same time whether or not
+        // the address exists. Caught, because an unhandled rejection (the
+        // mail provider down, a refused key) exits the whole process.
+        sendEmail({ to: { email }, subject, html }).catch((err: unknown) => {
+          console.error(
+            "[auth] OTP email failed:",
+            err instanceof Error ? err.message : err,
+          );
+        });
       },
     }),
 

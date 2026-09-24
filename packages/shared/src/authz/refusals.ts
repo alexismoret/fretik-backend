@@ -88,6 +88,7 @@ export const throwResourceRefusal = async (input: {
     required: input.required,
     current: input.current,
     capability: null,
+    requiredRole: null,
     resource: { type: input.resource.type, id: input.resource.id },
     ask,
     // Asking for more access makes sense when someone can give it; a guest
@@ -106,11 +107,23 @@ export const throwResourceRefusal = async (input: {
   });
 };
 
-const ROLE_NAMES: Record<RequiredRole, string> = {
-  owner: "an organization owner",
-  admin: "an organization admin",
-  lead: "a team lead",
-  member: "a team member",
+/** Who a role refusal names: the people who hold the least role that reaches. */
+const ROLE_HOLDERS: Record<RequiredRole, string> = {
+  owner: "organization owners",
+  admin: "organization admins",
+  lead: "team leads",
+  member: "the team's members and leads",
+};
+
+/**
+ * `member` says the role rather than "members of the team": a viewer is in
+ * the team, and would read that as already met.
+ */
+const ROLE_REFUSALS: Record<RequiredRole, string> = {
+  owner: "Only organization owners can do this.",
+  admin: "Only organization admins can do this.",
+  lead: "Only team leads can do this.",
+  member: "This needs the member role in the team.",
 };
 
 const defaultCapabilityMessage = (
@@ -122,11 +135,11 @@ const defaultCapabilityMessage = (
     case "POLICY_DISABLED":
       return decision.requiredRole === null
         ? "Turned off by your administrator."
-        : `Your administrator limited this to ${ROLE_NAMES[decision.requiredRole]}.`;
+        : `Your administrator limited this to ${ROLE_HOLDERS[decision.requiredRole]}.`;
     case "ROLE_REQUIRED":
       return decision.requiredRole === null
         ? "You don't have permission to do this."
-        : `This needs ${ROLE_NAMES[decision.requiredRole]}.`;
+        : ROLE_REFUSALS[decision.requiredRole];
   }
 };
 
@@ -152,6 +165,7 @@ export const throwCapabilityRefusal = async (input: {
     required: null,
     current: null,
     capability: input.capability,
+    requiredRole: input.decision.requiredRole,
     resource: null,
     ask,
     requestable: input.decision.reason !== "GUEST_RESTRICTED" && ask.length > 0,

@@ -221,6 +221,11 @@ export const accessDenialSchema = z
     current: accessLevelSchema.nullable(),
     /** The capability refused, for a capability refusal. */
     capability: z.string().nullable(),
+    /**
+     * The least role that would be allowed, for a capability refusal —
+     * null when no role would be (a policy turned it off for everyone).
+     */
+    requiredRole: z.enum(REQUIRED_ROLES).nullable(),
     resource: z
       .object({ type: accessResourceTypeSchema, id: z.string() })
       .nullable(),

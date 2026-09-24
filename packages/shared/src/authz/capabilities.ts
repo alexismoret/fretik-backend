@@ -78,11 +78,26 @@ const teamLeadsOnly = (standing: Standing): CapabilityDecision => {
     : refuse("ROLE_REQUIRED", "lead");
 };
 
+/** The least role an audience reaches: what a refusal tells the person. */
+const leastRoleOf = (audience: PolicyAudience): RequiredRole => {
+  switch (audience) {
+    case "admins":
+      return "admin";
+    case "leads":
+      return "lead";
+    case "members":
+      return "member";
+  }
+};
+
 /**
  * A team capability the policy extends down to `audience`. Viewers never get
  * one: a viewer reads. When the person's role WOULD be enough by default but
  * the policy narrowed the audience, the refusal says so (`POLICY_DISABLED`),
  * because the answer is then an admin's setting, not a promotion.
+ *
+ * Every refusal names the least role the audience reaches, so a viewer is
+ * never told that becoming a member would do when only a lead can.
  */
 const teamAudience =
   (
@@ -91,15 +106,16 @@ const teamAudience =
   ) =>
   (standing: Standing): CapabilityDecision => {
     if (standing.principal.isGuest) return GUEST_REFUSED;
-    const role = standing.teamRole;
-    if (role === null) return refuse("ROLE_REQUIRED", "member");
-    if (role === "viewer") return refuse("ROLE_REQUIRED", "member");
     const audience = audienceOf(standing.policy);
+    const role = standing.teamRole;
+    if (role === null || role === "viewer") {
+      return refuse("ROLE_REQUIRED", leastRoleOf(audience));
+    }
     if (reaches(audience, role, standing.principal)) return ALLOWED;
     const byDefault = reaches(defaultAudience, role, standing.principal);
     return refuse(
       byDefault ? "POLICY_DISABLED" : "ROLE_REQUIRED",
-      audience === "admins" ? "admin" : "lead",
+      leastRoleOf(audience),
     );
   };
 

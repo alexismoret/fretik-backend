@@ -40,7 +40,21 @@ export const settleAcceptedInvitation = async (input: {
   userId: string;
 }): Promise<void> => {
   const { organizationId, invitationId, userId } = input;
-  const held = await grantsOfInvitation(db, invitationId);
+  const [held, sent] = await Promise.all([
+    grantsOfInvitation(db, invitationId),
+    db.query.invitation.findFirst({
+      columns: { email: true, teamId: true },
+      where: { id: invitationId },
+    }),
+  ]);
+  // The team it opened, named as the journal keeps names: at write time.
+  const teamId = sent?.teamId?.split(",")[0] ?? null;
+  const joinedTeam = teamId
+    ? await db.query.team.findFirst({
+        columns: { name: true },
+        where: { id: teamId },
+      })
+    : undefined;
 
   // The membership just changed: a principal cached before it is stale.
   await bumpAccessVersion(organizationId);
@@ -106,7 +120,13 @@ export const settleAcceptedInvitation = async (input: {
       actorUserId: userId,
       action: "invitation.accepted",
       principal: { type: "invitation", id: invitationId },
-      metadata: { role: principal.orgRole, items: held.length },
+      metadata: {
+        role: principal.orgRole,
+        items: held.length,
+        email: sent?.email ?? null,
+        teamId,
+        teamName: joinedTeam?.name ?? null,
+      },
     });
     await recordAccessEvents(tx, events);
   });

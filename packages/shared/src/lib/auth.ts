@@ -18,7 +18,6 @@ import { seedStarterCollections } from "../services/collections/seed-starter-typ
 import { seedSystemOntology } from "../services/collections/seed-system-types";
 import { applyDocumentFieldTemplate } from "../services/field-definitions/apply-template";
 import { getTeamLocale } from "../services/field-definitions/get-locale";
-import { sendOrganizationInvitationEmail } from "../services/invitations/send-invitation-email";
 import { withdrawInvitationsToDeletedTeam } from "../services/invitations/withdraw-for-deleted-team";
 import { maximumTeamsFor } from "../services/organization/team-limit";
 import { scrubWorkflowNotificationRecipient } from "../services/workflows/scrub-notification-recipient";
@@ -31,13 +30,11 @@ import {
   OTP_EXPIRY_SECONDS,
   PENDING_INVITATION_LIMIT,
 } from "./auth-constants";
-import { organizationTeamInvitationHooks } from "./auth-hooks";
+import { organizationBeforeHooks } from "./auth-hooks";
 import {
   journalAfterTheFact,
   onInvitationAccepted,
   onInvitationClosed,
-  onMemberLeftOrganization,
-  onMemberLeftTeam,
   onMembershipChanged,
   onTeamCreated,
 } from "./auth-membership";
@@ -206,11 +203,11 @@ const options = {
   /**
    * Request hooks. A `before` hook that returns a value short-circuits the
    * endpoint, which is the only seam in front of the organization plugin's own
-   * guards — see `auth-hooks.ts` for what it intercepts and, more importantly,
-   * for the conditions under which it does NOT.
+   * guards: the endpoints our routes replace are closed there, and an existing
+   * member's team invitation is accepted there (`auth-hooks.ts`).
    */
   hooks: {
-    before: organizationTeamInvitationHooks,
+    before: organizationBeforeHooks,
     // Leaving (the one membership change with no organization hook), and
     // the directory endpoints' answers to a guest (`auth-after-hooks.ts`).
     after: organizationAfterHooks,
@@ -335,9 +332,6 @@ const options = {
         afterAddMember: async (data) => {
           await onMembershipChanged(data.organization.id);
         },
-        afterAddTeamMember: async (data) => {
-          await onMembershipChanged(data.organization.id);
-        },
         afterAcceptInvitation: async (data) => {
           await onMembershipChanged(data.organization.id);
           // What the invitation was shared for becomes theirs: a guest's
@@ -357,49 +351,6 @@ const options = {
             action: "invitation.rejected",
           });
         },
-        afterCancelInvitation: async (data) => {
-          await onInvitationClosed({
-            organizationId: data.organization.id,
-            invitationId: data.invitation.id,
-            email: data.invitation.email,
-            actorUserId: data.cancelledBy.id,
-            action: "invitation.canceled",
-          });
-        },
-        afterRemoveMember: async (data) => {
-          await onMemberLeftOrganization({
-            organizationId: data.organization.id,
-            userId: data.member.userId,
-          });
-        },
-        afterRemoveTeamMember: async (data) => {
-          await onMemberLeftTeam({
-            organizationId: data.organization.id,
-            teamId: data.team.id,
-            userId: data.teamMember.userId,
-          });
-        },
-        // A demoted admin loses admin rights on their next request: the bump
-        // drops every cached principal of the organization.
-        afterUpdateMemberRole: async (data) => {
-          await onMembershipChanged(data.organization.id);
-        },
-      },
-
-      // Only ever reached for an invitation into the organization: the
-      // "existing member joins one more team" case is served by
-      // `organizationTeamInvitationHooks`, which sends its own email through
-      // the same service.
-      sendInvitationEmail: async (data) => {
-        await sendOrganizationInvitationEmail({
-          invitationId: data.id,
-          email: data.email,
-          inviterName: data.inviter.user.name,
-          organizationName: data.organization.name,
-          role: data.role,
-          teamId: data.invitation.teamId ?? null,
-          expiresAt: data.invitation.expiresAt,
-        });
       },
 
       teams: {

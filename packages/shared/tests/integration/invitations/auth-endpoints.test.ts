@@ -23,19 +23,22 @@ import {
 import { mockModule } from "../../lib/mock-module";
 
 /**
- * Inviting someone who is ALREADY in the organization to one more team, and
- * every neighbouring case that must keep working.
+ * Better Auth's organization endpoints, as Fretik leaves them.
  *
- * The subject is `lib/auth-hooks.ts`, and it only exists as a SEAM: a
- * `hooks.before` that takes two organization endpoints away from Better Auth
- * under precise conditions and hands every other invitation back. Testing the
- * conditions apart from the dispatch would prove nothing — a wrong `ctx.path`,
- * or a return value Better Auth reads as a `{ context }` patch rather than a
- * response, and the plugin's own guard answers
- * `USER_IS_ALREADY_A_MEMBER_OF_THIS_ORGANIZATION` exactly as it did before,
- * with a green suite either way.
+ * The ones that change who belongs where are closed, since our routes replace
+ * them (`lib/auth-replaced-endpoints.ts`). The ones the app still calls stay
+ * open, and what runs in front of them is the subject here
+ * (`lib/auth-hooks.ts`): accepting a team invitation as someone ALREADY in the
+ * organization, and every neighbouring case that must keep working. The
+ * invitations are made through the app's own door (`inviteToTeam`).
  *
- * So everything here goes through `auth.api.*`, the same dispatch the HTTP
+ * The hooks only exist as a SEAM, a `hooks.before` in front of the plugin's
+ * endpoints. Testing their conditions apart from the dispatch would prove
+ * nothing: a wrong `ctx.path`, or a return value Better Auth reads as a
+ * `{ context }` patch rather than a response, and the plugin's own handler
+ * runs exactly as it did before, with a green suite either way.
+ *
+ * So every endpoint here goes through `auth.api.*`, the same dispatch the HTTP
  * router uses (`toAuthEndpoints` → `dispatchAuthEndpoint` → hooks → endpoint).
  * Real sessions, real cookies, real rows; the only double is the email
  * transport, which no assertion is about beyond WHICH message was sent.
@@ -54,6 +57,10 @@ await mockModule("../../src/lib/email", {
 const { auth } = await import("../../../src/lib/auth");
 const { SIGNUP_INVITATION_HEADER } =
   await import("../../../src/services/auth/signup-gate");
+const { inviteToTeam } =
+  await import("../../../src/services/invitations/invite-to-team");
+const { removeTeamMember } =
+  await import("../../../src/services/team/remove-member");
 
 const PASSWORD = "integration-password-1";
 
@@ -129,8 +136,8 @@ const createAccount = async (
   });
   const headers = new Headers({ cookie: cookieHeader(signIn.headers) });
 
-  // The invite path reads the ACTIVE organization from the session — the UI
-  // never sends an organizationId — so set it the way the app does.
+  // The endpoints read the ACTIVE organization from the session (the UI
+  // never sends an organizationId), so set it the way the app does.
   await auth.api.setActiveOrganization({
     body: { organizationId: workspace.organizationId },
     headers,
@@ -211,18 +218,16 @@ afterAll(async () => {
  */
 beforeEach(async () => {
   sent.length = 0;
-  // Through the endpoint, not a raw DELETE: `team.member_count` is a durable
+  // Through the service, not a raw DELETE: `team.member_count` is a durable
   // counter the seat limit is enforced against, and a test that unpicks a
-  // membership behind its back leaves the table and the counter disagreeing —
-  // which is exactly what the seat assertion below reads.
-  // Refuses with USER_IS_NOT_A_MEMBER_OF_THE_TEAM when there is nothing to
-  // undo, which is the usual case here.
-  await auth.api
-    .removeTeamMember({
-      body: { teamId: secondTeamId, userId: existing.userId },
-      headers: owner.headers,
-    })
-    .catch(() => undefined);
+  // membership behind its back leaves the table and the counter disagreeing,
+  // which is exactly what the seat assertion below reads. Refuses (404) when
+  // there is nothing to undo, which is the usual case here.
+  await removeTeamMember({
+    principal: await fx.principalOf(owner.userId),
+    teamId: secondTeamId,
+    userId: existing.userId,
+  }).catch(() => undefined);
   await db
     .delete(invitation)
     .where(
@@ -233,29 +238,129 @@ beforeEach(async () => {
     );
 });
 
-describe("POST /organization/invite-member", () => {
-  test("invites an existing organization member to another team", async () => {
-    // Before the hook existed this threw
-    // USER_IS_ALREADY_A_MEMBER_OF_THIS_ORGANIZATION — the reported bug.
-    const created = await auth.api.createInvitation({
-      body: { email: existing.email, role: "admin", teamId: secondTeamId },
-      headers: owner.headers,
+/** Invite someone to a team through the app's own door; the invitation's id. */
+const invite = async (
+  email: string,
+  teamId = secondTeamId,
+): Promise<string> => {
+  const [outcome] = await inviteToTeam({
+    principal: await fx.principalOf(owner.userId),
+    teamId,
+    invitations: [{ email, role: "member" }],
+  });
+  if (!outcome?.invitationId) throw new Error("fixture: not invited");
+  return outcome.invitationId;
+};
+
+const invitationRow = async (id: string) =>
+  db.query.invitation.findFirst({
+    columns: { role: true, status: true, teamId: true },
+    where: { id },
+  });
+
+describe("the endpoints our routes replace", () => {
+  test("are closed, to an owner too, and change nothing", async () => {
+    const [memberId] = await membershipsIn(fx.organizationId, existing.userId);
+    if (!memberId) throw new Error("fixture: no membership");
+    const waiting = await invite(
+      `it-waiting-${randomUUID().slice(0, 8)}@example.test`,
+    );
+    const sideDoor = `side-door-${randomUUID().slice(0, 8)}`;
+    const asOwner = { headers: owner.headers };
+
+    const refusals = await Promise.all([
+      refusalOf(
+        auth.api.createInvitation({
+          ...asOwner,
+          body: {
+            email: `it-closed-${randomUUID().slice(0, 8)}@example.test`,
+            role: "member",
+            teamId: secondTeamId,
+          },
+        }),
+      ),
+      refusalOf(
+        auth.api.cancelInvitation({
+          ...asOwner,
+          body: { invitationId: waiting },
+        }),
+      ),
+      refusalOf(
+        auth.api.updateMemberRole({
+          ...asOwner,
+          body: { memberId, role: "admin" },
+        }),
+      ),
+      refusalOf(
+        auth.api.removeMember({
+          ...asOwner,
+          body: { memberIdOrEmail: existing.email },
+        }),
+      ),
+      refusalOf(auth.api.createTeam({ ...asOwner, body: { name: sideDoor } })),
+      refusalOf(
+        auth.api.updateTeam({
+          ...asOwner,
+          body: { teamId: secondTeamId, data: { name: sideDoor } },
+        }),
+      ),
+      refusalOf(
+        auth.api.addTeamMember({
+          ...asOwner,
+          body: { teamId: secondTeamId, userId: existing.userId },
+        }),
+      ),
+      refusalOf(
+        auth.api.removeTeamMember({
+          ...asOwner,
+          body: { teamId: fx.teamId, userId: existing.userId },
+        }),
+      ),
+    ]);
+    for (const refusal of refusals)
+      expect(refusal).toContain("ENDPOINT_REPLACED");
+
+    // Nothing moved: the same membership at the same role, in the same team,
+    // the invitation still waiting, and no team named through the side door.
+    const membership = await db.query.member.findFirst({
+      columns: { role: true },
+      where: { id: memberId },
+    });
+    expect(membership?.role).toBe("member");
+    expect(await teamsOf(existing.userId)).toEqual([fx.teamId]);
+    expect((await invitationRow(waiting))?.status).toBe("pending");
+    const named = await db
+      .select({ id: team.id })
+      .from(team)
+      .where(
+        and(
+          eq(team.organizationId, fx.organizationId),
+          eq(team.name, sideDoor),
+        ),
+      );
+    expect(named).toEqual([]);
+  });
+});
+
+describe("inviting someone of the organization to one more team", () => {
+  test("keeps the role they hold, whatever was asked", async () => {
+    const [outcome] = await inviteToTeam({
+      principal: await fx.principalOf(owner.userId),
+      teamId: secondTeamId,
+      invitations: [{ email: existing.email, role: "admin" }],
     });
 
-    expect(created.teamId).toBe(secondTeamId);
-    expect(created.status).toBe("pending");
-    expect(created.email).toBe(existing.email.toLowerCase());
-    // The role they ALREADY hold, not the "admin" that was asked for: a team
-    // invitation is not a role change, and the pending list must not promise
-    // one the accept path will not keep.
-    expect(created.role).toBe("member");
+    // A team invitation is not a role change, and the pending list must not
+    // promise one the accept path will not keep.
+    expect(await invitationRow(outcome?.invitationId ?? "")).toEqual({
+      role: "member",
+      status: "pending",
+      teamId: secondTeamId,
+    });
   });
 
   test("mails the team-access copy, not the welcome-to-the-organization one", async () => {
-    await auth.api.createInvitation({
-      body: { email: existing.email, role: "member", teamId: secondTeamId },
-      headers: owner.headers,
-    });
+    await invite(existing.email);
 
     expect(sent).toHaveLength(1);
     expect(sent[0]?.to).toBe(existing.email.toLowerCase());
@@ -264,84 +369,12 @@ describe("POST /organization/invite-member", () => {
     expect(sent[0]?.subject).toContain(secondTeamName);
   });
 
-  test("still refuses an existing member with no team named", async () => {
-    // No `teamId` means "join the organization", which they already did. The
-    // hook must not touch this: Better Auth's refusal is the right answer.
-    const refusal = await refusalOf(
-      auth.api.createInvitation({
-        body: { email: existing.email, role: "member" },
-        headers: owner.headers,
-      }),
-    );
-
-    expect(refusal).toContain("USER_IS_ALREADY_A_MEMBER_OF_THIS_ORGANIZATION");
-  });
-
-  test("refuses a member of the target team", async () => {
-    await auth.api.addTeamMember({
-      body: { teamId: secondTeamId, userId: existing.userId },
-      headers: owner.headers,
-    });
-
-    const refusal = await refusalOf(
-      auth.api.createInvitation({
-        body: { email: existing.email, role: "member", teamId: secondTeamId },
-        headers: owner.headers,
-      }),
-    );
-
-    expect(refusal).toContain("USER_IS_ALREADY_A_MEMBER_OF_THIS_TEAM");
-    expect(sent).toHaveLength(0);
-  });
-
-  test("refuses a plain member handing out team access", async () => {
-    const refusal = await refusalOf(
-      auth.api.createInvitation({
-        body: { email: owner.email, role: "member", teamId: secondTeamId },
-        headers: existing.headers,
-      }),
-    );
-
-    expect(refusal).toContain(
-      "YOU_ARE_NOT_ALLOWED_TO_INVITE_USERS_TO_THIS_ORGANIZATION",
-    );
-    expect(sent).toHaveLength(0);
-  });
-
-  test("refuses a team belonging to another organization", async () => {
-    const other = await createWorkspaceFixture();
-    try {
-      const refusal = await refusalOf(
-        auth.api.createInvitation({
-          body: {
-            email: existing.email,
-            role: "member",
-            teamId: other.teamId,
-          },
-          headers: owner.headers,
-        }),
-      );
-      expect(refusal).toContain("TEAM_NOT_FOUND");
-    } finally {
-      await other.cleanup();
-    }
-  });
-
   test("re-inviting to a team cancels only THAT team's pending invitation", async () => {
     const thirdTeamId = (await fx.createTeam()).id;
 
-    const first = await auth.api.createInvitation({
-      body: { email: existing.email, role: "member", teamId: secondTeamId },
-      headers: owner.headers,
-    });
-    const elsewhere = await auth.api.createInvitation({
-      body: { email: existing.email, role: "member", teamId: thirdTeamId },
-      headers: owner.headers,
-    });
-    await auth.api.createInvitation({
-      body: { email: existing.email, role: "member", teamId: secondTeamId },
-      headers: owner.headers,
-    });
+    const first = await invite(existing.email);
+    const elsewhere = await invite(existing.email, thirdTeamId);
+    await invite(existing.email);
 
     const rows = await db
       .select({ id: invitation.id, status: invitation.status })
@@ -354,49 +387,33 @@ describe("POST /organization/invite-member", () => {
       );
     const byId = new Map(rows.map((r) => [r.id, r.status]));
 
-    expect(byId.get(first.id)).toBe("canceled");
-    // The other team's invitation is a different grant and survives — Better
-    // Auth's org-wide sweep would have cancelled it too.
-    expect(byId.get(elsewhere.id)).toBe("pending");
+    expect(byId.get(first)).toBe("canceled");
+    // The other team's invitation is a different grant and survives.
+    expect(byId.get(elsewhere)).toBe("pending");
     expect(rows.filter((r) => r.status === "pending")).toHaveLength(2);
   });
 
-  test("an address with no account takes Better Auth's path", async () => {
-    const stranger = `it-new-${randomUUID().slice(0, 8)}@example.test`;
-    const created = await auth.api.createInvitation({
-      body: { email: stranger, role: "member", teamId: secondTeamId },
-      headers: owner.headers,
-    });
-
-    expect(created.email).toBe(stranger);
-    expect(created.teamId).toBe(secondTeamId);
-    expect(created.status).toBe("pending");
-  });
-
-  test("an account in ANOTHER organization takes Better Auth's path", async () => {
+  test("someone outside it, with an account elsewhere or none, is welcomed into it", async () => {
     const other = await createWorkspaceFixture();
     try {
       const outsider = await createAccount(other, "member");
+      const stranger = `it-new-${randomUUID().slice(0, 8)}@example.test`;
       // Their sign-up sent an OTP through the same transport.
       sent.length = 0;
 
-      // Membership is per organization: they are not in this one, so this is
-      // an ordinary organization invitation and the hook must stand aside.
-      const created = await auth.api.createInvitation({
-        body: {
-          email: outsider.email,
-          role: "member",
-          teamId: secondTeamId,
-        },
-        headers: owner.headers,
-      });
-
-      expect(created.email).toBe(outsider.email.toLowerCase());
-      expect(created.teamId).toBe(secondTeamId);
-      expect(created.status).toBe("pending");
-      // ...and it is the welcome copy, not the team-access one.
-      expect(sent).toHaveLength(1);
-      expect(sent[0]?.subject).not.toContain(secondTeamName);
+      // Membership is per organization: neither is in this one, so each is
+      // invited into it, with the welcome copy rather than the team-access one.
+      const waiting = { status: "pending", teamId: secondTeamId };
+      expect(await invitationRow(await invite(outsider.email))).toMatchObject(
+        waiting,
+      );
+      expect(await invitationRow(await invite(stranger))).toMatchObject(
+        waiting,
+      );
+      expect(sent).toHaveLength(2);
+      for (const message of sent) {
+        expect(message.subject).not.toContain(secondTeamName);
+      }
     } finally {
       await other.cleanup();
     }
@@ -434,11 +451,7 @@ describe("the invariant behind all of this", () => {
 });
 
 describe("POST /organization/accept-invitation", () => {
-  const inviteExisting = async (teamId = secondTeamId) =>
-    auth.api.createInvitation({
-      body: { email: existing.email, role: "member", teamId },
-      headers: owner.headers,
-    });
+  const inviteExisting = async () => invite(existing.email);
 
   test("joins the team and leaves the organization membership alone", async () => {
     const before = await membershipsIn(fx.organizationId, existing.userId);
@@ -446,7 +459,7 @@ describe("POST /organization/accept-invitation", () => {
 
     const created = await inviteExisting();
     const accepted = await auth.api.acceptInvitation({
-      body: { invitationId: created.id },
+      body: { invitationId: created },
       headers: existing.headers,
     });
     expect(accepted?.invitation.status).toBe("accepted");
@@ -461,12 +474,33 @@ describe("POST /organization/accept-invitation", () => {
     expect(await teamsOf(existing.userId)).toEqual(
       [fx.teamId, secondTeamId].sort(),
     );
+    // The journal says who joined which team, by the names of the day.
+    const [entry] = await db
+      .select({
+        actorUserId: accessAuditLog.actorUserId,
+        metadata: accessAuditLog.metadata,
+      })
+      .from(accessAuditLog)
+      .where(
+        and(
+          eq(accessAuditLog.action, "invitation.accepted"),
+          eq(accessAuditLog.principalId, created),
+        ),
+      );
+    expect(entry).toMatchObject({
+      actorUserId: existing.userId,
+      metadata: {
+        email: existing.email.toLowerCase(),
+        teamId: secondTeamId,
+        teamName: secondTeamName,
+      },
+    });
   });
 
   test("moves the seat counter the limit is enforced against", async () => {
     const created = await inviteExisting();
     await auth.api.acceptInvitation({
-      body: { invitationId: created.id },
+      body: { invitationId: created },
       headers: existing.headers,
     });
 
@@ -484,13 +518,13 @@ describe("POST /organization/accept-invitation", () => {
   test("refuses the second attempt on the same invitation", async () => {
     const created = await inviteExisting();
     await auth.api.acceptInvitation({
-      body: { invitationId: created.id },
+      body: { invitationId: created },
       headers: existing.headers,
     });
 
     const refusal = await refusalOf(
       auth.api.acceptInvitation({
-        body: { invitationId: created.id },
+        body: { invitationId: created },
         headers: existing.headers,
       }),
     );
@@ -502,7 +536,7 @@ describe("POST /organization/accept-invitation", () => {
 
     const refusal = await refusalOf(
       auth.api.acceptInvitation({
-        body: { invitationId: created.id },
+        body: { invitationId: created },
         // Same organization, same everything — a different address is the ONE
         // column that may refuse here.
         headers: owner.headers,
@@ -518,11 +552,11 @@ describe("POST /organization/accept-invitation", () => {
     await db
       .update(invitation)
       .set({ expiresAt: new Date(Date.now() - 1000) })
-      .where(eq(invitation.id, created.id));
+      .where(eq(invitation.id, created));
 
     const refusal = await refusalOf(
       auth.api.acceptInvitation({
-        body: { invitationId: created.id },
+        body: { invitationId: created },
         headers: existing.headers,
       }),
     );
@@ -531,14 +565,11 @@ describe("POST /organization/accept-invitation", () => {
 
   test("a brand-new account joins through Better Auth", async () => {
     const newcomer = `it-join-${randomUUID().slice(0, 8)}@example.test`;
-    const created = await auth.api.createInvitation({
-      body: { email: newcomer, role: "member", teamId: secondTeamId },
-      headers: owner.headers,
-    });
+    const created = await invite(newcomer);
 
     const signUp = await auth.api.signUpEmail({
       body: { name: "Newcomer", email: newcomer, password: PASSWORD },
-      headers: presenting(created.id),
+      headers: presenting(created),
     });
     const signIn = await auth.api.signInEmail({
       body: { email: newcomer, password: PASSWORD },
@@ -546,7 +577,7 @@ describe("POST /organization/accept-invitation", () => {
     });
 
     const accepted = await auth.api.acceptInvitation({
-      body: { invitationId: created.id },
+      body: { invitationId: created },
       headers: new Headers({ cookie: cookieHeader(signIn.headers) }),
     });
     expect(accepted?.invitation.status).toBe("accepted");
@@ -564,12 +595,9 @@ describe("POST /organization/accept-invitation", () => {
     try {
       const outsider = await createAccount(other, "member");
 
-      const created = await auth.api.createInvitation({
-        body: { email: outsider.email, role: "member", teamId: secondTeamId },
-        headers: owner.headers,
-      });
+      const created = await invite(outsider.email);
       const accepted = await auth.api.acceptInvitation({
-        body: { invitationId: created.id },
+        body: { invitationId: created },
         headers: outsider.headers,
       });
       expect(accepted?.invitation.status).toBe("accepted");
@@ -603,7 +631,7 @@ describe("POST /organization/accept-invitation", () => {
  * invitation's id — what the emailed link carries — proves the inbox.
  */
 describe("sign-up of an invited address", () => {
-  const invite = async (email: string): Promise<string> => {
+  const seedInvitation = async (email: string): Promise<string> => {
     const [row] = await db
       .insert(invitation)
       .values({
@@ -629,7 +657,7 @@ describe("sign-up of an invited address", () => {
 
   test("without the invitation's id, the account must verify its email", async () => {
     const email = `it-squat-${randomUUID().slice(0, 8)}@example.test`;
-    await invite(email);
+    await seedInvitation(email);
 
     const signUp = await auth.api.signUpEmail({
       body: { name: "Not the invitee", email, password: PASSWORD },
@@ -645,8 +673,8 @@ describe("sign-up of an invited address", () => {
 
   test("with the id of ANOTHER invitation, it is not verified either", async () => {
     const email = `it-mixed-${randomUUID().slice(0, 8)}@example.test`;
-    await invite(email);
-    const someoneElses = await invite(
+    await seedInvitation(email);
+    const someoneElses = await seedInvitation(
       `it-other-${randomUUID().slice(0, 8)}@example.test`,
     );
 
@@ -660,7 +688,7 @@ describe("sign-up of an invited address", () => {
 
   test("with its own invitation's id, the account is verified", async () => {
     const email = `it-invitee-${randomUUID().slice(0, 8)}@example.test`;
-    const invitationId = await invite(email);
+    const invitationId = await seedInvitation(email);
 
     const signUp = await auth.api.signUpEmail({
       body: { name: "The invitee", email, password: PASSWORD },
@@ -668,6 +696,43 @@ describe("sign-up of an invited address", () => {
     });
 
     expect(await isVerified(signUp.user.id)).toBe(true);
+  });
+});
+
+describe("POST /organization/leave", () => {
+  test("is journaled as a departure, by the person leaving", async () => {
+    const leaving = await createAccount(fx, "member");
+
+    await auth.api.leaveOrganization({
+      body: { organizationId: fx.organizationId },
+      headers: leaving.headers,
+    });
+
+    expect(await membershipsIn(fx.organizationId, leaving.userId)).toEqual([]);
+    const journal = await db
+      .select({
+        actorUserId: accessAuditLog.actorUserId,
+        metadata: accessAuditLog.metadata,
+      })
+      .from(accessAuditLog)
+      .where(
+        and(
+          eq(accessAuditLog.organizationId, fx.organizationId),
+          eq(accessAuditLog.action, "member.removed"),
+          eq(accessAuditLog.principalId, leaving.userId),
+        ),
+      );
+    expect(journal).toEqual([
+      {
+        actorUserId: leaving.userId,
+        metadata: {
+          userName: "Integration user",
+          email: leaving.email,
+          role: "member",
+          left: true,
+        },
+      },
+    ]);
   });
 });
 

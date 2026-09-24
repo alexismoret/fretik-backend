@@ -15,9 +15,8 @@ import { listTeamRoster } from "./roster";
  * the team's leads' call, and the organization's admins'
  * (`team.members.manage`).
  *
- * What leaving a team sets in motion — their private workflows of that team
- * pausing, their cached access dropped — is `onMemberLeftTeam`'s, the same
- * steps Better Auth's own removal runs.
+ * What leaving a team sets in motion (their private workflows of that team
+ * pausing, their cached access dropped) is `onMemberLeftTeam`'s.
  */
 export const removeTeamMember = async (input: {
   principal: UserPrincipal;

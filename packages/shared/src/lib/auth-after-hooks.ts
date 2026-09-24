@@ -4,18 +4,22 @@ import {
   getSessionFromCtx,
 } from "better-auth/api";
 import { z } from "zod";
+import db from "../db";
 import {
   directoryAnswerForGuest,
   isDirectoryPath,
 } from "./auth-guest-directory";
-import { onMemberLeftOrganization } from "./auth-membership";
+import {
+  journalAfterTheFact,
+  onMemberLeftOrganization,
+} from "./auth-membership";
 
 /**
  * Better Auth `after` hooks: what runs once one of its endpoints has answered.
  *
  *   - `/organization/leave` is the one membership change with no organization
- *     hook: leaving on one's own is treated like being removed
- *     (`auth-membership.ts`);
+ *     hook: leaving on one's own is treated, and journaled, like being
+ *     removed (`auth-membership.ts`);
  *   - the endpoints that list an organization's people, teams and
  *     invitations answer a guest with themselves alone
  *     (`auth-guest-directory.ts`).
@@ -27,6 +31,7 @@ import { onMemberLeftOrganization } from "./auth-membership";
 const leftMemberSchema = z.object({
   organizationId: z.string(),
   userId: z.string(),
+  role: z.string().optional(),
 });
 
 const organizationIdQuerySchema = z.looseObject({
@@ -60,7 +65,25 @@ export const organizationAfterHooks = createAuthMiddleware(async (ctx) => {
 
   if (ctx.path === "/organization/leave") {
     const left = leftMemberSchema.safeParse(returned);
-    if (left.success) await onMemberLeftOrganization(left.data);
+    if (!left.success) return undefined;
+    const { organizationId, userId, role } = left.data;
+    const person = await db.query.user.findFirst({
+      columns: { name: true, email: true },
+      where: { id: userId },
+    });
+    await journalAfterTheFact({
+      organizationId,
+      actorUserId: userId,
+      action: "member.removed",
+      principal: { type: "user", id: userId },
+      metadata: {
+        userName: person?.name ?? null,
+        email: person?.email ?? null,
+        role: role ?? null,
+        left: true,
+      },
+    });
+    await onMemberLeftOrganization({ organizationId, userId });
   }
   return undefined;
 });

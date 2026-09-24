@@ -10,6 +10,10 @@ import {
   roleMatrixSchema,
   updateOrganizationPolicySchema,
 } from "@fretik/shared/schemas/access-api";
+import {
+  accessJournalPageSchema,
+  accessJournalQuerySchema,
+} from "@fretik/shared/schemas/access-journal";
 import { DEFAULT_ORGANIZATION_ACCESS_POLICY } from "@fretik/shared/schemas/access-policy";
 import {
   accessRequestListSchema,
@@ -38,6 +42,7 @@ import {
 import { sharedWithMeSchema } from "@fretik/shared/schemas/shared-with-me";
 import { describeAccess } from "@fretik/shared/services/access/describe";
 import { inviteGuests } from "@fretik/shared/services/access/guests/invite-guests";
+import { listAccessJournal } from "@fretik/shared/services/access/journal/list-journal";
 import {
   cancelAccessRequest,
   decideAccessRequest,
@@ -59,8 +64,9 @@ import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
  * it, what the organization allows beyond the roles, the roles grid — and
  * who has access to one resource, which the share dialog reads and changes
  * (`/resources/{type}/{id}`), what others shared with the caller
- * (`/shared-with-me`), and the requests for more access, asked from a
- * refusal and answered by whoever could share (`/requests`).
+ * (`/shared-with-me`), the requests for more access, asked from a
+ * refusal and answered by whoever could share (`/requests`), and the journal
+ * of every change to who may do what (`/journal`).
  *
  * The client decides nothing: it shows, hides or locks an action from the
  * decisions sent here, and a refusal it did not predict still arrives as a
@@ -151,6 +157,26 @@ const rolesRoute = createRoute({
       content: { "application/json": { schema: roleMatrixSchema } },
       description: "The roles grid",
     },
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const journalRoute = createRoute({
+  method: "get",
+  path: "/journal",
+  middleware: access.capability("audit.read"),
+  summary: "The access journal",
+  description:
+    "Every change to who may do what, newest first, a page at a time, by kind of change or by person. An item is named only to a reader who can open it now.",
+  tags: ["Access"],
+  request: { query: accessJournalQuerySchema },
+  responses: {
+    200: {
+      content: { "application/json": { schema: accessJournalPageSchema } },
+      description: "A page of the journal",
+    },
+    ...responseBadRequestSchema,
     ...responseForbiddenSchema,
     ...responseInternalErrorSchema,
   },
@@ -418,6 +444,14 @@ accessRoutes.openapi(rolesRoute, async (c) => {
     c.get("principal").organizationId,
   );
   return c.json({ rows: buildRoleMatrix(policy) }, 200);
+});
+
+accessRoutes.openapi(journalRoute, async (c) => {
+  const page = await listAccessJournal({
+    principal: c.get("principal"),
+    query: c.req.valid("query"),
+  });
+  return c.json(page, 200);
 });
 
 accessRoutes.openapi(getResourceAccessRoute, async (c) => {

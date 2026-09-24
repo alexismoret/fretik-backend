@@ -6,9 +6,10 @@ import { workflows } from "../../db/schema";
  * Remove a user from every workflow's `notifications.recipientUserIds`.
  *
  * The recipient list is jsonb (no FK), so nothing scrubs it automatically
- * when the user loses access. Called from the Better Auth lifecycle hooks
- * (`afterRemoveTeamMember` → team scope, `afterRemoveMember` → org scope,
- * `deleteUser.afterDelete` → global). Send time re-checks the roster via
+ * when the user loses access. Called when they leave (`onMemberLeftTeam` →
+ * team scope, `onMemberLeftOrganization` → org scope, in
+ * `lib/auth-membership.ts`) and from `deleteUser.afterDelete` (global). Send
+ * time re-checks the roster via
  * `filterTeamMemberIds` anyway — this scrub is data hygiene, not the
  * security boundary — which is why hook callers may log-and-continue on
  * failure rather than block the removal.

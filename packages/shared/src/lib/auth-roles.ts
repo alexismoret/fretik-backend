@@ -43,9 +43,9 @@ export const invalidateTeamMembershipCache = async (
 
 /**
  * Drop every cached team membership a user holds in an organization.
- * Better Auth's `removeMember` bulk-deletes their `team_member` rows in one
- * statement, so `afterRemoveTeamMember` never fires per row and the org-level
- * hook has to sweep the teams itself.
+ * Removing a member (Better Auth's `deleteMember`) bulk-deletes their
+ * `team_member` rows in one statement, so leaving the organization sweeps
+ * every team's cache itself (`onMemberLeftOrganization`).
  */
 export const invalidateOrgTeamMembershipCache = async (
   organizationId: string,

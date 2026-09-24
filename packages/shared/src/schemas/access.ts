@@ -173,7 +173,6 @@ export const ACCESS_AUDIT_ACTIONS = [
   "grant.updated",
   "grant.removed",
   "restriction.changed",
-  "owner.transferred",
   "request.created",
   "request.decided",
   "project.created",

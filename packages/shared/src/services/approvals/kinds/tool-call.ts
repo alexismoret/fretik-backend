@@ -1,7 +1,9 @@
+import { HTTPException } from "hono/http-exception";
 import type {
   ToolApprovalRequest,
   ToolApprovalToolCallResult,
 } from "../../../db/schema";
+import { parseApiError } from "../../../schemas/errors";
 import { TOOL_CALL_APPLY } from "../../tool-policies/builtin-apply";
 import { markConsumed } from "../complete";
 import { isToolCallPayload } from "../payload-guards";
@@ -58,9 +60,19 @@ const applyToolCall = async (
     );
     return { ok: true, data };
   } catch (error) {
-    return {
-      ok: false,
-      error: error instanceof Error ? error.message : String(error),
-    };
+    return { ok: false, error: failureMessage(error) };
   }
+};
+
+/**
+ * What the approval card shows when applying failed. A refusal from the
+ * access engine — the person was made a viewer, or left, while the approval
+ * waited — carries its sentence inside a JSON envelope; the card shows the
+ * sentence.
+ */
+const failureMessage = (error: unknown): string => {
+  if (error instanceof HTTPException) {
+    return parseApiError(error.message)?.message ?? error.message;
+  }
+  return error instanceof Error ? error.message : String(error);
 };

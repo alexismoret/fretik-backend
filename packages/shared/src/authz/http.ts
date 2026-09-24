@@ -1,5 +1,7 @@
 import type { Env, MiddlewareHandler } from "hono";
 import { createMiddleware } from "hono/factory";
+import { z } from "zod";
+import db from "../db";
 import type { HonoLoggedAppType } from "../lib/auth-middleware";
 import { forbidden, throwHttpError } from "../lib/errors";
 import type { AccessLevel } from "../schemas/access";
@@ -10,6 +12,7 @@ import {
 } from "./access";
 import type { Capability } from "./capabilities";
 import { requireCapability } from "./gates";
+import { throwNotVisible } from "./refusals";
 
 /**
  * Every route says who may call it — and saying it is what enforces it.
@@ -32,7 +35,8 @@ import { requireCapability } from "./gates";
  *               the handler as `c.get("resource")`. 404 when invisible, 403
  *               with the reason when the level is short.
  *   capability  an action gated by role and policy (`capabilities.ts`),
- *               decided in the active team for a team capability.
+ *               decided in the active team for a team capability — or, with
+ *               `teamCapability`, in the team the path names.
  *   session     any member of the organization; the service scopes what it
  *               returns to the principal (lists, "my" things, creation in the
  *               active team). The note says how.
@@ -53,7 +57,12 @@ export type AccessRule =
       readonly level: AccessLevel;
       readonly param: string;
     }
-  | { readonly kind: "capability"; readonly capability: Capability }
+  | {
+      readonly kind: "capability";
+      readonly capability: Capability;
+      /** Set when decided in the team named by this path parameter. */
+      readonly param?: string;
+    }
   | { readonly kind: "session"; readonly note: string }
   | { readonly kind: "handler"; readonly reason: string }
   | { readonly kind: "operator" }
@@ -76,6 +85,21 @@ export const accessRuleOf = (handler: unknown): AccessRule | undefined =>
 /** What a `resource` route's handler finds on the context. */
 export type ResourceEnv = HonoLoggedAppType & {
   Variables: { resource: ResolvedResource };
+};
+
+const uuid = z.uuid();
+
+/** Whether `teamId` names a team of this organization. */
+const isOrganizationTeam = async (
+  organizationId: string,
+  teamId: string,
+): Promise<boolean> => {
+  if (!uuid.safeParse(teamId).success) return false;
+  const row = await db.query.team.findFirst({
+    columns: { id: true },
+    where: { id: teamId, organizationId },
+  });
+  return row !== undefined;
 };
 
 /**
@@ -129,6 +153,30 @@ export const access = {
       { kind: "capability", capability },
     ),
 
+  /**
+   * A team capability decided in the team NAMED IN THE PATH (`param`, `id` by
+   * default), not the active one: a team's settings are managed from
+   * anywhere. A team of another organization answers 404, like one that does
+   * not exist — before any role is looked at, so a refusal never names
+   * another organization's leads.
+   */
+  teamCapability: (
+    capability: Capability,
+    param = "id",
+  ): MiddlewareHandler<HonoLoggedAppType> =>
+    withRule(
+      createMiddleware<HonoLoggedAppType>(async (c, next) => {
+        const principal = c.get("principal");
+        const teamId = c.req.param(param) ?? "";
+        if (!(await isOrganizationTeam(principal.organizationId, teamId))) {
+          throwNotVisible("Team not found");
+        }
+        await requireCapability({ principal, capability, teamId });
+        await next();
+      }),
+      { kind: "capability", capability, param },
+    ),
+
   /** Any member; `note` says how the service scopes the answer. */
   session: (note: string): MiddlewareHandler<Env> =>
     withRule(passThrough(), { kind: "session", note }),
@@ -142,7 +190,7 @@ export const access = {
     withRule(
       createMiddleware<HonoLoggedAppType>(async (c, next) => {
         if (!c.get("user").isSuperAdmin) {
-          return throwHttpError(403, forbidden("Operators only"));
+          throwHttpError(403, forbidden("Operators only"));
         }
         await next();
       }),

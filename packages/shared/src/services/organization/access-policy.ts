@@ -4,15 +4,20 @@ import db from "../../db";
 import { organizationSettings, teamSettings } from "../../db/schema";
 import { redis, selectOrCache } from "../../lib/redis";
 import {
+  DEFAULT_ORGANIZATION_ACCESS_POLICY,
+  DEFAULT_TEAM_ACCESS_POLICY,
   type OrganizationAccessPolicy,
+  organizationAccessPolicyOverrides,
   type OrganizationAccessPolicyPatch,
   organizationAccessPolicySchema,
   resolveOrganizationAccessPolicy,
   resolveTeamAccessPolicy,
   type TeamAccessPolicy,
+  teamAccessPolicyOverrides,
   type TeamAccessPolicyPatch,
   teamAccessPolicySchema,
 } from "../../schemas/access-policy";
+import { recordAccessEvent } from "../access/record-event";
 
 /**
  * The access policies — read on every capability decision, written from the
@@ -43,31 +48,72 @@ export const getOrganizationAccessPolicy = async (
     return resolveOrganizationAccessPolicy(row?.accessPolicy);
   }, organizationAccessPolicyCacheKey(organizationId));
 
+/** What one change did to each setting it touched, for the journal. */
+const changedSettings = <T extends Record<string, unknown>>(
+  before: T,
+  after: T,
+): { setting: string; from: unknown; to: unknown }[] =>
+  Object.keys(after)
+    .filter((key) => JSON.stringify(before[key]) !== JSON.stringify(after[key]))
+    .map((key) => ({ setting: key, from: before[key], to: after[key] }));
+
+/**
+ * Apply an administrator's change. What is STORED is only what they set
+ * (`organizationAccessPolicyOverrides`), never the resolved policy: a default
+ * that changes in a later release then still reaches every organization that
+ * never touched that setting, instead of being frozen into its row the first
+ * time anyone saved anything.
+ *
+ * The journal entry commits with the policy; who may make the change is the
+ * caller's to decide (`policies.manage`).
+ */
 export const setOrganizationAccessPolicy = async (input: {
   organizationId: string;
   patch: OrganizationAccessPolicyPatch;
+  actorUserId: string;
 }): Promise<OrganizationAccessPolicy> => {
-  const current = await db.query.organizationSettings.findFirst({
-    columns: { accessPolicy: true },
-    where: { organizationId: input.organizationId },
-  });
-  const merged = organizationAccessPolicySchema.parse({
-    ...resolveOrganizationAccessPolicy(current?.accessPolicy),
-    ...input.patch,
-  });
-
-  await db
-    .insert(organizationSettings)
-    .values({ organizationId: input.organizationId, accessPolicy: merged })
-    .onConflictDoUpdate({
-      target: organizationSettings.organizationId,
-      set: { accessPolicy: merged },
+  const resolved = await db.transaction(async (tx) => {
+    const current = await tx.query.organizationSettings.findFirst({
+      columns: { accessPolicy: true },
+      where: { organizationId: input.organizationId },
     });
+    const overrides = {
+      ...organizationAccessPolicyOverrides(current?.accessPolicy),
+      ...input.patch,
+    };
+    // Refuses an invalid value rather than storing it: reads are forgiving,
+    // writes are not.
+    const after = organizationAccessPolicySchema.parse({
+      ...DEFAULT_ORGANIZATION_ACCESS_POLICY,
+      ...overrides,
+    });
+    const changes = changedSettings(
+      resolveOrganizationAccessPolicy(current?.accessPolicy),
+      after,
+    );
+    if (changes.length === 0) return after;
 
-  // After the write, never before: a reader racing the update must not be
+    await tx
+      .insert(organizationSettings)
+      .values({ organizationId: input.organizationId, accessPolicy: overrides })
+      .onConflictDoUpdate({
+        target: organizationSettings.organizationId,
+        set: { accessPolicy: overrides },
+      });
+    await recordAccessEvent({
+      executor: tx,
+      organizationId: input.organizationId,
+      actorUserId: input.actorUserId,
+      action: "organization_policy.updated",
+      metadata: { changes },
+    });
+    return after;
+  });
+
+  // After the commit, never before: a reader racing the update must not be
   // able to refill the cache with the old value.
   await redis.del(organizationAccessPolicyCacheKey(input.organizationId));
-  return merged;
+  return resolved;
 };
 
 export const getTeamAccessPolicy = async (
@@ -88,20 +134,53 @@ export const getTeamAccessPolicy = async (
  *
  * A team's policy is part of what its members' principals hold (the level
  * they get on its content), so changing it bumps the organization's access
- * version.
+ * version. Sparse, like the organization's: only what a lead set is stored.
  */
 export const setTeamAccessPolicy = async (input: {
   teamId: string;
   organizationId: string;
   patch: TeamAccessPolicyPatch;
+  actorUserId: string;
+  /** The team's name as it reads in the journal. */
+  teamName: string;
 }): Promise<TeamAccessPolicy> => {
-  const current = await getTeamAccessPolicy(input.teamId);
-  const merged = teamAccessPolicySchema.parse({ ...current, ...input.patch });
-  await db
-    .update(teamSettings)
-    .set({ accessPolicy: merged })
-    .where(eq(teamSettings.teamId, input.teamId));
-  await redis.del(teamAccessPolicyCacheKey(input.teamId));
-  await bumpAccessVersion(input.organizationId);
-  return merged;
+  const { resolved, changed } = await db.transaction(async (tx) => {
+    const current = await tx.query.teamSettings.findFirst({
+      columns: { accessPolicy: true },
+      where: { teamId: input.teamId },
+    });
+    const overrides = {
+      ...teamAccessPolicyOverrides(current?.accessPolicy),
+      ...input.patch,
+    };
+    const after = teamAccessPolicySchema.parse({
+      ...DEFAULT_TEAM_ACCESS_POLICY,
+      ...overrides,
+    });
+    const changes = changedSettings(
+      resolveTeamAccessPolicy(current?.accessPolicy),
+      after,
+    );
+    if (changes.length === 0) return { resolved: after, changed: false };
+
+    await tx
+      .update(teamSettings)
+      .set({ accessPolicy: overrides })
+      .where(eq(teamSettings.teamId, input.teamId));
+    await recordAccessEvent({
+      executor: tx,
+      organizationId: input.organizationId,
+      actorUserId: input.actorUserId,
+      action: "team_policy.updated",
+      principal: { type: "team", id: input.teamId },
+      metadata: { teamName: input.teamName, changes },
+    });
+    return { resolved: after, changed: true };
+  });
+
+  if (changed) {
+    await redis.del(teamAccessPolicyCacheKey(input.teamId));
+    await bumpAccessVersion(input.organizationId);
+  }
+  return resolved;
 };

@@ -13,6 +13,7 @@ import { z } from "zod";
 import { gateBuiltinWriteTool } from "../agents/shared/policy-tool-gate";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
 import { workflowWriteBackstop } from "../agents/shared/workflow-write-backstop";
+import { liftAccessRefusal } from "../lib/access-refusal";
 import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
 
 /**
@@ -76,6 +77,7 @@ export const createManageLinkTool = () =>
             linkId: input.linkId,
             teamId: ctx.teamId,
             organizationId: ctx.organizationId,
+            userId: ctx.userId,
           });
           const gate = await gateBuiltinWriteTool(ctx, {
             toolName: "manageLink",
@@ -108,6 +110,7 @@ export const createManageLinkTool = () =>
           recordId: fromRecordId,
           teamId: ctx.teamId,
           organizationId: ctx.organizationId,
+          userId: ctx.userId,
         });
 
         const fromRecord = await getCollectionRecord({
@@ -136,9 +139,12 @@ export const createManageLinkTool = () =>
         });
         return { ok: true, linkId: link.id };
       } catch (err) {
-        return toolError(
-          TOOL_ERROR_CODES.COLLECTION_QUERY_ERROR,
-          `manageLink ${input.action} failed: ${err instanceof Error ? err.message : String(err)}`,
+        return (
+          liftAccessRefusal(err) ??
+          toolError(
+            TOOL_ERROR_CODES.COLLECTION_QUERY_ERROR,
+            `manageLink ${input.action} failed: ${err instanceof Error ? err.message : String(err)}`,
+          )
         );
       }
     },

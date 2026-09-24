@@ -8,7 +8,6 @@ import { emailOTP, organization, twoFactor } from "better-auth/plugins";
 import db from "../db";
 import * as schema from "../db/schema";
 import { generateOtpEmail } from "../emails/generators";
-import { bootstrapTeamWithBotUser } from "../services/auth/bot-user";
 import { getUserLocaleByEmail } from "../services/auth/get-user-locale";
 import {
   findSignupInvitation,
@@ -18,9 +17,9 @@ import {
 import { seedStarterCollections } from "../services/collections/seed-starter-types";
 import { seedSystemOntology } from "../services/collections/seed-system-types";
 import { applyDocumentFieldTemplate } from "../services/field-definitions/apply-template";
-import { duplicateOrgDefsToTeam } from "../services/field-definitions/duplicate-org-to-team";
 import { getTeamLocale } from "../services/field-definitions/get-locale";
 import { sendOrganizationInvitationEmail } from "../services/invitations/send-invitation-email";
+import { maximumTeamsFor } from "../services/organization/team-limit";
 import { scrubWorkflowNotificationRecipient } from "../services/workflows/scrub-notification-recipient";
 import { accountSecurity } from "./auth-account-security";
 import { recordAuthEvent } from "./auth-audit";
@@ -28,12 +27,15 @@ import {
   INVITATION_EXPIRY_SECONDS,
   MAX_MEMBERS_PER_TEAM,
   OTP_EXPIRY_SECONDS,
+  PENDING_INVITATION_LIMIT,
 } from "./auth-constants";
 import { organizationTeamInvitationHooks } from "./auth-hooks";
 import {
+  journalAfterTheFact,
   onMemberLeftOrganization,
   onMemberLeftTeam,
   onMembershipChanged,
+  onTeamCreated,
   organizationMembershipAfterHooks,
 } from "./auth-membership";
 import { passkeyOptions } from "./auth-passkey";
@@ -268,6 +270,7 @@ const options = {
       // ownership proof, so disable that requirement.
       requireEmailVerificationOnInvitation: false,
       invitationExpiresIn: INVITATION_EXPIRY_SECONDS,
+      invitationLimit: PENDING_INVITATION_LIMIT,
       cancelPendingInvitationsOnReInvite: true,
       organizationHooks: {
         afterCreateOrganization: async (data) => {
@@ -291,20 +294,27 @@ const options = {
           });
         },
         afterCreateTeam: async (data) => {
-          await bootstrapTeamWithBotUser({
+          await onTeamCreated({
             teamId: data.team.id,
             organizationId: data.team.organizationId,
           });
-          // Duplicate the org-scope field definitions into the new
-          // team so the runtime reads always find a non-empty set.
-          await duplicateOrgDefsToTeam({
+          await journalAfterTheFact({
             organizationId: data.team.organizationId,
-            teamId: data.team.id,
+            actorUserId: data.user?.id ?? null,
+            action: "team.created",
+            principal: { type: "team", id: data.team.id },
+            metadata: { teamName: data.team.name },
           });
-          await onMembershipChanged(data.team.organizationId);
         },
         afterDeleteTeam: async (data) => {
           await onMembershipChanged(data.team.organizationId);
+          await journalAfterTheFact({
+            organizationId: data.team.organizationId,
+            actorUserId: data.user?.id ?? null,
+            action: "team.deleted",
+            principal: { type: "team", id: data.team.id },
+            metadata: { teamName: data.team.name },
+          });
         },
         // Who belongs where changed: every cached principal of the
         // organization is stale (`authz/load-principal.ts`).
@@ -355,16 +365,7 @@ const options = {
 
       teams: {
         enabled: true,
-        maximumTeams: async (data) => {
-          const settings = await db.query.organizationSettings.findFirst({
-            columns: { maxAgencies: true },
-            where: { organizationId: data.organizationId },
-          });
-          // No settings row (org predating `afterCreateOrganization`, or an
-          // insert that failed) must not silently cap the org at one team —
-          // fall back to the same default the column carries.
-          return settings?.maxAgencies ?? 10;
-        },
+        maximumTeams: async (data) => maximumTeamsFor(data.organizationId),
         maximumMembersPerTeam: MAX_MEMBERS_PER_TEAM,
         allowRemovingAllTeams: false,
       },

@@ -98,6 +98,10 @@ export const DEFAULT_TEAM_ACCESS_POLICY: TeamAccessPolicy = {
   memberContentLevel: "full",
 };
 
+/** A stored value's own entries; none when it is not an object at all. */
+const entriesOf = (stored: unknown): [string, unknown][] =>
+  typeof stored === "object" && stored !== null ? Object.entries(stored) : [];
+
 /**
  * Merge a stored value over the defaults, key by key. A key from an older
  * shape, or one an operator wrote by hand, falls back to its default instead
@@ -108,15 +112,48 @@ const resolveSparse = <T extends Record<string, unknown>>(
   defaults: T,
   stored: unknown,
 ): T => {
-  if (typeof stored !== "object" || stored === null) return defaults;
   let resolved = defaults;
-  for (const [key, value] of Object.entries(stored)) {
+  for (const [key, value] of entriesOf(stored)) {
     if (!(key in defaults)) continue;
     const parsed = schema.safeParse({ ...resolved, [key]: value });
     if (parsed.success) resolved = parsed.data;
   }
   return resolved;
 };
+
+/**
+ * The keys an administrator actually set, and set to a valid value — what the
+ * row stores. A key that no longer exists or no longer parses is dropped, so
+ * it falls back to its default like `resolveSparse` reads it.
+ */
+const overridesOf = <T extends Record<string, unknown>>(
+  schema: z.ZodType<T>,
+  defaults: T,
+  stored: unknown,
+): Partial<T> => {
+  const resolved = resolveSparse(schema, defaults, stored);
+  const overrides: Partial<T> = {};
+  for (const [key, value] of entriesOf(stored)) {
+    if (!(key in defaults)) continue;
+    if (JSON.stringify(resolved[key]) !== JSON.stringify(value)) continue;
+    Object.assign(overrides, { [key]: value });
+  }
+  return overrides;
+};
+
+export const organizationAccessPolicyOverrides = (
+  stored: unknown,
+): OrganizationAccessPolicyPatch =>
+  overridesOf(
+    organizationAccessPolicySchema,
+    DEFAULT_ORGANIZATION_ACCESS_POLICY,
+    stored,
+  );
+
+export const teamAccessPolicyOverrides = (
+  stored: unknown,
+): TeamAccessPolicyPatch =>
+  overridesOf(teamAccessPolicySchema, DEFAULT_TEAM_ACCESS_POLICY, stored);
 
 export const resolveOrganizationAccessPolicy = (
   stored: unknown,

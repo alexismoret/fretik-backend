@@ -12,6 +12,7 @@ import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { gateBuiltinWriteTool } from "../agents/shared/policy-tool-gate";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
+import { requireTurnDriveAction } from "../agents/shared/turn-access";
 import { workflowWriteBackstop } from "../agents/shared/workflow-write-backstop";
 import { maybePersistLargeOutput } from "../lib/persisted-output";
 import {
@@ -183,6 +184,22 @@ export const createManageDocumentTool = () =>
       const documentId = input.documentId ?? "";
 
       try {
+        // The rules of the Drive's own routes, for the person the turn acts
+        // for: writing a new document is adding to a folder, reading takes
+        // view, and changing or restoring one takes edit.
+        await requireTurnDriveAction(
+          ctx,
+          input.action === "create"
+            ? {
+                kind: "addDocument",
+                teamId: ctx.teamId,
+                folderId: input.folderId ?? null,
+              }
+            : input.action === "get" || input.action === "history"
+              ? { kind: "readDocument", documentId }
+              : { kind: "editDocument", documentId },
+        );
+
         if (input.action === "get") {
           const { document, content } = await getAuthoredContent({
             documentId,

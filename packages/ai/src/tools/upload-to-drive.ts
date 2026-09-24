@@ -9,6 +9,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import { gateBuiltinWriteTool } from "../agents/shared/policy-tool-gate";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
+import { requireTurnDriveAction } from "../agents/shared/turn-access";
 import { workflowWriteBackstop } from "../agents/shared/workflow-write-backstop";
 import { WORKSPACE_DIRS } from "../lib/conversation-storage";
 import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
@@ -173,6 +174,21 @@ export const createUploadToDriveTool = () =>
             "List folders with `listFolders` to get a valid id.",
           );
         }
+      }
+
+      // The rules of the Drive's own routes, for the person the turn acts
+      // for: saving is adding to the folder, and replacing a document's
+      // content is changing that document.
+      await requireTurnDriveAction(ctx, {
+        kind: "addDocument",
+        teamId: ctx.teamId,
+        folderId: parentFolderId ?? null,
+      });
+      if (replaceDocumentId) {
+        await requireTurnDriveAction(ctx, {
+          kind: "editDocument",
+          documentId: replaceDocumentId,
+        });
       }
 
       const workspacePaths = sources.filter(

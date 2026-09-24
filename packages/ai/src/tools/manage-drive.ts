@@ -1,3 +1,4 @@
+import type { DriveAction } from "@fretik/shared/authz/drive";
 import db from "@fretik/shared/db";
 import type { ToolApprovalSummaryField } from "@fretik/shared/db/schema";
 import { updateDocument } from "@fretik/shared/services/documents/update";
@@ -14,7 +15,9 @@ import {
   agentEventActor,
   getRuntimeContext,
 } from "../agents/shared/runtime-context";
+import { requireTurnDriveAction } from "../agents/shared/turn-access";
 import { workflowWriteBackstop } from "../agents/shared/workflow-write-backstop";
+import { liftAccessRefusal } from "../lib/access-refusal";
 import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
 
 /**
@@ -60,6 +63,45 @@ export const manageDriveInputSchema = z.object({
       "Destination folder id. For createFolder / moveFolder / moveDocument. Omit or null = Drive root.",
     ),
 });
+
+/**
+ * What an action takes, in the engine's terms — null when a field it needs is
+ * missing, which its own branch refuses below before anything is written.
+ */
+const driveActionOf = (
+  input: z.infer<typeof manageDriveInputSchema>,
+  teamId: string,
+): DriveAction | null => {
+  const parentFolderId = input.parentFolderId ?? null;
+  switch (input.action) {
+    case "createFolder":
+      return { kind: "createFolder", teamId, parentFolderId };
+    case "renameFolder":
+      return input.folderId
+        ? { kind: "renameFolder", folderId: input.folderId }
+        : null;
+    case "moveFolder":
+      return input.folderId
+        ? { kind: "moveFolder", folderId: input.folderId, parentFolderId }
+        : null;
+    case "deleteFolder":
+      return input.folderId
+        ? { kind: "deleteFolder", folderId: input.folderId }
+        : null;
+    case "renameDocument":
+      return input.documentId
+        ? { kind: "renameDocument", documentId: input.documentId }
+        : null;
+    case "moveDocument":
+      return input.documentId
+        ? {
+            kind: "moveDocument",
+            documentId: input.documentId,
+            folderId: parentFolderId,
+          }
+        : null;
+  }
+};
 
 type ResolvedFolder = { id: string; name: string } | null;
 
@@ -155,6 +197,13 @@ export const createManageDriveTool = () =>
               "List folders with `listFolders` to get a valid id.",
             );
           }
+        }
+
+        // The person the turn acts for may do this — the rules of the Drive's
+        // own routes — before a card could ask anyone to approve it.
+        const driveAction = driveActionOf(input, ctx.teamId);
+        if (driveAction !== null) {
+          await requireTurnDriveAction(ctx, driveAction);
         }
 
         // Tool-permission gate: `blocked` → error, `approval` → pause with the
@@ -334,9 +383,12 @@ export const createManageDriveTool = () =>
           ),
         };
       } catch (err) {
-        return toolError(
-          TOOL_ERROR_CODES.DRIVE_ERROR,
-          `manageDrive ${input.action} failed: ${err instanceof Error ? err.message : String(err)}`,
+        return (
+          liftAccessRefusal(err) ??
+          toolError(
+            TOOL_ERROR_CODES.DRIVE_ERROR,
+            `manageDrive ${input.action} failed: ${err instanceof Error ? err.message : String(err)}`,
+          )
         );
       }
     },

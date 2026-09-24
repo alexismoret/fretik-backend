@@ -342,6 +342,7 @@ describe("who may publish — team and visibility, in the same query", () => {
     await setOrganizationAccessPolicy({
       organizationId: fx.organizationId,
       patch: { publicLinks: "nobody" },
+      actorUserId: fx.userIds[0],
     });
     try {
       const failure = await rejection(publish(id));
@@ -354,6 +355,7 @@ describe("who may publish — team and visibility, in the same query", () => {
       await setOrganizationAccessPolicy({
         organizationId: fx.organizationId,
         patch: { publicLinks: "members" },
+        actorUserId: fx.userIds[0],
       });
     }
   });

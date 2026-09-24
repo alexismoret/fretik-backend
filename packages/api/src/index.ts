@@ -32,6 +32,7 @@ import { getConnInfo } from "hono/bun";
 import { cors } from "hono/cors";
 
 import packagejson from "../package.json";
+import { accessRoutes } from "./handlers/access";
 import { accountRoutes } from "./handlers/account";
 import { aiMemoryRoutes } from "./handlers/ai-memory";
 import { approvalsRoutes } from "./handlers/approvals";
@@ -53,6 +54,7 @@ import { folderRoutes } from "./handlers/folders";
 import { invitationRoutes } from "./handlers/invitations";
 import { linkTypeRoutes } from "./handlers/link-types";
 import { linkRoutes } from "./handlers/links";
+import { memberRoutes } from "./handlers/members";
 import { organizationRoutes } from "./handlers/organization";
 import { pageRoutes } from "./handlers/pages";
 import { pinRoutes } from "./handlers/pins";
@@ -62,6 +64,7 @@ import { signupAccessRoutes } from "./handlers/signup-access";
 import { skillsRoutes } from "./handlers/skills";
 import { superAdminRoutes } from "./handlers/super-admins";
 import { teamSettingsRoutes } from "./handlers/team-settings";
+import { teamRoutes } from "./handlers/teams";
 import { toolPoliciesRoutes } from "./handlers/tool-policies";
 import { workflowRoutes } from "./handlers/workflows";
 
@@ -124,6 +127,10 @@ app.get("/health", (c) => c.json({ status: "ok" }, 200));
 // Routes
 app.route("/account", accountRoutes);
 app.route("/organization", organizationRoutes);
+// Who may do what: the caller's decisions, the policy, the roles grid.
+app.route("/access", accessRoutes);
+app.route("/members", memberRoutes);
+app.route("/teams", teamRoutes);
 app.route("/signup-access", signupAccessRoutes);
 app.route("/super-admins", superAdminRoutes);
 app.route("/document", documentRoutes);

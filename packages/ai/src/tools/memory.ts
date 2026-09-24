@@ -19,6 +19,8 @@ import {
   getRuntimeContext,
   type AgentRuntimeContext,
 } from "../agents/shared/runtime-context";
+import { requireTurnCapability } from "../agents/shared/turn-access";
+import { liftAccessRefusal } from "../lib/access-refusal";
 import { TOOL_ERROR_CODES } from "../lib/tool-error-codes";
 
 /**
@@ -146,6 +148,17 @@ const requireFieldsForCommand = (
   }
 };
 
+/** Whether a write command touches the team's namespace. */
+const writesTeamNote = (input: MemoryInput): boolean => {
+  const paths =
+    input.command === "rename"
+      ? [input.old_path, input.new_path]
+      : [input.path];
+  return paths.some(
+    (path) => path !== undefined && parseMemoryPath(path).scope === "team",
+  );
+};
+
 /**
  * Lift a thrown `HTTPException` (from the shared services) into the
  * `{error, code}` envelope the agent reads. Falls back to a
@@ -222,6 +235,13 @@ export const createMemoryTool = () =>
       }
 
       try {
+        // A team note is the team's context for the assistant: writing one
+        // takes `team.context.edit`, as it does from the settings. A personal
+        // note is the user's own.
+        if (input.command !== "view" && writesTeamNote(input)) {
+          await requireTurnCapability(ctx, "team.context.edit");
+        }
+
         switch (input.command) {
           case "view": {
             // Schema is `z.array(...).length(2)` (see view_range note),
@@ -308,7 +328,7 @@ export const createMemoryTool = () =>
           }
         }
       } catch (err) {
-        return liftError(err);
+        return liftAccessRefusal(err) ?? liftError(err);
       }
     },
   });

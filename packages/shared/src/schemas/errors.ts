@@ -101,6 +101,16 @@ export const ERROR_CODES = {
   /** A private workflow's owner left its team: it acts as them, so it stops. */
   WORKFLOW_OWNER_GONE: "WORKFLOW_OWNER_GONE",
 
+  // Organization structure: teams, members, invitations
+  /** 409 — the organization already has as many teams as it may. */
+  TEAM_LIMIT_REACHED: "TEAM_LIMIT_REACHED",
+  /** 409 — the team has no seat left for one more person. */
+  TEAM_MEMBER_LIMIT_REACHED: "TEAM_MEMBER_LIMIT_REACHED",
+  /** 409 — the organization has as many pending invitations as it may. */
+  INVITATION_LIMIT_REACHED: "INVITATION_LIMIT_REACHED",
+  /** 409 — the change would leave the organization without an owner. */
+  LAST_OWNER: "LAST_OWNER",
+
   /**
    * Refused by the access engine, with the reason and who to ask in the
    * body's `access` field (`AccessDenial`). The client explains it and, when

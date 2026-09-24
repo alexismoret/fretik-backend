@@ -120,6 +120,7 @@ linkRoutes.openapi(createRouteDef, async (c) => {
     recordId: body.fromRecordId,
     teamId: team.id,
     organizationId: team.organizationId,
+    userId: c.get("user").id,
   });
   const created = await createLink({
     organizationId: team.organizationId,
@@ -143,6 +144,7 @@ linkRoutes.openapi(deleteRouteDef, async (c) => {
     linkId: id,
     teamId: team.id,
     organizationId: team.organizationId,
+    userId: c.get("user").id,
   });
   const invalidated = await invalidateLink({
     id,

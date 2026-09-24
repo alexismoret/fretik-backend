@@ -1,4 +1,9 @@
-import type { TeamRole } from "../schemas/access";
+import type {
+  CapabilityDecision,
+  CapabilityKey,
+  RequiredRole,
+  TeamRole,
+} from "../schemas/access";
 import type {
   OrganizationAccessPolicy,
   PolicyAudience,
@@ -21,23 +26,18 @@ import type { Principal, UserPrincipal } from "./principal";
  * them nothing on content — that is the resource rules' business.
  */
 
-/** The role a refused capability needs, for the refusal's wording. */
-export type RequiredRole = "owner" | "admin" | "lead" | "member";
-
-export type CapabilityDecision =
-  | { readonly allowed: true }
-  | {
-      readonly allowed: false;
-      readonly reason: "ROLE_REQUIRED" | "POLICY_DISABLED" | "GUEST_RESTRICTED";
-      /** The least role that would be allowed, when one would. */
-      readonly requiredRole: RequiredRole | null;
-    };
+export type { CapabilityDecision, RequiredRole };
 
 /** Where a capability applies: the whole organization, or one team. */
 export type CapabilityScope = "organization" | "team";
 
 interface CapabilityDefinition {
   readonly scope: CapabilityScope;
+  /**
+   * The organization policy setting that moves this capability, when one
+   * does — what the "Roles and permissions" grid links to.
+   */
+  readonly policy?: keyof OrganizationAccessPolicy;
   /** Decides, given the person's standing. */
   readonly decide: (standing: Standing) => CapabilityDecision;
 }
@@ -150,6 +150,7 @@ export const CAPABILITIES = {
   /** Create a team. */
   "teams.create": {
     scope: "organization",
+    policy: "teamCreation",
     decide: (standing) => {
       if (standing.principal.isGuest) return GUEST_REFUSED;
       if (standing.principal.isOrgAdmin) return ALLOWED;
@@ -161,11 +162,13 @@ export const CAPABILITIES = {
   /** Share with the whole organization at once. */
   "share.organization": {
     scope: "organization",
+    policy: "organizationSharing",
     decide: organizationSwitch((policy) => policy.organizationSharing),
   },
   /** Share with people or teams outside one's own team. */
   "share.cross_team": {
     scope: "organization",
+    policy: "crossTeamSharing",
     decide: organizationSwitch((policy) => policy.crossTeamSharing),
   },
 
@@ -181,6 +184,7 @@ export const CAPABILITIES = {
   /** Invite people into the organization, into this team. */
   "members.invite": {
     scope: "team",
+    policy: "memberInvitations",
     decide: teamAudience(
       (policy) => (policy.memberInvitations === "leads" ? "leads" : "admins"),
       "admins",
@@ -189,9 +193,14 @@ export const CAPABILITIES = {
   /** Invite a guest from outside onto something of this team. */
   "guests.invite": {
     scope: "team",
+    policy: "guestInvitations",
     decide: teamAudience((policy) => policy.guestInvitations, "admins"),
   },
-  /** Create content in the team: files, chats, pages, workflows. */
+  /**
+   * Contribute to the team's content: add files, pages, workflows, records
+   * and collections, and change the ones this role may edit. A viewer reads —
+   * and chats, which is not content of the team's.
+   */
   "team.content.create": {
     scope: "team",
     decide: (standing) => {
@@ -205,26 +214,31 @@ export const CAPABILITIES = {
   /** Create a project in the team. */
   "projects.create": {
     scope: "team",
+    policy: "projectCreation",
     decide: teamAudience((policy) => policy.projectCreation, "members"),
   },
   /** The team's instructions, files and memory for the assistant. */
   "team.context.edit": {
     scope: "team",
+    policy: "teamContext",
     decide: teamAudience((policy) => policy.teamContext, "members"),
   },
   /** Connect, change and remove the team's shared apps. */
   "team.connections.manage": {
     scope: "team",
+    policy: "teamConnections",
     decide: teamAudience((policy) => policy.teamConnections, "members"),
   },
   /** Let a workflow act without asking for approvals. */
   "team.workflows.autonomous": {
     scope: "team",
+    policy: "autonomousWorkflows",
     decide: teamAudience((policy) => policy.autonomousWorkflows, "members"),
   },
   /** Publish a public link: a page on the web, a public form. */
   "share.public_link": {
     scope: "team",
+    policy: "publicLinks",
     decide: (standing) => {
       if (standing.principal.isGuest) return GUEST_REFUSED;
       if (standing.policy.publicLinks === "nobody") {
@@ -236,14 +250,22 @@ export const CAPABILITIES = {
       )(standing);
     },
   },
-} as const satisfies Record<string, CapabilityDefinition>;
+} as const satisfies Record<CapabilityKey, CapabilityDefinition>;
 
-export type Capability = keyof typeof CAPABILITIES;
+export type Capability = CapabilityKey;
 
-export const CAPABILITY_NAMES = Object.keys(CAPABILITIES) as Capability[];
+export { CAPABILITY_KEYS as CAPABILITY_NAMES } from "../schemas/access";
 
 export const capabilityScope = (capability: Capability): CapabilityScope =>
   CAPABILITIES[capability].scope;
+
+/** The policy setting that moves a capability, or null when none does. */
+export const capabilityPolicy = (
+  capability: Capability,
+): keyof OrganizationAccessPolicy | null => {
+  const definition: CapabilityDefinition = CAPABILITIES[capability];
+  return definition.policy ?? null;
+};
 
 /**
  * Decide one capability. `teamId` is required for a team capability and

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { userHasCapability } from "../../authz/gates";
 import type { BulkOperation, BulkOperationParams } from "../../db/schema";
 import { MAX_BULK_ITEMS } from "../../lib/db-bulk";
 import { audienceSchema } from "../../schemas/collection-sharing";
@@ -93,6 +94,9 @@ import type { ExecContext, SandboxExecResponse } from "./types";
  * generic approval gate (a pending `record_write` the user reviews); schema
  * changes are blocked for any run. Plain chat + `autonomous` write directly.
  */
+/** The ops that change nothing. */
+const READ_OPS = new Set(["records.query", "sync.list", "sync.preview"]);
+
 // Ops executed through the sandbox exec seam attribute as `connector`, keeping
 // the driving user + conversation for provenance.
 const execActor = (ctx: ExecContext): EventActor => ({
@@ -107,6 +111,24 @@ export const dispatchCollections = async (
   rawArgs: Record<string, unknown>,
 ): Promise<SandboxExecResponse> => {
   const actor = execActor(ctx);
+  // A viewer reads. Every op but the reads changes the team's records, its
+  // schema or what feeds it, which takes contributing to the team — the same
+  // rule the domain tools and the API apply (`team.content.create`).
+  if (
+    !READ_OPS.has(op) &&
+    !(await userHasCapability({
+      userId: ctx.userId,
+      organizationId: ctx.organizationId,
+      capability: "team.content.create",
+      teamId: ctx.teamId,
+    }))
+  ) {
+    return {
+      status: "error",
+      message:
+        "ACCESS_DENIED: the person this runs for can read this team's collections but not change them. Tell the user; do not retry.",
+    };
+  }
   // Resolve the run's write-autonomy once: `null` = plain chat (direct writes),
   // else a workflow run whose mode gates record writes + schema changes.
   const autonomy =

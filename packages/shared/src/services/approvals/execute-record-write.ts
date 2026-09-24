@@ -13,6 +13,10 @@ import { bulkUpdateCollectionRecords } from "../collection-records/bulk-update";
 import type { EventActor } from "../domain-events/emit";
 import { markConsumed } from "./complete";
 import { isRecordWritePayload } from "./payload-guards";
+import {
+  REQUESTER_CANNOT_CONTRIBUTE,
+  requesterMayContribute,
+} from "./requester-access";
 
 /**
  * Execute a granted `record_write` approval — the user-selected subset of one
@@ -60,6 +64,16 @@ export const executeRecordWriteApproval = async (params: {
   items.forEach((item, index) => {
     if (selected.has(index)) chosen.push({ index, item });
   });
+
+  if (!(await requesterMayContribute(params.approval))) {
+    const refused: ToolApprovalRecordResult[] = items.map((_, index) =>
+      selected.has(index)
+        ? { ok: false, error: REQUESTER_CANNOT_CONTRIBUTE }
+        : { skipped: true },
+    );
+    await markConsumed(params.approval.id, refused);
+    return refused;
+  }
 
   // Attribute like the direct collections SDK path (execActor in sandbox/collections.ts).
   const actor: EventActor = {

@@ -1,3 +1,4 @@
+import { accessRoutes } from "../../src/handlers/access";
 import { accountRoutes } from "../../src/handlers/account";
 import { aiMemoryRoutes } from "../../src/handlers/ai-memory";
 import { approvalsRoutes } from "../../src/handlers/approvals";
@@ -19,6 +20,7 @@ import { folderRoutes } from "../../src/handlers/folders";
 import { invitationRoutes } from "../../src/handlers/invitations";
 import { linkTypeRoutes } from "../../src/handlers/link-types";
 import { linkRoutes } from "../../src/handlers/links";
+import { memberRoutes } from "../../src/handlers/members";
 import { organizationRoutes } from "../../src/handlers/organization";
 import { pageRoutes } from "../../src/handlers/pages";
 import { pinRoutes } from "../../src/handlers/pins";
@@ -28,6 +30,7 @@ import { signupAccessRoutes } from "../../src/handlers/signup-access";
 import { skillsRoutes } from "../../src/handlers/skills";
 import { superAdminRoutes } from "../../src/handlers/super-admins";
 import { teamSettingsRoutes } from "../../src/handlers/team-settings";
+import { teamRoutes } from "../../src/handlers/teams";
 import { toolPoliciesRoutes } from "../../src/handlers/tool-policies";
 import { workflowRoutes } from "../../src/handlers/workflows";
 
@@ -57,6 +60,7 @@ export interface Probeable {
 }
 
 export const MOUNTED_ROUTERS: Record<string, Probeable> = {
+  "/access": accessRoutes,
   "/account": accountRoutes,
   "/ai-memory": aiMemoryRoutes,
   "/approvals": approvalsRoutes,
@@ -77,6 +81,7 @@ export const MOUNTED_ROUTERS: Record<string, Probeable> = {
   "/invitations": invitationRoutes,
   "/link-types": linkTypeRoutes,
   "/links": linkRoutes,
+  "/members": memberRoutes,
   "/organization": organizationRoutes,
   "/p": publicPageRoutes,
   "/pages": pageRoutes,
@@ -86,6 +91,7 @@ export const MOUNTED_ROUTERS: Record<string, Probeable> = {
   "/skills": skillsRoutes,
   "/super-admins": superAdminRoutes,
   "/team-settings": teamSettingsRoutes,
+  "/teams": teamRoutes,
   "/tool-policies": toolPoliciesRoutes,
   "/webhooks": nangoWebhookRoutes,
   "/workflows": workflowRoutes,

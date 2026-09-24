@@ -310,6 +310,7 @@ fieldDefinitionRoutes.openapi(createRouteDef, async (c) => {
     collectionId,
     teamId: team.id,
     organizationId: team.organizationId,
+    userId: c.get("user").id,
   });
 
   const created = await createFieldDefinition({
@@ -407,6 +408,7 @@ fieldDefinitionRoutes.openapi(checkFormulaRoute, async (c) => {
     collectionId,
     teamId: team.id,
     organizationId: team.organizationId,
+    userId: c.get("user").id,
   });
 
   const result = await checkFormula({

@@ -24,9 +24,10 @@ export interface OrganizationInvitationEmailParams {
  * Render and send an organization invitation email.
  *
  * Extracted from the Better Auth `sendInvitationEmail` callback because the
- * team-invitation path (`invite-member-to-team.ts`) writes its own `invitation`
- * row and therefore has to send its own email: two copies of "which locale,
- * which template, which subject" would drift the moment either is touched.
+ * other invitation paths (`invite-to-team.ts`, the team hook in
+ * `lib/auth-hooks.ts`) write their own `invitation` row and therefore send
+ * their own email: two copies of "which locale, which template, which
+ * subject" would drift the moment either is touched.
  *
  * Localized to the inviting TEAM's language — the invitee usually has no
  * account yet, so a per-user language isn't available (falls back to `en` for

@@ -2,6 +2,9 @@ import { APIError, createAuthMiddleware } from "better-auth/api";
 import { z } from "zod";
 import { bumpAccessVersion } from "../authz/load-principal";
 import db from "../db";
+import { recordAccessEvent } from "../services/access/record-event";
+import { bootstrapTeamWithBotUser } from "../services/auth/bot-user";
+import { duplicateOrgDefsToTeam } from "../services/field-definitions/duplicate-org-to-team";
 import { pauseWorkflowsOfDepartedMember } from "../services/workflows/owner-presence";
 import { scrubWorkflowNotificationRecipient } from "../services/workflows/scrub-notification-recipient";
 import {
@@ -34,6 +37,17 @@ const bestEffort = async (label: string, work: () => Promise<unknown>) => {
   }
 };
 
+/**
+ * The journal entry for a change one of Better Auth's own endpoints made. It
+ * follows the change rather than committing with it, so it is best-effort
+ * like the rest of this file: the change stands either way.
+ */
+export const journalAfterTheFact = async (
+  entry: Parameters<typeof recordAccessEvent>[0],
+): Promise<void> => {
+  await bestEffort("access journal", () => recordAccessEvent(entry));
+};
+
 /** Anything changed who belongs where in the organization. */
 export const onMembershipChanged = async (
   organizationId: string,
@@ -41,6 +55,24 @@ export const onMembershipChanged = async (
   await bestEffort("access version bump", () =>
     bumpAccessVersion(organizationId),
   );
+};
+
+/**
+ * A team was created — through Better Auth's endpoint (its `afterCreateTeam`
+ * hook) or ours (`services/team/create.ts`, which writes through the
+ * adapter and so fires no hook). NOT best-effort, unlike the rest of this
+ * file: a team without its agent user or its field definitions breaks
+ * invariants every read of the team relies on, so a failure here must surface.
+ */
+export const onTeamCreated = async (input: {
+  teamId: string;
+  organizationId: string;
+}): Promise<void> => {
+  await bootstrapTeamWithBotUser(input);
+  // The runtime reads always expect the org-scope field definitions to have
+  // been duplicated into the team.
+  await duplicateOrgDefsToTeam(input);
+  await onMembershipChanged(input.organizationId);
 };
 
 /** A person left the organization — removed, or of their own accord. */

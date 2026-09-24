@@ -72,12 +72,18 @@ export const ORGANIZATION_ROLES = [
 export type OrganizationRole = (typeof ORGANIZATION_ROLES)[number];
 export const organizationRoleSchema = z.enum(ORGANIZATION_ROLES);
 
-/** The roles a person can be given from the members page. */
+/**
+ * The roles a person can be given from the members page, or invited with.
+ * `owner` moves only by a transfer of ownership; `guest` is not a role one is
+ * moved into, it is how someone from outside arrives, on the items shared
+ * with them.
+ */
 export const ASSIGNABLE_ORGANIZATION_ROLES = [
   "admin",
   "member",
-  "guest",
 ] as const satisfies readonly OrganizationRole[];
+export type AssignableOrganizationRole =
+  (typeof ASSIGNABLE_ORGANIZATION_ROLES)[number];
 export const assignableOrganizationRoleSchema = z.enum(
   ASSIGNABLE_ORGANIZATION_ROLES,
 );
@@ -90,6 +96,86 @@ export const ACCESS_REQUEST_STATUSES = [
 ] as const;
 export type AccessRequestStatus = (typeof ACCESS_REQUEST_STATUSES)[number];
 export const accessRequestStatusSchema = z.enum(ACCESS_REQUEST_STATUSES);
+
+/**
+ * Every capability, by name — what a person may do that is not about ONE
+ * resource. The catalog that DECIDES each one is `authz/capabilities.ts`,
+ * which must implement exactly these (it is typed against this tuple), and
+ * the client receives decisions keyed by them (`GET /access/me`).
+ */
+export const CAPABILITY_KEYS = [
+  "organization.manage",
+  "members.manage",
+  "policies.manage",
+  "audit.read",
+  "requests.review",
+  "organization.templates",
+  "directory.read",
+  "teams.create",
+  "share.organization",
+  "share.cross_team",
+  "team.manage",
+  "team.members.manage",
+  "team.settings.manage",
+  "team.memory.manage",
+  "members.invite",
+  "guests.invite",
+  "team.content.create",
+  "projects.create",
+  "team.context.edit",
+  "team.connections.manage",
+  "team.workflows.autonomous",
+  "share.public_link",
+] as const;
+export type CapabilityKey = (typeof CAPABILITY_KEYS)[number];
+export const capabilityKeySchema = z.enum(CAPABILITY_KEYS);
+
+/** The role a refused capability needs, for the refusal's wording. */
+export const REQUIRED_ROLES = ["owner", "admin", "lead", "member"] as const;
+export type RequiredRole = (typeof REQUIRED_ROLES)[number];
+
+/**
+ * A capability decided for one person: allowed, or refused with the reason
+ * and the least role that would be allowed (when one would).
+ */
+export const capabilityDecisionSchema = z
+  .discriminatedUnion("allowed", [
+    z.object({ allowed: z.literal(true) }),
+    z.object({
+      allowed: z.literal(false),
+      reason: z.enum(["ROLE_REQUIRED", "POLICY_DISABLED", "GUEST_RESTRICTED"]),
+      requiredRole: z.enum(REQUIRED_ROLES).nullable(),
+    }),
+  ])
+  .openapi("CapabilityDecision");
+export type CapabilityDecision = z.infer<typeof capabilityDecisionSchema>;
+
+/**
+ * What the access journal records (`access_audit_log.action`): each change to
+ * who may do what. The journal is for administrators; it never holds content.
+ */
+export const ACCESS_AUDIT_ACTIONS = [
+  "member.role_changed",
+  "member.removed",
+  "invitation.sent",
+  "invitation.canceled",
+  "team.created",
+  "team.renamed",
+  "team.deleted",
+  "team_member.added",
+  "team_member.removed",
+  "team_role.changed",
+  "organization_policy.updated",
+  "team_policy.updated",
+  "grant.created",
+  "grant.updated",
+  "grant.removed",
+  "restriction.changed",
+  "owner.transferred",
+  "request.decided",
+] as const;
+export type AccessAuditAction = (typeof ACCESS_AUDIT_ACTIONS)[number];
+export const accessAuditActionSchema = z.enum(ACCESS_AUDIT_ACTIONS);
 
 /**
  * Why an action was refused. The client translates each one into a sentence

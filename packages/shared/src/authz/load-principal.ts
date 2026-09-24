@@ -115,7 +115,7 @@ const ROLE_STRENGTH: readonly OrganizationRole[] = [
   "bot",
   "guest",
 ];
-const parseOrganizationRole = (stored: string): OrganizationRole => {
+export const parseOrganizationRole = (stored: string): OrganizationRole => {
   const roles = stored
     .split(",")
     .map((role) => role.trim())

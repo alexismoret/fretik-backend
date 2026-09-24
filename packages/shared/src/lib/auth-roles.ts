@@ -10,6 +10,9 @@ import { redis } from "./redis";
  * still theirs", and is dropped explicitly on removal.
  */
 
+/** Cache key for the team row `authMiddleware` reads for the active team. */
+export const teamRowCacheKey = (teamId: string): string => `team:${teamId}`;
+
 /**
  * Cache key for the team-membership lookup `authMiddleware` runs on every
  * request. Nested under `team:{teamId}:` like the other team-scoped caches, so

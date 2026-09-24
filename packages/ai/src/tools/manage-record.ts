@@ -8,7 +8,10 @@ import { deleteCollectionRecord } from "@fretik/shared/services/collection-recor
 import { setRecordStatus } from "@fretik/shared/services/collection-records/set-status";
 import { getRecordSnapshots } from "@fretik/shared/services/collection-records/snapshot-batch";
 import { setRecordData } from "@fretik/shared/services/collection-records/update";
-import { assertCanWriteRecord } from "@fretik/shared/services/collection-sharing/write-access";
+import {
+  assertCanWriteRecord,
+  assertCanWriteType,
+} from "@fretik/shared/services/collection-sharing/write-access";
 import { resolveCollectionId } from "@fretik/shared/services/collections/resolve";
 import type {
   ExecContext,
@@ -23,6 +26,7 @@ import {
   getRuntimeContext,
 } from "../agents/shared/runtime-context";
 import { workflowWriteBackstop } from "../agents/shared/workflow-write-backstop";
+import { liftAccessRefusal } from "../lib/access-refusal";
 import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
 
 /**
@@ -232,6 +236,14 @@ export const createManageRecordTool = () =>
               "Check the available type keys in <team_collections>.",
             );
           }
+          // A collection this team may write records into, by someone who
+          // contributes to it — asked before any card could open.
+          await assertCanWriteType({
+            collectionId,
+            teamId: ctx.teamId,
+            organizationId: ctx.organizationId,
+            userId: ctx.userId,
+          });
           // Plain data write → rich `record_write` card (single item), same as
           // the Python bulk path. The gate writes directly at policy `auto`.
           const execCtx = toExecCtx(ctx);
@@ -335,6 +347,7 @@ export const createManageRecordTool = () =>
           recordId: input.recordId,
           teamId: ctx.teamId,
           organizationId: ctx.organizationId,
+          userId: ctx.userId,
         });
 
         if (input.action === "update") {
@@ -509,9 +522,12 @@ export const createManageRecordTool = () =>
         });
         return { ok: true, record: serializeRecord(record) };
       } catch (err) {
-        return toolError(
-          TOOL_ERROR_CODES.COLLECTION_QUERY_ERROR,
-          `manageRecord ${input.action} failed: ${errMsg(err)}`,
+        return (
+          liftAccessRefusal(err) ??
+          toolError(
+            TOOL_ERROR_CODES.COLLECTION_QUERY_ERROR,
+            `manageRecord ${input.action} failed: ${errMsg(err)}`,
+          )
         );
       }
     },

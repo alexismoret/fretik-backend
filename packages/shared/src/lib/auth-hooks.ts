@@ -7,14 +7,16 @@ import { getOrgAdapter } from "better-auth/plugins/organization";
 import { z } from "zod";
 
 import { sendOrganizationInvitationEmail } from "../services/invitations/send-invitation-email";
-import {
-  INVITATION_EXPIRY_SECONDS,
-  MAX_MEMBERS_PER_TEAM,
-} from "./auth-constants";
+import { MAX_MEMBERS_PER_TEAM, ORG_ADAPTER_OPTIONS } from "./auth-constants";
 import { onMembershipChanged } from "./auth-membership";
 
 /**
  * Better Auth request hooks.
+ *
+ * The app invites through its own door (`POST /teams/{id}/invitations`,
+ * `services/invitations/invite-to-team.ts`), decided by the organization's
+ * policy rather than by organization roles. This hook keeps Better Auth's
+ * endpoint correct for any client that still calls it.
  *
  * One job today: make "invite an existing organization member to one more
  * team" work. The organization plugin answers that request with
@@ -56,24 +58,6 @@ import { onMembershipChanged } from "./auth-membership";
  * organization, so they are not a member of this one, and joining it is
  * exactly the org-level invitation Better Auth already handles end to end.
  */
-
-/**
- * The plugin options the adapter reads. `invitationExpiresIn` is the only one
- * that changes a write (`createInvitation` stamps `expiresAt` from it), so it
- * comes from the same constant that configures the plugin in `auth.ts` rather
- * than being restated here.
- */
-const ORG_ADAPTER_OPTIONS: {
-  // Annotated rather than inferred: the adapter's return type branches on
-  // `O["teams"] extends { enabled: true }`, and a bare object literal widens
-  // `enabled` to `boolean` — which silently drops `teamId` off every
-  // invitation it hands back.
-  teams: { enabled: true };
-  invitationExpiresIn: number;
-} = {
-  teams: { enabled: true },
-  invitationExpiresIn: INVITATION_EXPIRY_SECONDS,
-};
 
 /**
  * A team invitation, and nothing else. A body with no `teamId`, or with the

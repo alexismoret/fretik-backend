@@ -332,7 +332,13 @@ describe("invalidating an edge", () => {
     });
 
     expect(
-      await statusOf(assertCanWriteLink({ linkId: theirs.id, ...viewer() })),
+      await statusOf(
+        assertCanWriteLink({
+          linkId: theirs.id,
+          ...viewer(),
+          userId: fx.userIds[0],
+        }),
+      ),
     ).toBe(403);
     expect(
       await statusOf(
@@ -340,6 +346,7 @@ describe("invalidating an edge", () => {
           linkId: theirs.id,
           teamId: foreign.teamId,
           organizationId: foreign.organizationId,
+          userId: foreign.userIds[0],
         }),
       ),
     ).toBe(404);

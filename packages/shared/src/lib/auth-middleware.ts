@@ -7,6 +7,7 @@ import { auth } from "./auth";
 import {
   TEAM_MEMBERSHIP_CACHE_TTL,
   teamMembershipCacheKey,
+  teamRowCacheKey,
 } from "./auth-roles";
 import { selectOrCache } from "./redis";
 
@@ -92,7 +93,7 @@ export const authMiddleware = createMiddleware<HonoLoggedAppType>(
           db.query.team.findFirst({
             where: { id: activeTeamId },
           }),
-        `team:${activeTeamId}`,
+        teamRowCacheKey(activeTeamId),
       );
 
       // The session keeps its `activeTeamId` when the active organization

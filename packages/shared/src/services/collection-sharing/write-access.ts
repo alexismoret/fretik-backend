@@ -21,6 +21,12 @@ import { forbidden, notFound, throwHttpError } from "../../lib/errors";
  *     that record.
  * Anything cross-organization is `404` (never disclosed as existing).
  *
+ * And the PERSON behind the write must contribute to the acting team: its
+ * leads and members do, a viewer reads (`team.content.create`). Every check
+ * below takes `userId` for that — undefined only when no person is behind the
+ * write (a team workflow acting as the team), which the team itself vouches
+ * for.
+ *
  * STRUCTURE is not data. A write grant opens a type's RECORDS, never its shape:
  * renaming, disabling or deleting the type, and adding or changing its fields,
  * stay with the team that owns it (`assertCanManageType`,
@@ -28,6 +34,21 @@ import { forbidden, notFound, throwHttpError } from "../../lib/errors";
  * every team's records, so changing the type itself is an org admin's call —
  * deleting one cascades the records of teams that never agreed to it.
  */
+
+/** The person may contribute to the acting team's content: not a viewer. */
+const requireContributor = async (input: {
+  userId: string | undefined;
+  teamId: string;
+  organizationId: string;
+}): Promise<void> => {
+  if (input.userId === undefined) return;
+  await requireUserCapability({
+    userId: input.userId,
+    organizationId: input.organizationId,
+    capability: "team.content.create",
+    teamId: input.teamId,
+  });
+};
 
 /** A `write` type grant to `teamId` (team-scoped or org-wide) exists. */
 const hasTypeWriteGrant = async (input: {
@@ -87,8 +108,10 @@ export const assertCanWriteType = async (input: {
   collectionId: string;
   teamId: string;
   organizationId: string;
+  userId: string | undefined;
   tx?: Executor;
 }): Promise<void> => {
+  await requireContributor(input);
   const exec = input.tx ?? db;
   const type = await exec.query.collections.findFirst({
     columns: { teamId: true, organizationId: true },
@@ -120,8 +143,10 @@ export const assertCanWriteRecord = async (input: {
   recordId: string;
   teamId: string;
   organizationId: string;
+  userId: string | undefined;
   tx?: Executor;
 }): Promise<void> => {
+  await requireContributor(input);
   const exec = input.tx ?? db;
   const record = await exec.query.collectionRecords.findFirst({
     columns: {
@@ -188,6 +213,7 @@ export const assertCanManageType = async (input: {
   userId: string | undefined;
   tx?: Executor;
 }): Promise<void> => {
+  await requireContributor(input);
   const type = await findTypeInOrganization({
     collectionId: input.collectionId,
     organizationId: input.organizationId,
@@ -224,8 +250,10 @@ export const assertCanEditTypeFields = async (input: {
   collectionId: string;
   teamId: string;
   organizationId: string;
+  userId: string | undefined;
   tx?: Executor;
 }): Promise<void> => {
+  await requireContributor(input);
   const type = await findTypeInOrganization({
     collectionId: input.collectionId,
     organizationId: input.organizationId,
@@ -276,6 +304,7 @@ export const assertCanWriteField = async (input: {
     collectionId: field.collectionId,
     teamId: input.teamId,
     organizationId: input.organizationId,
+    userId: input.userId,
     tx: exec,
   });
 };
@@ -289,6 +318,7 @@ export const assertCanWriteLink = async (input: {
   linkId: string;
   teamId: string;
   organizationId: string;
+  userId: string | undefined;
   tx?: Executor;
 }): Promise<void> => {
   const exec = input.tx ?? db;
@@ -303,6 +333,7 @@ export const assertCanWriteLink = async (input: {
     recordId: link.fromRecordId,
     teamId: input.teamId,
     organizationId: input.organizationId,
+    userId: input.userId,
     tx: exec,
   });
 };

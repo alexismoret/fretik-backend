@@ -20,6 +20,8 @@ import {
   agentEventActor,
   getRuntimeContext,
 } from "../agents/shared/runtime-context";
+import { requireTurnContributor } from "../agents/shared/turn-access";
+import { liftAccessRefusal } from "../lib/access-refusal";
 import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
 
 /**
@@ -159,6 +161,8 @@ export const createManageCollectionTool = () =>
               "create requires key, label, and a one-line description.",
             );
           }
+          // A new collection is new team content: a viewer reads.
+          await requireTurnContributor(ctx);
           if (input.fields && input.fields.length > 0) {
             const created = await createCollectionWithFields({
               organizationId: ctx.organizationId,
@@ -275,9 +279,12 @@ export const createManageCollectionTool = () =>
         });
         return { ok: true, type: { id: type.id, key: type.key } };
       } catch (err) {
-        return toolError(
-          TOOL_ERROR_CODES.COLLECTION_QUERY_ERROR,
-          `manageCollection ${input.action} failed: ${err instanceof Error ? err.message : String(err)}`,
+        return (
+          liftAccessRefusal(err) ??
+          toolError(
+            TOOL_ERROR_CODES.COLLECTION_QUERY_ERROR,
+            `manageCollection ${input.action} failed: ${err instanceof Error ? err.message : String(err)}`,
+          )
         );
       }
     },

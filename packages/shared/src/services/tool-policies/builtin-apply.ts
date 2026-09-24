@@ -1,3 +1,7 @@
+import { requireDriveAction } from "../../authz/drive";
+import { loadPrincipal } from "../../authz/load-principal";
+import type { UserPrincipal } from "../../authz/principal";
+import { forbidden, throwHttpError } from "../../lib/errors";
 import { recordSharingSchema } from "../../schemas/collection-sharing";
 import {
   fieldConfigSchema,
@@ -10,7 +14,11 @@ import { createCollectionRecord } from "../collection-records/create";
 import { deleteCollectionRecord } from "../collection-records/delete";
 import { setRecordStatus } from "../collection-records/set-status";
 import { setRecordData } from "../collection-records/update";
-import { assertCanWriteType } from "../collection-sharing/write-access";
+import {
+  assertCanWriteLink,
+  assertCanWriteRecord,
+  assertCanWriteType,
+} from "../collection-sharing/write-access";
 import { confirmFullResync } from "../collection-sync/confirm-full-resync";
 import { deleteCollection } from "../collections/delete";
 import { saveAuthoredContent } from "../documents/authored/content";
@@ -95,15 +103,48 @@ const agentActor = (ctx: ToolCallApplyContext): EventActor => ({
   conversationId: ctx.conversationId,
 });
 
+/**
+ * The person the approved write acts for, as the access engine sees them NOW.
+ * The tool asked the same questions before the card opened; a grant can come
+ * hours later, after the person was made a viewer or left, so each apply asks
+ * them again (the same rules as the tool's, `authz/drive.ts` and
+ * `collection-sharing/write-access.ts`).
+ */
+const principalOf = async (
+  ctx: ToolCallApplyContext,
+): Promise<UserPrincipal> => {
+  const principal = await loadPrincipal({
+    organizationId: ctx.organizationId,
+    userId: ctx.userId,
+  });
+  if (!principal) {
+    return throwHttpError(
+      403,
+      forbidden("The person this was for is no longer in the organization."),
+    );
+  }
+  return principal;
+};
+
 // ---- manageLink -----------------------------------------------------------
 
 const applyManageLink: ToolCallApplyFn = async (ctx, args) => {
   const actor = agentActor(ctx);
   const action = str(args, "action");
+  const scope = {
+    teamId: ctx.teamId,
+    organizationId: ctx.organizationId,
+    userId: ctx.userId,
+  };
   if (action === "unlink") {
+    await assertCanWriteLink({ linkId: str(args, "linkId"), ...scope });
     const link = await invalidateLink({ id: str(args, "linkId"), actor });
     return { ok: true, unlinked: link.id };
   }
+  await assertCanWriteRecord({
+    recordId: str(args, "fromRecordId"),
+    ...scope,
+  });
   const link = await createLink({
     organizationId: ctx.organizationId,
     teamId: ctx.teamId,
@@ -120,8 +161,14 @@ const applyManageLink: ToolCallApplyFn = async (ctx, args) => {
 const applyManageDrive: ToolCallApplyFn = async (ctx, args) => {
   const actor = agentActor(ctx);
   const action = str(args, "action");
+  const principal = await principalOf(ctx);
 
   if (action === "createFolder") {
+    await requireDriveAction(principal, {
+      kind: "createFolder",
+      teamId: ctx.teamId,
+      parentFolderId: strOrNull(args, "parentFolderId"),
+    });
     const folder = await createFolder({
       name: str(args, "name"),
       parentFolderId: strOrNull(args, "parentFolderId"),
@@ -132,6 +179,10 @@ const applyManageDrive: ToolCallApplyFn = async (ctx, args) => {
     return { ok: true, folder: { id: folder.id, name: folder.name } };
   }
   if (action === "renameFolder") {
+    await requireDriveAction(principal, {
+      kind: "renameFolder",
+      folderId: str(args, "folderId"),
+    });
     const folder = await updateFolder({
       id: str(args, "folderId"),
       teamId: ctx.teamId,
@@ -141,6 +192,11 @@ const applyManageDrive: ToolCallApplyFn = async (ctx, args) => {
     return { ok: true, folder: { id: folder.id, name: folder.name } };
   }
   if (action === "moveFolder") {
+    await requireDriveAction(principal, {
+      kind: "moveFolder",
+      folderId: str(args, "folderId"),
+      parentFolderId: strOrNull(args, "parentFolderId"),
+    });
     const folder = await updateFolder({
       id: str(args, "folderId"),
       teamId: ctx.teamId,
@@ -151,11 +207,13 @@ const applyManageDrive: ToolCallApplyFn = async (ctx, args) => {
   }
   if (action === "deleteFolder") {
     const folderId = str(args, "folderId");
+    await requireDriveAction(principal, { kind: "deleteFolder", folderId });
     await deleteFolders({ ids: [folderId], teamId: ctx.teamId, actor });
     return { ok: true, deleted: true, folderId };
   }
   if (action === "renameDocument") {
     const documentId = str(args, "documentId");
+    await requireDriveAction(principal, { kind: "renameDocument", documentId });
     const renamed = await updateDocument({
       id: documentId,
       teamId: ctx.teamId,
@@ -173,6 +231,11 @@ const applyManageDrive: ToolCallApplyFn = async (ctx, args) => {
   // moveDocument — the fall-through, so every action ABOVE must be handled
   // explicitly: an unmatched one would silently move the document to the root.
   const documentId = str(args, "documentId");
+  await requireDriveAction(principal, {
+    kind: "moveDocument",
+    documentId,
+    folderId: strOrNull(args, "parentFolderId"),
+  });
   const doc = await updateDocument({
     id: documentId,
     teamId: ctx.teamId,
@@ -195,7 +258,14 @@ const applyManageDocument: ToolCallApplyFn = async (ctx, args) => {
     conversationId: ctx.conversationId,
   };
 
+  const principal = await principalOf(ctx);
+
   if (action === "create") {
+    await requireDriveAction(principal, {
+      kind: "addDocument",
+      teamId: ctx.teamId,
+      folderId: strOrNull(args, "folderId"),
+    });
     const document = await createAuthoredDocument({
       organizationId: ctx.organizationId,
       teamId: ctx.teamId,
@@ -217,6 +287,12 @@ const applyManageDocument: ToolCallApplyFn = async (ctx, args) => {
       versionNumber: 1,
     };
   }
+
+  // Restoring or writing: both change what the document says.
+  await requireDriveAction(principal, {
+    kind: "editDocument",
+    documentId: str(args, "documentId"),
+  });
 
   if (action === "restore") {
     const result = await restoreDocumentVersion({
@@ -291,6 +367,19 @@ const applyUploadToDrive: ToolCallApplyFn = async (ctx, args) => {
   const fileIds = strListOrSingle(args, "fileIds", "fileId");
   const folderId = strOrNull(args, "folderId");
   const replaceDocumentId = strOrNull(args, "replaceDocumentId");
+
+  const principal = await principalOf(ctx);
+  await requireDriveAction(principal, {
+    kind: "addDocument",
+    teamId: ctx.teamId,
+    folderId,
+  });
+  if (replaceDocumentId !== null) {
+    await requireDriveAction(principal, {
+      kind: "editDocument",
+      documentId: replaceDocumentId,
+    });
+  }
 
   const saved: Record<string, unknown>[] = [];
   const failed: { file: string; reason: string }[] = [];
@@ -369,8 +458,17 @@ const serializeRecord = (r: {
 const applyManageRecord: ToolCallApplyFn = async (ctx, args) => {
   const actor = agentActor(ctx);
   const action = str(args, "action");
+  const scope = {
+    teamId: ctx.teamId,
+    organizationId: ctx.organizationId,
+    userId: ctx.userId,
+  };
 
   if (action === "create") {
+    await assertCanWriteType({
+      collectionId: str(args, "collectionId"),
+      ...scope,
+    });
     const record = await createCollectionRecord({
       organizationId: ctx.organizationId,
       teamId: ctx.teamId,
@@ -390,6 +488,9 @@ const applyManageRecord: ToolCallApplyFn = async (ctx, args) => {
     });
     return { ok: true, record: serializeRecord(record) };
   }
+
+  // Every other action writes one existing record.
+  await assertCanWriteRecord({ recordId: str(args, "recordId"), ...scope });
 
   if (action === "update") {
     const hasData = args.data !== undefined;
@@ -467,6 +568,7 @@ const applyManageCollection: ToolCallApplyFn = async (ctx, args) => {
     collectionId,
     teamId: ctx.teamId,
     organizationId: ctx.organizationId,
+    userId: ctx.userId,
   });
   const result = await deleteCollection({
     id: collectionId,
@@ -483,6 +585,7 @@ const applyManageField: ToolCallApplyFn = async (ctx, args) => {
     collectionId,
     teamId: ctx.teamId,
     organizationId: ctx.organizationId,
+    userId: ctx.userId,
   });
   const actor = agentActor(ctx);
 

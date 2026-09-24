@@ -589,6 +589,7 @@ collectionRecordRoutes.openapi(createRouteDef, async (c) => {
     collectionId: body.collectionId,
     teamId: team.id,
     organizationId: team.organizationId,
+    userId: c.get("user").id,
   });
   await assertRecordSharingAllowed(c.get("principal"), team.id, body.sharing);
   const created = await createCollectionRecord({
@@ -618,6 +619,7 @@ collectionRecordRoutes.openapi(updateRouteDef, async (c) => {
     recordId: id,
     teamId: team.id,
     organizationId: team.organizationId,
+    userId: c.get("user").id,
   });
   await assertRecordSharingAllowed(c.get("principal"), team.id, sharing);
   // `sharing` is owner-only — enforced inside the service via `callerTeamId`.
@@ -641,6 +643,7 @@ collectionRecordRoutes.openapi(statusRoute, async (c) => {
     recordId: id,
     teamId: team.id,
     organizationId: team.organizationId,
+    userId: c.get("user").id,
   });
   const updated = await setRecordStatus({ id, status });
   return c.json(updated, 200);
@@ -654,6 +657,7 @@ collectionRecordRoutes.openapi(deleteRouteDef, async (c) => {
     recordId: id,
     teamId: team.id,
     organizationId: team.organizationId,
+    userId: c.get("user").id,
   });
   const result = await deleteCollectionRecord({ id });
   return c.json(result, 200);
@@ -673,6 +677,7 @@ collectionRecordRoutes.openapi(bulkWriteRoute, async (c) => {
       collectionId: body.collectionId,
       teamId: team.id,
       organizationId: team.organizationId,
+      userId: c.get("user").id,
     });
     const result = await bulkCreateCollectionRecords({
       organizationId: team.organizationId,

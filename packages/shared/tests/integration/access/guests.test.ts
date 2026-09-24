@@ -36,11 +36,19 @@ import { mockModule } from "../../lib/mock-module";
  */
 
 /** Every message sent, in order. */
-const sent: { to: string; subject: string }[] = [];
+const sent: { to: string; subject: string; html: string }[] = [];
 
 await mockModule("../../src/lib/email", {
-  sendEmail: (options: { to: { email: string }; subject: string }) => {
-    sent.push({ to: options.to.email, subject: options.subject });
+  sendEmail: (options: {
+    to: { email: string };
+    subject: string;
+    html: string;
+  }) => {
+    sent.push({
+      to: options.to.email,
+      subject: options.subject,
+      html: options.html,
+    });
     return Promise.resolve();
   },
 });
@@ -234,6 +242,29 @@ describe("inviting an outside address", () => {
       { type: "invitation", name: email, guest: true, level: "edit" },
     ]);
     expect(await journal("invitation.sent")).toHaveLength(1);
+  });
+
+  test("words taking part in a project as the share dialog does", async () => {
+    const [project] = await db
+      .insert(projects)
+      .values({
+        organizationId: fx.organizationId,
+        teamId: fx.teamId,
+        name: `project-${randomUUID().slice(0, 8)}`,
+        ownerUserId: ownerId,
+      })
+      .returning({ id: projects.id });
+    if (!project) throw new Error("fixture: no project");
+
+    await inviteGuests({
+      principal: await fx.principalOf(ownerId),
+      type: "project",
+      id: project.id,
+      emails: [outsider()],
+      level: "use",
+    });
+    // Using a project is taking part in it ("Can take part"), not "using" it.
+    expect(sent[0]?.html).toContain("invited you to take part in");
   });
 
   test("never gives a guest full access, nor a seat in a chat of a team", async () => {

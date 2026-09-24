@@ -16,6 +16,18 @@ if (!appUrl) {
 const dateLocale = (lang: string): string =>
   lang === "fr" ? "fr-FR" : "en-US";
 
+/**
+ * How a level reads for a type: `use` of a chat or a project is taking part
+ * in it (the app's "Can take part"); `use` of anything else is using it.
+ */
+const levelWording = (
+  level: AccessLevel,
+  type: SharingResourceType,
+): AccessLevel | "takePart" =>
+  level === "use" && (type === "conversation" || type === "project")
+    ? "takePart"
+    : level;
+
 export interface EmailData {
   subject: string;
   html: string;
@@ -82,11 +94,14 @@ export const generateOrganizationInvitation = async (
   const isGuest = params.role === "guest";
 
   const message = item
-    ? t(`organizationInvitation.messageItem.${item.level}`, {
-        inviterName: params.inviterName,
-        itemName: item.name,
-        organizationName: params.organizationName,
-      })
+    ? t(
+        `organizationInvitation.messageItem.${levelWording(item.level, item.type)}`,
+        {
+          inviterName: params.inviterName,
+          itemName: item.name,
+          organizationName: params.organizationName,
+        },
+      )
     : isTeamAccessForMember
       ? t("organizationInvitation.messageExistingMember", {
           inviterName: params.inviterName,
@@ -836,7 +851,10 @@ export const generateSharedWithGuestEmail = async (
     resourceName: params.resource.name,
     organizationName: params.organizationName,
   };
-  const intro = t(`sharedWithGuest.intro.${params.level}`, names);
+  const intro = t(
+    `sharedWithGuest.intro.${levelWording(params.level, params.resource.type)}`,
+    names,
+  );
   const until =
     params.expiresAt === null
       ? ""

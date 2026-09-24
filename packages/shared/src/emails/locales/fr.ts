@@ -55,6 +55,8 @@ export default {
     messageItem: {
       view: "{{inviterName}} vous invite à consulter « {{itemName}} » dans {{organizationName}} sur Fretik.",
       use: "{{inviterName}} vous invite à utiliser « {{itemName}} » dans {{organizationName}} sur Fretik.",
+      takePart:
+        "{{inviterName}} vous invite à participer à « {{itemName}} » dans {{organizationName}} sur Fretik.",
       edit: "{{inviterName}} vous invite à modifier « {{itemName}} » dans {{organizationName}} sur Fretik.",
       full: "{{inviterName}} vous donne un accès complet à « {{itemName}} » dans {{organizationName}} sur Fretik.",
     },
@@ -70,6 +72,8 @@ export default {
     intro: {
       view: "{{sharerName}} a partagé « {{resourceName}} » avec vous dans {{organizationName}} : vous pouvez le consulter.",
       use: "{{sharerName}} a partagé « {{resourceName}} » avec vous dans {{organizationName}} : vous pouvez l'utiliser.",
+      takePart:
+        "{{sharerName}} a partagé « {{resourceName}} » avec vous dans {{organizationName}} : vous pouvez y participer.",
       edit: "{{sharerName}} a partagé « {{resourceName}} » avec vous dans {{organizationName}} : vous pouvez le modifier.",
       full: "{{sharerName}} vous a donné un accès complet à « {{resourceName}} » dans {{organizationName}}.",
     },

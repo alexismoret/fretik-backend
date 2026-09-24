@@ -4,6 +4,7 @@ import { throwForbidden } from "../../../authz/refusals";
 import type { LoadedNode } from "../../../authz/resources/types";
 import db from "../../../db";
 import { aiConversations, documents, folders } from "../../../db/schema";
+import { badRequest, throwHttpError } from "../../../lib/errors";
 import type {
   ResourceAccess,
   SharingResourceType,
@@ -76,6 +77,13 @@ export const setGeneralAccess = async (input: {
       case "conversation":
         await restrictConversation({ principal, node, restricted });
         break;
+      case "collection":
+        return throwHttpError(
+          400,
+          badRequest(
+            "A collection is always its team's: share it with other teams instead.",
+          ),
+        );
     }
   }
 

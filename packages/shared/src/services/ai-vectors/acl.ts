@@ -273,11 +273,12 @@ export const documentsUnderFolders = async (
  */
 export const refreshAclsAfterAccessChange = async (input: {
   executor: Executor;
-  type: AclResourceType | "folder" | "conversation";
+  type: AclResourceType | "folder" | "conversation" | "collection";
   id: string;
 }): Promise<void> => {
-  // A chat has no vectors of its own in the assistant's search index.
-  if (input.type === "conversation") return;
+  // A chat has no vectors of its own in the assistant's search index, and a
+  // collection's records are searched in their own team only.
+  if (input.type === "conversation" || input.type === "collection") return;
   if (input.type === "folder") {
     await refreshVectorAcls({
       executor: input.executor,

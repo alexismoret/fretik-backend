@@ -5,7 +5,7 @@ import type {
   AccessLevel,
   AccessResourceType,
 } from "../schemas/access";
-import { isSharingResourceType } from "../schemas/access-sharing";
+import { isRequestableResourceType } from "../schemas/access-sharing";
 import { ERROR_CODES } from "../schemas/errors";
 import type {
   Capability,
@@ -109,14 +109,15 @@ export const throwResourceRefusal = async (input: {
     requiredRole: null,
     resource: { type: input.resource.type, id: input.resource.id },
     ask,
-    // Asking for more access makes sense when someone can give it, through
-    // the share dialog's grants; a guest limit or a type ceiling is not
-    // something anyone can lift per person.
+    // Asking for more access makes sense when someone can give it to this
+    // person through the share dialog; a guest limit, a type ceiling or a
+    // collection (shared with teams, never one person) is not something
+    // anyone can lift per person.
     requestable:
       reason === "INSUFFICIENT_LEVEL" &&
       ask.length > 0 &&
       !input.principal.isGuest &&
-      isSharingResourceType(input.resource.type),
+      isRequestableResourceType(input.resource.type),
   };
   return throwHttpError(403, {
     code: ERROR_CODES.ACCESS_DENIED,

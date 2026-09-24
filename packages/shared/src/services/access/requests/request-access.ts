@@ -14,7 +14,10 @@ import {
 } from "../../../lib/errors";
 import type { AccessLevel } from "../../../schemas/access";
 import type { AccessRequestView } from "../../../schemas/access-requests";
-import type { SharingResourceType } from "../../../schemas/access-sharing";
+import {
+  isRequestableResourceType,
+  type SharingResourceType,
+} from "../../../schemas/access-sharing";
 import { recordAccessEvent } from "../record-event";
 import { notifyAccessRequested } from "./notify";
 import { buildRequestViews } from "./views";
@@ -51,6 +54,14 @@ export const requestAccess = async (input: {
     return throwHttpError(
       403,
       forbidden("Guests can't ask for more access to a shared item."),
+    );
+  }
+  if (!isRequestableResourceType(type)) {
+    return throwHttpError(
+      400,
+      badRequest(
+        "A collection is shared with teams, not with one person: ask its team's leads to share it with yours.",
+      ),
     );
   }
   if (!adapterFor(type).offeredLevels.includes(level)) {

@@ -11,11 +11,10 @@ import {
  * inherits from its folder or container, and the changes the share dialog
  * makes. The shapes of `/access/resources/{type}/{id}`.
  *
- * The types listed here are the ones whose sharing goes through the engine's
- * own grants (`access_grants`). A chat's participants are its seats, which
- * the grant store moves a person to and from (`services/access/sharing/
- * grant-store.ts`); collections keep the grants the SQL tool enforces, and
- * join with their own store.
+ * Every type listed here is shared from the same dialog, through the same
+ * routes. Most keep their grants in the engine's own table (`access_grants`);
+ * a chat keeps its participants in its seats, and a collection its grants
+ * where the SQL tool enforces them (`services/access/sharing/grant-store.ts`).
  */
 export const SHARING_RESOURCE_TYPES = [
   "folder",
@@ -23,6 +22,7 @@ export const SHARING_RESOURCE_TYPES = [
   "page",
   "workflow",
   "conversation",
+  "collection",
 ] as const;
 export type SharingResourceType = (typeof SHARING_RESOURCE_TYPES)[number];
 export const sharingResourceTypeSchema = z.enum(SHARING_RESOURCE_TYPES);
@@ -31,6 +31,15 @@ export const isSharingResourceType = (
   type: string,
 ): type is SharingResourceType =>
   (SHARING_RESOURCE_TYPES as readonly string[]).includes(type);
+
+/**
+ * The types a person can be given by name, and so can ask for: every one but
+ * a collection, which is its team's and shared with other teams.
+ */
+export const isRequestableResourceType = (
+  type: string,
+): type is Exclude<SharingResourceType, "collection"> =>
+  isSharingResourceType(type) && type !== "collection";
 
 export const resourceAccessParamsSchema = z.object({
   type: sharingResourceTypeSchema.openapi({
@@ -138,6 +147,11 @@ export const resourceAccessSchema = z
       restricted: z.boolean(),
       /** What it inherits from while it is not restricted. */
       inheritsFrom: inheritanceSourceSchema.nullable(),
+      /**
+       * Whether it can be restricted at all: a collection is always its
+       * team's, and shared from there with other teams.
+       */
+      restrictable: z.boolean(),
       /**
        * Only the owner may restrict it: a restricted workflow runs with its
        * owner's access, and nobody else may make it act as them.

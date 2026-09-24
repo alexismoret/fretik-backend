@@ -1,4 +1,4 @@
-import { and, eq, gt, isNull, ne, or } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { adapterFor, requireAccess } from "../../../authz/access";
 import { decideCapability } from "../../../authz/capabilities";
 import { levelRank } from "../../../authz/levels";
@@ -6,13 +6,7 @@ import type { UserPrincipal } from "../../../authz/principal";
 import type { LoadedNode } from "../../../authz/resources/types";
 import { ceilingFor, inheritedCap } from "../../../authz/rules";
 import db from "../../../db";
-import {
-  accessGrants,
-  aiConversationMembers,
-  projects,
-  team,
-  user,
-} from "../../../db/schema";
+import { projects, team } from "../../../db/schema";
 import type {
   AccessHolder,
   InheritanceSource,
@@ -21,6 +15,7 @@ import type {
 } from "../../../schemas/access-sharing";
 import { getOrganizationAccessPolicy } from "../../organization/access-policy";
 import { listResourceRequests } from "../requests/list-requests";
+import { listGrants } from "./grant-store";
 import { principalKey, resolvePrincipals } from "./principals";
 
 /**
@@ -78,6 +73,7 @@ export const describeResourceAccess = async (input: {
     general: {
       restricted: node.restricted,
       inheritsFrom,
+      restrictable: type !== "collection",
       ownerRestrictsOnly: type === "workflow",
       inheritedLevel: inheritedCap(type),
     },
@@ -111,77 +107,13 @@ const loadHolders = async (
   type: SharingResourceType,
   node: LoadedNode,
 ): Promise<AccessHolder[]> => {
-  const rows = await db
-    .select({
-      principalType: accessGrants.principalType,
-      principalId: accessGrants.principalId,
-      level: accessGrants.level,
-      grantedAt: accessGrants.createdAt,
-      grantedByUserId: accessGrants.grantedByUserId,
-      grantedByName: user.name,
-    })
-    .from(accessGrants)
-    .leftJoin(user, eq(user.id, accessGrants.grantedByUserId))
-    .where(
-      and(
-        eq(accessGrants.resourceType, type),
-        eq(accessGrants.resourceId, node.id),
-        ne(accessGrants.principalType, "invitation"),
-        or(
-          isNull(accessGrants.expiresAt),
-          gt(accessGrants.expiresAt, new Date()),
-        ),
-      ),
-    );
+  const grants = await listGrants(db, { type, id: node.id });
+  const described = await resolvePrincipals(principal.organizationId, grants);
 
-  // A chat's participants are its seats, listed beside its grants; the owner
-  // is the owner, not a holder.
-  const seats =
-    type === "conversation"
-      ? (
-          await db
-            .select({
-              principalId: aiConversationMembers.userId,
-              grantedAt: aiConversationMembers.joinedAt,
-            })
-            .from(aiConversationMembers)
-            .where(
-              and(
-                eq(aiConversationMembers.conversationId, node.id),
-                ne(aiConversationMembers.role, "owner"),
-              ),
-            )
-        ).map((seat) => ({
-          principalType: "user" as const,
-          principalId: seat.principalId,
-          level: "use" as const,
-          grantedAt: seat.grantedAt,
-          grantedByUserId: null,
-          grantedByName: null,
-        }))
-      : [];
-  const seated = new Set(seats.map((seat) => seat.principalId));
-  const entries = [
-    ...rows.filter(
-      (row) => !(row.principalType === "user" && seated.has(row.principalId)),
-    ),
-    ...seats,
-  ];
-
-  const refs = entries.flatMap((row) =>
-    row.principalType === "invitation"
-      ? []
-      : [{ type: row.principalType, id: row.principalId }],
-  );
-  const described = await resolvePrincipals(principal.organizationId, refs);
-
-  const holders = entries.flatMap((row): AccessHolder[] => {
-    if (row.principalType === "invitation") return [];
+  const holders = grants.flatMap((grant): AccessHolder[] => {
     // A principal that left the organization gets nothing from its grant
     // and is not listed; it counts again if it comes back.
-    const who = described.get(
-      principalKey({ type: row.principalType, id: row.principalId }),
-    );
+    const who = described.get(principalKey(grant));
     if (!who) return [];
     return [
       {
@@ -191,12 +123,9 @@ const loadHolders = async (
         email: who.email,
         image: who.image,
         memberCount: who.memberCount,
-        level: row.level,
-        grantedAt: row.grantedAt,
-        grantedBy:
-          row.grantedByUserId === null || row.grantedByName === null
-            ? null
-            : { userId: row.grantedByUserId, name: row.grantedByName },
+        level: grant.level,
+        grantedAt: grant.grantedAt,
+        grantedBy: grant.grantedBy,
       },
     ];
   });

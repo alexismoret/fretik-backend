@@ -1,4 +1,4 @@
-import { inArray } from "drizzle-orm";
+import { inArray, sql } from "drizzle-orm";
 import db from "../../db";
 import { collectionGrants, collections, projects } from "../../db/schema";
 import type { GrantFact } from "../principal";
@@ -34,7 +34,8 @@ export const collectionAdapter: ResourceAdapter = {
         id: collections.id,
         organizationId: collections.organizationId,
         teamId: collections.teamId,
-        name: collections.label,
+        // How lists and pages name it: "Suppliers", not "Supplier".
+        name: sql<string>`coalesce(${collections.labelPlural}, ${collections.label})`,
       })
       .from(collections)
       .where(inArray(collections.id, unique));

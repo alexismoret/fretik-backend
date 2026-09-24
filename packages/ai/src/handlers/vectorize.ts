@@ -1,3 +1,4 @@
+import { access } from "@fretik/shared/authz/http";
 import type { AiVectorSourceType } from "@fretik/shared/db/schema";
 import {
   contextVectorMetadataSchema,
@@ -170,78 +171,84 @@ const VectorizeRequestSchema = z.discriminatedUnion("sourceType", [
 const vectorizeRoutes = new OpenAPIHono<HonoInternalAppType>();
 vectorizeRoutes.use("*", internalMiddleware);
 
-vectorizeRoutes.post("/", async (c) => {
-  const raw: unknown = await c.req.json();
-  const parsed = VectorizeRequestSchema.safeParse(raw);
-  if (!parsed.success) {
-    return c.json(
-      {
-        code: "VALIDATION_ERROR",
-        message: "Invalid request body",
-        details: parsed.error.issues.map((i) => i.message),
-      },
-      400,
-    );
-  }
+vectorizeRoutes.post(
+  "/",
+  access.internal(
+    "Shared services re-index rows they already hold; the text arrives in the body.",
+  ),
+  async (c) => {
+    const raw: unknown = await c.req.json();
+    const parsed = VectorizeRequestSchema.safeParse(raw);
+    if (!parsed.success) {
+      return c.json(
+        {
+          code: "VALIDATION_ERROR",
+          message: "Invalid request body",
+          details: parsed.error.issues.map((i) => i.message),
+        },
+        400,
+      );
+    }
 
-  try {
-    // Forward the whole validated payload. The Zod discriminated union
-    // has already narrowed `metadata` against `sourceType`, so this
-    // assignment is type-safe without any runtime cast.
-    // Workflow and page cards go through their own entry points: they own the
-    // `content_hash` short-circuit, so re-saving one without a meaningful
-    // change costs no embedding.
-    const data = parsed.data;
-    const runVectorize = () => {
-      if (data.sourceType === "workflows") {
-        return vectorizeWorkflow({
-          workflowId: data.sourceId,
-          teamId: data.teamId,
-          organizationId: data.organizationId,
-          userId: data.userId,
-          name: data.metadata.name,
-          description: data.metadata.description,
-          triggerType: data.metadata.trigger_type,
-          status: data.metadata.status,
-          taskCount: data.metadata.task_count,
-          content: data.content,
-        });
-      }
-      if (data.sourceType === "pages") {
-        return vectorizePage({
-          pageId: data.sourceId,
-          teamId: data.teamId,
-          organizationId: data.organizationId,
-          userId: data.userId,
-          name: data.metadata.name,
-          job: data.metadata.job,
-          published: data.metadata.published,
-          content: data.content,
-        });
-      }
-      return vectorizeSource(data);
-    };
-    const result = await runVectorize();
-    return c.json(
-      {
-        success: true,
-        stats: result,
-      },
-      200,
-    );
-  } catch (err) {
-    console.error(
-      `[vectorize] failed for ${parsed.data.sourceType}/${parsed.data.sourceId}:`,
-      err instanceof Error ? err.message : err,
-    );
-    return c.json(
-      {
-        code: "VECTORIZE_ERROR",
-        message: err instanceof Error ? err.message : "Vectorisation failed",
-      },
-      500,
-    );
-  }
-});
+    try {
+      // Forward the whole validated payload. The Zod discriminated union
+      // has already narrowed `metadata` against `sourceType`, so this
+      // assignment is type-safe without any runtime cast.
+      // Workflow and page cards go through their own entry points: they own the
+      // `content_hash` short-circuit, so re-saving one without a meaningful
+      // change costs no embedding.
+      const data = parsed.data;
+      const runVectorize = () => {
+        if (data.sourceType === "workflows") {
+          return vectorizeWorkflow({
+            workflowId: data.sourceId,
+            teamId: data.teamId,
+            organizationId: data.organizationId,
+            userId: data.userId,
+            name: data.metadata.name,
+            description: data.metadata.description,
+            triggerType: data.metadata.trigger_type,
+            status: data.metadata.status,
+            taskCount: data.metadata.task_count,
+            content: data.content,
+          });
+        }
+        if (data.sourceType === "pages") {
+          return vectorizePage({
+            pageId: data.sourceId,
+            teamId: data.teamId,
+            organizationId: data.organizationId,
+            userId: data.userId,
+            name: data.metadata.name,
+            job: data.metadata.job,
+            published: data.metadata.published,
+            content: data.content,
+          });
+        }
+        return vectorizeSource(data);
+      };
+      const result = await runVectorize();
+      return c.json(
+        {
+          success: true,
+          stats: result,
+        },
+        200,
+      );
+    } catch (err) {
+      console.error(
+        `[vectorize] failed for ${parsed.data.sourceType}/${parsed.data.sourceId}:`,
+        err instanceof Error ? err.message : err,
+      );
+      return c.json(
+        {
+          code: "VECTORIZE_ERROR",
+          message: err instanceof Error ? err.message : "Vectorisation failed",
+        },
+        500,
+      );
+    }
+  },
+);
 
 export { vectorizeRoutes };

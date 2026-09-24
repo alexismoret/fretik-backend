@@ -1,3 +1,4 @@
+import { access } from "@fretik/shared/authz/http";
 import {
   authMiddleware,
   type HonoLoggedAppType,
@@ -36,6 +37,7 @@ changelogRoutes.use("*", authMiddleware);
 const listSeenRoute = createRoute({
   method: "get",
   path: "/seen",
+  middleware: access.session("The caller reads their own read receipts."),
   summary: "Product updates the caller has already been shown",
   description:
     "The full set of slugs, unordered. The client diffs it against the entries it ships to decide what — if anything — to announce.",
@@ -53,6 +55,9 @@ const listSeenRoute = createRoute({
 const markSeenRoute = createRoute({
   method: "post",
   path: "/seen",
+  middleware: access.session(
+    "The caller marks updates as seen for themselves.",
+  ),
   summary: "Mark product updates as shown to the caller",
   description:
     "Idempotent: re-sending a slug keeps its original timestamp and counts as 0 added, so a retry or a second tab is harmless. Unknown slugs are accepted — the frontend is the only authority on which entries exist, and it may ship before or after this service.",

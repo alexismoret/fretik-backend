@@ -20,6 +20,11 @@
  */
 import { eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
+import {
+  bumpAccessVersion,
+  loadPrincipal,
+} from "../../src/authz/load-principal";
+import type { UserPrincipal } from "../../src/authz/principal";
 import db from "../../src/db";
 import {
   aiConversations,
@@ -103,6 +108,12 @@ export interface WorkspaceFixture {
     values: Pick<LinkInsert, "linkTypeId" | "fromRecordId" | "toRecordId"> &
       Partial<LinkInsert>,
   ) => Promise<{ id: string }>;
+  /**
+   * The access engine's principal for a user of this workspace, loaded fresh:
+   * the fixture writes memberships straight to the tables, which bumps no
+   * access version, so a cached principal could predate them.
+   */
+  principalOf: (userId: string) => Promise<UserPrincipal>;
   /** Drops the organization; every dependent row cascades with it. */
   cleanup: () => Promise<void>;
 }
@@ -307,6 +318,13 @@ export const createWorkspaceFixture = async (): Promise<WorkspaceFixture> => {
     return row;
   };
 
+  const principalOf: WorkspaceFixture["principalOf"] = async (userId) => {
+    await bumpAccessVersion(org.id);
+    const principal = await loadPrincipal({ organizationId: org.id, userId });
+    if (!principal) throw new Error("fixture: user is not in the workspace");
+    return principal;
+  };
+
   const cleanup = async (): Promise<void> => {
     await db.delete(organization).where(eq(organization.id, org.id));
     // `user` has no FK to organization (Better Auth owns that table), so the
@@ -329,6 +347,7 @@ export const createWorkspaceFixture = async (): Promise<WorkspaceFixture> => {
     createField,
     createLinkType,
     createLink,
+    principalOf,
     cleanup,
   };
 };

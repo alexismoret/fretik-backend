@@ -1,5 +1,6 @@
 import type { Tool, ToolExecuteFunction } from "ai";
 import { z } from "zod";
+import { liftAccessRefusal } from "../../lib/access-refusal";
 import {
   TOOL_ERROR_CODES,
   toolError,
@@ -43,11 +44,21 @@ const toJsonSafeOutput = <TOutput>(result: TOutput): TOutput => {
 const guardToolExecute = <TInput, TOutput, TContext>(
   execute: ToolExecuteFunction<TInput, TOutput, TContext>,
 ): ToolExecuteFunction<TInput, TOutput, TContext> => {
-  const internalError = (): ToolErrorOutput =>
-    toolError(
+  /**
+   * What a throw becomes. An access refusal is not a fault — the person the
+   * turn acts for may not do this — so it reaches the model as the refusal it
+   * is (`liftAccessRefusal`), and is not logged as a crash. Anything else is
+   * the unexpected error this wrapper exists for.
+   */
+  const failure = (err: unknown, where: string): ToolErrorOutput => {
+    const refusal = liftAccessRefusal(err);
+    if (refusal !== null) return refusal;
+    console.error(`[chatbot-tool] ${where}`, err);
+    return toolError(
       TOOL_ERROR_CODES.INTERNAL_ERROR,
       "The tool hit an unexpected internal error. Retry once; if it persists, tell the user this action is temporarily unavailable.",
     );
+  };
   const guarded: ToolExecuteFunction<
     TInput,
     TOutput | ToolErrorOutput,
@@ -78,8 +89,7 @@ const guardToolExecute = <TInput, TOutput, TContext>(
     try {
       result = execute(input, options);
     } catch (err) {
-      console.error("[chatbot-tool] uncaught error in tool execute", err);
-      return Promise.resolve(internalError());
+      return Promise.resolve(failure(err, "uncaught error in tool execute"));
     }
     // Streaming tool result. The SDK emits every yield as a `preliminary`
     // tool-output and the LAST one as the real result, which is how a tool that
@@ -101,16 +111,14 @@ const guardToolExecute = <TInput, TOutput, TContext>(
         try {
           for await (const chunk of source) yield toJsonSafeOutput(chunk);
         } catch (err) {
-          console.error("[chatbot-tool] error in streaming tool execute", err);
-          yield internalError();
+          yield failure(err, "error in streaming tool execute");
         }
       };
       return guardedStream();
     }
-    return Promise.resolve(result).then(toJsonSafeOutput, (err: unknown) => {
-      console.error("[chatbot-tool] rejected promise in tool execute", err);
-      return internalError();
-    });
+    return Promise.resolve(result).then(toJsonSafeOutput, (err: unknown) =>
+      failure(err, "rejected promise in tool execute"),
+    );
   };
   // The AI SDK types `Tool["execute"]` invariantly in OUTPUT; the guard only
   // adds a `ToolErrorOutput` runtime return on unexpected failure, which is

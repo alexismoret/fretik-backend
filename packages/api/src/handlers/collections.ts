@@ -1,8 +1,15 @@
+import { access } from "@fretik/shared/authz/http";
+import type { UserPrincipal } from "@fretik/shared/authz/principal";
+import { requireSharingAudience } from "@fretik/shared/authz/sharing-policy";
 import {
   authMiddleware,
   type HonoLoggedAppType,
 } from "@fretik/shared/lib/auth-middleware";
 import { teamRequired } from "@fretik/shared/lib/errors";
+import {
+  type Audience,
+  audienceReach,
+} from "@fretik/shared/schemas/collection-sharing";
 import { paramsIdSchema } from "@fretik/shared/schemas/common/params";
 import {
   responseForbiddenSchema,
@@ -45,6 +52,9 @@ const collectionWithFieldsResponseSchema = collectionResponseSchema.extend({
 const listRoute = createRoute({
   method: "get",
   path: "",
+  middleware: access.session(
+    "The team's collections, the organization's, and those shared with the team.",
+  ),
   summary: "List collections",
   description:
     "Lists the active team's collections — the seeded system types plus the team's own.",
@@ -64,6 +74,7 @@ const listRoute = createRoute({
 const overviewRoute = createRoute({
   method: "get",
   path: "/overview",
+  middleware: access.session("Counts over the collections the team can read."),
   summary: "List collections with record counts",
   description:
     "The team's visible collections, each with its confirmed-record total and its count of AI-suggested records awaiting review — the home dashboard's objects grid in one round-trip.",
@@ -83,6 +94,9 @@ const overviewRoute = createRoute({
 const getRoute = createRoute({
   method: "get",
   path: "/{id}",
+  middleware: access.handler(
+    "Readable by the team: its own, an organization one, or shared (getCollection).",
+  ),
   summary: "Get a collection with its fields",
   tags: ["Collections"],
   request: { params: paramsIdSchema },
@@ -102,6 +116,7 @@ const getRoute = createRoute({
 const createRouteDef = createRoute({
   method: "post",
   path: "",
+  middleware: access.capability("team.content.create"),
   summary: "Create a collection",
   tags: ["Collections"],
   request: {
@@ -127,6 +142,7 @@ const createRouteDef = createRoute({
 const createWithFieldsRouteDef = createRoute({
   method: "post",
   path: "/with-fields",
+  middleware: access.capability("team.content.create"),
   summary: "Create a collection with its fields atomically",
   description:
     "Creates a team collection and its initial fields in one transaction — the composer's create. A half-built type can never persist.",
@@ -154,6 +170,9 @@ const createWithFieldsRouteDef = createRoute({
 const updateRouteDef = createRoute({
   method: "patch",
   path: "/{id}",
+  middleware: access.handler(
+    "The owning team, or an admin for an organization collection (assertCanManageType); sharing policies.",
+  ),
   summary: "Update a collection",
   tags: ["Collections"],
   request: {
@@ -181,6 +200,9 @@ const updateRouteDef = createRoute({
 const deleteRouteDef = createRoute({
   method: "delete",
   path: "/{id}",
+  middleware: access.handler(
+    "The owning team, or an admin for an organization collection (assertCanManageType).",
+  ),
   summary: "Delete a collection",
   description:
     "Deletes a team collection and its records. The Document type is delete-protected.",
@@ -232,11 +254,26 @@ collectionRoutes.openapi(getRoute, async (c) => {
   return c.json(type, 200);
 });
 
+/** Sharing a collection as it is written must stay within the policies. */
+const assertSharingAllowed = async (
+  principal: UserPrincipal,
+  teamId: string,
+  sharing: Audience | undefined,
+): Promise<void> => {
+  if (sharing === undefined) return;
+  await requireSharingAudience({
+    principal,
+    resourceTeamId: teamId,
+    audience: audienceReach(sharing, teamId),
+  });
+};
+
 collectionRoutes.openapi(createRouteDef, async (c) => {
   const team = c.get("team");
   if (!team) return c.json(teamRequired(), 403);
   const user = c.get("user");
   const body = c.req.valid("json");
+  await assertSharingAllowed(c.get("principal"), team.id, body.sharing);
   const created = await createCollection({
     organizationId: team.organizationId,
     teamId: team.id,
@@ -258,6 +295,7 @@ collectionRoutes.openapi(createWithFieldsRouteDef, async (c) => {
   if (!team) return c.json(teamRequired(), 403);
   const user = c.get("user");
   const body = c.req.valid("json");
+  await assertSharingAllowed(c.get("principal"), team.id, body.sharing);
   const created = await createCollectionWithFields({
     organizationId: team.organizationId,
     teamId: team.id,
@@ -286,6 +324,7 @@ collectionRoutes.openapi(updateRouteDef, async (c) => {
     organizationId: team.organizationId,
     userId: user.id,
   });
+  await assertSharingAllowed(c.get("principal"), team.id, sharing);
   const updated = await updateCollection({
     id,
     patch,

@@ -1,4 +1,5 @@
 import { and, eq } from "drizzle-orm";
+import type { Principal } from "../../authz/principal";
 import db from "../../db";
 import { workflows } from "../../db/schema";
 import { badRequest, throwHttpError } from "../../lib/errors";
@@ -8,25 +9,33 @@ import {
   workflowEventActivationError,
   type WorkflowResponse,
 } from "../../schemas/workflows";
+import { requireWorkflowSettingsAllowed } from "./capabilities";
 import { getWorkflowRow } from "./get";
 import { serializeWorkflow } from "./serialize";
 import { refreshWorkflowVectors } from "./vector-refresh";
-import type { WorkflowRequester } from "./visibility";
 
 /**
  * Activate a workflow (draft/paused → active). For a cron-triggered
  * workflow this creates the Trigger.dev schedule (idempotent by dedup key)
  * and stamps `triggerScheduleId`. Manual / event workflows just flip status.
- * Idempotent: an already-active workflow is returned unchanged.
+ * Idempotent: an already-active workflow is returned unchanged. Turning a
+ * workflow on is its owner's kind of decision: full access.
  */
 export const activateWorkflow = async (params: {
   id: string;
   teamId: string;
-  requester?: WorkflowRequester;
+  principal: Principal;
 }): Promise<WorkflowResponse | undefined> => {
-  const row = await getWorkflowRow(params);
+  const row = await getWorkflowRow({ ...params, level: "full" });
   if (!row) return undefined;
   if (row.status === "active") return serializeWorkflow(row);
+  // Turning it on is when its settings start to act: all of them are checked
+  // against the policy as it stands now, not as it stood when they were set.
+  await requireWorkflowSettingsAllowed({
+    principal: params.principal,
+    teamId: row.teamId,
+    after: row,
+  });
 
   let triggerScheduleId = row.triggerScheduleId;
   if (row.triggerType === "cron") {

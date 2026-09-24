@@ -1,41 +1,22 @@
+import { legacyPrivacyWhere } from "../../authz/legacy-privacy";
+import type { Principal } from "../../authz/principal";
+import type { AccessLevel } from "../../schemas/access";
+
 /**
- * Page visibility — a page is either team-shared (`userId` NULL) or private to
- * its owner (`userId` set). Same shape and same doctrine as
- * `services/workflows/visibility.ts`: a row is visible when it's team-shared
- * OR owned by the requester; org admins see everything (governance), and
- * ownership is never reassignable to someone else.
+ * Which pages a principal reaches, and at what level — decided by the access
+ * engine (`authz/`): the page's owner, its grants, and its container (its
+ * project, else its team) unless the page is restricted.
  *
- * `requester` is OPTIONAL and its absence means SYSTEM TRUST: internal callers
- * (the public-page resolver, which has already authorised through the token)
- * pass none and see every page in the team. Only user-facing API/tool callers
- * pass a requester.
+ * Every page service takes a PRINCIPAL. There is no "no requester" path any
+ * more, and no admin widening: an organization admin reads a colleague's
+ * private page exactly like anyone else — through a grant. A caller with no
+ * person behind it (the public page resolver, which authorised through the
+ * token) passes `systemPrincipal(reason)`, and says why.
+ *
+ * The filter is spread into a relational `where`; an invisible page, or one
+ * the principal reaches below `level`, is simply not found. Routes and tools
+ * check the level first (`access.resource`, `requireAccess`) so a person who
+ * can see the page gets a 403 that says why, not this 404.
  */
-export interface PageRequester {
-  userId: string;
-  isAdmin: boolean;
-}
-
-/** Spread into a Drizzle relational `where` alongside other filters. */
-export const pageVisibilityWhere = (requester?: PageRequester) =>
-  !requester || requester.isAdmin
-    ? {}
-    : {
-        OR: [
-          { userId: { isNull: true as const } },
-          { userId: requester.userId },
-        ],
-      };
-
-/**
- * Write-time ownership guard shared by `createPage`/`updatePage`: the only
- * values ever written to `pages.userId` are `null` (team-shared) or the acting
- * user's own id (private to themselves) — never another user's.
- */
-export const pageOwnerWriteError = (
-  userId: string | null | undefined,
-  actingUserId: string,
-): string | null => {
-  if (userId === undefined || userId === null) return null;
-  if (userId === actingUserId) return null;
-  return "page.userId can only be null (team-shared) or your own id (private to you). A page can't be scoped to another user.";
-};
+export const pageAccessWhere = (principal: Principal, level: AccessLevel) =>
+  legacyPrivacyWhere({ principal, level, resourceType: "page" });

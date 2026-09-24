@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
+import { installAccessDouble } from "../../lib/access-double";
 import { mockModule } from "../../lib/mock-module";
 
 /**
@@ -27,8 +28,10 @@ await mockModule("@fretik/shared/services/pages/retrieve", {
     return stored;
   },
 });
-await mockModule("@fretik/shared/services/organization/member-role", {
-  isOrgAdmin: async () => false,
+// Who the turn acts for, and the engine's gates: let through.
+const access = await installAccessDouble();
+afterAll(() => {
+  access.restore();
 });
 
 const { describePage } = await import("../../../src/tools/build-page");

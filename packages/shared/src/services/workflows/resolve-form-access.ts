@@ -1,8 +1,9 @@
+import { resolveAccess } from "../../authz/access";
+import { atLeast } from "../../authz/levels";
+import { loadPrincipal } from "../../authz/load-principal";
 import db from "../../db";
 import type { Workflow } from "../../db/schema";
 import type { WorkflowFormConfig } from "../../schemas/workflow-forms";
-import { isOrgAdmin } from "../organization/member-role";
-import { isTeamMember } from "../team/members";
 
 export type FormAccessResult =
   | {
@@ -19,17 +20,23 @@ export type FormAccessResult =
   | { access: "forbidden" };
 
 /**
- * Whether a signed-in user may view/fill a PRIVATE form: org admins (governance),
- * the owner of a user-scoped workflow, or any member of a team-shared one —
- * the same scope the authenticated app enforces, applied to the public page.
+ * Whether a signed-in person may open and fill a PRIVATE form. Filling one runs
+ * the workflow, so it takes what running it takes in the app: `use` on the
+ * workflow (`authz/`). A restricted workflow runs as its owner, so only they
+ * may; a workflow open to its team, each member who may run it. Someone from
+ * another organization is not in the workflow's, and reaches nothing.
  */
 const canAccessPrivateForm = async (
   workflow: Workflow,
   userId: string,
 ): Promise<boolean> => {
-  if (await isOrgAdmin(workflow.organizationId, userId)) return true;
-  if (workflow.userId) return workflow.userId === userId;
-  return isTeamMember(workflow.teamId, userId);
+  const principal = await loadPrincipal({
+    organizationId: workflow.organizationId,
+    userId,
+  });
+  if (!principal) return false;
+  const resolved = await resolveAccess(principal, "workflow", workflow.id);
+  return resolved !== null && atLeast(resolved.level, "use");
 };
 
 /**

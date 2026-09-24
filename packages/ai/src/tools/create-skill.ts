@@ -1,8 +1,9 @@
-import { assertOrgAdmin } from "@fretik/shared/lib/auth-roles";
+import { hasCapability } from "@fretik/shared/authz/gates";
 import { pickAvailableSkillSlug } from "@fretik/shared/services/skills/slugify-name";
 import { validateSkillShape } from "@fretik/shared/services/skills/validate";
 import { tool } from "ai";
 import { z } from "zod";
+import { actingPrincipal } from "../agents/shared/acting-principal";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
 
 /**
@@ -25,9 +26,10 @@ import { getRuntimeContext } from "../agents/shared/runtime-context";
  * `/workspace/skills/skill-author/SKILL.md`. The tool description
  * tells the model to read it first so the proposal respects the rules.
  *
- * Authz: only org owners / admins can save skills. Non-admins get a
- * `not_authorized` error so the assistant relays it politely instead
- * of producing a draft that would be rejected on save.
+ * Authz: only the team's leads and the organization's admins can save skills
+ * (`team.settings.manage`). Anyone else gets a `not_authorized` error so the
+ * assistant relays it politely instead of producing a draft that would be
+ * rejected on save.
  */
 export const createCreateSkillTool = () =>
   tool({
@@ -45,7 +47,7 @@ export const createCreateSkillTool = () =>
       "- If the user described what they want, work from their description. If they're referring to earlier in the conversation, extract the procedure from the transcript instead. The two are equally valid sources.",
       "- If anything material is unclear (when the skill should trigger, what the output should be, what inputs are required), ask the user before drafting. One good question is better than three small ones.",
       "",
-      "The result is surfaced to the user as a draft for them to review and confirm — only confirmed drafts are saved. Only team admins and owners can confirm; non-admin callers receive a `not_authorized` error to relay.",
+      "The result is surfaced to the user as a draft for them to review and confirm — only confirmed drafts are saved. Only the team's leads and the organization's admins can confirm; anyone else receives a `not_authorized` error to relay.",
     ].join("\n"),
     inputSchema: z.object({
       name: z
@@ -81,19 +83,20 @@ export const createCreateSkillTool = () =>
         };
       }
 
-      // Authz first so a non-admin doesn't see a slug-validation error
-      // when the real blocker is permissions.
-      try {
-        await assertOrgAdmin({
-          userId: ctx.userId,
-          organizationId: ctx.organizationId,
-          message: "Saving a skill requires admin or owner role",
-        });
-      } catch {
+      // Authz first, so someone who may not save sees the real blocker rather
+      // than a slug-validation error. The team's skills are its settings: its
+      // leads decide them, and the organization's admins, who lead every team
+      // (`team.settings.manage`).
+      const allowed = await hasCapability({
+        principal: await actingPrincipal(ctx),
+        capability: "team.settings.manage",
+        teamId: ctx.teamId,
+      });
+      if (!allowed) {
         return {
           error: "not_authorized",
           message:
-            "Only team admins and owners can save skills. Ask an admin in this conversation to confirm the save — they can read this transcript.",
+            "Only the team's leads and the organization's admins can save skills. Add one of them to this conversation to confirm.",
         };
       }
 

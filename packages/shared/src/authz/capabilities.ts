@@ -176,6 +176,8 @@ export const CAPABILITIES = {
   "team.members.manage": { scope: "team", decide: teamLeadsOnly },
   /** The assistant's settings: models, tool permissions, skills. */
   "team.settings.manage": { scope: "team", decide: teamLeadsOnly },
+  /** Clear the team's shared memory: hide its episodes, delete its notes in bulk. */
+  "team.memory.manage": { scope: "team", decide: teamLeadsOnly },
   /** Invite people into the organization, into this team. */
   "members.invite": {
     scope: "team",

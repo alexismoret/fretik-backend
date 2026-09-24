@@ -1,5 +1,7 @@
 import { eq } from "drizzle-orm";
 import { z } from "zod";
+import { requireCapability } from "../../../authz/gates";
+import type { UserPrincipal } from "../../../authz/principal";
 import db from "../../../db";
 import {
   type ExternalAppConcurrencyMode,
@@ -61,13 +63,19 @@ const resolveActionNames = async (
  * can update it.
  *
  * Status `error` is set by the dispatcher itself on a Nango 401/403, not
- * by users — it's accepted here for completeness (admins flipping back
+ * by users — it's accepted here for completeness (someone flipping it back
  * to `active` after a manual recovery).
  *
  * `scope` moves the row between shared (`user_id` NULL) and private. Taking a
  * SHARED connection private takes it away from everyone else, so it is gated on
- * being its creator or an org admin; sharing a PRIVATE one needs no gate — only
- * its owner can see it in the first place, so only its owner can get here.
+ * being its creator or governing the team's apps; sharing a PRIVATE one needs
+ * no gate — only its owner can see it in the first place, so only its owner
+ * can get here.
+ *
+ * GOVERNING a shared connection — its per-action permissions, its concurrency,
+ * its call budgets — decides for everyone who reads through it, so it is not
+ * a per-member knob: it takes `team.settings.manage` in the connection's team
+ * (its leads, and the organization's admins, who lead every team).
  *
  * `options` is treated as a partial patch: provided keys overwrite the
  * existing JSONB, omitted keys are preserved. The resulting merged object
@@ -78,7 +86,8 @@ const resolveActionNames = async (
 export const updateConnection = async (params: {
   id: string;
   teamId: string;
-  userId: string;
+  /** Who is changing it. */
+  principal: UserPrincipal;
   displayName?: string;
   status?: ExternalAppConnectionStatus;
   /** `team` = shared with the whole team, `user` = private to the caller. */
@@ -95,16 +104,22 @@ export const updateConnection = async (params: {
   rateLimit?: { requests: number; perSeconds: number } | null;
   /** In-flight ceiling for this account; `null` follows the manifest. */
   maxConcurrent?: number | null;
-  /** Whether the caller is an org admin — required to edit `actionPolicies` on
-   * a TEAM-scoped connection (any member can see it, only admins may change its
-   * permissions). Personal connections are owner-only via `getConnectionForCaller`. */
-  isOrgAdmin?: boolean;
 }): Promise<ExternalAppConnection> => {
+  const { principal } = params;
   const current = await getConnectionForCaller(
     params.id,
     params.teamId,
-    params.userId,
+    principal.userId,
   );
+  const isShared = current.userId === null;
+  /** Refuse a change to a SHARED connection unless the caller governs the team's apps. */
+  const requireGovernance = (message: string): Promise<void> =>
+    requireCapability({
+      principal,
+      capability: "team.settings.manage",
+      teamId: params.teamId,
+      message,
+    });
 
   const patch: Partial<ExternalAppConnection> = { updatedAt: new Date() };
   if (params.displayName !== undefined) patch.displayName = params.displayName;
@@ -121,27 +136,23 @@ export const updateConnection = async (params: {
       // people, so it is the only one that needs a gate.
       if (
         params.scope === "user" &&
-        current.createdByUserId !== params.userId &&
-        params.isOrgAdmin !== true
+        current.createdByUserId !== principal.userId
       ) {
-        return throwHttpError(403, {
-          code: ERROR_CODES.FORBIDDEN,
-          message:
-            "Only the member who connected this app, or an admin, can make it personal.",
-        });
+        await requireGovernance(
+          "Only the member who connected this app, or a team lead, can make it personal.",
+        );
       }
-      patch.userId = params.scope === "team" ? null : params.userId;
+      patch.userId = params.scope === "team" ? null : principal.userId;
     }
   }
 
   if (params.concurrencyMode !== undefined) {
     // Same gate as the policies below: on a shared connection this decides how
     // hard the WHOLE team may push one account, so it is not a per-member knob.
-    if (current.userId === null && params.isOrgAdmin !== true) {
-      return throwHttpError(403, {
-        code: ERROR_CODES.FORBIDDEN,
-        message: "Only an admin can change a team connection's concurrency.",
-      });
+    if (isShared) {
+      await requireGovernance(
+        "Only a team lead can change a team connection's concurrency.",
+      );
     }
     patch.concurrencyMode = params.concurrencyMode;
   }
@@ -150,11 +161,10 @@ export const updateConnection = async (params: {
     // Same gate, same reason: a budget is shared by everyone who reads through
     // this connection, so widening it is a decision about the whole team's
     // traffic and not one member's.
-    if (current.userId === null && params.isOrgAdmin !== true) {
-      return throwHttpError(403, {
-        code: ERROR_CODES.FORBIDDEN,
-        message: "Only an admin can change a team connection's call limits.",
-      });
+    if (isShared) {
+      await requireGovernance(
+        "Only a team lead can change a team connection's call limits.",
+      );
     }
     if (params.rateLimit !== undefined) {
       // Both columns move together or neither does: a count with no period is
@@ -169,12 +179,11 @@ export const updateConnection = async (params: {
   }
 
   if (params.actionPolicies !== undefined) {
-    // Team-scoped connection: only admins may change its permissions.
-    if (current.userId === null && params.isOrgAdmin !== true) {
-      return throwHttpError(403, {
-        code: ERROR_CODES.FORBIDDEN,
-        message: "Only an admin can change a team connection's permissions.",
-      });
+    // A shared connection's permissions are the team's decision.
+    if (isShared) {
+      await requireGovernance(
+        "Only a team lead can change a team connection's permissions.",
+      );
     }
     const actionNames = await resolveActionNames(current);
     const merged: Record<string, ToolPolicyLevel> = {

@@ -1,3 +1,4 @@
+import type { Principal } from "../../authz/principal";
 import type { PageRunResponse, PageValue } from "../../schemas/pages";
 import { resolvePageConnection } from "../external-apps/connections/resolve-for-page";
 import {
@@ -9,7 +10,6 @@ import { getPage } from "./retrieve";
 import { resolvePageState } from "./run-page-data";
 import { runPageRecordOperation } from "./run-record-operation";
 import { resolveExternalArgs } from "./sources/external";
-import type { PageRequester } from "./visibility";
 
 /**
  * Run one of a page's declared operations — the WRITE half of a page.
@@ -63,14 +63,16 @@ export const runPageOperation = async (params: {
   organizationId: string;
   teamId: string;
   userId: string;
-  requester?: PageRequester;
+  /** Running a page's operation takes `use` on the page. */
+  principal: Principal;
   operation: string;
   variables: Record<string, PageValue>;
 }): Promise<PageRunResponse> => {
   const page = await getPage({
     pageId: params.pageId,
     teamId: params.teamId,
-    ...(params.requester ? { requester: params.requester } : {}),
+    principal: params.principal,
+    level: "use",
   });
 
   const operation = page.definition.operations.find(

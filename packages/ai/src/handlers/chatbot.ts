@@ -1,3 +1,4 @@
+import { access } from "@fretik/shared/authz/http";
 import db, { type Transaction } from "@fretik/shared/db";
 import { aiChatFiles, aiMessages } from "@fretik/shared/db/schema";
 import {
@@ -2906,407 +2907,413 @@ const REWIND_REFUSAL_STATUS = {
  * garbage-collected when the stream ends. No cross-request leakage is
  * possible because nothing outside that closure holds a reference.
  */
-chatbotRoutes.post("/stream", async (c) => {
-  // TTFT starts HERE. Everything below this line and above `runChatbotTurn` is
-  // serial I/O the user waits through, and until now none of it was measured:
-  // `[pre-turn]` opens at `buildTurnCallOptions`, several round trips later.
-  const routeStartedAt = Date.now();
-  const preludeTimings: StageTimings = {};
+chatbotRoutes.post(
+  "/stream",
+  access.handler(
+    "A turn is written by a participant of its conversation (getConversation); a new chat is the caller's own.",
+  ),
+  async (c) => {
+    // TTFT starts HERE. Everything below this line and above `runChatbotTurn` is
+    // serial I/O the user waits through, and until now none of it was measured:
+    // `[pre-turn]` opens at `buildTurnCallOptions`, several round trips later.
+    const routeStartedAt = Date.now();
+    const preludeTimings: StageTimings = {};
 
-  const user = c.get("user");
-  const team = c.get("team");
-  const organization = c.get("organization");
-  if (!team) return throwHttpError(403, teamRequired());
+    const user = c.get("user");
+    const team = c.get("team");
+    const organization = c.get("organization");
+    if (!team) return throwHttpError(403, teamRequired());
 
-  const body: unknown = await c.req.json();
-  const parsed = ChatStreamRequestSchema.safeParse(body);
-  if (!parsed.success) {
-    return c.json(
-      {
-        code: "VALIDATION_ERROR",
-        message: "Invalid request body",
-        details: parsed.error.issues.map((i) => i.message),
-      },
-      400,
-    );
-  }
-
-  const {
-    conversationId,
-    messages,
-    mentionedUserIds,
-    mentionsAssistant,
-    reasoningLevel,
-    editedMessageId,
-    retriedMessageId,
-  } = parsed.data;
-
-  const conversation = await timeStage(
-    preludeTimings,
-    "getConversation",
-    getConversation({
-      id: conversationId,
-      teamId: team.id,
-      userId: user.id,
-    }),
-  );
-  if (!conversation) {
-    return throwHttpError(404, notFound("Conversation not found"));
-  }
-
-  // Persist the new user message (last one in the incoming array),
-  // attributed to its human author. This happens BEFORE the activation
-  // gate so a human-to-human aside is still stored and seen by the others.
-  const lastUser = [...messages].reverse().find((m) => m.role === "user");
-
-  // Retrieval starts HERE, ahead of everything the turn still has to set up.
-  //
-  // The gather depends on the message text, its attachments and the session's
-  // scope — all three are already in hand — and on nothing produced below.
-  // Everything between this line and `runChatbotTurn` is serial I/O: saving the
-  // message, binding its files, two conversation events, the read marker,
-  // mentions, the stream claim, the turn log, the history since the last
-  // checkpoint, the model resolution. Ten round trips the three retrieval arms can run
-  // underneath instead of after.
-  //
-  // Fire-and-collect, never awaited here: `prefetchRecallGather` swallows its
-  // own failures, and `runUnifiedRecall` reads the promise back through
-  // `gatherPromise`. A turn that never reaches recall (the activation gate
-  // below, a 409 on the stream claim) simply drops it.
-  //
-  // One deliberate difference from the text the turn later sees: in a
-  // conversation with two or more participants `buildSpeakerContext` prefixes
-  // user messages with `[Name]: `, and that happens far below this line. The
-  // arms therefore retrieve against the message WITHOUT the speaker label,
-  // which is the more faithful query anyway — a colleague's name is noise to
-  // an embedding of "what is the Nordwind delivery cadence". Solo
-  // conversations, the overwhelming majority, are byte-identical either way.
-  const prefetchedGather =
-    lastUser && organization
-      ? prefetchRecallGather({
-          userMessage: uiMessageText(lastUser),
-          attachedFiles: extractLastUserFileFilenames([lastUser]).map(
-            (filename) => ({
-              filename,
-              mimeType: inferMimeTypeFromFilename(filename),
-            }),
-          ),
-          // Judge-only, and assembled after the await in `runUnifiedRecall`
-          // from the history this has not waited for.
-          recentTail: "",
-          teamId: team.id,
-          organizationId: organization.id,
-          userId: user.id,
-          conversationId,
-          agentType: "chatbot",
-        })
-      : null;
-
-  // An EDIT re-sends a message already in the thread with NEW wording; a RETRY
-  // re-sends it verbatim because the user wants another answer to the same
-  // question. Either way the conversation rewinds to that message before
-  // anything else happens: the turn below then answers against a history that
-  // no longer holds what the previous attempt produced
-  // (`loadConversationForAgent` reads the same rows).
-  //
-  // The order here is the whole trick. Cancel first — a running turn is
-  // precisely what would write into the gap the rewind opens — then delete
-  // everything after the message, then let the ordinary `saveMessage` below
-  // upsert it onto the same row (id, `seq` and `created_at` survive, so the
-  // bubble stays where it is and keeps its original time).
-  //
-  // What the two modes do NOT share is the budget. Only an edit is counted
-  // against `MAX_USER_MESSAGE_EDITS` and only an edit can be refused for having
-  // spent it: the cap exists so the question cannot be rewritten indefinitely,
-  // and a retry rewrites nothing.
-  const rewoundMessageId = editedMessageId ?? retriedMessageId;
-  const countsAsEdit = editedMessageId !== undefined;
-  let editCount: number | null = null;
-  if (rewoundMessageId) {
-    if (!lastUser || lastUser.id !== rewoundMessageId) {
+    const body: unknown = await c.req.json();
+    const parsed = ChatStreamRequestSchema.safeParse(body);
+    if (!parsed.success) {
       return c.json(
         {
-          code: "INVALID_REWIND",
-          message: `${countsAsEdit ? "editedMessageId" : "retriedMessageId"} must name the last user message of this request.`,
+          code: "VALIDATION_ERROR",
+          message: "Invalid request body",
+          details: parsed.error.issues.map((i) => i.message),
         },
         400,
       );
     }
-    const cancelledTurnId = await timeStage(
+
+    const {
+      conversationId,
+      messages,
+      mentionedUserIds,
+      mentionsAssistant,
+      reasoningLevel,
+      editedMessageId,
+      retriedMessageId,
+    } = parsed.data;
+
+    const conversation = await timeStage(
       preludeTimings,
-      "cancelForRewind",
-      cancelTurnForRewind(conversationId),
-    );
-    const rewound = await timeStage(
-      preludeTimings,
-      "rewind",
-      rewindConversationToUserMessage({
-        conversationId,
-        messageId: rewoundMessageId,
+      "getConversation",
+      getConversation({
+        id: conversationId,
+        teamId: team.id,
         userId: user.id,
-        countsAsEdit,
       }),
     );
-    if (!rewound.ok) {
-      // Deliberately never 409: the client transport reads that status as "a
-      // turn is already streaming, attach to it instead", which would swallow
-      // the refusal and leave the user looking at a truncated thread.
+    if (!conversation) {
+      return throwHttpError(404, notFound("Conversation not found"));
+    }
+
+    // Persist the new user message (last one in the incoming array),
+    // attributed to its human author. This happens BEFORE the activation
+    // gate so a human-to-human aside is still stored and seen by the others.
+    const lastUser = [...messages].reverse().find((m) => m.role === "user");
+
+    // Retrieval starts HERE, ahead of everything the turn still has to set up.
+    //
+    // The gather depends on the message text, its attachments and the session's
+    // scope — all three are already in hand — and on nothing produced below.
+    // Everything between this line and `runChatbotTurn` is serial I/O: saving the
+    // message, binding its files, two conversation events, the read marker,
+    // mentions, the stream claim, the turn log, the history since the last
+    // checkpoint, the model resolution. Ten round trips the three retrieval arms can run
+    // underneath instead of after.
+    //
+    // Fire-and-collect, never awaited here: `prefetchRecallGather` swallows its
+    // own failures, and `runUnifiedRecall` reads the promise back through
+    // `gatherPromise`. A turn that never reaches recall (the activation gate
+    // below, a 409 on the stream claim) simply drops it.
+    //
+    // One deliberate difference from the text the turn later sees: in a
+    // conversation with two or more participants `buildSpeakerContext` prefixes
+    // user messages with `[Name]: `, and that happens far below this line. The
+    // arms therefore retrieve against the message WITHOUT the speaker label,
+    // which is the more faithful query anyway — a colleague's name is noise to
+    // an embedding of "what is the Nordwind delivery cadence". Solo
+    // conversations, the overwhelming majority, are byte-identical either way.
+    const prefetchedGather =
+      lastUser && organization
+        ? prefetchRecallGather({
+            userMessage: uiMessageText(lastUser),
+            attachedFiles: extractLastUserFileFilenames([lastUser]).map(
+              (filename) => ({
+                filename,
+                mimeType: inferMimeTypeFromFilename(filename),
+              }),
+            ),
+            // Judge-only, and assembled after the await in `runUnifiedRecall`
+            // from the history this has not waited for.
+            recentTail: "",
+            teamId: team.id,
+            organizationId: organization.id,
+            userId: user.id,
+            conversationId,
+            agentType: "chatbot",
+          })
+        : null;
+
+    // An EDIT re-sends a message already in the thread with NEW wording; a RETRY
+    // re-sends it verbatim because the user wants another answer to the same
+    // question. Either way the conversation rewinds to that message before
+    // anything else happens: the turn below then answers against a history that
+    // no longer holds what the previous attempt produced
+    // (`loadConversationForAgent` reads the same rows).
+    //
+    // The order here is the whole trick. Cancel first — a running turn is
+    // precisely what would write into the gap the rewind opens — then delete
+    // everything after the message, then let the ordinary `saveMessage` below
+    // upsert it onto the same row (id, `seq` and `created_at` survive, so the
+    // bubble stays where it is and keeps its original time).
+    //
+    // What the two modes do NOT share is the budget. Only an edit is counted
+    // against `MAX_USER_MESSAGE_EDITS` and only an edit can be refused for having
+    // spent it: the cap exists so the question cannot be rewritten indefinitely,
+    // and a retry rewrites nothing.
+    const rewoundMessageId = editedMessageId ?? retriedMessageId;
+    const countsAsEdit = editedMessageId !== undefined;
+    let editCount: number | null = null;
+    if (rewoundMessageId) {
+      if (!lastUser || lastUser.id !== rewoundMessageId) {
+        return c.json(
+          {
+            code: "INVALID_REWIND",
+            message: `${countsAsEdit ? "editedMessageId" : "retriedMessageId"} must name the last user message of this request.`,
+          },
+          400,
+        );
+      }
+      const cancelledTurnId = await timeStage(
+        preludeTimings,
+        "cancelForRewind",
+        cancelTurnForRewind(conversationId),
+      );
+      const rewound = await timeStage(
+        preludeTimings,
+        "rewind",
+        rewindConversationToUserMessage({
+          conversationId,
+          messageId: rewoundMessageId,
+          userId: user.id,
+          countsAsEdit,
+        }),
+      );
+      if (!rewound.ok) {
+        // Deliberately never 409: the client transport reads that status as "a
+        // turn is already streaming, attach to it instead", which would swallow
+        // the refusal and leave the user looking at a truncated thread.
+        return c.json(
+          {
+            code:
+              rewound.reason === "limit-reached"
+                ? "EDIT_LIMIT_REACHED"
+                : countsAsEdit
+                  ? "EDIT_REFUSED"
+                  : "RETRY_REFUSED",
+            message: `Cannot ${countsAsEdit ? "edit" : "retry"} this message (${rewound.reason}).`,
+            editCount: rewound.editCount,
+            maxEdits: MAX_USER_MESSAGE_EDITS,
+          },
+          REWIND_REFUSAL_STATUS[rewound.reason],
+        );
+      }
+      editCount = rewound.nextEditCount;
+      console.info(
+        `[chatbot] conversation ${conversationId} rewound to ${rewoundMessageId} — ` +
+          (countsAsEdit
+            ? `edit ${editCount}/${MAX_USER_MESSAGE_EDITS}`
+            : `retry (edit ${editCount}/${MAX_USER_MESSAGE_EDITS} untouched)`) +
+          `, ${rewound.deletedMessages} message(s) dropped` +
+          (cancelledTurnId ? `, turn ${cancelledTurnId} discarded` : ""),
+      );
+    }
+
+    if (lastUser) {
+      const savedUserMessage = await timeStage(
+        preludeTimings,
+        "saveMessage",
+        saveMessage({
+          conversationId,
+          role: "user",
+          parts: lastUser.parts,
+          metadata:
+            editCount === null
+              ? lastUser.metadata
+              : withRewindMetadata(lastUser.metadata, editCount, countsAsEdit),
+          authorId: user.id,
+          // Keep the client's wire id (uuid via the frontend's `generateId`)
+          // so the bubble the sender already rendered survives rehydration
+          // with the same Vue key. A duplicate POST converges by upsert.
+          id: isUuid(lastUser.id) ? lastUser.id : undefined,
+        }),
+      );
+      // Bind every `ai_chat_files` row that was created in the draft
+      // (messageId = NULL) to the message we just persisted. The orphan
+      // reaper keys off `messageId IS NULL` to reap abandoned drafts —
+      // flipping this field here removes those rows from its scan.
+      if (savedUserMessage) {
+        const attachedFilenames = extractLastUserFileFilenames([lastUser]);
+        await timeStage(
+          preludeTimings,
+          "linkFiles",
+          linkChatFilesToMessage(
+            conversationId,
+            attachedFilenames,
+            savedUserMessage.id,
+          ),
+        );
+        // Surface the new user message to other connected viewers right away
+        // — covers human-to-human asides that never start an assistant turn,
+        // and lets viewers paint the sender's bubble before the answer streams.
+        //
+        // A rewind — edit or retry — announces itself differently: a viewer that
+        // merely appended the message would keep the exchange the rewind just
+        // deleted sitting underneath it, so `message-edited` means "reload,
+        // don't merge". `editCount` is non-null on exactly those two paths.
+        await timeStage(
+          preludeTimings,
+          "publishAdded",
+          publishConversationEvent(
+            conversationId,
+            editCount === null
+              ? {
+                  type: "message-added",
+                  messageId: savedUserMessage.id,
+                  role: "user",
+                  authorId: user.id,
+                }
+              : {
+                  type: "message-edited",
+                  messageId: savedUserMessage.id,
+                  authorId: user.id,
+                },
+          ),
+        );
+      }
+    }
+
+    // The sender has, by definition, just read the conversation — clear their
+    // own unread / action-required state.
+    await timeStage(
+      preludeTimings,
+      "markRead",
+      markConversationRead({ conversationId, userId: user.id }),
+    );
+
+    // Pull @mentioned teammates into the conversation and notify them.
+    if (mentionedUserIds && mentionedUserIds.length > 0) {
+      const mentioned = await timeStage(
+        preludeTimings,
+        "mentions",
+        applyMentions({
+          conversationId,
+          teamId: team.id,
+          byUserId: user.id,
+          mentionedUserIds,
+        }),
+      );
+      void notifyMentionedMembers({
+        mentioned,
+        conversationId,
+        conversationTitle: conversation.title,
+        mentionedByName: user.name,
+        logPrefix: "[chatbot]",
+      });
+    }
+
+    // Activation gate. The agent answers by default, but stays silent when the
+    // message @mentions humans only (a human-to-human aside). An explicit
+    // @Assistant mention forces a reply.
+    const hasHumanMention = (mentionedUserIds?.length ?? 0) > 0;
+    const shouldAgentRespond = !(hasHumanMention && !mentionsAssistant);
+    if (!shouldAgentRespond) {
+      // Human-to-human aside: the message is stored and the mentioned
+      // teammates are notified, but the agent doesn't reply. Return an empty
+      // UI message stream (not JSON) so the AI SDK transport on the client
+      // completes cleanly — the user's message stays, no assistant bubble.
+      return createUIMessageStreamResponse({
+        stream: createUIMessageStream<UIMessage>({ execute: () => undefined }),
+      });
+    }
+
+    // Phase 12 resumable streams — idempotence guard. Claim the active
+    // stream slot via a conditional UPDATE (only succeeds when
+    // `activeStreamId IS NULL`). If another tab or a dup request already
+    // kicked off a turn, we refuse with 409 so the client can switch to
+    // the GET /:id/stream reconnection path instead of running two
+    // turns in parallel.
+    const streamId = randomUUIDv7();
+    const claimed = await timeStage(
+      preludeTimings,
+      "claimStream",
+      setConversationActiveStream(conversationId, streamId),
+    );
+    if (!claimed) {
       return c.json(
         {
-          code:
-            rewound.reason === "limit-reached"
-              ? "EDIT_LIMIT_REACHED"
-              : countsAsEdit
-                ? "EDIT_REFUSED"
-                : "RETRY_REFUSED",
-          message: `Cannot ${countsAsEdit ? "edit" : "retry"} this message (${rewound.reason}).`,
-          editCount: rewound.editCount,
-          maxEdits: MAX_USER_MESSAGE_EDITS,
+          code: "STREAM_IN_PROGRESS",
+          message:
+            "A chatbot turn is already streaming for this conversation. Reconnect via GET /chatbot/:id/stream instead.",
         },
-        REWIND_REFUSAL_STATUS[rewound.reason],
+        409,
       );
     }
-    editCount = rewound.nextEditCount;
-    console.info(
-      `[chatbot] conversation ${conversationId} rewound to ${rewoundMessageId} — ` +
-        (countsAsEdit
-          ? `edit ${editCount}/${MAX_USER_MESSAGE_EDITS}`
-          : `retry (edit ${editCount}/${MAX_USER_MESSAGE_EDITS} untouched)`) +
-        `, ${rewound.deletedMessages} message(s) dropped` +
-        (cancelledTurnId ? `, turn ${cancelledTurnId} discarded` : ""),
-    );
-  }
 
-  if (lastUser) {
-    const savedUserMessage = await timeStage(
+    // Open the turn log BEFORE announcing the turn: the log exists from this
+    // instant, so any viewer invited by `turn-started` attaches successfully
+    // — there is no setup window where an attach finds nothing (the old
+    // buffer registered seconds into the turn and early attachers 204'd).
+    await timeStage(preludeTimings, "openTurnLog", openTurnLog(streamId));
+
+    // Announce the turn to every connected viewer so non-senders fan-in to
+    // the same turn log (live multi-user streaming) and their send button
+    // gates while it runs. `byUserId` lets the sender's own client skip the
+    // fan-in (it is already streaming via this POST).
+    await timeStage(
       preludeTimings,
-      "saveMessage",
-      saveMessage({
-        conversationId,
-        role: "user",
-        parts: lastUser.parts,
-        metadata:
-          editCount === null
-            ? lastUser.metadata
-            : withRewindMetadata(lastUser.metadata, editCount, countsAsEdit),
-        authorId: user.id,
-        // Keep the client's wire id (uuid via the frontend's `generateId`)
-        // so the bubble the sender already rendered survives rehydration
-        // with the same Vue key. A duplicate POST converges by upsert.
-        id: isUuid(lastUser.id) ? lastUser.id : undefined,
-      }),
-    );
-    // Bind every `ai_chat_files` row that was created in the draft
-    // (messageId = NULL) to the message we just persisted. The orphan
-    // reaper keys off `messageId IS NULL` to reap abandoned drafts —
-    // flipping this field here removes those rows from its scan.
-    if (savedUserMessage) {
-      const attachedFilenames = extractLastUserFileFilenames([lastUser]);
-      await timeStage(
-        preludeTimings,
-        "linkFiles",
-        linkChatFilesToMessage(
-          conversationId,
-          attachedFilenames,
-          savedUserMessage.id,
-        ),
-      );
-      // Surface the new user message to other connected viewers right away
-      // — covers human-to-human asides that never start an assistant turn,
-      // and lets viewers paint the sender's bubble before the answer streams.
-      //
-      // A rewind — edit or retry — announces itself differently: a viewer that
-      // merely appended the message would keep the exchange the rewind just
-      // deleted sitting underneath it, so `message-edited` means "reload,
-      // don't merge". `editCount` is non-null on exactly those two paths.
-      await timeStage(
-        preludeTimings,
-        "publishAdded",
-        publishConversationEvent(
-          conversationId,
-          editCount === null
-            ? {
-                type: "message-added",
-                messageId: savedUserMessage.id,
-                role: "user",
-                authorId: user.id,
-              }
-            : {
-                type: "message-edited",
-                messageId: savedUserMessage.id,
-                authorId: user.id,
-              },
-        ),
-      );
-    }
-  }
-
-  // The sender has, by definition, just read the conversation — clear their
-  // own unread / action-required state.
-  await timeStage(
-    preludeTimings,
-    "markRead",
-    markConversationRead({ conversationId, userId: user.id }),
-  );
-
-  // Pull @mentioned teammates into the conversation and notify them.
-  if (mentionedUserIds && mentionedUserIds.length > 0) {
-    const mentioned = await timeStage(
-      preludeTimings,
-      "mentions",
-      applyMentions({
-        conversationId,
-        teamId: team.id,
+      "publishStarted",
+      publishConversationEvent(conversationId, {
+        type: "turn-started",
+        streamId,
         byUserId: user.id,
-        mentionedUserIds,
       }),
     );
-    void notifyMentionedMembers({
-      mentioned,
+
+    // Everything after the last checkpoint. Tokens bound the window — the
+    // compaction cap folds the older portion into the next checkpoint — and
+    // the row limit is only a guard; see `AGENT_WINDOW_ROW_LIMIT`.
+    const window = await timeStage(
+      preludeTimings,
+      "loadHistory",
+      loadAgentWindow(conversationId),
+    );
+    const history = window.messages;
+
+    // Attribute speakers when the conversation is collaborative (≥2 members).
+    // Solo conversations are left untouched — see buildSpeakerContext.
+    const { history: speakerHistory, participantsBlock } = buildSpeakerContext({
+      history,
+      participants: conversation.members,
+    });
+
+    const callOptions: ChatbotCallOptions = {
+      organizationId: organization.id,
+      teamId: team.id,
+      userId: user.id,
+      userName: user.name,
       conversationId,
-      conversationTitle: conversation.title,
-      mentionedByName: user.name,
+      timeZone: c.req.header("X-Client-Timezone"),
+      participantsBlock,
+      // Reuse the resumable streamId as the per-turn trace id so step /
+      // zombie / fallback log lines all share one identifier — one grep
+      // recovers the full turn end-to-end. (Distinct from the Langfuse
+      // trace id, which is the active OTel span context.)
+      traceId: streamId,
+    };
+
+    // C8 — which flagship model serves this turn: the conversation's pin (legacy
+    // conversations, stamped when the prompt bar still had a model picker) → the
+    // team's pick in settings → the code default. An unknown or
+    // no-longer-selectable pin degrades rather than erroring.
+    const {
+      profileKey: flagshipKey,
+      fellBack,
+      storedReasoningLevel,
+    } = await timeStage(
+      preludeTimings,
+      "resolveFlagship",
+      resolveTeamFlagship(team.id, conversation.modelProfileKey),
+    );
+    if (fellBack && conversation.modelProfileKey) {
+      console.warn(
+        `[chatbot] conversation ${conversationId} pinned model "${conversation.modelProfileKey}" is not a selectable flagship — using default`,
+      );
+    }
+    const profile = resolveChatModelForProfile(flagshipKey).profile;
+
+    markSince(preludeTimings, "preludeTotal", routeStartedAt);
+    console.info(`[chatbot] [prelude] ${formatTimings(preludeTimings)}`);
+
+    return runChatbotTurn({
+      conversationId,
+      history: speakerHistory,
+      agentWindow: window,
+      participantIds: conversation.members.map((m) => m.userId),
+      callOptions,
+      prefetchedGather,
+      routeStartedAt,
+      preludeTimings,
+      resumableStreamId: streamId,
       logPrefix: "[chatbot]",
+      agentSet: getChatbotAgentSet(flagshipKey),
+      modelProfile: profile,
+      // Thinking depth, outermost choice first: what this user picked in the
+      // prompt bar for this turn, else the team's stored default for this model,
+      // else the profile's own. `effectiveReasoningLevel` drops anything the
+      // model does not support (and the profile default itself, so an untouched
+      // turn stays byte-identical on the wire).
+      reasoningLevel: effectiveReasoningLevel(
+        profile,
+        reasoningLevel ?? storedReasoningLevel,
+      ),
     });
-  }
-
-  // Activation gate. The agent answers by default, but stays silent when the
-  // message @mentions humans only (a human-to-human aside). An explicit
-  // @Assistant mention forces a reply.
-  const hasHumanMention = (mentionedUserIds?.length ?? 0) > 0;
-  const shouldAgentRespond = !(hasHumanMention && !mentionsAssistant);
-  if (!shouldAgentRespond) {
-    // Human-to-human aside: the message is stored and the mentioned
-    // teammates are notified, but the agent doesn't reply. Return an empty
-    // UI message stream (not JSON) so the AI SDK transport on the client
-    // completes cleanly — the user's message stays, no assistant bubble.
-    return createUIMessageStreamResponse({
-      stream: createUIMessageStream<UIMessage>({ execute: () => undefined }),
-    });
-  }
-
-  // Phase 12 resumable streams — idempotence guard. Claim the active
-  // stream slot via a conditional UPDATE (only succeeds when
-  // `activeStreamId IS NULL`). If another tab or a dup request already
-  // kicked off a turn, we refuse with 409 so the client can switch to
-  // the GET /:id/stream reconnection path instead of running two
-  // turns in parallel.
-  const streamId = randomUUIDv7();
-  const claimed = await timeStage(
-    preludeTimings,
-    "claimStream",
-    setConversationActiveStream(conversationId, streamId),
-  );
-  if (!claimed) {
-    return c.json(
-      {
-        code: "STREAM_IN_PROGRESS",
-        message:
-          "A chatbot turn is already streaming for this conversation. Reconnect via GET /chatbot/:id/stream instead.",
-      },
-      409,
-    );
-  }
-
-  // Open the turn log BEFORE announcing the turn: the log exists from this
-  // instant, so any viewer invited by `turn-started` attaches successfully
-  // — there is no setup window where an attach finds nothing (the old
-  // buffer registered seconds into the turn and early attachers 204'd).
-  await timeStage(preludeTimings, "openTurnLog", openTurnLog(streamId));
-
-  // Announce the turn to every connected viewer so non-senders fan-in to
-  // the same turn log (live multi-user streaming) and their send button
-  // gates while it runs. `byUserId` lets the sender's own client skip the
-  // fan-in (it is already streaming via this POST).
-  await timeStage(
-    preludeTimings,
-    "publishStarted",
-    publishConversationEvent(conversationId, {
-      type: "turn-started",
-      streamId,
-      byUserId: user.id,
-    }),
-  );
-
-  // Everything after the last checkpoint. Tokens bound the window — the
-  // compaction cap folds the older portion into the next checkpoint — and
-  // the row limit is only a guard; see `AGENT_WINDOW_ROW_LIMIT`.
-  const window = await timeStage(
-    preludeTimings,
-    "loadHistory",
-    loadAgentWindow(conversationId),
-  );
-  const history = window.messages;
-
-  // Attribute speakers when the conversation is collaborative (≥2 members).
-  // Solo conversations are left untouched — see buildSpeakerContext.
-  const { history: speakerHistory, participantsBlock } = buildSpeakerContext({
-    history,
-    participants: conversation.members,
-  });
-
-  const callOptions: ChatbotCallOptions = {
-    organizationId: organization.id,
-    teamId: team.id,
-    userId: user.id,
-    userName: user.name,
-    conversationId,
-    timeZone: c.req.header("X-Client-Timezone"),
-    participantsBlock,
-    // Reuse the resumable streamId as the per-turn trace id so step /
-    // zombie / fallback log lines all share one identifier — one grep
-    // recovers the full turn end-to-end. (Distinct from the Langfuse
-    // trace id, which is the active OTel span context.)
-    traceId: streamId,
-  };
-
-  // C8 — which flagship model serves this turn: the conversation's pin (legacy
-  // conversations, stamped when the prompt bar still had a model picker) → the
-  // team's pick in settings → the code default. An unknown or
-  // no-longer-selectable pin degrades rather than erroring.
-  const {
-    profileKey: flagshipKey,
-    fellBack,
-    storedReasoningLevel,
-  } = await timeStage(
-    preludeTimings,
-    "resolveFlagship",
-    resolveTeamFlagship(team.id, conversation.modelProfileKey),
-  );
-  if (fellBack && conversation.modelProfileKey) {
-    console.warn(
-      `[chatbot] conversation ${conversationId} pinned model "${conversation.modelProfileKey}" is not a selectable flagship — using default`,
-    );
-  }
-  const profile = resolveChatModelForProfile(flagshipKey).profile;
-
-  markSince(preludeTimings, "preludeTotal", routeStartedAt);
-  console.info(`[chatbot] [prelude] ${formatTimings(preludeTimings)}`);
-
-  return runChatbotTurn({
-    conversationId,
-    history: speakerHistory,
-    agentWindow: window,
-    participantIds: conversation.members.map((m) => m.userId),
-    callOptions,
-    prefetchedGather,
-    routeStartedAt,
-    preludeTimings,
-    resumableStreamId: streamId,
-    logPrefix: "[chatbot]",
-    agentSet: getChatbotAgentSet(flagshipKey),
-    modelProfile: profile,
-    // Thinking depth, outermost choice first: what this user picked in the
-    // prompt bar for this turn, else the team's stored default for this model,
-    // else the profile's own. `effectiveReasoningLevel` drops anything the
-    // model does not support (and the profile default itself, so an untouched
-    // turn stays byte-identical on the wire).
-    reasoningLevel: effectiveReasoningLevel(
-      profile,
-      reasoningLevel ?? storedReasoningLevel,
-    ),
-  });
-});
+  },
+);
 
 /**
  * How long after a turn claimed the slot its turn log is still assumed to
@@ -3340,72 +3347,76 @@ const TURN_LOG_CURSOR_RE = /^\d+-\d+$/;
  * producer pings its log every 5s, so a stale tail means a dead process
  * and the slot is cleared on the spot.
  */
-chatbotRoutes.get("/:conversationId/stream", async (c) => {
-  const user = c.get("user");
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
+chatbotRoutes.get(
+  "/:conversationId/stream",
+  access.resource("conversation", "view", "conversationId"),
+  async (c) => {
+    const user = c.get("user");
+    const team = c.get("team");
+    if (!team) return throwHttpError(403, teamRequired());
 
-  const conversationId = c.req.param("conversationId");
-  const conversation = await getConversation({
-    id: conversationId,
-    teamId: team.id,
-    userId: user.id,
-  });
-  if (!conversation) {
-    return throwHttpError(404, notFound("Conversation not found"));
-  }
-
-  const activeStreamId = await getConversationActiveStream(conversationId);
-  if (!activeStreamId) {
-    return new Response(null, { status: 204 });
-  }
-
-  const status = await getTurnLogStatus(activeStreamId);
-  if (!status.exists) {
-    // The log is opened synchronously right after the claim, so a missing
-    // log means Redis lost the key (flush/restart) — except for a request
-    // racing the claim by milliseconds, which gets the benefit of the
-    // doubt via the claim uuid's own timestamp.
-    const claimedAt = uuidv7TimestampMs(activeStreamId);
-    const isFreshClaim =
-      claimedAt !== null && Date.now() - claimedAt < STREAM_CLAIM_GRACE_MS;
-    if (!isFreshClaim) {
-      await clearConversationActiveStream(conversationId, activeStreamId);
+    const conversationId = c.req.param("conversationId");
+    const conversation = await getConversation({
+      id: conversationId,
+      teamId: team.id,
+      userId: user.id,
+    });
+    if (!conversation) {
+      return throwHttpError(404, notFound("Conversation not found"));
     }
-    return new Response(null, { status: 204 });
-  }
-  if (status.ended) {
-    // The log is closed but the slot survived it — the producer died between
-    // its end marker and its cleanup, or its persistence threw. The turn is
-    // over either way: everything it produced is in history, so serving the
-    // log again would only replay a finished turn behind a slot that keeps
-    // 409ing every new prompt. Same rule the maintenance sweep applies, but
-    // on demand instead of on its cadence.
-    await clearConversationActiveStream(conversationId, activeStreamId);
-    return new Response(null, { status: 204 });
-  }
-  if (isTurnLogOrphan(status, Date.now())) {
-    // Dead producer (deploy/crash mid-turn — or a stall long past even
-    // the tool-aware deadline). SALVAGE, then clear: everything the turn
-    // streamed becomes persisted history, so the client's fallback shows
-    // the interrupted turn instead of nothing. Then clear the slot so the
-    // conversation isn't stuck behind the 409 guard.
-    await drainTurnLogToHistory({ conversationId, streamId: activeStreamId });
-    await clearConversationActiveStream(conversationId, activeStreamId);
-    return new Response(null, { status: 204 });
-  }
 
-  const rawCursor = c.req.header("Last-Event-ID") ?? c.req.query("cursor");
-  const cursor =
-    rawCursor && TURN_LOG_CURSOR_RE.test(rawCursor) ? rawCursor : "0-0";
-  return new Response(readTurnLogAsSse(activeStreamId, cursor), {
-    status: 200,
-    headers: {
-      ...UI_MESSAGE_STREAM_HEADERS,
-      ...ANTI_BUFFERING_HEADERS,
-    },
-  });
-});
+    const activeStreamId = await getConversationActiveStream(conversationId);
+    if (!activeStreamId) {
+      return new Response(null, { status: 204 });
+    }
+
+    const status = await getTurnLogStatus(activeStreamId);
+    if (!status.exists) {
+      // The log is opened synchronously right after the claim, so a missing
+      // log means Redis lost the key (flush/restart) — except for a request
+      // racing the claim by milliseconds, which gets the benefit of the
+      // doubt via the claim uuid's own timestamp.
+      const claimedAt = uuidv7TimestampMs(activeStreamId);
+      const isFreshClaim =
+        claimedAt !== null && Date.now() - claimedAt < STREAM_CLAIM_GRACE_MS;
+      if (!isFreshClaim) {
+        await clearConversationActiveStream(conversationId, activeStreamId);
+      }
+      return new Response(null, { status: 204 });
+    }
+    if (status.ended) {
+      // The log is closed but the slot survived it — the producer died between
+      // its end marker and its cleanup, or its persistence threw. The turn is
+      // over either way: everything it produced is in history, so serving the
+      // log again would only replay a finished turn behind a slot that keeps
+      // 409ing every new prompt. Same rule the maintenance sweep applies, but
+      // on demand instead of on its cadence.
+      await clearConversationActiveStream(conversationId, activeStreamId);
+      return new Response(null, { status: 204 });
+    }
+    if (isTurnLogOrphan(status, Date.now())) {
+      // Dead producer (deploy/crash mid-turn — or a stall long past even
+      // the tool-aware deadline). SALVAGE, then clear: everything the turn
+      // streamed becomes persisted history, so the client's fallback shows
+      // the interrupted turn instead of nothing. Then clear the slot so the
+      // conversation isn't stuck behind the 409 guard.
+      await drainTurnLogToHistory({ conversationId, streamId: activeStreamId });
+      await clearConversationActiveStream(conversationId, activeStreamId);
+      return new Response(null, { status: 204 });
+    }
+
+    const rawCursor = c.req.header("Last-Event-ID") ?? c.req.query("cursor");
+    const cursor =
+      rawCursor && TURN_LOG_CURSOR_RE.test(rawCursor) ? rawCursor : "0-0";
+    return new Response(readTurnLogAsSse(activeStreamId, cursor), {
+      status: 200,
+      headers: {
+        ...UI_MESSAGE_STREAM_HEADERS,
+        ...ANTI_BUFFERING_HEADERS,
+      },
+    });
+  },
+);
 
 /**
  * POST /chatbot/:conversationId/stop — explicit user Stop.
@@ -3427,31 +3438,35 @@ chatbotRoutes.get("/:conversationId/stream", async (c) => {
  * Idempotent: a second Stop on an already-cleared conversation
  * is a harmless no-op.
  */
-chatbotRoutes.post("/:conversationId/stop", async (c) => {
-  const user = c.get("user");
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
+chatbotRoutes.post(
+  "/:conversationId/stop",
+  access.resource("conversation", "use", "conversationId"),
+  async (c) => {
+    const user = c.get("user");
+    const team = c.get("team");
+    if (!team) return throwHttpError(403, teamRequired());
 
-  const conversationId = c.req.param("conversationId");
-  const conversation = await getConversation({
-    id: conversationId,
-    teamId: team.id,
-    userId: user.id,
-  });
-  if (!conversation) {
-    return throwHttpError(404, notFound("Conversation not found"));
-  }
+    const conversationId = c.req.param("conversationId");
+    const conversation = await getConversation({
+      id: conversationId,
+      teamId: team.id,
+      userId: user.id,
+    });
+    if (!conversation) {
+      return throwHttpError(404, notFound("Conversation not found"));
+    }
 
-  const activeStreamId = await getConversationActiveStream(conversationId);
-  if (!activeStreamId) {
-    return c.json({ stopped: false, reason: "no-active-stream" }, 200);
-  }
+    const activeStreamId = await getConversationActiveStream(conversationId);
+    if (!activeStreamId) {
+      return c.json({ stopped: false, reason: "no-active-stream" }, 200);
+    }
 
-  await redis.publish(getAbortChannel(activeStreamId), "1");
-  await clearConversationActiveStream(conversationId, activeStreamId);
+    await redis.publish(getAbortChannel(activeStreamId), "1");
+    await clearConversationActiveStream(conversationId, activeStreamId);
 
-  return c.json({ stopped: true }, 200);
-});
+    return c.json({ stopped: true }, 200);
+  },
+);
 
 /**
  * GET /chatbot/:conversationId/events — long-lived per-viewer SSE channel
@@ -3461,87 +3476,92 @@ chatbotRoutes.post("/:conversationId/stop", async (c) => {
  * live streamId immediately (→ `resumeStream` fan-in) and see the roster.
  * Long-lived: returns only when the client disconnects (`stream.aborted`).
  */
-chatbotRoutes.get("/:conversationId/events", async (c) => {
-  const user = c.get("user");
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
+chatbotRoutes.get(
+  "/:conversationId/events",
+  access.resource("conversation", "view", "conversationId"),
+  async (c) => {
+    const user = c.get("user");
+    const team = c.get("team");
+    if (!team) return throwHttpError(403, teamRequired());
 
-  const conversationId = c.req.param("conversationId");
-  const conversation = await getConversation({
-    id: conversationId,
-    teamId: team.id,
-    userId: user.id,
-  });
-  if (!conversation) {
-    return throwHttpError(404, notFound("Conversation not found"));
-  }
+    const conversationId = c.req.param("conversationId");
+    const conversation = await getConversation({
+      id: conversationId,
+      teamId: team.id,
+      userId: user.id,
+    });
+    if (!conversation) {
+      return throwHttpError(404, notFound("Conversation not found"));
+    }
 
-  for (const [key, value] of Object.entries(ANTI_BUFFERING_HEADERS)) {
-    c.header(key, value);
-  }
-  return streamSSE(c, async (stream) => {
-    // Bridge Redis pub/sub → an awaitable queue so every SSE write is
-    // ordered + awaited (the Bun chunked-encoding footgun; see sse-utils).
-    // The queue's shape is what keeps events from being dropped — see
-    // `lib/sse-event-queue.ts`. Subscribing here, BEFORE the snapshot below,
-    // is the other half of that: pub/sub has no replay.
-    const events = createSseEventQueue(CHATBOT_HEARTBEAT_MS);
-    const cleanup = await subscribeConversationEvents(conversationId, (p) =>
-      events.push(p),
-    );
+    for (const [key, value] of Object.entries(ANTI_BUFFERING_HEADERS)) {
+      c.header(key, value);
+    }
+    return streamSSE(c, async (stream) => {
+      // Bridge Redis pub/sub → an awaitable queue so every SSE write is
+      // ordered + awaited (the Bun chunked-encoding footgun; see sse-utils).
+      // The queue's shape is what keeps events from being dropped — see
+      // `lib/sse-event-queue.ts`. Subscribing here, BEFORE the snapshot below,
+      // is the other half of that: pub/sub has no replay.
+      const events = createSseEventQueue(CHATBOT_HEARTBEAT_MS);
+      const cleanup = await subscribeConversationEvents(conversationId, (p) =>
+        events.push(p),
+      );
 
-    /* oxlint-disable no-await-in-loop -- sequential SSE writes are required */
-    try {
-      // Initial snapshot: any live turn + the current presence roster, so a
-      // viewer joining mid-turn fans in and renders avatars without waiting
-      // for the next event.
-      // `turn-started` alone is the attach invite: the turn log exists from
-      // the moment the slot is claimed (openTurnLog runs before the event is
-      // published), so a viewer can always attach immediately — the separate
-      // `turn-stream-ready` handshake is gone with the old buffer.
-      //
-      // Written AFTER the subscription above, and inside this `try`, for two
-      // reasons. Subscribing second dropped every event published while the
-      // snapshot was on the wire — pub/sub has no replay, and a lost
-      // `turn-ended` leaves every viewer's send gate stuck on Stop until they
-      // reload. And a client that disconnects mid-snapshot must still reach
-      // the `finally` that unsubscribes. A `turn-started` delivered twice (in
-      // the queue AND in the snapshot) is harmless: the client's attach is
-      // single-flight and keyed by streamId.
-      const activeStreamId = await getConversationActiveStream(conversationId);
-      if (activeStreamId) {
+      /* oxlint-disable no-await-in-loop -- sequential SSE writes are required */
+      try {
+        // Initial snapshot: any live turn + the current presence roster, so a
+        // viewer joining mid-turn fans in and renders avatars without waiting
+        // for the next event.
+        // `turn-started` alone is the attach invite: the turn log exists from
+        // the moment the slot is claimed (openTurnLog runs before the event is
+        // published), so a viewer can always attach immediately — the separate
+        // `turn-stream-ready` handshake is gone with the old buffer.
+        //
+        // Written AFTER the subscription above, and inside this `try`, for two
+        // reasons. Subscribing second dropped every event published while the
+        // snapshot was on the wire — pub/sub has no replay, and a lost
+        // `turn-ended` leaves every viewer's send gate stuck on Stop until they
+        // reload. And a client that disconnects mid-snapshot must still reach
+        // the `finally` that unsubscribes. A `turn-started` delivered twice (in
+        // the queue AND in the snapshot) is harmless: the client's attach is
+        // single-flight and keyed by streamId.
+        const activeStreamId =
+          await getConversationActiveStream(conversationId);
+        if (activeStreamId) {
+          await stream.writeSSE({
+            event: "message",
+            data: JSON.stringify({
+              type: "turn-started",
+              streamId: activeStreamId,
+              byUserId: "",
+            }),
+          });
+        }
         await stream.writeSSE({
           event: "message",
           data: JSON.stringify({
-            type: "turn-started",
-            streamId: activeStreamId,
-            byUserId: "",
+            type: "presence",
+            viewers: await listViewers(conversationId),
           }),
         });
-      }
-      await stream.writeSSE({
-        event: "message",
-        data: JSON.stringify({
-          type: "presence",
-          viewers: await listViewers(conversationId),
-        }),
-      });
 
-      while (!stream.aborted) {
-        for (let next = events.take(); next; next = events.take()) {
-          await stream.writeSSE({ event: "message", data: next });
+        while (!stream.aborted) {
+          for (let next = events.take(); next; next = events.take()) {
+            await stream.writeSSE({ event: "message", data: next });
+          }
+          const outcome = await events.waitForEventOrHeartbeat();
+          if (outcome === "heartbeat") {
+            await stream.writeSSE({ event: "ping", data: "ping" });
+          }
         }
-        const outcome = await events.waitForEventOrHeartbeat();
-        if (outcome === "heartbeat") {
-          await stream.writeSSE({ event: "ping", data: "ping" });
-        }
+      } finally {
+        await cleanup();
       }
-    } finally {
-      await cleanup();
-    }
-    /* oxlint-enable no-await-in-loop */
-  });
-});
+      /* oxlint-enable no-await-in-loop */
+    });
+  },
+);
 
 const PresenceRequestSchema = z.object({ present: z.boolean().optional() });
 
@@ -3551,35 +3571,39 @@ const PresenceRequestSchema = z.object({ present: z.boolean().optional() });
  * self-heals an unclean tab close) and posts `{ present: false }` on a
  * clean leave. Broadcasts the refreshed roster to the other viewers.
  */
-chatbotRoutes.post("/:conversationId/presence", async (c) => {
-  const user = c.get("user");
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
+chatbotRoutes.post(
+  "/:conversationId/presence",
+  access.resource("conversation", "view", "conversationId"),
+  async (c) => {
+    const user = c.get("user");
+    const team = c.get("team");
+    if (!team) return throwHttpError(403, teamRequired());
 
-  const conversationId = c.req.param("conversationId");
-  const conversation = await getConversation({
-    id: conversationId,
-    teamId: team.id,
-    userId: user.id,
-  });
-  if (!conversation) {
-    return throwHttpError(404, notFound("Conversation not found"));
-  }
-
-  const body: unknown = await c.req.json().catch(() => ({}));
-  const parsed = PresenceRequestSchema.safeParse(body);
-  const present = parsed.success ? (parsed.data.present ?? true) : true;
-  if (present) {
-    await markPresent(conversationId, {
+    const conversationId = c.req.param("conversationId");
+    const conversation = await getConversation({
+      id: conversationId,
+      teamId: team.id,
       userId: user.id,
-      name: user.name,
-      image: user.image ?? null,
     });
-  } else {
-    await removePresent(conversationId, user.id);
-  }
-  return c.json({ ok: true }, 200);
-});
+    if (!conversation) {
+      return throwHttpError(404, notFound("Conversation not found"));
+    }
+
+    const body: unknown = await c.req.json().catch(() => ({}));
+    const parsed = PresenceRequestSchema.safeParse(body);
+    const present = parsed.success ? (parsed.data.present ?? true) : true;
+    if (present) {
+      await markPresent(conversationId, {
+        userId: user.id,
+        name: user.name,
+        image: user.image ?? null,
+      });
+    } else {
+      await removePresent(conversationId, user.id);
+    }
+    return c.json({ ok: true }, 200);
+  },
+);
 
 const TypingRequestSchema = z.object({ isTyping: z.boolean() });
 
@@ -3588,33 +3612,37 @@ const TypingRequestSchema = z.object({ isTyping: z.boolean() });
  * on/off signal to the other viewers. No storage; the client auto-expires
  * the indicator after a few seconds.
  */
-chatbotRoutes.post("/:conversationId/typing", async (c) => {
-  const user = c.get("user");
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
+chatbotRoutes.post(
+  "/:conversationId/typing",
+  access.resource("conversation", "use", "conversationId"),
+  async (c) => {
+    const user = c.get("user");
+    const team = c.get("team");
+    if (!team) return throwHttpError(403, teamRequired());
 
-  const conversationId = c.req.param("conversationId");
-  const body: unknown = await c.req.json();
-  const parsed = TypingRequestSchema.safeParse(body);
-  if (!parsed.success) {
-    return c.json({ code: "VALIDATION_ERROR", message: "Invalid body" }, 400);
-  }
-  const conversation = await getConversation({
-    id: conversationId,
-    teamId: team.id,
-    userId: user.id,
-  });
-  if (!conversation) {
-    return throwHttpError(404, notFound("Conversation not found"));
-  }
+    const conversationId = c.req.param("conversationId");
+    const body: unknown = await c.req.json();
+    const parsed = TypingRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json({ code: "VALIDATION_ERROR", message: "Invalid body" }, 400);
+    }
+    const conversation = await getConversation({
+      id: conversationId,
+      teamId: team.id,
+      userId: user.id,
+    });
+    if (!conversation) {
+      return throwHttpError(404, notFound("Conversation not found"));
+    }
 
-  await publishTyping(
-    conversationId,
-    { userId: user.id, name: user.name },
-    parsed.data.isTyping,
-  );
-  return c.json({ ok: true }, 200);
-});
+    await publishTyping(
+      conversationId,
+      { userId: user.id, name: user.name },
+      parsed.data.isTyping,
+    );
+    return c.json({ ok: true }, 200);
+  },
+);
 
 /**
  * POST /chatbot/feedback — capture user quality signals as Langfuse scores.
@@ -3640,89 +3668,95 @@ const ChatFeedbackSchema = z.object({
   comment: z.string().max(500).optional(),
 });
 
-chatbotRoutes.post("/feedback", async (c) => {
-  const user = c.get("user");
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
+chatbotRoutes.post(
+  "/feedback",
+  access.handler(
+    "Feedback on a message of a conversation the caller takes part in (getConversation).",
+  ),
+  async (c) => {
+    const user = c.get("user");
+    const team = c.get("team");
+    if (!team) return throwHttpError(403, teamRequired());
 
-  const body: unknown = await c.req.json();
-  const parsed = ChatFeedbackSchema.safeParse(body);
-  if (!parsed.success) {
-    return c.json(
-      {
-        code: "VALIDATION_ERROR",
-        message: "Invalid request body",
-        details: parsed.error.issues.map((i) => i.message),
-      },
-      400,
-    );
-  }
-  const { conversationId, messageId, traceId, type, comment } = parsed.data;
-
-  // Ownership check: only score traces from a conversation the caller owns.
-  const conversation = await getConversation({
-    id: conversationId,
-    teamId: team.id,
-    userId: user.id,
-  });
-  if (!conversation) {
-    return throwHttpError(404, notFound("Conversation not found"));
-  }
-
-  // Toggle off: delete the `user-feedback` score and drop the UX flag.
-  if (type === "clear") {
-    const recorded = await deleteScore(`${traceId}-user-feedback`);
-    await db
-      .update(aiMessages)
-      .set({
-        // jsonb `-` removes the key, preserving telemetry / langfuseTraceId.
-        metadata: sql`coalesce(${aiMessages.metadata}, '{}'::jsonb) - 'userFeedback'`,
-      })
-      .where(
-        and(
-          eq(aiMessages.id, messageId),
-          eq(aiMessages.conversationId, conversationId),
-        ),
+    const body: unknown = await c.req.json();
+    const parsed = ChatFeedbackSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json(
+        {
+          code: "VALIDATION_ERROR",
+          message: "Invalid request body",
+          details: parsed.error.issues.map((i) => i.message),
+        },
+        400,
       );
+    }
+    const { conversationId, messageId, traceId, type, comment } = parsed.data;
+
+    // Ownership check: only score traces from a conversation the caller owns.
+    const conversation = await getConversation({
+      id: conversationId,
+      teamId: team.id,
+      userId: user.id,
+    });
+    if (!conversation) {
+      return throwHttpError(404, notFound("Conversation not found"));
+    }
+
+    // Toggle off: delete the `user-feedback` score and drop the UX flag.
+    if (type === "clear") {
+      const recorded = await deleteScore(`${traceId}-user-feedback`);
+      await db
+        .update(aiMessages)
+        .set({
+          // jsonb `-` removes the key, preserving telemetry / langfuseTraceId.
+          metadata: sql`coalesce(${aiMessages.metadata}, '{}'::jsonb) - 'userFeedback'`,
+        })
+        .where(
+          and(
+            eq(aiMessages.id, messageId),
+            eq(aiMessages.conversationId, conversationId),
+          ),
+        );
+      return c.json({ recorded }, 200);
+    }
+
+    const scoreName = type === "retry" ? "user-retry" : "user-feedback";
+    const scoreValue = type === "thumbs-down" ? 0 : 1;
+    const recorded = await recordScore({
+      // Stable id per (trace, signal) → re-clicking a thumb upserts the one
+      // score instead of stacking duplicates.
+      id: `${traceId}-${scoreName}`,
+      traceId,
+      name: scoreName,
+      value: scoreValue,
+      dataType: "BOOLEAN",
+      ...(comment !== undefined ? { comment } : {}),
+    });
+
+    // Persist the chosen thumb on the message itself — a UX flag, distinct
+    // from the analytical Langfuse score — so it shows again on reload,
+    // arriving for free with the message history (no extra read). Merge into
+    // the existing metadata jsonb to preserve telemetry / langfuseTraceId.
+    // The `WHERE conversationId` scopes the write to the owned conversation.
+    // Retry is an implicit signal with no UI state to persist.
+    if (type !== "retry") {
+      const userFeedback = type === "thumbs-up" ? "up" : "down";
+      await db
+        .update(aiMessages)
+        .set({
+          metadata: sql`coalesce(${aiMessages.metadata}, '{}'::jsonb) || ${JSON.stringify({ userFeedback })}::jsonb`,
+        })
+        .where(
+          and(
+            eq(aiMessages.id, messageId),
+            eq(aiMessages.conversationId, conversationId),
+          ),
+        );
+    }
+
     return c.json({ recorded }, 200);
-  }
-
-  const scoreName = type === "retry" ? "user-retry" : "user-feedback";
-  const scoreValue = type === "thumbs-down" ? 0 : 1;
-  const recorded = await recordScore({
-    // Stable id per (trace, signal) → re-clicking a thumb upserts the one
-    // score instead of stacking duplicates.
-    id: `${traceId}-${scoreName}`,
-    traceId,
-    name: scoreName,
-    value: scoreValue,
-    dataType: "BOOLEAN",
-    ...(comment !== undefined ? { comment } : {}),
-  });
-
-  // Persist the chosen thumb on the message itself — a UX flag, distinct
-  // from the analytical Langfuse score — so it shows again on reload,
-  // arriving for free with the message history (no extra read). Merge into
-  // the existing metadata jsonb to preserve telemetry / langfuseTraceId.
-  // The `WHERE conversationId` scopes the write to the owned conversation.
-  // Retry is an implicit signal with no UI state to persist.
-  if (type !== "retry") {
-    const userFeedback = type === "thumbs-up" ? "up" : "down";
-    await db
-      .update(aiMessages)
-      .set({
-        metadata: sql`coalesce(${aiMessages.metadata}, '{}'::jsonb) || ${JSON.stringify({ userFeedback })}::jsonb`,
-      })
-      .where(
-        and(
-          eq(aiMessages.id, messageId),
-          eq(aiMessages.conversationId, conversationId),
-        ),
-      );
-  }
-
-  return c.json({ recorded }, 200);
-});
+  },
+);
 
 /**
  * POST /chatbot/:conversationId/summary — "summarise what I missed".
@@ -3731,56 +3765,60 @@ chatbotRoutes.post("/feedback", async (c) => {
  * read yet (since their `lastReadAt` / `joinedAt`). Membership-gated. Does
  * NOT mark the conversation read — the client decides when to clear unread.
  */
-chatbotRoutes.post("/:conversationId/summary", async (c) => {
-  const user = c.get("user");
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
+chatbotRoutes.post(
+  "/:conversationId/summary",
+  access.resource("conversation", "view", "conversationId"),
+  async (c) => {
+    const user = c.get("user");
+    const team = c.get("team");
+    if (!team) return throwHttpError(403, teamRequired());
 
-  const conversationId = c.req.param("conversationId");
+    const conversationId = c.req.param("conversationId");
 
-  const conversation = await getConversation({
-    id: conversationId,
-    teamId: team.id,
-    userId: user.id,
-  });
-  if (!conversation) {
-    return throwHttpError(404, notFound("Conversation not found"));
-  }
-
-  // Optional `since` — the client's snapshot of its `lastReadAt` captured
-  // before the conversation was marked read on open. Ignored if unparseable.
-  const body = await c.req.json().catch(() => ({}));
-  const rawSince = (body as { since?: unknown }).since;
-  const since =
-    typeof rawSince === "string" && !Number.isNaN(Date.parse(rawSince))
-      ? new Date(rawSince)
-      : undefined;
-
-  const { priorContext, missed } = await loadCatchUpContext({
-    conversationId,
-    userId: user.id,
-    ...(since ? { since } : {}),
-  });
-  // Served straight from this route, so it is its own root trace — named and
-  // joined to the conversation's session (see `withNamedTrace`).
-  const summary = await withNamedTrace(
-    "catch-up-summary",
-    {
-      sessionId: conversationId,
+    const conversation = await getConversation({
+      id: conversationId,
+      teamId: team.id,
       userId: user.id,
-      tags: [`team:${team.id}`],
-    },
-    () =>
-      summariseMissedMessages({
-        missed,
-        priorContext,
-        participants: conversation.members,
-        teamId: team.id,
-      }),
-  );
+    });
+    if (!conversation) {
+      return throwHttpError(404, notFound("Conversation not found"));
+    }
 
-  return c.json({ summary }, 200);
-});
+    // Optional `since` — the client's snapshot of its `lastReadAt` captured
+    // before the conversation was marked read on open. Ignored if unparseable.
+    const body = await c.req.json().catch(() => ({}));
+    const rawSince = (body as { since?: unknown }).since;
+    const since =
+      typeof rawSince === "string" && !Number.isNaN(Date.parse(rawSince))
+        ? new Date(rawSince)
+        : undefined;
+
+    const { priorContext, missed } = await loadCatchUpContext({
+      conversationId,
+      userId: user.id,
+      ...(since ? { since } : {}),
+    });
+    // Served straight from this route, so it is its own root trace — named and
+    // joined to the conversation's session (see `withNamedTrace`).
+    const summary = await withNamedTrace(
+      "catch-up-summary",
+      {
+        sessionId: conversationId,
+        userId: user.id,
+        tags: [`team:${team.id}`],
+      },
+      () =>
+        summariseMissedMessages({
+          missed,
+          priorContext,
+          participants: conversation.members,
+          teamId: team.id,
+        }),
+    );
+
+    return c.json({ summary }, 200);
+  },
+);
 
 // ==================== //
 // INTERNAL ROUTES      //
@@ -3799,190 +3837,201 @@ chatbotInternalRoutes.use("*", registryWarmMiddleware);
  * (to persist into ai_messages) or none (one-shot invocation with
  * inline messages, nothing persisted).
  */
-chatbotInternalRoutes.post("/invoke", async (c) => {
-  const context = c.get("context");
+chatbotInternalRoutes.post(
+  "/invoke",
+  access.internal(
+    "The API and the workflow engine invoke the agent for a team and, when there is one, a person they name.",
+  ),
+  async (c) => {
+    const context = c.get("context");
 
-  const raw: unknown = await c.req.json();
-  const parsed = InternalInvokeSchema.safeParse(raw);
-  if (!parsed.success) {
-    return c.json(
-      {
-        code: "VALIDATION_ERROR",
-        message: "Invalid request body",
-        details: parsed.error.issues.map((i) => i.message),
-      },
-      400,
-    );
-  }
-  const { conversationId, messages } = parsed.data;
-
-  // C3 eval seam: an internal caller may pin this turn to an arbitrary
-  // registry profile via `X-Model-Profile-Key`. Read HERE, not in
-  // `middlewares/internal.ts` — the middleware is shared by every
-  // internal route and the override must never leak into the
-  // user-facing /stream path. Unknown keys 400 instead of silently
-  // serving the default model: an eval run scored against the wrong
-  // model is worse than a failed one.
-  const profileKey = c.req.header("X-Model-Profile-Key");
-  let agentSet: AgentSet<ChatbotCallOptions, ChatbotTools> | undefined;
-  let modelProfile: ModelProfile | undefined;
-  if (profileKey !== undefined) {
-    try {
-      agentSet = getChatbotAgentSet(profileKey);
-      modelProfile = resolveChatModelForProfile(profileKey).profile;
-    } catch {
+    const raw: unknown = await c.req.json();
+    const parsed = InternalInvokeSchema.safeParse(raw);
+    if (!parsed.success) {
       return c.json(
         {
-          code: "UNKNOWN_MODEL_PROFILE",
-          message: `Unknown model profile key: "${profileKey}"`,
+          code: "VALIDATION_ERROR",
+          message: "Invalid request body",
+          details: parsed.error.issues.map((i) => i.message),
         },
         400,
       );
     }
-  }
+    const { conversationId, messages } = parsed.data;
 
-  // Second eval seam, and it exists because the first one was NOT enough:
-  // `X-Model-Profile-Key` repoints the parent turn only, so a page candidate
-  // run gated the model that DECIDES to build a page while the model that
-  // WRITES it stayed on the `page-build` binding. Same rules as above — read
-  // here so it cannot reach /stream, unknown keys refused rather than served.
-  const pageBuildProfileKey = c.req.header("X-Page-Build-Profile-Key");
-  if (pageBuildProfileKey !== undefined) {
-    try {
-      resolveChatModelForProfile(pageBuildProfileKey);
-    } catch {
+    // C3 eval seam: an internal caller may pin this turn to an arbitrary
+    // registry profile via `X-Model-Profile-Key`. Read HERE, not in
+    // `middlewares/internal.ts` — the middleware is shared by every
+    // internal route and the override must never leak into the
+    // user-facing /stream path. Unknown keys 400 instead of silently
+    // serving the default model: an eval run scored against the wrong
+    // model is worse than a failed one.
+    const profileKey = c.req.header("X-Model-Profile-Key");
+    let agentSet: AgentSet<ChatbotCallOptions, ChatbotTools> | undefined;
+    let modelProfile: ModelProfile | undefined;
+    if (profileKey !== undefined) {
+      try {
+        agentSet = getChatbotAgentSet(profileKey);
+        modelProfile = resolveChatModelForProfile(profileKey).profile;
+      } catch {
+        return c.json(
+          {
+            code: "UNKNOWN_MODEL_PROFILE",
+            message: `Unknown model profile key: "${profileKey}"`,
+          },
+          400,
+        );
+      }
+    }
+
+    // Second eval seam, and it exists because the first one was NOT enough:
+    // `X-Model-Profile-Key` repoints the parent turn only, so a page candidate
+    // run gated the model that DECIDES to build a page while the model that
+    // WRITES it stayed on the `page-build` binding. Same rules as above — read
+    // here so it cannot reach /stream, unknown keys refused rather than served.
+    const pageBuildProfileKey = c.req.header("X-Page-Build-Profile-Key");
+    if (pageBuildProfileKey !== undefined) {
+      try {
+        resolveChatModelForProfile(pageBuildProfileKey);
+      } catch {
+        return c.json(
+          {
+            code: "UNKNOWN_MODEL_PROFILE",
+            message: `Unknown page-build profile key: "${pageBuildProfileKey}"`,
+          },
+          400,
+        );
+      }
+    }
+
+    // Third eval seam, same rules again: which SELECTOR turns retrieval into the
+    // memory block. `RECALL_MODE` is a process default read at module load, so
+    // comparing the judge against the deterministic path otherwise means
+    // restarting the service between arms — and two runs taken minutes apart
+    // against a live corpus are not a paired comparison. Read here so it can
+    // never reach /stream; unknown values refused rather than silently served.
+    const recallModeHeader = c.req.header("X-Recall-Mode");
+    if (recallModeHeader !== undefined && !isRecallMode(recallModeHeader)) {
       return c.json(
         {
-          code: "UNKNOWN_MODEL_PROFILE",
-          message: `Unknown page-build profile key: "${pageBuildProfileKey}"`,
+          code: "UNKNOWN_RECALL_MODE",
+          message: `Unknown recall mode: "${recallModeHeader}" (expected judge | verbatim | adaptive)`,
         },
         400,
       );
     }
-  }
+    const recallMode: RecallMode | undefined = recallModeHeader;
 
-  // Third eval seam, same rules again: which SELECTOR turns retrieval into the
-  // memory block. `RECALL_MODE` is a process default read at module load, so
-  // comparing the judge against the deterministic path otherwise means
-  // restarting the service between arms — and two runs taken minutes apart
-  // against a live corpus are not a paired comparison. Read here so it can
-  // never reach /stream; unknown values refused rather than silently served.
-  const recallModeHeader = c.req.header("X-Recall-Mode");
-  if (recallModeHeader !== undefined && !isRecallMode(recallModeHeader)) {
-    return c.json(
-      {
-        code: "UNKNOWN_RECALL_MODE",
-        message: `Unknown recall mode: "${recallModeHeader}" (expected judge | verbatim | adaptive)`,
-      },
-      400,
-    );
-  }
-  const recallMode: RecallMode | undefined = recallModeHeader;
+    // Same contract, same reason, for the standing block: `digest` (the
+    // generated summary) vs `episodes` (the deterministic index) vs `none` (the
+    // control arm, which is what makes the other two measurable at all).
+    const standingModeHeader = c.req.header("X-Standing-Mode");
+    if (
+      standingModeHeader !== undefined &&
+      !isStandingMode(standingModeHeader)
+    ) {
+      return c.json(
+        {
+          code: "UNKNOWN_STANDING_MODE",
+          message: `Unknown standing mode: "${standingModeHeader}" (expected episodes | none)`,
+        },
+        400,
+      );
+    }
+    const standingMode: StandingMode | undefined = standingModeHeader;
 
-  // Same contract, same reason, for the standing block: `digest` (the
-  // generated summary) vs `episodes` (the deterministic index) vs `none` (the
-  // control arm, which is what makes the other two measurable at all).
-  const standingModeHeader = c.req.header("X-Standing-Mode");
-  if (standingModeHeader !== undefined && !isStandingMode(standingModeHeader)) {
-    return c.json(
-      {
-        code: "UNKNOWN_STANDING_MODE",
-        message: `Unknown standing mode: "${standingModeHeader}" (expected episodes | none)`,
-      },
-      400,
-    );
-  }
-  const standingMode: StandingMode | undefined = standingModeHeader;
+    // D.3 warning: `messages` is silently ignored when `conversationId`
+    // is set (the history is loaded from DB instead). Alert the caller
+    // via log so this isn't a silent footgun. Not rejected to preserve
+    // backward-compat with internal callers that might already send
+    // both fields — if a future caller is updated to rely on either
+    // mode explicitly, we can harden this into a 400 later.
+    if (conversationId && messages.length > 0) {
+      console.warn(
+        "[chatbot.invoke] conversationId + messages both present — `messages` is IGNORED (history is loaded from DB). Send without conversationId for stateless invocation, or without messages for stateful resume.",
+      );
+    }
 
-  // D.3 warning: `messages` is silently ignored when `conversationId`
-  // is set (the history is loaded from DB instead). Alert the caller
-  // via log so this isn't a silent footgun. Not rejected to preserve
-  // backward-compat with internal callers that might already send
-  // both fields — if a future caller is updated to rely on either
-  // mode explicitly, we can harden this into a 400 later.
-  if (conversationId && messages.length > 0) {
-    console.warn(
-      "[chatbot.invoke] conversationId + messages both present — `messages` is IGNORED (history is loaded from DB). Send without conversationId for stateless invocation, or without messages for stateful resume.",
-    );
-  }
+    /**
+     * The window, KEPT — not read for its `messages` and thrown away.
+     *
+     * Dropping it was a real defect and an expensive one. `onFinish` writes the
+     * checkpoint only when `agentWindow` is present, so this route read
+     * checkpoints and never wrote one: every turn on a long conversation
+     * reloaded the whole history and ran a fresh summariser. Measured 2026-09-18
+     * on a 340 000-token conversation over four two-turn probes — 8 turns, 8 full
+     * summariser runs, `compaction=29 634…60 776 ms` on every one of them,
+     * including the turns that should have opened on a checkpoint written three
+     * seconds earlier.
+     *
+     * It matters most exactly where it is least visible: `/invoke` is the
+     * server-to-server route, so the turns paying that were workflow nodes and
+     * evals, where nobody is watching a spinner and the cost shows up only on
+     * the bill.
+     */
+    // The context headers are trusted — this route sits behind the internal
+    // key — but a conversation named in the body is still checked against them:
+    // a caller that mixes up one id must fail, not replay another team's history
+    // under this team's identity.
+    if (conversationId) {
+      const conversation = await db.query.aiConversations.findFirst({
+        columns: { id: true },
+        where: { id: conversationId, teamId: context.teamId },
+      });
+      if (!conversation) {
+        return throwHttpError(404, notFound("Conversation not found"));
+      }
+    }
 
-  /**
-   * The window, KEPT — not read for its `messages` and thrown away.
-   *
-   * Dropping it was a real defect and an expensive one. `onFinish` writes the
-   * checkpoint only when `agentWindow` is present, so this route read
-   * checkpoints and never wrote one: every turn on a long conversation
-   * reloaded the whole history and ran a fresh summariser. Measured 2026-09-18
-   * on a 340 000-token conversation over four two-turn probes — 8 turns, 8 full
-   * summariser runs, `compaction=29 634…60 776 ms` on every one of them,
-   * including the turns that should have opened on a checkpoint written three
-   * seconds earlier.
-   *
-   * It matters most exactly where it is least visible: `/invoke` is the
-   * server-to-server route, so the turns paying that were workflow nodes and
-   * evals, where nobody is watching a spinner and the cost shows up only on
-   * the bill.
-   */
-  // The context headers are trusted — this route sits behind the internal
-  // key — but a conversation named in the body is still checked against them:
-  // a caller that mixes up one id must fail, not replay another team's history
-  // under this team's identity.
-  if (conversationId) {
-    const conversation = await db.query.aiConversations.findFirst({
-      columns: { id: true },
-      where: { id: conversationId, teamId: context.teamId },
+    const window = conversationId
+      ? await loadAgentWindow(conversationId)
+      : null;
+    const history: UIMessage[] = window ? window.messages : messages;
+    // Read rather than defaulted to `[]`: an empty cast is one the reader's
+    // `participants_changed` guard can never reject, because it only engages at
+    // two or more. See `loadParticipantIds`.
+    const participantIds = conversationId
+      ? await loadParticipantIds(conversationId)
+      : [];
+
+    const callOptions: ChatbotCallOptions = {
+      organizationId: context.organizationId,
+      teamId: context.teamId,
+      userId: context.userId,
+      userName: context.userName,
+      conversationId,
+      timeZone: context.timeZone,
+      // Internal `/invoke` callers don't generate a resumable streamId,
+      // so mint a fresh trace id here. Without it the agent-builder
+      // prepareCall short-circuits the per-turn onStepFinish override
+      // and step lines stay traceless — which is fine, just slightly
+      // harder to correlate when debugging.
+      traceId: randomUUIDv7(),
+      pageBuildProfileKey,
+    };
+
+    // Internal `/invoke` callers (e.g. workflow nodes) do NOT go through
+    // the turn-log path — they keep the HTTP connection open for
+    // the full turn and don't need tab-reopen reconnection. We still
+    // avoid passing the request AbortSignal to the LLM to stay
+    // consistent with the user-facing route; the caller should drive
+    // its own lifecycle.
+    return runChatbotTurn({
+      conversationId,
+      history,
+      ...(window ? { agentWindow: window } : {}),
+      participantIds,
+      callOptions,
+      agentSet,
+      modelProfile,
+      recallMode,
+      standingMode,
+      // Server-to-server channel: deliver real tool inputs (see
+      // RunChatbotTurnParams.scrubSensitiveInputs).
+      scrubSensitiveInputs: false,
+      logPrefix: "[chatbot.invoke]",
     });
-    if (!conversation) {
-      return throwHttpError(404, notFound("Conversation not found"));
-    }
-  }
-
-  const window = conversationId ? await loadAgentWindow(conversationId) : null;
-  const history: UIMessage[] = window ? window.messages : messages;
-  // Read rather than defaulted to `[]`: an empty cast is one the reader's
-  // `participants_changed` guard can never reject, because it only engages at
-  // two or more. See `loadParticipantIds`.
-  const participantIds = conversationId
-    ? await loadParticipantIds(conversationId)
-    : [];
-
-  const callOptions: ChatbotCallOptions = {
-    organizationId: context.organizationId,
-    teamId: context.teamId,
-    userId: context.userId,
-    userName: context.userName,
-    conversationId,
-    timeZone: context.timeZone,
-    // Internal `/invoke` callers don't generate a resumable streamId,
-    // so mint a fresh trace id here. Without it the agent-builder
-    // prepareCall short-circuits the per-turn onStepFinish override
-    // and step lines stay traceless — which is fine, just slightly
-    // harder to correlate when debugging.
-    traceId: randomUUIDv7(),
-    pageBuildProfileKey,
-  };
-
-  // Internal `/invoke` callers (e.g. workflow nodes) do NOT go through
-  // the turn-log path — they keep the HTTP connection open for
-  // the full turn and don't need tab-reopen reconnection. We still
-  // avoid passing the request AbortSignal to the LLM to stay
-  // consistent with the user-facing route; the caller should drive
-  // its own lifecycle.
-  return runChatbotTurn({
-    conversationId,
-    history,
-    ...(window ? { agentWindow: window } : {}),
-    participantIds,
-    callOptions,
-    agentSet,
-    modelProfile,
-    recallMode,
-    standingMode,
-    // Server-to-server channel: deliver real tool inputs (see
-    // RunChatbotTurnParams.scrubSensitiveInputs).
-    scrubSensitiveInputs: false,
-    logPrefix: "[chatbot.invoke]",
-  });
-});
+  },
+);
 
 export { chatbotInternalRoutes, chatbotRoutes };

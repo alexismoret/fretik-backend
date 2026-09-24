@@ -72,9 +72,7 @@ export const createPageReviewTool = () =>
       const page = await getPage({
         pageId: state.pageId,
         teamId: project.teamId,
-        ...(project.requester !== undefined
-          ? { requester: project.requester }
-          : {}),
+        principal: await project.principal(),
       });
 
       const review = await runPageReview({

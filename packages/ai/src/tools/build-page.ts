@@ -1,10 +1,12 @@
+import { requireAccess, resolveAccess } from "@fretik/shared/authz/access";
+import { atLeast } from "@fretik/shared/authz/levels";
 import { PAGE_ENTRY_FILE } from "@fretik/shared/schemas/pages";
-import { isOrgAdmin } from "@fretik/shared/services/organization/member-role";
 import { describeRowTypes } from "@fretik/shared/services/pages/describe-row-types";
 import { getPage } from "@fretik/shared/services/pages/retrieve";
 import type { Agent, ToolSet } from "ai";
 import { z } from "zod";
 import type { ChatbotCallOptions } from "../agents/chatbot";
+import { actingPrincipal } from "../agents/shared/acting-principal";
 import { buildChatbotTool } from "../agents/shared/chatbot-tool";
 import type { AgentRuntimeContext } from "../agents/shared/runtime-context";
 import { createSubAgentExecute } from "../agents/shared/sub-agent";
@@ -152,6 +154,21 @@ export const describePage = async (
   pageId: string,
   ctx: AgentRuntimeContext,
 ): Promise<string> => {
+  const principal = await actingPrincipal(ctx);
+  // Changing a page takes edit on it. A reader is refused HERE, with the
+  // reason, before a build starts — not at its first save, minutes later. A
+  // page out of sight falls through to the briefing below, like any page that
+  // fails to open.
+  const access = await resolveAccess(principal, "page", pageId);
+  if (access !== null && !atLeast(access.level, "edit")) {
+    await requireAccess({
+      principal,
+      type: "page",
+      id: pageId,
+      required: "edit",
+    });
+  }
+
   let state: PageProjectState;
   try {
     const scope = builderScope(ctx);
@@ -159,18 +176,7 @@ export const describePage = async (
     if (open !== null && open.pageId === pageId && hasFiles(open)) {
       state = open;
     } else {
-      const page = await getPage({
-        pageId,
-        teamId: ctx.teamId,
-        ...(ctx.userId !== undefined
-          ? {
-              requester: {
-                userId: ctx.userId,
-                isAdmin: await isOrgAdmin(ctx.organizationId, ctx.userId),
-              },
-            }
-          : {}),
-      });
+      const page = await getPage({ pageId, teamId: ctx.teamId, principal });
       state = projectFromDefinition(page.definition, {
         id: page.id,
         name: page.name,

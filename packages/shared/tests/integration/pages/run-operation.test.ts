@@ -191,12 +191,13 @@ afterEach(async () => {
     );
 });
 
-const run = (variables: Record<string, PageValue> = {}) =>
+const run = async (variables: Record<string, PageValue> = {}) =>
   runPageOperation({
     pageId,
     organizationId: fx.organizationId,
     teamId: fx.teamId,
     userId: fx.userIds[0],
+    principal: await fx.principalOf(fx.userIds[0]),
     operation: "create",
     variables,
   });

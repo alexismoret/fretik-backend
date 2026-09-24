@@ -1,3 +1,4 @@
+import { access } from "@fretik/shared/authz/http";
 import { type HonoLoggedAppType } from "@fretik/shared/lib/auth-middleware";
 import {
   getNangoWebhookSecret,
@@ -74,6 +75,9 @@ const webhookAckSchema = z.object({
 const webhookRoute = createRoute({
   method: "post",
   path: "/nango",
+  middleware: access.public(
+    "Inbound from Nango, which holds no session: an HMAC over the raw body authenticates it.",
+  ),
   summary: "Inbound Nango webhook (HMAC-signed)",
   description:
     "Authenticated by the `X-Nango-Hmac-Sha256` header over the raw body, using the environment's webhook signing key. Handles `auth` / `deletion`; acknowledges everything else without acting.",

@@ -1,4 +1,7 @@
 import { introspectMcpConnection } from "@fretik/providers/mcp";
+import { requireCapability } from "@fretik/shared/authz/gates";
+import { access } from "@fretik/shared/authz/http";
+import type { UserPrincipal } from "@fretik/shared/authz/principal";
 import type { ExternalAppConnection } from "@fretik/shared/db/schema";
 import {
   authMiddleware,
@@ -54,7 +57,6 @@ import {
   getSnapshotForConnection,
   recordMcpIntrospectionError,
 } from "@fretik/shared/services/external-apps/mcp/snapshot-store";
-import { isOrgAdmin } from "@fretik/shared/services/organization/member-role";
 import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 
 /**
@@ -73,10 +75,34 @@ import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
  * is the only place we record the connection's existence. We re-verify
  * the connection via `nango.getConnection(...)` to defend against a
  * hostile client posting a fake `connectionId`.
+ *
+ * Who may do what. A personal connection is its owner's alone: nobody else
+ * even sees it (`getConnectionForCaller`). A SHARED one is the team's: every
+ * member reads through it, and connecting, renaming, re-authenticating or
+ * removing one takes `team.connections.manage` in the team. Governing it —
+ * its action permissions, concurrency and budgets — takes
+ * `team.settings.manage`, checked field by field in `updateConnection`.
  */
 
 const connectionsRoutes = new OpenAPIHono<HonoLoggedAppType>();
 connectionsRoutes.use("*", authMiddleware);
+
+/**
+ * Refuse a change to a SHARED connection by someone who may not manage the
+ * team's apps. A personal connection needs no check here: only its owner can
+ * see it, so only its owner gets this far.
+ */
+const requireManageable = async (
+  connection: ExternalAppConnection,
+  principal: UserPrincipal,
+): Promise<void> => {
+  if (connection.userId !== null) return;
+  await requireCapability({
+    principal,
+    capability: "team.connections.manage",
+    teamId: connection.teamId,
+  });
+};
 
 // ---- DTO mapper ------------------------------------------------------
 
@@ -219,6 +245,9 @@ const toConnectionDto = async (
 const connectSessionRoute = createRoute({
   method: "post",
   path: "/connect-session",
+  middleware: access.session(
+    "Starts connecting an app for the caller; sharing it with the team is checked when it is confirmed.",
+  ),
   // (mounted at the root of `/external-apps`, so this lands at
   // `POST /external-apps/connect-session`).
   summary: "Mint a Nango Connect session for the frontend OAuth flow",
@@ -246,6 +275,9 @@ const connectSessionRoute = createRoute({
 const mcpCatalogRoute = createRoute({
   method: "get",
   path: "/mcp-catalog",
+  middleware: access.session(
+    "Searches a public catalog of MCP servers; nothing of the team is read.",
+  ),
   summary: "Search the MCP app catalog (Official MCP Registry, discovery-only)",
   description:
     "Searches the Official MCP Registry for connectable MCP servers (metadata only — logos, descriptions; no user data transits the registry). Paginated and searchable via `q`. Entries carry a `verified` flag (official/DNS-verified namespace). The connect UI merges these with the hand-written manifest providers. Connecting always goes direct to the server's own first-party endpoint.",
@@ -264,6 +296,9 @@ const mcpCatalogRoute = createRoute({
 const mcpInspectRoute = createRoute({
   method: "post",
   path: "/mcp-catalog/inspect",
+  middleware: access.session(
+    "Inspects a public MCP server's sign-in mode; nothing of the team is read or written.",
+  ),
   summary: "Inspect a discovered MCP server and auto-detect its auth mode",
   description:
     "Resolves the server's own first-party endpoint (preferring Streamable-HTTP over SSE) and best-effort classifies auth as none/oauth/manual so the connect UI can skip the manual auth picker. Also returns the logo/description/tools for the detail panel. Never creates a connection.",
@@ -288,6 +323,9 @@ const mcpInspectRoute = createRoute({
 const confirmRoute = createRoute({
   method: "post",
   path: "/connections",
+  middleware: access.handler(
+    "A connection of one's own is open to every member; a shared one takes team.connections.manage.",
+  ),
   summary: "Confirm and store a Nango connection after Connect UI completes",
   description:
     "Called by the frontend right after Nango's Connect UI fires `onEvent({ type: 'connect' })`. The handler verifies the `nangoConnectionId` via `nango.getConnection(...)` (defense against fake IDs) then inserts a Fretik-side row with the chosen `scope` and `displayName`.",
@@ -317,6 +355,9 @@ const confirmRoute = createRoute({
 const listRoute = createRoute({
   method: "get",
   path: "/connections",
+  middleware: access.session(
+    "The team's shared connections and the caller's own, never a colleague's personal one.",
+  ),
   summary: "List external-app connections the caller can use",
   description:
     "Returns every team-scoped connection (shared with everyone in the team) plus the caller's user-scoped connections. Newest first. `includeSignatures=true` adds `params` / `returns` (and any declared pagination, batch or incremental capability) to the READ actions of an MCP connection's snapshot, so a form can be generated from them.",
@@ -339,6 +380,9 @@ const listRoute = createRoute({
 const getOneRoute = createRoute({
   method: "get",
   path: "/connections/{id}",
+  middleware: access.handler(
+    "A shared connection or the caller's own; any other answers 404 (getConnectionForCaller).",
+  ),
   summary: "Fetch a single connection",
   description:
     "`includeSignatures=true` adds the READ actions' `params` / `returns` and sync capabilities, as on the list route.",
@@ -360,6 +404,9 @@ const getOneRoute = createRoute({
 const updateRoute = createRoute({
   method: "patch",
   path: "/connections/{id}",
+  middleware: access.handler(
+    "A shared connection takes team.connections.manage, its permissions team.settings.manage.",
+  ),
   summary: "Rename, re-scope or flip the status of a connection",
   description:
     "Partial update — send any combination of `displayName`, `scope` and `status`. Flipping `status` to `active` clears `lastErrorMessage` (typical recovery after a manual reconnect). `scope` moves the connection between team-shared and personal; taking a shared one private requires being the member who connected it, or an org admin. `actionPolicies` are validated against the connection's own action surface: the provider manifest for a catalogue app, the introspected tool snapshot for an MCP server — which answers `409 EXTERNAL_APP_MCP_NOT_READY` while that snapshot is still being built.",
@@ -391,6 +438,9 @@ const updateRoute = createRoute({
 const testCredentialsRoute = createRoute({
   method: "post",
   path: "/connections/test-credentials",
+  middleware: access.session(
+    "Checks credentials the caller typed against the app; nothing is stored.",
+  ),
   summary: "Validate user-supplied credentials before storing them in Nango",
   description:
     "Generic credential-testing endpoint for `custom-handler` providers (IMAP/SMTP today; future API-key / SDK-only providers). Receives the provider key plus the raw `credentials` and `connection_config` field values from the descriptor-driven form, dispatches to the provider's own `testCredentials` implementation, and returns a granular `{ ok, scope?, message? }` so the UI can tell the user which side (IMAP vs SMTP, auth vs network) failed.",
@@ -420,6 +470,9 @@ const testCredentialsRoute = createRoute({
 const dynamicOptionsRoute = createRoute({
   method: "post",
   path: "/connections/dynamic-options",
+  middleware: access.session(
+    "Lists choices from the app with credentials the caller typed; nothing is stored.",
+  ),
   summary:
     "Resolve the options of a `dynamic-select` credential field at form render time",
   description:
@@ -450,6 +503,9 @@ const dynamicOptionsRoute = createRoute({
 const reconnectSessionRoute = createRoute({
   method: "post",
   path: "/connections/{id}/reconnect-session",
+  middleware: access.handler(
+    "Signing a shared connection in again takes team.connections.manage (requireManageable).",
+  ),
   summary: "Mint a Nango Connect session to reconnect an existing connection",
   description:
     "Used when a connection's `status` flipped to `error` (token revoked/expired) OR proactively (e.g. user changed their Microsoft password and wants to refresh credentials before the next failure). Returns a short-lived session token bound to the existing `nangoConnectionId` — preserves the row's `id`, `displayName`, `options`, and audit trail. Works for both OAuth (`nango-proxy`) and headless (`custom-handler`) providers; the frontend branches on transport.",
@@ -470,6 +526,9 @@ const reconnectSessionRoute = createRoute({
 const reconnectConfirmRoute = createRoute({
   method: "post",
   path: "/connections/{id}/reconnect-confirm",
+  middleware: access.handler(
+    "Signing a shared connection in again takes team.connections.manage (requireManageable).",
+  ),
   summary: "Finalise a reconnect after Connect UI fires the connect event",
   description:
     "Re-verifies the Nango connection still exists post-reconnect, then flips `status` back to `active` and clears `lastErrorMessage`. A `disabled` row stays `disabled` (Nango credentials are still refreshed, but the user must explicitly re-enable from the settings UI).",
@@ -492,6 +551,9 @@ const reconnectConfirmRoute = createRoute({
 const connectionConfigRoute = createRoute({
   method: "get",
   path: "/connections/{id}/connection-config",
+  middleware: access.handler(
+    "A shared connection or the caller's own; any other answers 404 (getConnectionForCaller).",
+  ),
   summary: "Fetch non-sensitive connection_config to pre-fill reconnect form",
   description:
     "Returns only the fields declared with `target: 'connection_config'` in the provider's `credentialsForm` descriptor (IMAP/SMTP host/port, etc.). Fields with `target: 'credentials'` (password, API key) are filtered out — they never leave Nango. Only meaningful for `custom-handler` providers; returns 400 for OAuth.",
@@ -514,6 +576,9 @@ const connectionConfigRoute = createRoute({
 const deleteRoute = createRoute({
   method: "delete",
   path: "/connections/{id}",
+  middleware: access.handler(
+    "Removing a shared connection takes team.connections.manage (requireManageable).",
+  ),
   summary: "Delete a connection (revokes the Nango connection too)",
   description:
     "Revokes the OAuth grant in Nango (best-effort — a 404 or transient error never blocks the local delete) then drops the Fretik row. Any `pending` approvals referencing this connection stay visible in audit.",
@@ -577,6 +642,13 @@ connectionsRoutes.openapi(confirmRoute, async (c) => {
   if (!user) return c.json(forbidden("Authentication required"), 403);
 
   const body = c.req.valid("json");
+  if (body.scope === "team") {
+    await requireCapability({
+      principal: c.get("principal"),
+      capability: "team.connections.manage",
+      teamId: team.id,
+    });
+  }
   const row = await confirmConnection({
     organizationId: team.organizationId,
     teamId: team.id,
@@ -650,25 +722,18 @@ connectionsRoutes.openapi(updateRoute, async (c) => {
 
   const { id } = c.req.valid("param");
   const patch = c.req.valid("json");
-  // Editing a team connection's per-action policies requires admin; so does
-  // taking a shared connection private when you are not the member who
-  // connected it. The service enforces both (personal connections stay
-  // owner-only via caller visibility).
-  // The limits join that list for the same reason the concurrency mode is on
-  // it: a budget is shared by everyone who reads through the connection, so
-  // widening one is a decision about the whole team's traffic.
-  const admin =
-    patch.actionPolicies !== undefined ||
-    patch.concurrencyMode !== undefined ||
-    patch.rateLimit !== undefined ||
-    patch.maxConcurrent !== undefined ||
-    patch.scope !== undefined
-      ? await isOrgAdmin(team.organizationId, user.id)
-      : undefined;
+  const principal = c.get("principal");
+  await requireManageable(
+    await getConnectionForCaller(id, team.id, user.id),
+    principal,
+  );
+  // The fields that govern a shared connection for the whole team (its
+  // permissions, concurrency and budgets, taking it private) are checked by
+  // the service, one by one.
   const row = await updateConnection({
     id,
     teamId: team.id,
-    userId: user.id,
+    principal,
     displayName: patch.displayName,
     status: patch.status,
     scope: patch.scope,
@@ -677,7 +742,6 @@ connectionsRoutes.openapi(updateRoute, async (c) => {
     concurrencyMode: patch.concurrencyMode,
     rateLimit: patch.rateLimit,
     maxConcurrent: patch.maxConcurrent,
-    isOrgAdmin: admin,
   });
   return c.json(await toConnectionDto(row), 200);
 });
@@ -720,6 +784,10 @@ connectionsRoutes.openapi(reconnectSessionRoute, async (c) => {
   if (!user) return c.json(forbidden("Authentication required"), 403);
 
   const { id } = c.req.valid("param");
+  await requireManageable(
+    await getConnectionForCaller(id, team.id, user.id),
+    c.get("principal"),
+  );
   const session = await createReconnectSession({
     connectionId: id,
     teamId: team.id,
@@ -736,6 +804,10 @@ connectionsRoutes.openapi(reconnectConfirmRoute, async (c) => {
   if (!user) return c.json(forbidden("Authentication required"), 403);
 
   const { id } = c.req.valid("param");
+  await requireManageable(
+    await getConnectionForCaller(id, team.id, user.id),
+    c.get("principal"),
+  );
   const row = await confirmReconnect({
     connectionId: id,
     teamId: team.id,
@@ -766,6 +838,10 @@ connectionsRoutes.openapi(deleteRoute, async (c) => {
   if (!user) return c.json(forbidden("Authentication required"), 403);
 
   const { id } = c.req.valid("param");
+  await requireManageable(
+    await getConnectionForCaller(id, team.id, user.id),
+    c.get("principal"),
+  );
   await deleteConnection({ id, teamId: team.id, userId: user.id });
   return c.json({ id, deleted: true as const }, 200);
 });

@@ -1,13 +1,15 @@
+import type { Principal } from "../../authz/principal";
 import db from "../../db";
 import { notFound, throwHttpError } from "../../lib/errors";
+import type { AccessLevel } from "../../schemas/access";
 import type { PageResponse, PageSummary } from "../../schemas/pages";
 import { serializePage, serializePageSummary } from "./serialize";
-import { pageVisibilityWhere, type PageRequester } from "./visibility";
+import { pageAccessWhere } from "./visibility";
 
 /**
- * List a team's pages, newest-touched first. Private pages (`userId` set) are
- * filtered out for everyone but their owner and org admins — omit `requester`
- * for system-trust callers.
+ * List a team's pages the principal can see, newest-touched first — the
+ * engine decides (`visibility.ts`), so a restricted page appears only to its
+ * owner and the people it is shared with.
  *
  * Archived pages are in no listing, for anyone: that is what archiving is (see
  * `pages.archivedAt`). They stay reachable by id, so a link to one still opens
@@ -15,7 +17,7 @@ import { pageVisibilityWhere, type PageRequester } from "./visibility";
  */
 export const listPages = async (params: {
   teamId: string;
-  requester?: PageRequester;
+  principal: Principal;
   limit?: number;
   /** Only the pages this conversation built (their provenance). */
   sourceConversationId?: string;
@@ -24,7 +26,7 @@ export const listPages = async (params: {
     where: {
       teamId: params.teamId,
       archivedAt: { isNull: true },
-      ...pageVisibilityWhere(params.requester),
+      ...pageAccessWhere(params.principal, "view"),
       ...(params.sourceConversationId === undefined
         ? {}
         : { sourceConversationId: params.sourceConversationId }),
@@ -35,17 +37,21 @@ export const listPages = async (params: {
   return rows.map(serializePageSummary);
 };
 
-/** Fetch one page in the team's scope; 404 when missing or not visible. */
+/**
+ * Fetch one page of its team; 404 when missing or not visible at `level`
+ * (`view` unless the caller is about to do more with it).
+ */
 export const getPage = async (params: {
   pageId: string;
   teamId: string;
-  requester?: PageRequester;
+  principal: Principal;
+  level?: AccessLevel;
 }): Promise<PageResponse> => {
   const row = await db.query.pages.findFirst({
     where: {
       id: params.pageId,
       teamId: params.teamId,
-      ...pageVisibilityWhere(params.requester),
+      ...pageAccessWhere(params.principal, params.level ?? "view"),
     },
   });
   if (!row) return throwHttpError(404, notFound("Page"));

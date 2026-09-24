@@ -1,3 +1,4 @@
+import { forbidden, throwHttpError } from "../lib/errors";
 import { getOrganizationAccessPolicy } from "../services/organization/access-policy";
 import {
   type Capability,
@@ -5,6 +6,7 @@ import {
   type CapabilityDecision,
   decideCapability,
 } from "./capabilities";
+import { loadPrincipal } from "./load-principal";
 import type { Principal } from "./principal";
 import { throwCapabilityRefusal } from "./refusals";
 
@@ -50,6 +52,53 @@ export const requireCapability = async (input: {
     decision,
     teamId: input.teamId ?? null,
     message: input.message,
+  });
+};
+
+/**
+ * `requireCapability` for a service that holds a user id rather than a
+ * principal — the collection write checks, the agent's tools. Loads the
+ * principal (cached) and decides the same way; someone who is not a member of
+ * the organization is refused outright.
+ */
+export const requireUserCapability = async (input: {
+  userId: string;
+  organizationId: string;
+  capability: Capability;
+  teamId?: string | null;
+  message?: string;
+}): Promise<void> => {
+  const principal = await loadPrincipal({
+    organizationId: input.organizationId,
+    userId: input.userId,
+  });
+  if (!principal) {
+    return throwHttpError(403, forbidden("Not a member of this organization"));
+  }
+  await requireCapability({
+    principal,
+    capability: input.capability,
+    teamId: input.teamId,
+    message: input.message,
+  });
+};
+
+/** `hasCapability` for a caller that holds a user id rather than a principal. */
+export const userHasCapability = async (input: {
+  userId: string;
+  organizationId: string;
+  capability: Capability;
+  teamId?: string | null;
+}): Promise<boolean> => {
+  const principal = await loadPrincipal({
+    organizationId: input.organizationId,
+    userId: input.userId,
+  });
+  if (!principal) return false;
+  return hasCapability({
+    principal,
+    capability: input.capability,
+    teamId: input.teamId,
   });
 };
 

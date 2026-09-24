@@ -1,3 +1,6 @@
+import { requireAccessForEach } from "@fretik/shared/authz/access";
+import { requireFolderToAddTo } from "@fretik/shared/authz/drive";
+import { access } from "@fretik/shared/authz/http";
 import {
   authMiddleware,
   type HonoLoggedAppType,
@@ -33,6 +36,12 @@ import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 // ROUTER SETUP         //
 // ==================== //
 
+/**
+ * Each route on one folder names the level it takes (`access.resource`): view
+ * to open it, edit to rename or move it, full to delete it — with everything
+ * inside. Creating a folder, or moving one, also takes edit on the folder it
+ * lands in.
+ */
 const folderRoutes = new OpenAPIHono<HonoLoggedAppType>();
 folderRoutes.use("*", authMiddleware);
 
@@ -47,6 +56,7 @@ folderRoutes.use("*", authMiddleware);
 const createFolderRoute = createRoute({
   method: "post",
   path: "",
+  middleware: access.capability("team.content.create"),
   summary: "Create a folder",
   description: "Create a new folder",
   tags: ["Folders"],
@@ -71,6 +81,9 @@ const createFolderRoute = createRoute({
 const getRootDriveRoute = createRoute({
   method: "get",
   path: "",
+  middleware: access.session(
+    "The root of the active team's Drive; Drive items are open to their team.",
+  ),
   summary: "Get root drive",
   description: "Get root folder details and its children",
   tags: ["Folders"],
@@ -94,6 +107,7 @@ const getRootDriveRoute = createRoute({
 const getFolderExplorerRoute = createRoute({
   method: "get",
   path: "/{id}",
+  middleware: access.resource("folder", "view"),
   summary: "Get a folder explorer",
   description: "Get a specific folder details and its children",
   tags: ["Folders"],
@@ -119,6 +133,7 @@ const getFolderExplorerRoute = createRoute({
 const updateFolderRoute = createRoute({
   method: "patch",
   path: "/{id}",
+  middleware: access.resource("folder", "edit"),
   summary: "Update a folder",
   description: "Update a specific folder by ID",
   tags: ["Folders"],
@@ -151,6 +166,9 @@ const updateFolderRoute = createRoute({
 const deleteFoldersRoute = createRoute({
   method: "delete",
   path: "",
+  middleware: access.handler(
+    "Each folder takes full access; ids out of sight are skipped (requireAccessForEach).",
+  ),
   summary: "Delete multiple folders",
   description: "Delete multiple folders by ID",
   tags: ["Folders"],
@@ -185,6 +203,7 @@ folderRoutes.openapi(createFolderRoute, async (c) => {
 
   // Get input
   const { name, parentFolderId } = c.req.valid("json");
+  await requireFolderToAddTo(c.get("principal"), parentFolderId);
 
   const newFolder = await createFolder({
     name,
@@ -236,6 +255,7 @@ folderRoutes.openapi(updateFolderRoute, async (c) => {
 
   const { id } = c.req.valid("param");
   const updates = c.req.valid("json");
+  await requireFolderToAddTo(c.get("principal"), updates.parentFolderId);
 
   const updatedFolder = await updateFolder({
     id,
@@ -255,9 +275,16 @@ folderRoutes.openapi(deleteFoldersRoute, async (c) => {
   }
 
   const { ids } = c.req.valid("json");
+  const deletable = await requireAccessForEach({
+    principal: c.get("principal"),
+    type: "folder",
+    ids,
+    required: "full",
+  });
+  if (deletable.length === 0) return c.json({ rowCount: 0 }, 200);
 
   const res = await deleteFolders({
-    ids,
+    ids: deletable,
     teamId: team.id,
     actor: { actorType: "user", actorUserId: user.id },
   });

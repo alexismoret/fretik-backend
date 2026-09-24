@@ -1,3 +1,4 @@
+import { access } from "@fretik/shared/authz/http";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { z } from "zod";
 import { internalMiddleware } from "../middlewares/internal";
@@ -54,7 +55,12 @@ const ExtractMentionsRequestSchema = z.object({
 const memoryRoutes = new OpenAPIHono<HonoInternalAppType>();
 memoryRoutes.use("*", internalMiddleware);
 
-memoryRoutes.post("/extract-mentions", async (c) => {
+/** Every route here is a memory job of the jobs worker, for the team it names. */
+const MEMORY_JOB = access.internal(
+  "The jobs worker distills and links the memory of the team it names.",
+);
+
+memoryRoutes.post("/extract-mentions", MEMORY_JOB, async (c) => {
   const raw: unknown = await c.req.json();
   const parsed = ExtractMentionsRequestSchema.safeParse(raw);
   if (!parsed.success) {
@@ -95,7 +101,7 @@ const DistillConversationRequestSchema = z.object({
   organizationId: z.uuid(),
 });
 
-memoryRoutes.post("/distill-conversation", async (c) => {
+memoryRoutes.post("/distill-conversation", MEMORY_JOB, async (c) => {
   const raw: unknown = await c.req.json();
   const parsed = DistillConversationRequestSchema.safeParse(raw);
   if (!parsed.success) {
@@ -133,7 +139,7 @@ const DistillRecordActivityRequestSchema = z.object({
   organizationId: z.uuid(),
 });
 
-memoryRoutes.post("/distill-record-activity", async (c) => {
+memoryRoutes.post("/distill-record-activity", MEMORY_JOB, async (c) => {
   const raw: unknown = await c.req.json();
   const parsed = DistillRecordActivityRequestSchema.safeParse(raw);
   if (!parsed.success) {
@@ -171,7 +177,7 @@ const ConsolidateEpisodesRequestSchema = z.object({
   organizationId: z.uuid(),
 });
 
-memoryRoutes.post("/consolidate-episodes", async (c) => {
+memoryRoutes.post("/consolidate-episodes", MEMORY_JOB, async (c) => {
   const raw: unknown = await c.req.json();
   const parsed = ConsolidateEpisodesRequestSchema.safeParse(raw);
   if (!parsed.success) {
@@ -212,7 +218,7 @@ const UnsupersedeEpisodesRequestSchema = z.object({
 // The reverse of /consolidate-episodes — operator recourse for a wrong MERGE
 // (restore members + swap the recall index). Internal-only, like every
 // mutation here.
-memoryRoutes.post("/unsupersede-episodes", async (c) => {
+memoryRoutes.post("/unsupersede-episodes", MEMORY_JOB, async (c) => {
   const raw: unknown = await c.req.json();
   const parsed = UnsupersedeEpisodesRequestSchema.safeParse(raw);
   if (!parsed.success) {
@@ -260,7 +266,7 @@ const ExtractRelationsRequestSchema = z.object({
   organizationId: z.uuid(),
 });
 
-memoryRoutes.post("/extract-relations", async (c) => {
+memoryRoutes.post("/extract-relations", MEMORY_JOB, async (c) => {
   const raw: unknown = await c.req.json();
   const parsed = ExtractRelationsRequestSchema.safeParse(raw);
   if (!parsed.success) {
@@ -298,7 +304,7 @@ const PromoteEpisodesRequestSchema = z.object({
   organizationId: z.uuid(),
 });
 
-memoryRoutes.post("/promote-episodes", async (c) => {
+memoryRoutes.post("/promote-episodes", MEMORY_JOB, async (c) => {
   const raw: unknown = await c.req.json();
   const parsed = PromoteEpisodesRequestSchema.safeParse(raw);
   if (!parsed.success) {

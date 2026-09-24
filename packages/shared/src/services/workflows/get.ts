@@ -1,26 +1,28 @@
+import type { Principal } from "../../authz/principal";
 import db from "../../db";
 import type { Workflow } from "../../db/schema";
+import type { AccessLevel } from "../../schemas/access";
 import type { WorkflowResponse } from "../../schemas/workflows";
 import { serializeWorkflow } from "./serialize";
-import { workflowVisibilityWhere, type WorkflowRequester } from "./visibility";
+import { workflowAccessWhere } from "./visibility";
 
 /**
- * Fetch one workflow row, team-scoped. `requester` also restricts a private
- * workflow to its owner (admins/internal callers see every workflow) —
- * internal callers (run creation, activation, the turn executor) omit it on
- * purpose, since they already resolved the workflow through a trusted path
- * (the trigger, the run row) and must see it regardless of who owns it.
+ * Fetch one workflow row of its team, if the principal reaches it at `level`
+ * (`view` by default). Internal callers (run creation, activation, the turn
+ * executor) pass a system principal: they resolved the workflow through a
+ * trusted path — the trigger, the run row — and act for nobody.
  */
 export const getWorkflowRow = async (params: {
   id: string;
   teamId: string;
-  requester?: WorkflowRequester;
+  principal: Principal;
+  level?: AccessLevel;
 }): Promise<Workflow | undefined> =>
   db.query.workflows.findFirst({
     where: {
       id: params.id,
       teamId: params.teamId,
-      ...workflowVisibilityWhere(params.requester),
+      ...workflowAccessWhere(params.principal, params.level ?? "view"),
     },
   });
 
@@ -28,7 +30,8 @@ export const getWorkflowRow = async (params: {
 export const getWorkflow = async (params: {
   id: string;
   teamId: string;
-  requester?: WorkflowRequester;
+  principal: Principal;
+  level?: AccessLevel;
 }): Promise<WorkflowResponse | undefined> => {
   const row = await getWorkflowRow(params);
   return row ? serializeWorkflow(row) : undefined;

@@ -162,6 +162,11 @@ export const TOOL_ERROR_CODES = {
   // Tool-permission policy: the team set this tool to `blocked` (Settings →
   // Tool permissions). A backstop for a guessed/pruned tool name.
   TOOL_DISABLED_BY_POLICY: "TOOL_DISABLED_BY_POLICY",
+  // The person the assistant acts for may not do this: their access to the
+  // resource, or their role, falls short (`lib/access-refusal.ts`). Not an
+  // input-shape code: no argument changes someone's access, so the loop guard
+  // must not steer a retry — the way forward is the person asking for it.
+  ACCESS_DENIED: "ACCESS_DENIED",
 } as const;
 
 export type ToolErrorCode =

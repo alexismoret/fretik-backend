@@ -1,3 +1,4 @@
+import { access } from "@fretik/shared/authz/http";
 import {
   authMiddleware,
   type HonoLoggedAppType,
@@ -16,8 +17,6 @@ import {
   pinTargetSchema,
   reorderPinsRequestSchema,
 } from "@fretik/shared/schemas/pins";
-import { isOrgAdmin } from "@fretik/shared/services/organization/member-role";
-import type { PageRequester } from "@fretik/shared/services/pages/visibility";
 import { listUserPins } from "@fretik/shared/services/pins/list";
 import { pinTarget } from "@fretik/shared/services/pins/pin";
 import { reorderUserPins } from "@fretik/shared/services/pins/reorder";
@@ -27,31 +26,27 @@ import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 /**
  * Pins — the caller's personal sidebar shortcuts inside the team they are
  * working in. Thin wrappers over `@fretik/shared/services/pins/*`: this file
- * resolves the caller's team + requester and formats responses, nothing more.
+ * resolves the caller's team and formats responses, nothing more.
  *
  * Every route is scoped to `(user, team)` from the session — the caller never
- * names whose pins they are touching, so there is nothing here to authorise
- * beyond having a team.
+ * names whose pins they are touching. What a pin points at is resolved through
+ * the access engine with the caller's principal, so a pin shows (and can be
+ * created) only for what the caller may open.
  */
 
 const pinRoutes = new OpenAPIHono<HonoLoggedAppType>();
 pinRoutes.use("*", authMiddleware);
 
-/** A private (user-scoped) page is visible only to its owner — except org
- * admins/owners, who see every page for governance. */
-const resolveRequester = async (
-  user: { id: string },
-  team: { organizationId: string },
-): Promise<PageRequester> => ({
-  userId: user.id,
-  isAdmin: await isOrgAdmin(team.organizationId, user.id),
-});
+const OWN_PINS = access.session(
+  "The caller's own pins in the active team; targets resolve through the engine.",
+);
 
 // ---- Routes ----------------------------------------------------------
 
 const listRoute = createRoute({
   method: "get",
   path: "/",
+  middleware: OWN_PINS,
   summary: "List the caller's pins",
   description:
     "In the caller's chosen order, and already carrying what the sidebar draws (label, icon, color, route key) so rendering needs no follow-up request. Targets that no longer exist are reaped; targets that exist but are currently invisible or disabled are omitted and come back when they become visible again.",
@@ -71,6 +66,7 @@ const listRoute = createRoute({
 const createRouteDef = createRoute({
   method: "post",
   path: "/",
+  middleware: OWN_PINS,
   summary: "Pin a target",
   description:
     "Idempotent: re-pinning keeps the entry where it is instead of moving it to the end. A target the caller cannot see answers 404, exactly like opening it would.",
@@ -96,6 +92,7 @@ const createRouteDef = createRoute({
 const reorderRoute = createRoute({
   method: "post",
   path: "/reorder",
+  middleware: OWN_PINS,
   summary: "Reorder the caller's pins",
   description:
     "Takes the FULL list in its new order — a partial payload is refused, because ordering rewrites every position and the omitted rows would keep colliding indices.",
@@ -121,6 +118,7 @@ const reorderRoute = createRoute({
 const deleteRouteDef = createRoute({
   method: "delete",
   path: "/{targetType}/{targetId}",
+  middleware: OWN_PINS,
   summary: "Unpin a target",
   description:
     "Idempotent — unpinning something that is not pinned succeeds, so the UI can fire the toggle optimistically.",
@@ -143,13 +141,9 @@ const deleteRouteDef = createRoute({
 pinRoutes.openapi(listRoute, async (c) => {
   const team = c.get("team");
   if (!team) return c.json(teamRequired(), 403);
-  const user = c.get("user");
-  const requester = await resolveRequester(user, team);
   const data = await listUserPins({
-    userId: user.id,
-    organizationId: team.organizationId,
+    principal: c.get("principal"),
     teamId: team.id,
-    requester,
   });
   return c.json({ data }, 200);
 });
@@ -157,15 +151,10 @@ pinRoutes.openapi(listRoute, async (c) => {
 pinRoutes.openapi(createRouteDef, async (c) => {
   const team = c.get("team");
   if (!team) return c.json(teamRequired(), 403);
-  const user = c.get("user");
-  const target = c.req.valid("json");
-  const requester = await resolveRequester(user, team);
   await pinTarget({
-    userId: user.id,
-    organizationId: team.organizationId,
+    principal: c.get("principal"),
     teamId: team.id,
-    target,
-    requester,
+    target: c.req.valid("json"),
   });
   return c.json({ ok: true }, 201);
 });

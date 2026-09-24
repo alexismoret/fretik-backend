@@ -1,3 +1,4 @@
+import { access } from "@fretik/shared/authz/http";
 import {
   authMiddleware,
   type HonoLoggedAppType,
@@ -39,6 +40,7 @@ const superAdminSchema = z.object({
 const listRoute = createRoute({
   method: "get",
   path: "",
+  middleware: access.operator(),
   summary: "List super-admins",
   tags: ["Super admins"],
   responses: {
@@ -54,6 +56,7 @@ const listRoute = createRoute({
 const grantRoute = createRoute({
   method: "post",
   path: "",
+  middleware: access.operator(),
   summary: "Grant super-admin to an existing account by email",
   tags: ["Super admins"],
   request: {
@@ -78,6 +81,7 @@ const grantRoute = createRoute({
 const revokeRoute = createRoute({
   method: "delete",
   path: "",
+  middleware: access.operator(),
   summary: "Revoke super-admin from a user",
   tags: ["Super admins"],
   request: { query: z.object({ userId: z.string() }) },

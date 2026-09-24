@@ -107,8 +107,8 @@ export const episodeOkResponseSchema = z.object({
 
 export const deleteAllEpisodesBodySchema = z.object({
   /**
-   * `user` = the caller's own private episodes; `team` = every episode in the
-   * team (admin only — enforced in the handler via `isOrgAdmin`).
+   * `user` = the caller's own private episodes; `team` = the episodes the
+   * whole team sees (`team.memory.manage`, decided in the handler).
    */
   scope: z.enum(["user", "team"]),
 });

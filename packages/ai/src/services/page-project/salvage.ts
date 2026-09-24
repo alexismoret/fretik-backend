@@ -1,4 +1,4 @@
-import type { PageRequester } from "@fretik/shared/services/pages/visibility";
+import { actingPrincipal } from "../../agents/shared/acting-principal";
 import { buildPageProject } from "./build";
 import { readPageProject, writePageProject } from "./store";
 
@@ -28,10 +28,17 @@ export const salvagePageProject = async (params: {
   organizationId: string;
   userId: string | null;
   conversationId?: string;
-  requester?: PageRequester;
 }): Promise<PageSalvageOutcome | null> => {
   const state = await readPageProject(params.scope);
   if (state === null || Object.keys(state.files).length === 0) return null;
+
+  // The rescue saves for whoever the dead run was building for, with exactly
+  // their access — the same person the builder acted for.
+  const principal = await actingPrincipal({
+    organizationId: params.organizationId,
+    teamId: params.teamId,
+    ...(params.userId !== null ? { userId: params.userId } : {}),
+  });
 
   const built = await buildPageProject({
     state,
@@ -39,7 +46,7 @@ export const salvagePageProject = async (params: {
     organizationId: params.organizationId,
     userId: params.userId,
     conversationId: params.conversationId,
-    requester: params.requester,
+    principal,
     rescue: true,
   });
   // Nothing to rescue: the builder saved this itself. Reporting "recovered"

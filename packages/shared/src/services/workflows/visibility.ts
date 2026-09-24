@@ -1,44 +1,28 @@
+import { legacyPrivacyWhere } from "../../authz/legacy-privacy";
+import type { Principal } from "../../authz/principal";
+import type { AccessLevel } from "../../schemas/access";
+
 /**
- * Workflow visibility — a workflow is either team-shared (`userId` NULL) or
- * private to its owner (`userId` set). Mirrors the connection resolver's own
- * scope predicate (`services/external-apps/connections/resolve.ts`): a row is
- * visible when it's team-shared OR owned by the requester. Org admins/owners
- * see everything (governance), but ownership itself is never reassignable to
- * someone else — see the `userId` write-guard in `create.ts`/`update.ts`.
+ * Which workflows a principal reaches, and at what level — decided by the
+ * access engine (`authz/`): the workflow's owner, its grants, and its
+ * container (its project, else its team) unless it is restricted.
  *
- * `requester` is OPTIONAL and its absence means SYSTEM TRUST: internal
- * callers (cron-fire, the event sweep, the turn executor, run creation) never
- * pass one and see every workflow in the team, exactly like before this
- * feature existed. Only user-facing API/tool callers pass a requester.
+ * A restricted workflow runs WITH ITS OWNER'S ACCESS (`create-run.ts`), so for
+ * everyone but its owner it is capped at `view`: shown, never run nor
+ * changed — anyone else doing so would act as the owner. Opening it to the
+ * team makes it run as the team's agent instead, and lifts the cap.
+ *
+ * Every workflow service takes a PRINCIPAL. The internal callers that used to
+ * omit it — the cron fire, the event sweep, the turn executor, run creation —
+ * pass `systemPrincipal(reason)`: they resolved the workflow through a trusted
+ * path (a trigger, a run row) and act for nobody in particular. There is no
+ * admin widening: an organization admin reads a private workflow like anyone
+ * else, through a grant.
  */
-export interface WorkflowRequester {
-  userId: string;
-  isAdmin: boolean;
-}
-
-/** Spread into a Drizzle relational `where` alongside other filters. */
-export const workflowVisibilityWhere = (requester?: WorkflowRequester) =>
-  !requester || requester.isAdmin
-    ? {}
-    : {
-        OR: [
-          { userId: { isNull: true as const } },
-          { userId: requester.userId },
-        ],
-      };
-
-/**
- * Write-time ownership guard shared by `createWorkflow`/`updateWorkflow`: the
- * only values ever written to `workflows.userId` are `null` (team-shared) or
- * the acting user's own id (private to themselves) — never another user's id,
- * which would silently make a run impersonate someone else. Returns an error
- * message, or null when the value is allowed.
- */
-export const workflowOwnerWriteError = (
-  userId: string | null | undefined,
-  actingUserId: string,
-): string | null => {
-  if (userId === undefined || userId === null) return null;
-  if (userId === actingUserId) return null;
-  return "workflow.userId can only be null (team-shared) or your own id (private to you). A workflow can't be scoped to another user.";
-};
+export const workflowAccessWhere = (principal: Principal, level: AccessLevel) =>
+  legacyPrivacyWhere({
+    principal,
+    level,
+    resourceType: "workflow",
+    restrictedCeiling: "view",
+  });

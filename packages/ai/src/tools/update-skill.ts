@@ -1,8 +1,9 @@
-import { assertOrgAdmin } from "@fretik/shared/lib/auth-roles";
+import { hasCapability } from "@fretik/shared/authz/gates";
 import { getSkillForTeamById } from "@fretik/shared/services/skills/get-by-id";
 import { validateSkillShape } from "@fretik/shared/services/skills/validate";
 import { tool } from "ai";
 import { z } from "zod";
+import { actingPrincipal } from "../agents/shared/acting-principal";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
 
 /**
@@ -37,7 +38,7 @@ export const createUpdateSkillTool = () =>
       "",
       "Bundled and always-on skills cannot be updated — only team-created skills are editable. Calls against those return a `skill_read_only` error.",
       "",
-      "The result is surfaced to the user as a draft for them to review and confirm. Only team admins and owners can confirm.",
+      "The result is surfaced to the user as a draft for them to review and confirm. Only the team's leads and the organization's admins can confirm.",
     ].join("\n"),
     inputSchema: z.object({
       skill_id: z
@@ -72,17 +73,18 @@ export const createUpdateSkillTool = () =>
         };
       }
 
-      try {
-        await assertOrgAdmin({
-          userId: ctx.userId,
-          organizationId: ctx.organizationId,
-          message: "Updating a skill requires admin or owner role",
-        });
-      } catch {
+      // The team's skills are its settings: its leads decide them, and the
+      // organization's admins, who lead every team (`team.settings.manage`).
+      const allowed = await hasCapability({
+        principal: await actingPrincipal(ctx),
+        capability: "team.settings.manage",
+        teamId: ctx.teamId,
+      });
+      if (!allowed) {
         return {
           error: "not_authorized",
           message:
-            "Only team admins and owners can save skill changes. Ask an admin in this conversation to confirm — they can read this transcript.",
+            "Only the team's leads and the organization's admins can save skill changes. Add one of them to this conversation to confirm.",
         };
       }
 

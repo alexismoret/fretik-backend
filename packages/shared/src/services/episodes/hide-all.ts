@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import db from "../../db";
 import { aiEpisodes } from "../../db/schema";
 import { forbidden, throwHttpError } from "../../lib/errors";
@@ -8,20 +8,22 @@ import { deleteEpisodeVectors } from "./vectors";
  * Bulk "reset" of episodic memory — flip every ACTIVE episode in scope to
  * `demoted` and drop their recall vectors (the 30-day purge finalizes it).
  *   - `scope='user'` clears the caller's own private episodes.
- *   - `scope='team'` (admin only) clears the whole team's episodes, including
- *     every member's private ones.
+ *   - `scope='team'` (`team.memory.manage`, decided by the caller) clears the
+ *     episodes the whole team sees. Members' private episodes stay: a lead
+ *     runs the team's shared memory, not what each person keeps for
+ *     themselves, and every member can reset their own.
  * Set-based UPDATE; no per-row journal (a full wipe isn't worth the churn).
  */
 export const hideAllEpisodes = async (input: {
   teamId: string;
   userId: string;
   scope: "user" | "team";
-  isAdmin: boolean;
+  canManageTeamMemory: boolean;
 }): Promise<{ hidden: number }> => {
-  if (input.scope === "team" && !input.isAdmin) {
+  if (input.scope === "team" && !input.canManageTeamMemory) {
     return throwHttpError(
       403,
-      forbidden("Only an admin can delete team memory"),
+      forbidden("Only a team lead can delete team memory"),
     );
   }
 
@@ -29,9 +31,11 @@ export const hideAllEpisodes = async (input: {
     eq(aiEpisodes.teamId, input.teamId),
     eq(aiEpisodes.state, "active"),
   ];
-  if (input.scope === "user") {
-    conditions.push(eq(aiEpisodes.userId, input.userId));
-  }
+  conditions.push(
+    input.scope === "user"
+      ? eq(aiEpisodes.userId, input.userId)
+      : isNull(aiEpisodes.userId),
+  );
 
   const rows = await db
     .update(aiEpisodes)

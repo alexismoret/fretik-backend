@@ -62,6 +62,7 @@ const runningWorkflow = async (
     organizationId: fx.organizationId,
     teamId: fx.teamId,
     createdByUserId: owner,
+    principal: await fx.principalOf(owner),
     input: draft(scope === "private" ? { ...over, userId: owner } : over),
   });
   // The conversation is the only thing the sandbox JWT carries back, so it is

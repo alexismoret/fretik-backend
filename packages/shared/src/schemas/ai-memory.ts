@@ -108,8 +108,8 @@ export const deleteMemoryQuerySchema = z.object({
 
 export const deleteAllMemoriesBodySchema = z.object({
   /**
-   * `user` = the caller's own user-scope notes; `team` = every note in the
-   * team (admin only — enforced in the handler via `isOrgAdmin`).
+   * `user` = the caller's own user-scope notes; `team` = the team's shared
+   * notes (`team.memory.manage`, decided in the handler).
    */
   scope: aiMemoryScopeSchema,
 });

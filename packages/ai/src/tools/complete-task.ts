@@ -1,3 +1,4 @@
+import { SYSTEM } from "@fretik/shared/authz/system-principals";
 import { currentWorkflowTask } from "@fretik/shared/schemas/workflows";
 import { completeCurrentTask } from "@fretik/shared/services/workflows/complete-current-task";
 import { getWorkflowRunRow } from "@fretik/shared/services/workflows/get-run";
@@ -45,7 +46,11 @@ const checkDeliverable = async (params: {
   conversationId: string | undefined;
 }): Promise<ReturnType<typeof toolError> | null> => {
   if (params.outcome !== "completed") return null;
-  const run = await getWorkflowRunRow({ id: params.runId });
+  // The run of THIS turn, named by the engine in the runtime context.
+  const run = await getWorkflowRunRow({
+    id: params.runId,
+    principal: SYSTEM.workflowEngine,
+  });
   if (!run) return null;
   const current = currentWorkflowTask(run.taskStates);
   const expected = current?.expectedOutput?.trim();

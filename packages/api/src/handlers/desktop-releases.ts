@@ -1,3 +1,4 @@
+import { access } from "@fretik/shared/authz/http";
 import { type HonoLoggedAppType } from "@fretik/shared/lib/auth-middleware";
 import { responseInternalErrorSchema } from "@fretik/shared/schemas/common/responses";
 import { desktopReleaseResponseSchema } from "@fretik/shared/schemas/desktop-releases";
@@ -15,6 +16,9 @@ const desktopReleaseRoutes = new OpenAPIHono<HonoLoggedAppType>();
 const getLatestRoute = createRoute({
   method: "get",
   path: "/latest",
+  middleware: access.public(
+    "The download page is reachable before signing in.",
+  ),
   summary: "Latest desktop app release — version + per-platform download URLs",
   tags: ["Desktop"],
   responses: {

@@ -1,3 +1,5 @@
+import { requireAccess } from "@fretik/shared/authz/access";
+import { requireCapability } from "@fretik/shared/authz/gates";
 import db from "@fretik/shared/db";
 import { readSessionFile } from "@fretik/shared/lib/chatbot-session-storage";
 import {
@@ -5,6 +7,7 @@ import {
   isValidCollectionColor,
 } from "@fretik/shared/lib/colors/collection-colors";
 import { isValidIcon } from "@fretik/shared/lib/icons/search";
+import type { AccessLevel } from "@fretik/shared/schemas/access";
 import { describeFormFieldsForAgent } from "@fretik/shared/schemas/workflow-forms";
 import {
   buildTriggerCatalog,
@@ -19,7 +22,6 @@ import {
   workflowAutonomySchema,
   workflowTriggerTypeSchema,
 } from "@fretik/shared/schemas/workflows";
-import { isOrgAdmin } from "@fretik/shared/services/organization/member-role";
 import { activateWorkflow } from "@fretik/shared/services/workflows/activate";
 import type { RunAttachment } from "@fretik/shared/services/workflows/attach-run-files";
 import { countTestRuns } from "@fretik/shared/services/workflows/count-test-runs";
@@ -39,12 +41,13 @@ import {
   summarizeRunPressure,
 } from "@fretik/shared/services/workflows/run-pressure";
 import { updateWorkflow } from "@fretik/shared/services/workflows/update";
-import type { WorkflowRequester } from "@fretik/shared/services/workflows/visibility";
 import { tool } from "ai";
 import { z } from "zod";
+import { actingPrincipal } from "../agents/shared/acting-principal";
 import { listConversationFiles } from "../agents/shared/fragments";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
 import { workflowToolHintNames } from "../agents/workflow/tools";
+import { liftAccessRefusal } from "../lib/access-refusal";
 import { WORKSPACE_DIRS } from "../lib/conversation-storage";
 import { maybePersistLargeOutput } from "../lib/persisted-output";
 import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
@@ -422,11 +425,22 @@ export const createManageWorkflowTool = () =>
       const runAction = async () => {
         const ctx = getRuntimeContext(options);
         const { teamId, organizationId, userId } = ctx;
-        // A private workflow is invisible to anyone but its owner (org
-        // admins/owners see everything) — same rule as the API/UI.
-        const requester: WorkflowRequester | undefined = userId
-          ? { userId, isAdmin: await isOrgAdmin(organizationId, userId) }
-          : undefined;
+        // The tool reaches exactly what the person it acts for reaches — the
+        // same rules as the app (`authz/`). An action checks its level first,
+        // so a reader who asks to run or change a workflow hears why not,
+        // instead of "no such workflow".
+        const principal = await actingPrincipal(ctx);
+        const requireWorkflow = (
+          workflowId: string,
+          required: AccessLevel,
+        ): Promise<unknown> =>
+          requireAccess({
+            principal,
+            type: "workflow",
+            id: workflowId,
+            required,
+            notFoundMessage: "Workflow not found",
+          });
 
         const { icon: safeIcon, warnings: iconWarnings } = sanitizeIcon(
           input.icon,
@@ -476,10 +490,16 @@ export const createManageWorkflowTool = () =>
                   : {}),
                 ...(input.scope === "private" ? { userId } : {}),
               };
+              await requireCapability({
+                principal,
+                capability: "team.content.create",
+                teamId,
+              });
               const workflow = await createWorkflow({
                 organizationId,
                 teamId,
                 createdByUserId: userId,
+                principal,
                 input: createInput,
               });
               return {
@@ -542,11 +562,12 @@ export const createManageWorkflowTool = () =>
                     ? { userId: null }
                     : {}),
               };
+              await requireWorkflow(input.workflowId, "edit");
               const workflow = await updateWorkflow({
                 id: input.workflowId,
                 teamId,
                 input: patch,
-                requester,
+                principal,
               });
               if (!workflow) {
                 return toolError(
@@ -581,8 +602,8 @@ export const createManageWorkflowTool = () =>
 
             case "list": {
               const [workflows, activeRuns] = await Promise.all([
-                listWorkflows({ teamId, requester }),
-                listActiveWorkflowRuns({ teamId, requester }),
+                listWorkflows({ teamId, principal }),
+                listActiveWorkflowRuns({ teamId, principal }),
               ]);
               const pressure = summarizeRunPressure(activeRuns);
               return {
@@ -617,8 +638,8 @@ export const createManageWorkflowTool = () =>
                 );
               }
               const [workflow, activeRuns] = await Promise.all([
-                getWorkflow({ id: input.workflowId, teamId, requester }),
-                listActiveWorkflowRuns({ teamId, requester }),
+                getWorkflow({ id: input.workflowId, teamId, principal }),
+                listActiveWorkflowRuns({ teamId, principal }),
               ]);
               if (!workflow) {
                 return toolError(
@@ -668,10 +689,12 @@ export const createManageWorkflowTool = () =>
                   "run_test requires workflowId.",
                 );
               }
+              await requireWorkflow(input.workflowId, "use");
               const row = await getWorkflowRow({
                 id: input.workflowId,
                 teamId,
-                requester,
+                principal,
+                level: "use",
               });
               if (!row) {
                 return toolError(
@@ -778,10 +801,12 @@ export const createManageWorkflowTool = () =>
                   "run requires workflowId.",
                 );
               }
+              await requireWorkflow(input.workflowId, "use");
               const row = await getWorkflowRow({
                 id: input.workflowId,
                 teamId,
-                requester,
+                principal,
+                level: "use",
               });
               if (!row) {
                 return toolError(
@@ -855,7 +880,7 @@ export const createManageWorkflowTool = () =>
               const run = await getWorkflowRun({
                 id: input.runId,
                 teamId,
-                requester,
+                principal,
               });
               if (!run) {
                 return toolError(
@@ -940,10 +965,11 @@ export const createManageWorkflowTool = () =>
                   );
                 }
               }
+              await requireWorkflow(input.workflowId, "full");
               const workflow = await activateWorkflow({
                 id: input.workflowId,
                 teamId,
-                requester,
+                principal,
               });
               if (!workflow) {
                 return toolError(
@@ -968,10 +994,11 @@ export const createManageWorkflowTool = () =>
                   "pause requires workflowId.",
                 );
               }
+              await requireWorkflow(input.workflowId, "full");
               const workflow = await pauseWorkflow({
                 id: input.workflowId,
                 teamId,
-                requester,
+                principal,
               });
               if (!workflow) {
                 return toolError(
@@ -998,9 +1025,12 @@ export const createManageWorkflowTool = () =>
             }
           }
         } catch (err) {
-          return toolError(
-            TOOL_ERROR_CODES.WORKFLOW_ERROR,
-            `manageWorkflow ${input.action} failed: ${err instanceof Error ? err.message : String(err)}`,
+          return (
+            liftAccessRefusal(err) ??
+            toolError(
+              TOOL_ERROR_CODES.WORKFLOW_ERROR,
+              `manageWorkflow ${input.action} failed: ${err instanceof Error ? err.message : String(err)}`,
+            )
           );
         }
       };

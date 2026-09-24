@@ -37,7 +37,6 @@ import {
   organizationMembershipAfterHooks,
 } from "./auth-membership";
 import { passkeyOptions } from "./auth-passkey";
-import { invalidateMemberRoleCache } from "./auth-roles";
 import { sendEmail } from "./email";
 import { redis } from "./redis";
 
@@ -331,13 +330,9 @@ const options = {
             userId: data.teamMember.userId,
           });
         },
-        // A demoted admin loses admin rights on their next request, not when
-        // the cached role expires.
+        // A demoted admin loses admin rights on their next request: the bump
+        // drops every cached principal of the organization.
         afterUpdateMemberRole: async (data) => {
-          await invalidateMemberRoleCache(
-            data.organization.id,
-            data.member.userId,
-          );
           await onMembershipChanged(data.organization.id);
         },
       },

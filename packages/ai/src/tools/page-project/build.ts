@@ -97,7 +97,7 @@ export const buildFromContext = async (
     organizationId: project.organizationId,
     userId: project.userId,
     conversationId: project.conversationId,
-    requester: project.requester,
+    principal: await project.principal(),
     // The TURN, not the run: the builder's own scope is a child of it, and
     // Langfuse prices the trace. See `PageVersionMeta.traceId`.
     traceId: project.reviewScope,

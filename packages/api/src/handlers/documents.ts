@@ -1,3 +1,6 @@
+import { requireAccessForEach } from "@fretik/shared/authz/access";
+import { requireFolderToAddTo } from "@fretik/shared/authz/drive";
+import { access } from "@fretik/shared/authz/http";
 import type { Document, DocumentVersion } from "@fretik/shared/db/schema";
 import {
   authMiddleware,
@@ -68,6 +71,12 @@ import { streamSSE } from "hono/streaming";
 // ROUTER SETUP         //
 // ==================== //
 
+/**
+ * Each route on one document names the level it takes (`access.resource`):
+ * view to open, preview or download it, edit to change, rename, move or
+ * re-extract it, full to delete it. Adding a document — an upload, a written
+ * one, a move — also takes edit on the folder it lands in.
+ */
 const documentRoutes = new OpenAPIHono<HonoLoggedAppType>();
 documentRoutes.use("*", authMiddleware);
 
@@ -109,6 +118,7 @@ const formatVersionResponse = (version: DocumentVersion) => ({
 const uploadDocumentRoute = createRoute({
   method: "post",
   path: "/upload",
+  middleware: access.capability("team.content.create"),
   summary: "Upload a document",
   description:
     "Uploads a single file, saves it to DB with 'uploading' status, and starts background processing (S3, thumbnail, pre-extraction).",
@@ -138,6 +148,9 @@ const uploadDocumentRoute = createRoute({
 const listRecentDocumentsRoute = createRoute({
   method: "get",
   path: "",
+  middleware: access.session(
+    "The active team's recent Drive documents; Drive items are open to their team.",
+  ),
   summary: "List recent documents",
   description:
     "The team's most recently added documents, newest first — a lightweight projection (name, kind, size, status, when) for the home dashboard. Paginated with an exact total.",
@@ -160,6 +173,7 @@ const listRecentDocumentsRoute = createRoute({
 const updateDocumentRoute = createRoute({
   method: "patch",
   path: "/{id}",
+  middleware: access.resource("document", "edit"),
   summary: "Update a document",
   description: "Update a specific document by ID",
   tags: ["Documents"],
@@ -192,6 +206,9 @@ const updateDocumentRoute = createRoute({
 const deleteDocumentsRoute = createRoute({
   method: "delete",
   path: "",
+  middleware: access.handler(
+    "Each document takes full access; ids out of sight are skipped (requireAccessForEach).",
+  ),
   summary: "Delete multiple documents",
   description: "Delete multiple documents by ID",
   tags: ["Documents"],
@@ -218,6 +235,7 @@ const deleteDocumentsRoute = createRoute({
 const getDocumentDetailsRoute = createRoute({
   method: "get",
   path: "/{id}",
+  middleware: access.resource("document", "view"),
   summary: "Get document details",
   description:
     "Retrieves detailed information about a document, including properties and a presigned file URL",
@@ -243,6 +261,7 @@ const getDocumentDetailsRoute = createRoute({
 const reextractDocumentRoute = createRoute({
   method: "post",
   path: "/{id}/reextract",
+  middleware: access.resource("document", "edit"),
   summary: "Re-extract a document",
   description:
     "Re-runs classification and entity extraction against the team's current field definitions (OCR is reused from cache). The document returns to `processing`; progress streams over the existing upload SSE.",
@@ -274,6 +293,7 @@ const reextractDocumentRoute = createRoute({
 const createAuthoredDocumentRoute = createRoute({
   method: "post",
   path: "/authored",
+  middleware: access.capability("team.content.create"),
   summary: "Create a written document",
   description:
     "Creates a markdown document authored in Fretik. Unlike an upload it is `ready` immediately — nothing to convert or OCR — and is mirrored into the graph and indexed for search like any other document.",
@@ -297,6 +317,7 @@ const createAuthoredDocumentRoute = createRoute({
 const getDocumentContentRoute = createRoute({
   method: "get",
   path: "/{id}/content",
+  middleware: access.resource("document", "view"),
   summary: "Read a written document's text",
   description:
     "Returns the markdown of a document authored in Fretik. Uploaded files are not text and are read through their presigned URL instead.",
@@ -322,6 +343,7 @@ const getDocumentContentRoute = createRoute({
 const saveDocumentContentRoute = createRoute({
   method: "patch",
   path: "/{id}/content",
+  middleware: access.resource("document", "edit"),
   summary: "Save a written document's text",
   description:
     "Replaces the markdown and records a version. Consecutive saves by the same author within a few minutes fold into one version. Send `baseUpdatedAt` to be refused with 409 rather than overwrite a concurrent save.",
@@ -362,6 +384,7 @@ const saveDocumentContentRoute = createRoute({
 const listDocumentVersionsRoute = createRoute({
   method: "get",
   path: "/{id}/versions",
+  middleware: access.resource("document", "view"),
   summary: "List a document's versions",
   description:
     "History of a document, newest first, with who produced each version. Available for every document — a written one, an uploaded file that was replaced, or one that was never touched (which has a single version).",
@@ -383,6 +406,7 @@ const listDocumentVersionsRoute = createRoute({
 const restoreDocumentVersionRoute = createRoute({
   method: "post",
   path: "/{id}/versions/{versionId}/restore",
+  middleware: access.resource("document", "edit"),
   summary: "Restore a document version",
   description:
     "Brings back a previous version's content. The rollback becomes the newest version rather than truncating history, so it can itself be undone. Files that carry derived data (thumbnail, extracted fields) are re-processed against the restored bytes.",
@@ -415,6 +439,7 @@ const restoreDocumentVersionRoute = createRoute({
 const getDocumentPreviewSourceRoute = createRoute({
   method: "get",
   path: "/{id}/preview-source",
+  middleware: access.resource("document", "view"),
   summary: "Get what a viewer should render for a document",
   description:
     "A short-lived link to what the viewer should fetch when a document's own bytes cannot be rendered in a browser: a PDF rendering (legacy Office, OpenDocument, RTF, TIFF) or the extracted markdown sidecar (mail). `kind` is null for a type that renders from its own bytes.",
@@ -438,6 +463,7 @@ const getDocumentPreviewSourceRoute = createRoute({
 const downloadDocumentVersionRoute = createRoute({
   method: "get",
   path: "/{id}/versions/{versionId}/download",
+  middleware: access.resource("document", "view"),
   summary: "Download one version",
   description:
     "A short-lived link to a past version's bytes. Reading an old version must not move the document, so this is what the history offers instead of restoring: the file downloads under a name carrying its version number.",
@@ -476,6 +502,7 @@ documentRoutes.openapi(uploadDocumentRoute, async (c) => {
   }
 
   const { file, folderId, onConflict } = c.req.valid("form");
+  await requireFolderToAddTo(c.get("principal"), folderId);
 
   const result = await uploadDocument(
     file,
@@ -500,29 +527,33 @@ documentRoutes.openapi(uploadDocumentRoute, async (c) => {
  * --
  * SSE endpoint for real-time document processing progress.
  */
-documentRoutes.get("/upload/:documentId/progress", async (c) => {
-  const team = c.get("team");
-  if (!team) {
-    return throwHttpError(403, teamRequired());
-  }
+documentRoutes.get(
+  "/upload/:documentId/progress",
+  access.resource("document", "view", "documentId"),
+  async (c) => {
+    const team = c.get("team");
+    if (!team) {
+      return throwHttpError(403, teamRequired());
+    }
 
-  // The progress bus is keyed by document id alone, so the authorization is
-  // this pre-check: once the stream is open it relays whatever it is told.
-  // A malformed id is refused here too — Postgres would reject it as a uuid
-  // and surface a 500.
-  const documentId = c.req.param("documentId");
-  if (
-    !z.uuid().safeParse(documentId).success ||
-    !(await getUploadProgress({ documentId, teamId: team.id }))
-  ) {
-    return throwHttpError(404, notFound());
-  }
+    // The progress bus is keyed by document id alone, so the authorization is
+    // this pre-check: once the stream is open it relays whatever it is told.
+    // A malformed id is refused here too — Postgres would reject it as a uuid
+    // and surface a 500.
+    const documentId = c.req.param("documentId");
+    if (
+      !z.uuid().safeParse(documentId).success ||
+      !(await getUploadProgress({ documentId, teamId: team.id }))
+    ) {
+      return throwHttpError(404, notFound());
+    }
 
-  applyAntiBufferingHeaders(c);
-  return streamSSE(c, async (stream) => {
-    await streamUploadProgress({ documentId, teamId: team.id, stream });
-  });
-});
+    applyAntiBufferingHeaders(c);
+    return streamSSE(c, async (stream) => {
+      await streamUploadProgress({ documentId, teamId: team.id, stream });
+    });
+  },
+);
 
 /**
  * -- DELETE DOCUMENTS
@@ -535,8 +566,15 @@ documentRoutes.openapi(deleteDocumentsRoute, async (c) => {
   }
 
   const { ids } = c.req.valid("json");
+  const deletable = await requireAccessForEach({
+    principal: c.get("principal"),
+    type: "document",
+    ids,
+    required: "full",
+  });
+  if (deletable.length === 0) return c.json({ rowCount: 0 }, 200);
 
-  const res = await deleteDocuments({ ids, teamId: team.id });
+  const res = await deleteDocuments({ ids: deletable, teamId: team.id });
 
   return c.json({ rowCount: res.rowCount }, 200);
 });
@@ -553,6 +591,7 @@ documentRoutes.openapi(updateDocumentRoute, async (c) => {
 
   const { id } = c.req.valid("param");
   const updates = c.req.valid("json");
+  await requireFolderToAddTo(c.get("principal"), updates.folderId);
 
   const updatedDocument = await updateDocument({
     id,
@@ -603,6 +642,7 @@ documentRoutes.openapi(createAuthoredDocumentRoute, async (c) => {
   }
 
   const { title, content, folderId } = c.req.valid("json");
+  await requireFolderToAddTo(c.get("principal"), folderId);
 
   const document = await createAuthoredDocument({
     organizationId: team.organizationId,

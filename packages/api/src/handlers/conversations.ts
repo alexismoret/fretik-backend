@@ -1,3 +1,4 @@
+import { access } from "@fretik/shared/authz/http";
 import {
   authMiddleware,
   type HonoLoggedAppType,
@@ -48,6 +49,13 @@ import { z } from "zod";
 // ROUTER SETUP         //
 // ==================== //
 
+/**
+ * A chat belongs to its participants (`ai_conversation_members`): its owner
+ * has full access, the others take part (`use`) — they read it, write in it,
+ * rename it and bring colleagues in. Being in its team is not enough. The
+ * routes on one conversation name that level (`access.resource`), and the
+ * services stay gated on the caller's seat.
+ */
 const conversationRoutes = new OpenAPIHono<HonoLoggedAppType>();
 conversationRoutes.use("*", authMiddleware);
 
@@ -58,6 +66,9 @@ conversationRoutes.use("*", authMiddleware);
 const listConversationsRoute = createRoute({
   method: "get",
   path: "/",
+  middleware: access.session(
+    "The conversations the caller takes part in, in the active team.",
+  ),
   summary: "List AI conversations",
   description:
     "List conversations the current user participates in for a given agent type (defaults to chatbot), the caller's pinned ones first then most-recently-active. `pinned` narrows to one of those two blocks; `paginate=cursor` walks the unpinned block forward by key and returns `nextCursor` instead of an exact `count`.",
@@ -85,6 +96,9 @@ const listConversationsRoute = createRoute({
 const createConversationRoute = createRoute({
   method: "post",
   path: "/",
+  middleware: access.session(
+    "Starts a conversation in the active team, with the caller as its owner.",
+  ),
   summary: "Create an AI conversation",
   description: "Create a new conversation scoped to the current user and team.",
   tags: ["Conversations"],
@@ -111,6 +125,7 @@ const createConversationRoute = createRoute({
 const getConversationRoute = createRoute({
   method: "get",
   path: "/{id}",
+  middleware: access.resource("conversation", "view"),
   summary: "Get an AI conversation",
   description:
     "Return a single conversation the current user participates in: metadata, member roster, the caller's role and email opt-in, plus unread / action-required flags.",
@@ -132,6 +147,7 @@ const getConversationRoute = createRoute({
 const updateConversationRoute = createRoute({
   method: "patch",
   path: "/{id}",
+  middleware: access.resource("conversation", "use"),
   summary: "Update an AI conversation",
   description:
     "Rename a conversation. Any participant may rename. The email-on-completion opt-in is per-member and lives on PATCH /{id}/members/me.",
@@ -163,6 +179,9 @@ const updateConversationRoute = createRoute({
 const deleteConversationsRoute = createRoute({
   method: "delete",
   path: "/",
+  middleware: access.handler(
+    "Only a conversation's owner deletes it; other ids are skipped (deleteConversations).",
+  ),
   summary: "Delete AI conversations",
   description: "Delete multiple conversations by id.",
   tags: ["Conversations"],
@@ -183,6 +202,7 @@ const deleteConversationsRoute = createRoute({
 const getMessagesRoute = createRoute({
   method: "get",
   path: "/{id}/messages",
+  middleware: access.resource("conversation", "view"),
   summary: "Get messages of an AI conversation",
   description:
     "Return the message history as Vercel AI SDK UIMessage objects, ready to inject into the Chat class on the client. `limit` returns only the last N messages (still oldest-first) — the mount path uses it to keep reload payloads bounded.",
@@ -209,6 +229,7 @@ const getMessagesRoute = createRoute({
 const getBackgroundTasksRoute = createRoute({
   method: "get",
   path: "/{id}/background-tasks",
+  middleware: access.resource("conversation", "view"),
   summary: "List background work a conversation is waiting on",
   description:
     "Workflow runs the agent launched from this conversation: everything still running, plus what finished recently. The conversation is resumed automatically once they are all done.",
@@ -237,6 +258,7 @@ const memberIdParamsSchema = z.object({
 const addMembersRoute = createRoute({
   method: "post",
   path: "/{id}/members",
+  middleware: access.resource("conversation", "use"),
   summary: "Add conversation members",
   description:
     "Add team members as participants. Ids that aren't real team members are ignored. Returns the refreshed roster.",
@@ -262,6 +284,7 @@ const addMembersRoute = createRoute({
 const removeMemberRoute = createRoute({
   method: "delete",
   path: "/{id}/members/{userId}",
+  middleware: access.resource("conversation", "use"),
   summary: "Remove a conversation member",
   description:
     "Remove a participant. The conversation owner cannot be removed. Returns the refreshed roster.",
@@ -281,6 +304,7 @@ const removeMemberRoute = createRoute({
 const updateMemberPreferencesRoute = createRoute({
   method: "patch",
   path: "/{id}/members/me",
+  middleware: access.resource("conversation", "use"),
   summary: "Update my own preferences on this conversation",
   description:
     "Email-on-completion and the pin are both PER MEMBER: a conversation is shared, and neither field changes what anyone else sees. Every field is optional and only the ones sent are written. Re-pinning something already pinned keeps its position instead of moving it to the top.",
@@ -310,6 +334,7 @@ const updateMemberPreferencesRoute = createRoute({
 const markReadRoute = createRoute({
   method: "post",
   path: "/{id}/read",
+  middleware: access.resource("conversation", "view"),
   summary: "Mark a conversation as read",
   description:
     "Clear the unread indicator and any action-required badge for the current user.",

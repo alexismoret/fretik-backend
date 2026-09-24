@@ -1,3 +1,5 @@
+import { restrictionColumns } from "../../authz/legacy-privacy";
+import type { Principal } from "../../authz/principal";
 import db from "../../db";
 import { workflows } from "../../db/schema";
 import { badRequest, internalError, throwHttpError } from "../../lib/errors";
@@ -6,31 +8,46 @@ import {
   type CreateWorkflowInput,
   type WorkflowResponse,
 } from "../../schemas/workflows";
+import { requireWorkflowSettingsAllowed } from "./capabilities";
 import { serializeWorkflow } from "./serialize";
 import { validateWorkflowExternalApps } from "./validate-external-apps";
 import { refreshWorkflowVectors } from "./vector-refresh";
-import { workflowOwnerWriteError } from "./visibility";
 
 /**
  * Create a workflow definition (always `status: "draft"` — activation is a
- * separate, gated step). Scoped to the caller's team/org; `userId` set =
- * private to that user, null = team-shared. `userId` can only be omitted/null
- * or the creator's own id — nobody can scope a workflow to run as someone
- * else (see `workflowOwnerWriteError`).
+ * separate, gated step). The creator owns it. The legacy `userId` says who
+ * sees it: null opens it to the team (it then runs as the team's agent), the
+ * creator's own id restricts it to them (it then runs with their access) —
+ * never someone else's, which would make it act as them.
  */
 export const createWorkflow = async (params: {
   organizationId: string;
   teamId: string;
   createdByUserId: string;
+  /** The creator, as the engine sees them (bounds the connections it names). */
+  principal: Principal;
   input: CreateWorkflowInput;
 }): Promise<WorkflowResponse> => {
   const input = CreateWorkflowSchema.parse(params.input);
 
-  const ownerError = workflowOwnerWriteError(
-    input.userId ?? null,
-    params.createdByUserId,
-  );
-  if (ownerError) return throwHttpError(400, badRequest(ownerError));
+  const restricted = input.userId !== undefined && input.userId !== null;
+  if (restricted && input.userId !== params.createdByUserId) {
+    return throwHttpError(
+      400,
+      badRequest(
+        "workflow.userId can only be null (the team's) or your own id. A workflow never runs as someone else.",
+      ),
+    );
+  }
+  const access = restrictionColumns({
+    restricted,
+    ownerUserId: params.createdByUserId,
+  });
+  await requireWorkflowSettingsAllowed({
+    principal: params.principal,
+    teamId: params.teamId,
+    after: input,
+  });
 
   const externalAppConnectionIds =
     input.externalAppConnectionIds === undefined
@@ -38,8 +55,8 @@ export const createWorkflow = async (params: {
       : await validateWorkflowExternalApps({
           connectionIds: input.externalAppConnectionIds,
           teamId: params.teamId,
-          ownerUserId: input.userId ?? null,
-          actorUserId: params.createdByUserId,
+          runsAsUserId: access.userId,
+          actor: params.principal,
         });
 
   const [row] = await db
@@ -47,7 +64,7 @@ export const createWorkflow = async (params: {
     .values({
       organizationId: params.organizationId,
       teamId: params.teamId,
-      userId: input.userId ?? null,
+      ...access,
       name: input.name,
       description: input.description,
       icon: input.icon ?? null,

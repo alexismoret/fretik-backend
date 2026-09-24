@@ -1,8 +1,9 @@
+import { requireCapability } from "@fretik/shared/authz/gates";
+import { access } from "@fretik/shared/authz/http";
 import {
   authMiddleware,
   type HonoLoggedAppType,
 } from "@fretik/shared/lib/auth-middleware";
-import { assertOrgAdmin } from "@fretik/shared/lib/auth-roles";
 import { teamRequired } from "@fretik/shared/lib/errors";
 import { paramsIdSchema } from "@fretik/shared/schemas/common/params";
 import {
@@ -66,6 +67,9 @@ const scopeQuerySchema = z.object({
 const listRoute = createRoute({
   method: "get",
   path: "",
+  middleware: access.handler(
+    "The active team's fields; the organization's templates take organization.templates.",
+  ),
   summary: "List field definitions",
   description:
     "Lists field definitions for the active team (default) or for the organization (admin only).",
@@ -88,6 +92,9 @@ const listRoute = createRoute({
 const createRouteDef = createRoute({
   method: "post",
   path: "",
+  middleware: access.handler(
+    "A field of a collection the team may edit fields of; an organization template takes organization.templates.",
+  ),
   summary: "Create a field definition",
   tags: ["FieldDefinitions"],
   request: {
@@ -114,6 +121,9 @@ const createRouteDef = createRoute({
 const updateRouteDef = createRoute({
   method: "patch",
   path: "/{id}",
+  middleware: access.handler(
+    "The team's own field, or an organization template with organization.templates (assertCanWriteField).",
+  ),
   summary: "Update a field definition",
   tags: ["FieldDefinitions"],
   request: {
@@ -142,6 +152,9 @@ const updateRouteDef = createRoute({
 const deleteRouteDef = createRoute({
   method: "delete",
   path: "/{id}",
+  middleware: access.handler(
+    "The team's own field, or an organization template with organization.templates (assertCanWriteField).",
+  ),
   summary: "Delete a field definition",
   tags: ["FieldDefinitions"],
   request: {
@@ -168,6 +181,9 @@ const deleteRouteDef = createRoute({
 const reorderRoute = createRoute({
   method: "post",
   path: "/reorder",
+  middleware: access.handler(
+    "The active team's fields; the organization's templates take organization.templates.",
+  ),
   summary: "Reorder field definitions",
   tags: ["FieldDefinitions"],
   request: {
@@ -194,6 +210,9 @@ const reorderRoute = createRoute({
 const checkFormulaRoute = createRoute({
   method: "post",
   path: "/check-formula",
+  middleware: access.session(
+    "Compiles a formula against the active team's fields; nothing is written.",
+  ),
   summary: "Dry-run a formula expression",
   description:
     "Compiles a formula against a collection's fields WITHOUT saving, and returns the type it evaluates to or the reason it cannot compile. Powers the live feedback in the formula editor; an invalid expression is a 200 with `ok: false`, not an error — it is the normal state while one is being typed.",
@@ -221,6 +240,7 @@ const checkFormulaRoute = createRoute({
 const formulaFunctionsRoute = createRoute({
   method: "get",
   path: "/formula-functions",
+  middleware: access.session("The static catalogue of formula functions."),
   summary: "List the formula language's functions",
   description:
     "Every function a formula may call, with its parameters in order. Drives the visual formula builder, which renders one labelled slot per parameter — the list is served rather than mirrored client-side so the form always matches the function it builds.",
@@ -244,13 +264,12 @@ const formulaFunctionsRoute = createRoute({
 fieldDefinitionRoutes.openapi(listRoute, async (c) => {
   const team = c.get("team");
   if (!team) return c.json(teamRequired(), 403);
-  const user = c.get("user");
 
   const { scope } = c.req.valid("query");
   if (scope === "organization") {
-    await assertOrgAdmin({
-      userId: user.id,
-      organizationId: team.organizationId,
+    await requireCapability({
+      principal: c.get("principal"),
+      capability: "organization.templates",
     });
     const defs = await getFieldDefinitionsForOrganization({
       organizationId: team.organizationId,
@@ -272,9 +291,9 @@ fieldDefinitionRoutes.openapi(createRouteDef, async (c) => {
 
   const body = c.req.valid("json");
   if (body.scope === "organization") {
-    await assertOrgAdmin({
-      userId: user.id,
-      organizationId: team.organizationId,
+    await requireCapability({
+      principal: c.get("principal"),
+      capability: "organization.templates",
     });
   }
 
@@ -360,13 +379,12 @@ fieldDefinitionRoutes.openapi(deleteRouteDef, async (c) => {
 fieldDefinitionRoutes.openapi(reorderRoute, async (c) => {
   const team = c.get("team");
   if (!team) return c.json(teamRequired(), 403);
-  const user = c.get("user");
 
   const { scope, ids } = c.req.valid("json");
   if (scope === "organization") {
-    await assertOrgAdmin({
-      userId: user.id,
-      organizationId: team.organizationId,
+    await requireCapability({
+      principal: c.get("principal"),
+      capability: "organization.templates",
     });
   }
 

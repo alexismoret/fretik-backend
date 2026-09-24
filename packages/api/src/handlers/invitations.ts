@@ -1,3 +1,4 @@
+import { access } from "@fretik/shared/authz/http";
 import { type HonoLoggedAppType } from "@fretik/shared/lib/auth-middleware";
 import { responseInternalErrorSchema } from "@fretik/shared/schemas/common/responses";
 import { getPublicInvitationPreview } from "@fretik/shared/services/invitations/get-public-preview";
@@ -36,6 +37,9 @@ const previewResponseSchema = z.object({
 const previewRoute = createRoute({
   method: "get",
   path: "/{id}/preview",
+  middleware: access.public(
+    "A logged-out invitee must see who invited them; the id is the secret the email carried.",
+  ),
   summary: "Public preview of an organization invitation",
   tags: ["Invitations"],
   request: { params: z.object({ id: z.uuid() }) },

@@ -1,4 +1,6 @@
 import { and, eq } from "drizzle-orm";
+import { requireCapability } from "../../authz/gates";
+import type { Principal } from "../../authz/principal";
 import db from "../../db";
 import { pages } from "../../db/schema";
 import { badRequest, notFound, throwHttpError } from "../../lib/errors";
@@ -6,7 +8,7 @@ import { pagePublishError, type PageResponse } from "../../schemas/pages";
 import { invalidatePublicPageCache } from "./public-cache";
 import { serializePage } from "./serialize";
 import { refreshPageVectors } from "./vector-refresh";
-import { pageVisibilityWhere, type PageRequester } from "./visibility";
+import { pageAccessWhere } from "./visibility";
 
 /**
  * Publish a page at `/p/<token>`.
@@ -26,16 +28,23 @@ export const publishPage = async (params: {
   pageId: string;
   teamId: string;
   publishedByUserId: string;
-  requester?: PageRequester;
+  principal: Principal;
 }): Promise<PageResponse> => {
   const existing = await db.query.pages.findFirst({
     where: {
       id: params.pageId,
       teamId: params.teamId,
-      ...pageVisibilityWhere(params.requester),
+      ...pageAccessWhere(params.principal, "full"),
     },
   });
   if (!existing) return throwHttpError(404, notFound("Page"));
+  // A public link is the team's call (`share.public_link`), on top of full
+  // access to the page.
+  await requireCapability({
+    principal: params.principal,
+    capability: "share.public_link",
+    teamId: params.teamId,
+  });
 
   const blocker = pagePublishError(existing.definition);
   if (blocker) return throwHttpError(400, badRequest(blocker));
@@ -62,14 +71,14 @@ export const publishPage = async (params: {
 export const unpublishPage = async (params: {
   pageId: string;
   teamId: string;
-  requester?: PageRequester;
+  principal: Principal;
 }): Promise<PageResponse> => {
   const existing = await db.query.pages.findFirst({
     columns: { id: true, publicToken: true },
     where: {
       id: params.pageId,
       teamId: params.teamId,
-      ...pageVisibilityWhere(params.requester),
+      ...pageAccessWhere(params.principal, "full"),
     },
   });
   if (!existing) return throwHttpError(404, notFound("Page"));

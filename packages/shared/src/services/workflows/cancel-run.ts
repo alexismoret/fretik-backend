@@ -1,28 +1,29 @@
+import type { Principal } from "../../authz/principal";
 import { cancelWorkflowTriggerRun } from "../../lib/trigger-client";
 import { publishWorkflowAbort } from "../../lib/workflow-abort";
 import type { WorkflowRunResponse } from "../../schemas/workflows";
 import { finalizeRun } from "./finalize-run";
 import { getWorkflowRun, getWorkflowRunRow } from "./get-run";
 import { onWorkflowRunTerminal } from "./on-run-terminal";
-import type { WorkflowRequester } from "./visibility";
 
 /**
  * Stop a run (the Stop button). Best-effort cancels the Trigger.dev run
  * when one is actually running, publishes a mid-turn abort so an in-flight
  * turn truncates now, then closes the run `canceled`. Idempotent — a
  * terminal run is returned unchanged.
- * Returns `undefined` when the run doesn't exist / isn't visible to the team
- * (or, with `requester`, isn't visible to them — a private workflow's run).
+ * Returns `undefined` when the run doesn't exist or its workflow is not
+ * visible to the principal. Stopping a run is operating the workflow: callers
+ * check `use` on it first (a restricted workflow's run is its owner's).
  */
 export const cancelWorkflowRun = async (params: {
   runId: string;
   teamId: string;
-  requester?: WorkflowRequester;
+  principal: Principal;
 }): Promise<WorkflowRunResponse | undefined> => {
   const run = await getWorkflowRunRow({
     id: params.runId,
     teamId: params.teamId,
-    requester: params.requester,
+    principal: params.principal,
   });
   if (!run) return undefined;
   if (
@@ -30,7 +31,11 @@ export const cancelWorkflowRun = async (params: {
     run.status === "failed" ||
     run.status === "canceled"
   ) {
-    return getWorkflowRun({ id: params.runId, teamId: params.teamId });
+    return getWorkflowRun({
+      id: params.runId,
+      teamId: params.teamId,
+      principal: params.principal,
+    });
   }
 
   // A parked run has NO live orchestrator — it exited at the park rather
@@ -67,5 +72,9 @@ export const cancelWorkflowRun = async (params: {
     },
   );
 
-  return getWorkflowRun({ id: params.runId, teamId: params.teamId });
+  return getWorkflowRun({
+    id: params.runId,
+    teamId: params.teamId,
+    principal: params.principal,
+  });
 };

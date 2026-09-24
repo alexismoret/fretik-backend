@@ -5,7 +5,6 @@ import db from "../db";
 import { pauseWorkflowsOfDepartedMember } from "../services/workflows/owner-presence";
 import { scrubWorkflowNotificationRecipient } from "../services/workflows/scrub-notification-recipient";
 import {
-  invalidateMemberRoleCache,
   invalidateOrgTeamMembershipCache,
   invalidateTeamMembershipCache,
 } from "./auth-roles";
@@ -51,14 +50,11 @@ export const onMemberLeftOrganization = async (input: {
 }): Promise<void> => {
   const { organizationId, userId } = input;
   await onMembershipChanged(organizationId);
-  // `authMiddleware` caches team membership and the role; removing an org
-  // member also drops their `team_member` rows, so a live session would keep
-  // team access until the TTL expired.
+  // `authMiddleware` caches team membership; removing an org member also
+  // drops their `team_member` rows, so a live session would keep team access
+  // until the TTL expired.
   await bestEffort("team membership cache", () =>
     invalidateOrgTeamMembershipCache(organizationId, userId),
-  );
-  await bestEffort("member role cache", () =>
-    invalidateMemberRoleCache(organizationId, userId),
   );
   // Workflow notification recipients are jsonb userId lists (no FK).
   await bestEffort("notification recipients", () =>

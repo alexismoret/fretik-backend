@@ -1,10 +1,11 @@
 import { and, eq, inArray } from "drizzle-orm";
+import type { UserPrincipal } from "../../authz/principal";
 import db from "../../db";
 import { userPins } from "../../db/schema";
 import type { PinItem } from "../../schemas/pins";
 import { listCollections } from "../collections/retrieve";
-import { pageVisibilityWhere, type PageRequester } from "../pages/visibility";
-import { workflowVisibilityWhere } from "../workflows/visibility";
+import { pageAccessWhere } from "../pages/visibility";
+import { workflowAccessWhere } from "../workflows/visibility";
 
 /**
  * Render one user's sidebar pins, in their chosen order.
@@ -16,24 +17,23 @@ import { workflowVisibilityWhere } from "../workflows/visibility";
  *    was deleted through a path that did not reach `deletePinsForTarget` (an FK
  *    cascade, a manual DELETE) — and is reaped here, once, awaited.
  *  - the VISIBILITY check is scoped to the caller (`listCollections` for its
- *    cross-team grant logic, the page and workflow visibility predicates for
- *    private pages and private workflows). A row that exists but is not
- *    currently visible or enabled is simply left OUT of the response and KEPT
- *    in the table: a disabled collection that gets re-enabled must bring its
- *    pin back, and a pin must never become a probe for a page or a workflow
- *    the caller may not see.
+ *    cross-team grant logic, the access engine for pages and workflows). A
+ *    row that exists but is not currently visible or enabled is simply left
+ *    OUT of the response and KEPT in the table: a disabled collection that
+ *    gets re-enabled must bring its pin back, a page shared again must bring
+ *    its pin back, and a pin must never become a probe for a page or a
+ *    workflow the caller may not see.
  */
 export const listUserPins = async (params: {
-  userId: string;
-  organizationId: string;
+  principal: UserPrincipal;
   teamId: string;
-  requester?: PageRequester;
 }): Promise<PinItem[]> => {
+  const { principal, teamId } = params;
   const rows = await db.query.userPins.findMany({
     where: {
-      userId: params.userId,
-      organizationId: params.organizationId,
-      teamId: params.teamId,
+      userId: principal.userId,
+      organizationId: principal.organizationId,
+      teamId,
     },
     orderBy: { displayOrder: "asc", createdAt: "asc" },
   });
@@ -86,8 +86,8 @@ export const listUserPins = async (params: {
       .delete(userPins)
       .where(
         and(
-          eq(userPins.userId, params.userId),
-          eq(userPins.teamId, params.teamId),
+          eq(userPins.userId, principal.userId),
+          eq(userPins.teamId, teamId),
           inArray(userPins.targetId, orphanIds),
         ),
       );
@@ -98,8 +98,8 @@ export const listUserPins = async (params: {
   const visibleCollections =
     collectionIds.length > 0
       ? await listCollections({
-          organizationId: params.organizationId,
-          teamId: params.teamId,
+          organizationId: principal.organizationId,
+          teamId,
           includeDisabled: false,
         })
       : [];
@@ -113,8 +113,8 @@ export const listUserPins = async (params: {
           columns: { id: true, name: true, icon: true, color: true },
           where: {
             id: { in: pageIds },
-            teamId: params.teamId,
-            ...pageVisibilityWhere(params.requester),
+            teamId,
+            ...pageAccessWhere(principal, "view"),
           },
         })
       : [];
@@ -126,8 +126,8 @@ export const listUserPins = async (params: {
           columns: { id: true, name: true, icon: true, color: true },
           where: {
             id: { in: workflowIds },
-            teamId: params.teamId,
-            ...workflowVisibilityWhere(params.requester),
+            teamId,
+            ...workflowAccessWhere(principal, "view"),
           },
         })
       : [];

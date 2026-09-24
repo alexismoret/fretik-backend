@@ -129,10 +129,10 @@ export const containerArm = (input: {
  * (see `resources/content.ts`).
  */
 export interface FlatAccessColumns {
-  readonly id: AnyColumn;
-  readonly organizationId: AnyColumn;
-  readonly teamId: AnyColumn;
-  readonly projectId: AnyColumn;
+  readonly id: AnyColumn | SQL;
+  readonly organizationId: AnyColumn | SQL;
+  readonly teamId: AnyColumn | SQL;
+  readonly projectId: AnyColumn | SQL;
   readonly owner: AnyColumn | SQL;
   readonly restricted: AnyColumn | SQL;
 }

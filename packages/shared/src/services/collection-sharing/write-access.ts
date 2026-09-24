@@ -1,7 +1,7 @@
 import { and, eq, isNull, or, sql } from "drizzle-orm";
+import { requireUserCapability } from "../../authz/gates";
 import db, { type Executor } from "../../db";
 import { collectionGrants, recordShares } from "../../db/schema";
-import { assertOrgAdmin } from "../../lib/auth-roles";
 import { forbidden, notFound, throwHttpError } from "../../lib/errors";
 
 /**
@@ -201,9 +201,10 @@ export const assertCanManageType = async (input: {
         forbidden("Only an organization admin can change this collection"),
       );
     }
-    return assertOrgAdmin({
+    return requireUserCapability({
       userId: input.userId,
       organizationId: input.organizationId,
+      capability: "organization.templates",
       message: "Only an organization admin can change this collection",
     });
   }
@@ -261,9 +262,10 @@ export const assertCanWriteField = async (input: {
     return throwHttpError(404, notFound("Field definition not found"));
   }
   if (field.teamId === null) {
-    return assertOrgAdmin({
+    return requireUserCapability({
       userId: input.userId,
       organizationId: input.organizationId,
+      capability: "organization.templates",
       message: "Only an organization admin can change an organization field",
     });
   }

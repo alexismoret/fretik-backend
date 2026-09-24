@@ -77,12 +77,34 @@ export const resolveAccess = async (
 ): Promise<ResolvedResource | null> =>
   (await resolveAccessMany(principal, type, [id])).get(id) ?? null;
 
+/** Refuse one resolved resource whose level falls short of `required`. */
+const refuseShortLevel = (input: {
+  principal: Principal;
+  type: EngineResourceType;
+  id: string;
+  resolved: ResolvedResource;
+  required: AccessLevel;
+}): Promise<never> | undefined => {
+  if (atLeast(input.resolved.level, input.required)) return undefined;
+  if (input.principal.kind === "system") return undefined;
+  return throwResourceRefusal({
+    principal: input.principal,
+    resource: {
+      type: input.type,
+      id: input.id,
+      ownerUserId: input.resolved.node.ownerUserId,
+      teamId: input.resolved.node.teamId,
+    },
+    required: input.required,
+    current: input.resolved.level,
+  });
+};
+
 /**
  * THE gate. The resource must be visible — otherwise 404, like one that does
  * not exist — and the person's level must reach `required` — otherwise 403,
- * saying why and whom to ask. Returns the resource, whose `node.teamId` is the
- * team the caller must scope its service call to: an item shared from another
- * team is served from ITS team, never re-scoped to the caller's.
+ * saying why and whom to ask. Returns the resource with the person's level
+ * on it; `node.teamId` is the team that holds it.
  */
 export const requireAccess = async (input: {
   principal: Principal;
@@ -94,17 +116,41 @@ export const requireAccess = async (input: {
 }): Promise<ResolvedResource> => {
   const resolved = await resolveAccess(input.principal, input.type, input.id);
   if (!resolved) return throwNotVisible(input.notFoundMessage);
-  if (atLeast(resolved.level, input.required)) return resolved;
-  if (input.principal.kind === "system") return resolved;
-  return throwResourceRefusal({
-    principal: input.principal,
-    resource: {
-      type: input.type,
-      id: input.id,
-      ownerUserId: resolved.node.ownerUserId,
-      teamId: resolved.node.teamId,
-    },
-    required: input.required,
-    current: resolved.level,
+  await refuseShortLevel({ ...input, resolved });
+  return resolved;
+};
+
+/**
+ * The gate for a list of ids (a bulk delete, a bulk move). An id the person
+ * cannot see is dropped, answered like one that does not exist; one they see
+ * below `required` refuses the whole batch with the 403 that names it — a
+ * batch that half-happens is harder to explain than one that did not. Returns
+ * the ids to act on, in the order given.
+ */
+export const requireAccessForEach = async (input: {
+  principal: Principal;
+  type: EngineResourceType;
+  ids: readonly string[];
+  required: AccessLevel;
+}): Promise<string[]> => {
+  const resolved = await resolveAccessMany(
+    input.principal,
+    input.type,
+    input.ids,
+  );
+  const visible = [...new Set(input.ids)].flatMap((id) => {
+    const resource = resolved.get(id);
+    return resource === undefined ? [] : [{ id, resource }];
   });
+  const short = visible.find(
+    ({ resource }) => !atLeast(resource.level, input.required),
+  );
+  if (short !== undefined) {
+    await refuseShortLevel({
+      ...input,
+      id: short.id,
+      resolved: short.resource,
+    });
+  }
+  return visible.map(({ id }) => id);
 };

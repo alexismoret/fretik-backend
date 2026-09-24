@@ -1,6 +1,7 @@
 import { accountRoutes } from "../../src/handlers/account";
 import { aiMemoryRoutes } from "../../src/handlers/ai-memory";
 import { approvalsRoutes } from "../../src/handlers/approvals";
+import { changelogRoutes } from "../../src/handlers/changelog";
 import { chatbotContextRoutes } from "../../src/handlers/chatbot-context";
 import { collectionRecordRoutes } from "../../src/handlers/collection-records";
 import { collectionSharingRoutes } from "../../src/handlers/collection-sharing";
@@ -51,12 +52,15 @@ import { workflowRoutes } from "../../src/handlers/workflows";
  */
 export interface Probeable {
   request: (path: string, init?: RequestInit) => Response | Promise<Response>;
+  /** Hono's route table: one entry per handler, middlewares included. */
+  routes: readonly { method: string; path: string; handler: unknown }[];
 }
 
 export const MOUNTED_ROUTERS: Record<string, Probeable> = {
   "/account": accountRoutes,
   "/ai-memory": aiMemoryRoutes,
   "/approvals": approvalsRoutes,
+  "/changelog": changelogRoutes,
   "/chatbot-context": chatbotContextRoutes,
   "/collection-records": collectionRecordRoutes,
   "/collection-sharing": collectionSharingRoutes,

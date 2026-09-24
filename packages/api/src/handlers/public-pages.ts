@@ -1,3 +1,4 @@
+import { access } from "@fretik/shared/authz/http";
 import db from "@fretik/shared/db";
 import { type HonoLoggedAppType } from "@fretik/shared/lib/auth-middleware";
 import {
@@ -117,6 +118,9 @@ publicPageRoutes.use(
 const getPageRoute = createRoute({
   method: "get",
   path: "/{token}",
+  middleware: access.public(
+    "Publishing a page IS the decision to expose it; the token names it.",
+  ),
   summary: "Public definition + access verdict for a published page",
   description:
     "Always 200. Serves the definition FROZEN at publish time, never the team's working copy.",
@@ -184,6 +188,9 @@ const publicPageDataResponseSchema = z.object({
 const postDataRoute = createRoute({
   method: "post",
   path: "/{token}/data",
+  middleware: access.public(
+    "A published page loads its declared datasets for anyone holding its token.",
+  ),
   summary: "Execute a published page's datasets",
   description:
     "Always 200. Runs under the OWNING team's scope (that is what makes a public page show real numbers) against the FROZEN definition. The body carries variable values, an optional dataset subset, and an optional window/ordering per dataset — never filters, collection ids or query fragments.",

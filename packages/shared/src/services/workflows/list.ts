@@ -1,24 +1,24 @@
+import type { Principal } from "../../authz/principal";
 import db from "../../db";
 import type { WorkflowResponse } from "../../schemas/workflows";
 import { serializeWorkflow } from "./serialize";
-import { workflowVisibilityWhere, type WorkflowRequester } from "./visibility";
+import { workflowAccessWhere } from "./visibility";
 
 /**
  * List a team's workflows, most-recently-updated first. Archived workflows
  * are excluded by default (the card list shows live definitions only).
- * `requester` restricts private (user-scoped) workflows to their owner —
- * admins and internal callers (omitted `requester`) see every workflow.
+ * Only the workflows the principal can see (`visibility.ts`).
  */
 export const listWorkflows = async (params: {
   teamId: string;
   includeArchived?: boolean;
-  requester?: WorkflowRequester;
+  principal: Principal;
 }): Promise<WorkflowResponse[]> => {
   const rows = await db.query.workflows.findMany({
     where: {
       teamId: params.teamId,
       ...(params.includeArchived ? {} : { status: { ne: "archived" } }),
-      ...workflowVisibilityWhere(params.requester),
+      ...workflowAccessWhere(params.principal, "view"),
     },
     orderBy: { updatedAt: "desc" },
   });

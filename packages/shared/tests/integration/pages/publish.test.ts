@@ -35,10 +35,10 @@ import { mockModule } from "../../lib/mock-module";
  * in the file. `resolvePageAccess` is the only fully anonymous surface in the
  * product, and its lookup was being asserted against a hand-written matcher.
  *
- * `pageVisibilityWhere` had four tests of its own that compared the returned
- * OBJECT to a literal. They are gone: the clause is spread into a real query
- * here, so what is asserted is which pages a member, an admin and an internal
- * caller can actually reach.
+ * The visibility clause had four tests of its own that compared the returned
+ * OBJECT to a literal. They are gone: the access engine's clause is spread into
+ * a real query here, so what is asserted is which pages a member and an admin
+ * can actually reach.
  *
  * The AI service stays doubled — it is a process boundary, and `refreshPageVectors`
  * is fire-and-forget, so left real its rejection would surface inside whichever
@@ -87,8 +87,9 @@ const { publishPage, unpublishPage } =
   await import("../../../src/services/pages/publish");
 const { resolvePageAccess } =
   await import("../../../src/services/pages/resolve-page-access");
-const { pageOwnerWriteError } =
-  await import("../../../src/services/pages/visibility");
+const { createPage } = await import("../../../src/services/pages/create");
+const { setOrganizationAccessPolicy } =
+  await import("../../../src/services/organization/access-policy");
 const { publicPageDefinitionCacheKey } =
   await import("../../../src/services/pages/public-cache");
 
@@ -156,15 +157,20 @@ const row = async (id: string) => {
   return found;
 };
 
-const publish = (
-  pageId: string,
-  requester?: { userId: string; isAdmin: boolean },
-) =>
+/** Publish as one of the workspace's users — its first, by default. */
+const publish = async (pageId: string, by: string = fx.userIds[0]) =>
   publishPage({
     pageId,
     teamId: fx.teamId,
-    publishedByUserId: fx.userIds[0],
-    ...(requester ? { requester } : {}),
+    publishedByUserId: by,
+    principal: await fx.principalOf(by),
+  });
+
+const unpublish = async (pageId: string, by: string = fx.userIds[0]) =>
+  unpublishPage({
+    pageId,
+    teamId: fx.teamId,
+    principal: await fx.principalOf(by),
   });
 
 describe("publishPage — frozen definition, live data", () => {
@@ -302,9 +308,7 @@ describe("who may publish — team and visibility, in the same query", () => {
   test("a member cannot publish a colleague's PRIVATE page", async () => {
     const id = await seedPage({ userId: fx.userIds[0] });
 
-    const failure = await rejection(
-      publish(id, { userId: fx.userIds[1], isAdmin: false }),
-    );
+    const failure = await rejection(publish(id, fx.userIds[1]));
 
     expect(failure instanceof HTTPException && failure.status).toBe(404);
     expect((await row(id)).publicToken).toBeNull();
@@ -313,35 +317,64 @@ describe("who may publish — team and visibility, in the same query", () => {
   test("a member CAN publish a team-shared page", async () => {
     const id = await seedPage({ userId: null });
 
-    await publish(id, { userId: fx.userIds[1], isAdmin: false });
+    await publish(id, fx.userIds[1]);
 
     expect((await row(id)).publicToken).not.toBeNull();
   });
 
-  test("an org admin publishes anything in the team, for governance", async () => {
-    const id = await seedPage({ userId: fx.userIds[0] });
+  test("an org admin gets nothing on a colleague's private page by that role", async () => {
+    // Private to the MEMBER; the fixture's first user owns the organization.
+    // Admins run the structure — reading or publishing someone's private work
+    // takes a grant, like for anyone else.
+    const id = await seedPage({
+      userId: fx.userIds[1],
+      createdByUserId: fx.userIds[1],
+    });
 
-    await publish(id, { userId: fx.userIds[1], isAdmin: true });
+    const failure = await rejection(publish(id, fx.userIds[0]));
 
-    expect((await row(id)).publicToken).not.toBeNull();
+    expect(failure instanceof HTTPException && failure.status).toBe(404);
+    expect((await row(id)).publicToken).toBeNull();
   });
 
-  test("no requester means system trust — every page in the team", async () => {
-    const id = await seedPage({ userId: fx.userIds[0] });
+  test("an organization that turns public links off is obeyed, and says so", async () => {
+    const id = await seedPage();
+    await setOrganizationAccessPolicy({
+      organizationId: fx.organizationId,
+      patch: { publicLinks: "nobody" },
+    });
+    try {
+      const failure = await rejection(publish(id));
 
-    await publish(id);
-
-    expect((await row(id)).publicToken).not.toBeNull();
+      expect(failure instanceof HTTPException && failure.status).toBe(403);
+      expect(failure.message).toContain("ACCESS_DENIED");
+      expect(failure.message).toContain("POLICY_DISABLED");
+      expect((await row(id)).publicToken).toBeNull();
+    } finally {
+      await setOrganizationAccessPolicy({
+        organizationId: fx.organizationId,
+        patch: { publicLinks: "members" },
+      });
+    }
   });
 
-  test("a page may be team-shared or private to the writer, never to someone else", () => {
-    // The write-side half of the same doctrine, and genuinely pure.
-    expect(pageOwnerWriteError(null, "user-1")).toBeNull();
-    expect(pageOwnerWriteError(undefined, "user-1")).toBeNull();
-    expect(pageOwnerWriteError("user-1", "user-1")).toBeNull();
-    expect(pageOwnerWriteError("user-2", "user-1")).toContain(
-      "can't be scoped to another user",
+  test("a page is open to the team or restricted to its writer, never handed to someone else", async () => {
+    const failure = await rejection(
+      createPage({
+        organizationId: fx.organizationId,
+        teamId: fx.teamId,
+        createdByUserId: fx.userIds[0],
+        input: {
+          name: "Someone else's",
+          description: "",
+          definition: readyDefinition(),
+          userId: fx.userIds[1],
+        },
+      }),
     );
+
+    expect(failure instanceof HTTPException && failure.status).toBe(400);
+    expect(failure.message).toContain("your own id");
   });
 });
 
@@ -352,7 +385,7 @@ describe("unpublishPage — a revoked link is indistinguishable from none", () =
     const token = (await row(id)).publicToken ?? "";
     await redis.set(publicPageDefinitionCacheKey(token), "stale", "EX", 60);
 
-    const page = await unpublishPage({ pageId: id, teamId: fx.teamId });
+    const page = await unpublish(id);
 
     const stored = await row(id);
     expect(stored.publicToken).toBeNull();
@@ -369,7 +402,7 @@ describe("unpublishPage — a revoked link is indistinguishable from none", () =
     const token = (await row(id)).publicToken ?? "";
     expect((await resolvePageAccess({ token })).access).toBe("ready");
 
-    await unpublishPage({ pageId: id, teamId: fx.teamId });
+    await unpublish(id);
 
     expect(await resolvePageAccess({ token })).toEqual({
       access: "not_found",
@@ -379,7 +412,7 @@ describe("unpublishPage — a revoked link is indistinguishable from none", () =
   test("unpublishing a page that was never published still succeeds", async () => {
     const id = await seedPage();
 
-    await unpublishPage({ pageId: id, teamId: fx.teamId });
+    await unpublish(id);
 
     expect((await row(id)).publicToken).toBeNull();
   });
@@ -392,11 +425,10 @@ describe("unpublishPage — a revoked link is indistinguishable from none", () =
       pageId: foreign.id,
       teamId: otherFx.teamId,
       publishedByUserId: otherFx.userIds[0],
+      principal: await otherFx.principalOf(otherFx.userIds[0]),
     });
 
-    const failure = await rejection(
-      unpublishPage({ pageId: foreign.id, teamId: fx.teamId }),
-    );
+    const failure = await rejection(unpublish(foreign.id));
 
     expect(failure instanceof HTTPException && failure.status).toBe(404);
     expect((await row(foreign.id)).publicToken).not.toBeNull();
@@ -407,7 +439,7 @@ describe("unpublishPage — a revoked link is indistinguishable from none", () =
     await publish(id);
     await waitForVectorize(id, 1);
 
-    await unpublishPage({ pageId: id, teamId: fx.teamId });
+    await unpublish(id);
     // The SECOND call for this page — the array is not cleared, because the
     // count is what says the revoke re-indexed rather than the publish.
     const calls = await waitForVectorize(id, 2);

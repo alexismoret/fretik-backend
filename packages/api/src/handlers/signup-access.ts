@@ -1,3 +1,4 @@
+import { access } from "@fretik/shared/authz/http";
 import {
   authMiddleware,
   type HonoLoggedAppType,
@@ -45,6 +46,7 @@ const domainEntrySchema = z.object({
 const listEmailsRoute = createRoute({
   method: "get",
   path: "/emails",
+  middleware: access.operator(),
   summary: "List allowlisted sign-up emails (super-admin)",
   tags: ["Signup access"],
   responses: {
@@ -60,6 +62,7 @@ const listEmailsRoute = createRoute({
 const addEmailRoute = createRoute({
   method: "post",
   path: "/emails",
+  middleware: access.operator(),
   summary: "Allowlist a sign-up email (super-admin)",
   tags: ["Signup access"],
   request: {
@@ -88,6 +91,7 @@ const addEmailRoute = createRoute({
 const removeEmailRoute = createRoute({
   method: "delete",
   path: "/emails",
+  middleware: access.operator(),
   summary: "Remove an allowlisted sign-up email (super-admin)",
   tags: ["Signup access"],
   request: { query: z.object({ email: z.email() }) },
@@ -113,6 +117,7 @@ const domainSchema = z
 const listDomainsRoute = createRoute({
   method: "get",
   path: "/domains",
+  middleware: access.operator(),
   summary: "List allowed sign-up domains (super-admin)",
   tags: ["Signup access"],
   responses: {
@@ -128,6 +133,7 @@ const listDomainsRoute = createRoute({
 const addDomainRoute = createRoute({
   method: "post",
   path: "/domains",
+  middleware: access.operator(),
   summary: "Allow a sign-up domain (super-admin)",
   tags: ["Signup access"],
   request: {
@@ -159,6 +165,7 @@ const addDomainRoute = createRoute({
 const removeDomainRoute = createRoute({
   method: "delete",
   path: "/domains",
+  middleware: access.operator(),
   summary: "Remove an allowed sign-up domain (super-admin)",
   tags: ["Signup access"],
   request: { query: z.object({ domain: domainSchema }) },

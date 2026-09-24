@@ -1,3 +1,4 @@
+import { SYSTEM } from "../../authz/system-principals";
 import db from "../../db";
 import type { Workflow } from "../../db/schema";
 import { throwHttpError } from "../../lib/errors";
@@ -35,6 +36,7 @@ export const assertWorkflowOwnerPresent = async (
   await pauseWorkflow({
     id: workflow.id,
     teamId: workflow.teamId,
+    principal: SYSTEM.workflowEngine,
     reason: OWNER_GONE_PAUSE_REASON,
   });
   return throwHttpError(409, {
@@ -68,6 +70,7 @@ export const pauseWorkflowsOfDepartedMember = async (params: {
     await pauseWorkflow({
       id: workflow.id,
       teamId: workflow.teamId,
+      principal: SYSTEM.workflowEngine,
       reason: OWNER_GONE_PAUSE_REASON,
     });
   }

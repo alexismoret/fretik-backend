@@ -1,3 +1,4 @@
+import { access } from "@fretik/shared/authz/http";
 import {
   authMiddleware,
   type HonoLoggedAppType,
@@ -34,6 +35,9 @@ linkRoutes.use("*", authMiddleware);
 const listRoute = createRoute({
   method: "get",
   path: "",
+  middleware: access.handler(
+    "The record must be readable (assertCanReadRecord); far ends are filtered.",
+  ),
   summary: "List a record's active links",
   tags: ["Links"],
   request: { query: z.object({ recordId: z.uuid() }) },
@@ -52,6 +56,9 @@ const listRoute = createRoute({
 const createRouteDef = createRoute({
   method: "post",
   path: "",
+  middleware: access.handler(
+    "Write access to the source record, and both ends readable (bulk-create).",
+  ),
   summary: "Create a link between two records",
   tags: ["Links"],
   request: {
@@ -73,6 +80,9 @@ const createRouteDef = createRoute({
 const deleteRouteDef = createRoute({
   method: "delete",
   path: "/{id}",
+  middleware: access.handler(
+    "The same right as creating it: write access to its source record.",
+  ),
   summary: "Remove a link",
   tags: ["Links"],
   request: { params: paramsIdSchema },

@@ -1,4 +1,6 @@
 import { and, eq, inArray } from "drizzle-orm";
+import type { Principal } from "../../authz/principal";
+import { SYSTEM } from "../../authz/system-principals";
 import db from "../../db";
 import { aiConversations, workflows } from "../../db/schema";
 import { deleteSessionFolder } from "../../lib/chatbot-session-storage";
@@ -11,7 +13,6 @@ import { cancelWorkflowRun } from "./cancel-run";
 import { getWorkflowRow } from "./get";
 import { serializeWorkflow } from "./serialize";
 import { deleteWorkflowVectorRows } from "./vector-refresh";
-import type { WorkflowRequester } from "./visibility";
 
 /** A run is done when it can no longer fire a turn or hold a Trigger.dev task. */
 const NON_TERMINAL_RUN_STATUSES = ["queued", "running", "needs_approval"];
@@ -33,12 +34,13 @@ const NON_TERMINAL_RUN_STATUSES = ["queued", "running", "needs_approval"];
 export const deleteWorkflow = async (params: {
   id: string;
   teamId: string;
-  requester?: WorkflowRequester;
+  principal: Principal;
 }): Promise<WorkflowResponse | undefined> => {
   const row = await getWorkflowRow({
     id: params.id,
     teamId: params.teamId,
-    requester: params.requester,
+    principal: params.principal,
+    level: "full",
   });
   if (!row) return undefined;
   if (row.status !== "archived") {
@@ -57,14 +59,18 @@ export const deleteWorkflow = async (params: {
   // hiccup must not block the delete (the row is gone either way).
   for (const run of runs) {
     if (!NON_TERMINAL_RUN_STATUSES.includes(run.status)) continue;
-    await cancelWorkflowRun({ runId: run.id, teamId: params.teamId }).catch(
-      (error: unknown) => {
-        console.warn(
-          `[workflows.delete] cancel run ${run.id} failed:`,
-          error instanceof Error ? error.message : error,
-        );
-      },
-    );
+    // The deletion itself was authorised above (full access); stopping its
+    // runs is the engine's cleanup, not a second decision.
+    await cancelWorkflowRun({
+      runId: run.id,
+      teamId: params.teamId,
+      principal: SYSTEM.workflowEngine,
+    }).catch((error: unknown) => {
+      console.warn(
+        `[workflows.delete] cancel run ${run.id} failed:`,
+        error instanceof Error ? error.message : error,
+      );
+    });
   }
 
   // Safety net — archive already demoted these; catches any straggler. Idempotent.

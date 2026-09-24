@@ -1,13 +1,10 @@
 import db from "@fretik/shared/db";
 import type { ToolApprovalSummaryField } from "@fretik/shared/db/schema";
+import { FOLDER_DESCRIPTION_MAX_CHARS } from "@fretik/shared/schemas/folders";
 import { updateDocument } from "@fretik/shared/services/documents/update";
 import { createFolder } from "@fretik/shared/services/folders/create";
 import { deleteFolders } from "@fretik/shared/services/folders/delete";
 import { updateFolder } from "@fretik/shared/services/folders/update";
-// Through the barrel: `schemas/folders` and `schemas/documents` import each
-// other, and entering the pair through `folders` first reads
-// `FolderBreadcrumbSchema` before it exists.
-import { FOLDER_DESCRIPTION_MAX_CHARS } from "@fretik/shared/schemas";
 import { tool } from "ai";
 import { z } from "zod";
 import {
@@ -140,7 +137,7 @@ export const createManageDriveTool = () =>
       "",
       "- createFolder: name (+ optional parentFolderId, description). Creates a folder; omit parentFolderId for the root.",
       "- renameFolder: folderId + name.",
-      "- describeFolder: folderId + description. Documents added with no destination are filed automatically into the folder whose description fits, so write one whenever the user says what a folder is for.",
+      "- describeFolder: folderId + description. Documents added with no destination are filed automatically into the folder whose description fits.",
       "- moveFolder: folderId + parentFolderId (new parent; null = root).",
       "- deleteFolder: folderId. Deletes the folder AND its documents/subfolders — confirm with the user first.",
       "- moveDocument: documentId + parentFolderId (destination; null = root).",

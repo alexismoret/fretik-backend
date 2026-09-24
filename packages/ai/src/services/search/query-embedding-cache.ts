@@ -73,14 +73,20 @@ const MAX_ENTRIES = 1000;
  *
  * A normal 3-entry batch is 200-500 ms, and the recall gather's own p90 is
  * ~1 s; but the gather has been measured at 6.3 s and 12.4 s on two turns out
- * of 230, and both were this call with no ceiling on it. 2.5 s is past the
- * slowest healthy call by a wide margin and well inside a turn's budget.
+ * of 230, and both were this call with no ceiling on it, hence a ceiling.
+ *
+ * It was 2.5 s, and the provider's tail made that a real loss: measured in
+ * production over 7 days (2026-09-24, Langfuse), 274 query embeddings timed
+ * out, each a search served without its semantic arm. Of the unbounded calls
+ * of the same size that ran past 2.5 s, 20 % were done by 3 s, 50 % by 4 s,
+ * 69 % by 5 s. 4 s halves those losses; the median call (0.21 s) does not
+ * move, and only a call already in the slow tail waits longer.
  *
  * Timing out is not a failure of the search: `hybridSearch` catches the
  * rejection and serves the two lexical arms, which have already answered by
  * then. That path exists and is tested — this only makes it reachable.
  */
-const QUERY_EMBED_TIMEOUT_MS = 2_500;
+const QUERY_EMBED_TIMEOUT_MS = 4_000;
 
 /**
  * How long the query path will wait for Redis.

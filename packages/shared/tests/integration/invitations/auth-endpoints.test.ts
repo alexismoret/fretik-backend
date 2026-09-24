@@ -46,6 +46,8 @@ await mockModule("../../src/lib/email", {
 });
 
 const { auth } = await import("../../../src/lib/auth");
+const { SIGNUP_INVITATION_HEADER } =
+  await import("../../../src/services/auth/signup-gate");
 
 const PASSWORD = "integration-password-1";
 
@@ -69,9 +71,10 @@ const cookieHeader = (headers: Headers): string =>
  *
  * Sign-up is gated (closed beta) and, with `requireEmailVerification`, an
  * unverified account cannot sign in — so this borrows the product's own
- * mechanism: a pending invitation both opens the gate and auto-verifies the
- * account (`databaseHooks.user.create.before`). It is cancelled straight after
- * so no assertion below can see it.
+ * mechanism: a pending invitation, presented by id the way the invitation page
+ * sends it, both opens the gate and auto-verifies the account
+ * (`databaseHooks.user.create.before`). It is cancelled straight after so no
+ * assertion below can see it.
  */
 const createAccount = async (
   workspace: WorkspaceFixture,
@@ -94,6 +97,7 @@ const createAccount = async (
 
   const signUp = await auth.api.signUpEmail({
     body: { name: "Integration user", email, password: PASSWORD },
+    headers: presenting(bootstrap.id),
   });
 
   await db
@@ -128,6 +132,10 @@ const createAccount = async (
 
   return { userId: signUp.user.id, email, headers };
 };
+
+/** The headers of a sign-up made from an invitation's link. */
+const presenting = (invitationId: string): Headers =>
+  new Headers({ [SIGNUP_INVITATION_HEADER]: invitationId });
 
 /** The `{ message, code }` an endpoint refused with, or null if it succeeded. */
 const refusalOf = async (call: Promise<unknown>): Promise<string | null> =>
@@ -524,6 +532,7 @@ describe("POST /organization/accept-invitation", () => {
 
     const signUp = await auth.api.signUpEmail({
       body: { name: "Newcomer", email: newcomer, password: PASSWORD },
+      headers: presenting(created.id),
     });
     const signIn = await auth.api.signInEmail({
       body: { email: newcomer, password: PASSWORD },
@@ -578,5 +587,80 @@ describe("POST /organization/accept-invitation", () => {
     } finally {
       await other.cleanup();
     }
+  });
+});
+
+/**
+ * An invitation EXISTING for an address says nothing about who is typing it.
+ * Auto-verifying on that alone let anyone register an invited address before
+ * its owner did, sign straight in, and accept the invitation as them. Only the
+ * invitation's id — what the emailed link carries — proves the inbox.
+ */
+describe("sign-up of an invited address", () => {
+  const invite = async (email: string): Promise<string> => {
+    const [row] = await db
+      .insert(invitation)
+      .values({
+        organizationId: fx.organizationId,
+        email,
+        role: "member",
+        status: "pending",
+        expiresAt: new Date(Date.now() + 60_000),
+        inviterId: fx.userIds[0],
+      })
+      .returning({ id: invitation.id });
+    if (!row) throw new Error("fixture: no invitation");
+    return row.id;
+  };
+
+  const isVerified = async (userId: string): Promise<boolean | undefined> =>
+    (
+      await db.query.user.findFirst({
+        columns: { emailVerified: true },
+        where: { id: userId },
+      })
+    )?.emailVerified;
+
+  test("without the invitation's id, the account must verify its email", async () => {
+    const email = `it-squat-${randomUUID().slice(0, 8)}@example.test`;
+    await invite(email);
+
+    const signUp = await auth.api.signUpEmail({
+      body: { name: "Not the invitee", email, password: PASSWORD },
+    });
+
+    expect(await isVerified(signUp.user.id)).toBe(false);
+    expect(
+      await refusalOf(
+        auth.api.signInEmail({ body: { email, password: PASSWORD } }),
+      ),
+    ).toContain("EMAIL_NOT_VERIFIED");
+  });
+
+  test("with the id of ANOTHER invitation, it is not verified either", async () => {
+    const email = `it-mixed-${randomUUID().slice(0, 8)}@example.test`;
+    await invite(email);
+    const someoneElses = await invite(
+      `it-other-${randomUUID().slice(0, 8)}@example.test`,
+    );
+
+    const signUp = await auth.api.signUpEmail({
+      body: { name: "Wrong link", email, password: PASSWORD },
+      headers: presenting(someoneElses),
+    });
+
+    expect(await isVerified(signUp.user.id)).toBe(false);
+  });
+
+  test("with its own invitation's id, the account is verified", async () => {
+    const email = `it-invitee-${randomUUID().slice(0, 8)}@example.test`;
+    const invitationId = await invite(email);
+
+    const signUp = await auth.api.signUpEmail({
+      body: { name: "The invitee", email, password: PASSWORD },
+      headers: presenting(invitationId),
+    });
+
+    expect(await isVerified(signUp.user.id)).toBe(true);
   });
 });

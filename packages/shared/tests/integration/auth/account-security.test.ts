@@ -46,6 +46,8 @@ await mockModule("../../src/lib/email", {
 });
 
 const { auth } = await import("../../../src/lib/auth");
+const { SIGNUP_INVITATION_HEADER } =
+  await import("../../../src/services/auth/signup-gate");
 
 /**
  * The security notices sent so far. Sign-up also mails a verification code,
@@ -99,8 +101,9 @@ const withCookies = (request: Headers, response: Headers): Headers => {
 
 /**
  * An account with a password and an active organization. Sign-up is gated
- * (closed beta), so a pending invitation opens the gate and auto-verifies the
- * account, then is cancelled — the product's own mechanism, as in
+ * (closed beta), so a pending invitation opens the gate and, presented by its
+ * id as the invitation link does, auto-verifies the account; it is then
+ * cancelled. The product's own mechanism, as in
  * `invitations/auth-endpoints.test.ts`.
  */
 const createAccount = async (workspace: WorkspaceFixture): Promise<Account> => {
@@ -120,6 +123,7 @@ const createAccount = async (workspace: WorkspaceFixture): Promise<Account> => {
 
   const signUp = await auth.api.signUpEmail({
     body: { name: "Security user", email, password: PASSWORD },
+    headers: new Headers({ [SIGNUP_INVITATION_HEADER]: bootstrap.id }),
   });
   await db
     .update(invitation)

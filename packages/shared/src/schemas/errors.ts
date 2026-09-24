@@ -96,6 +96,10 @@ export const ERROR_CODES = {
    * the operation opens a new request rather than replaying this one. */
   TOOL_APPROVAL_EXECUTION_FAILED: "TOOL_APPROVAL_EXECUTION_FAILED",
 
+  // Workflows
+  /** A private workflow's owner left its team: it acts as them, so it stops. */
+  WORKFLOW_OWNER_GONE: "WORKFLOW_OWNER_GONE",
+
   // Generic
   INTERNAL_ERROR: "INTERNAL_ERROR",
 } as const;

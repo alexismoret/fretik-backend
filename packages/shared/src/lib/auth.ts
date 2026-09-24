@@ -11,9 +11,9 @@ import { generateOtpEmail } from "../emails/generators";
 import { bootstrapTeamWithBotUser } from "../services/auth/bot-user";
 import { getUserLocaleByEmail } from "../services/auth/get-user-locale";
 import {
-  getPendingInvitationTeamId,
-  hasPendingInvitation,
+  findSignupInvitation,
   isEmailAllowlisted,
+  SIGNUP_INVITATION_HEADER,
 } from "../services/auth/signup-gate";
 import { seedStarterCollections } from "../services/collections/seed-starter-types";
 import { seedSystemOntology } from "../services/collections/seed-system-types";
@@ -21,6 +21,7 @@ import { applyDocumentFieldTemplate } from "../services/field-definitions/apply-
 import { duplicateOrgDefsToTeam } from "../services/field-definitions/duplicate-org-to-team";
 import { getTeamLocale } from "../services/field-definitions/get-locale";
 import { sendOrganizationInvitationEmail } from "../services/invitations/send-invitation-email";
+import { pauseWorkflowsOfDepartedMember } from "../services/workflows/owner-presence";
 import { scrubWorkflowNotificationRecipient } from "../services/workflows/scrub-notification-recipient";
 import { accountSecurity } from "./auth-account-security";
 import { recordAuthEvent } from "./auth-audit";
@@ -32,6 +33,7 @@ import {
 import { organizationTeamInvitationHooks } from "./auth-hooks";
 import { passkeyOptions } from "./auth-passkey";
 import {
+  invalidateMemberRoleCache,
   invalidateOrgTeamMembershipCache,
   invalidateTeamMembershipCache,
 } from "./auth-roles";
@@ -73,6 +75,25 @@ const scrubNotificationRecipient = async (params: {
   } catch (err) {
     console.warn(
       `[workflow-notifications] failed to scrub recipient ${params.userId}:`,
+      err,
+    );
+  }
+};
+
+/**
+ * Best-effort pause of the private workflows a departing member owns in the
+ * given teams — they run AS that person (see `workflows/owner-presence.ts`).
+ * Never blocks the removal: run creation re-checks the owner anyway.
+ */
+const pauseDepartedOwnerWorkflows = async (params: {
+  userId: string;
+  teamIds: string[];
+}): Promise<void> => {
+  try {
+    await pauseWorkflowsOfDepartedMember(params);
+  } catch (err) {
+    console.warn(
+      `[workflows] failed to pause workflows owned by departing ${params.userId}:`,
       err,
     );
   }
@@ -210,17 +231,28 @@ const options = {
   databaseHooks: {
     user: {
       create: {
-        before: async (newUser) => {
+        before: async (newUser, context) => {
           const email = newUser.email.toLowerCase();
-          // Invited users proved email ownership by clicking the emailed link
-          // — auto-verify them so the invitation flow never stalls. They also
-          // inherit their inviting team's UI language (falls back to "en" for
-          // org-level invitations with no team).
-          if (await hasPendingInvitation(email)) {
-            const teamId = await getPendingInvitationTeamId(email);
-            const language = teamId ? await getTeamLocale(teamId) : "en";
+          // An invited address may register during the closed beta, in the
+          // inviting team's UI language (falls back to "en" for org-level
+          // invitations with no team). It skips email verification only when
+          // the sign-up presents the invitation's own id — the secret the
+          // emailed link carries; otherwise it verifies by code like anyone.
+          const invitation = await findSignupInvitation({
+            email,
+            invitationId:
+              context?.headers?.get(SIGNUP_INVITATION_HEADER) ?? null,
+          });
+          if (invitation) {
+            const language = invitation.teamId
+              ? await getTeamLocale(invitation.teamId)
+              : "en";
             return {
-              data: { ...newUser, emailVerified: true, language },
+              data: {
+                ...newUser,
+                language,
+                ...(invitation.ownershipProven ? { emailVerified: true } : {}),
+              },
             };
           }
           // Closed beta: only allowlisted emails may self-register.
@@ -292,26 +324,38 @@ const options = {
         // (no FK) — drop the departing user from them so the config doesn't
         // accumulate stale ids.
         afterRemoveMember: async (data) => {
-          await scrubNotificationRecipient({
-            userId: data.member.userId,
-            organizationId: data.organization.id,
-          });
+          const { userId } = data.member;
+          const organizationId = data.organization.id;
+          await scrubNotificationRecipient({ userId, organizationId });
           // `authMiddleware` caches team membership; removing an org member
           // also drops their `team_member` rows, so their live session would
-          // keep team access until the TTL expires.
-          await invalidateOrgTeamMembershipCache(
-            data.organization.id,
-            data.member.userId,
-          );
+          // keep team access until the TTL expires. Same for their role.
+          await invalidateOrgTeamMembershipCache(organizationId, userId);
+          await invalidateMemberRoleCache(organizationId, userId);
+          const teams = await db.query.team.findMany({
+            columns: { id: true },
+            where: { organizationId },
+          });
+          await pauseDepartedOwnerWorkflows({
+            userId,
+            teamIds: teams.map((t) => t.id),
+          });
         },
         afterRemoveTeamMember: async (data) => {
-          await scrubNotificationRecipient({
-            userId: data.teamMember.userId,
-            teamId: data.team.id,
+          const { userId } = data.teamMember;
+          await scrubNotificationRecipient({ userId, teamId: data.team.id });
+          await invalidateTeamMembershipCache(data.team.id, userId);
+          await pauseDepartedOwnerWorkflows({
+            userId,
+            teamIds: [data.team.id],
           });
-          await invalidateTeamMembershipCache(
-            data.team.id,
-            data.teamMember.userId,
+        },
+        // A demoted admin loses admin rights on their next request, not when
+        // the cached role expires.
+        afterUpdateMemberRole: async (data) => {
+          await invalidateMemberRoleCache(
+            data.organization.id,
+            data.member.userId,
           );
         },
       },

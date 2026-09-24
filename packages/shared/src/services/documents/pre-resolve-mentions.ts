@@ -72,9 +72,9 @@ export const readEntityVerdict = (
   response: DecisionResponse | null,
   questionId: string,
   candidates: readonly EntityCandidate[],
-): { linkId: string | null; chosenId: string | null; shadow: boolean } => {
+): { linkId: string | null; chosenId: string | null } => {
   if (response?.status !== "answered") {
-    return { linkId: null, chosenId: null, shadow: false };
+    return { linkId: null, chosenId: null };
   }
   const chosen = chosenOf(response.answers[questionId]);
   const chosenId =
@@ -88,12 +88,7 @@ export const readEntityVerdict = (
     chosen.confidence !== null &&
     chosen.confidence >= bar &&
     (chosen.probability ?? 0) >= minChosen;
-  const shadow = response.policy.mode === "shadow";
-  return {
-    linkId: chosenId !== null && sure && !shadow ? chosenId : null,
-    chosenId,
-    shadow,
-  };
+  return { linkId: chosenId !== null && sure ? chosenId : null, chosenId };
 };
 
 /**
@@ -140,8 +135,8 @@ const nearCandidates = async (params: {
 };
 
 /**
- * Hints for the fold: mention key → existing record id. Empty in shadow, on
- * no answer, or when nothing needed asking. Never throws; a failure leaves
+ * Hints for the fold: mention key → existing record id. Empty on no answer,
+ * on an unsure one, or when nothing needed asking. Never throws; a failure leaves
  * every mention to the fold, exactly as before this pass existed.
  */
 export const preResolveMentions = async (params: {

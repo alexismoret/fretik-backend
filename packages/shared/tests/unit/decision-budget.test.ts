@@ -23,15 +23,12 @@ const spec = (
   state: {
     maxTokens: 4000,
     admit: ["summary", "filename", "customFields."],
-    content: ["summary", "customFields."],
     ...state,
   },
-  egress: "redactable",
   path: "background",
   timeoutMs: 1000,
   fallbackTransport: true,
   journal: { policy: "all" },
-  defaultMode: "on",
   evalGate: { suites: [] },
 });
 
@@ -44,11 +41,11 @@ describe("fitState", () => {
   test("a key nobody admitted never leaves", () => {
     // An allow-list, never a pass-through: a fact a resolver adds tomorrow
     // does not reach a vendor until someone decides it belongs in a decision.
-    const fitted = fitState(
-      spec(),
-      { filename: "a.pdf", secretNote: "x", documentId: "0199" },
-      { redactContent: false },
-    );
+    const fitted = fitState(spec(), {
+      filename: "a.pdf",
+      secretNote: "x",
+      documentId: "0199",
+    });
     expect(fitted.state).toEqual({ filename: "a.pdf" });
     expect(fitted.dropped.map((d) => d.key).sort()).toEqual([
       "documentId",
@@ -57,31 +54,14 @@ describe("fitState", () => {
   });
 
   test("a prefix entry admits every key under it", () => {
-    const fitted = fitState(
-      spec(),
-      { "customFields.total": 12, "customFields.kind": "invoice" },
-      { redactContent: false },
-    );
+    const fitted = fitState(spec(), {
+      "customFields.total": 12,
+      "customFields.kind": "invoice",
+    });
     expect(Object.keys(fitted.state)).toEqual([
       "customFields.total",
       "customFields.kind",
     ]);
-  });
-
-  test("content keys are dropped when content may not leave", () => {
-    const fitted = fitState(
-      spec(),
-      {
-        summary: "A supplier invoice.",
-        filename: "a.pdf",
-        "customFields.x": 1,
-      },
-      { redactContent: true },
-    );
-    expect(fitted.state).toEqual({ filename: "a.pdf" });
-    expect(fitted.dropped.filter((d) => d.reason === "content")).toHaveLength(
-      2,
-    );
   });
 
   test("when the budget binds, the LEAST telling facts go", () => {
@@ -89,21 +69,18 @@ describe("fitState", () => {
     // what the budget sheds. The budget is room for the summary and one token.
     const summary = "word ".repeat(12).trim();
     const room = estimateTokens({}) + estimateTokens({ summary }) + 1;
-    const fitted = fitState(
-      spec({ maxTokens: room }),
-      { filename: "report.pdf", summary },
-      { redactContent: false },
-    );
+    const fitted = fitState(spec({ maxTokens: room }), {
+      filename: "report.pdf",
+      summary,
+    });
     expect(Object.keys(fitted.state)).toEqual(["summary"]);
     expect(fitted.dropped).toEqual([{ key: "filename", reason: "budget" }]);
   });
 
   test("no single value is longer than the clip", () => {
-    const fitted = fitState(
-      spec({ maxTokens: 10_000 }),
-      { summary: "x".repeat(MAX_VALUE_CHARS * 2) },
-      { redactContent: false },
-    );
+    const fitted = fitState(spec({ maxTokens: 10_000 }), {
+      summary: "x".repeat(MAX_VALUE_CHARS * 2),
+    });
     const summary = fitted.state["summary"];
     expect(typeof summary === "string" && summary.length).toBe(
       MAX_VALUE_CHARS + 1,

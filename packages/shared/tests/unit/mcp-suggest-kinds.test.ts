@@ -37,18 +37,14 @@ const [items] = mcpToolsToDescriptor({
   ],
 }).actions;
 
-const answered = (
-  answer: {
-    choice: string;
-    probability?: number;
-    confidence?: number;
-  },
-  mode: "on" | "shadow" = "on",
-): DecisionAnswered => ({
+const answered = (answer: {
+  choice: string;
+  probability?: number;
+  confidence?: number;
+}): DecisionAnswered => ({
   status: "answered",
   point: "external-apps.mcp.suggest-kind",
   policy: {
-    mode,
     questionVersion: 1,
     thresholds: { kind: 0.8 },
     minChosenProbability: { kind: 0.6 },
@@ -102,17 +98,5 @@ describe("readKindVerdict", () => {
     ]) {
       expect(readKindVerdict(answered(answer), 0).outcome).toBe("unsure");
     }
-  });
-
-  test("shadow journals the verdict without showing it", () => {
-    expect(
-      readKindVerdict(
-        answered(
-          { choice: "read", probability: 0.9, confidence: 0.9 },
-          "shadow",
-        ),
-        0,
-      ),
-    ).toEqual({ outcome: "shadow", kind: "read" });
   });
 });

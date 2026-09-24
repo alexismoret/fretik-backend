@@ -63,7 +63,7 @@ const clip = (
 export interface FittedState {
   state: DecisionState;
   /** Keys that were present but did not go out, and why. */
-  dropped: { key: string; reason: "not_admitted" | "content" | "budget" }[];
+  dropped: { key: string; reason: "not_admitted" | "budget" }[];
   tokens: number;
 }
 
@@ -78,7 +78,6 @@ export interface FittedState {
 export const fitState = (
   spec: DecisionPointSpec,
   raw: DecisionState,
-  options: { redactContent: boolean },
 ): FittedState => {
   const dropped: FittedState["dropped"] = [];
   const ordered: string[] = [];
@@ -99,13 +98,6 @@ export const fitState = (
   const state: DecisionState = {};
   let tokens = estimateTokens(state);
   for (const key of ordered) {
-    if (
-      options.redactContent &&
-      spec.state.content.some((entry) => admits(entry, key))
-    ) {
-      dropped.push({ key, reason: "content" });
-      continue;
-    }
     const value = raw[key];
     if (value === undefined) continue;
     const clipped = clip(value, spec.state.maxValueChars ?? MAX_VALUE_CHARS);

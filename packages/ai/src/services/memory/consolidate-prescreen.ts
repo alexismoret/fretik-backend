@@ -62,41 +62,32 @@ export const PRESCREEN_QUESTIONS: Record<
   },
 };
 
-export interface PrescreenVerdict {
-  /** Both questions came back clearly no. */
-  skip: boolean;
-  /** The point runs in shadow: the verdict is recorded, the judge still runs. */
-  shadow: boolean;
-}
-
 /**
- * Skip only on a confident double "no" read against the echoed bars. A
- * missing answer on either question is not a "no", so it never skips.
+ * True when both questions came back clearly no, read against the echoed
+ * bars: the cluster stays as it is without the judge. A missing answer on
+ * either question is not a "no", so it never skips.
  */
-export const readPrescreen = (
-  response: DecisionResponse | null,
-): PrescreenVerdict => {
-  if (response?.status !== "answered") return { skip: false, shadow: false };
-  const shadow = response.policy.mode === "shadow";
+export const readPrescreen = (response: DecisionResponse | null): boolean => {
+  if (response?.status !== "answered") return false;
   const clearlyNo = (id: "same" | "conflict"): boolean => {
     const p = probabilityOf(response.answers[id]);
     const bar = thresholdFor(response.policy, id);
     return p !== null && bar !== undefined && p < bar;
   };
-  return { skip: clearlyNo("same") && clearlyNo("conflict"), shadow };
+  return clearlyNo("same") && clearlyNo("conflict");
 };
 
 /**
- * One row per question. The judge's action is the reference label while in
- * shadow: MERGE means "same" was true, REVISE means "conflict" was, NOOP
- * means neither. An unreadable judge output labels nothing.
+ * One row per question. When the judge ran, its action is the reference
+ * label: MERGE means "same" was true, REVISE means "conflict" was, NOOP means
+ * neither. A skipped cluster, or an unreadable judge output, labels nothing.
  */
 export const prescreenJournalEntries = (params: {
   organizationId: string;
   teamId: string;
   subjectId: string;
   response: DecisionResponse | null;
-  verdict: PrescreenVerdict;
+  skip: boolean;
   judgeAction: "MERGE" | "REVISE" | "NOOP" | null;
 }): JournalEntry[] =>
   (["same", "conflict"] as const).map((questionId) =>
@@ -109,8 +100,8 @@ export const prescreenJournalEntries = (params: {
       subjectId: params.subjectId,
       response: params.response,
       questionCount: 2,
-      outcome: params.verdict.skip ? "skip" : "judge",
-      applied: params.verdict.skip && !params.verdict.shadow,
+      outcome: params.skip ? "skip" : "judge",
+      applied: params.skip,
       ...(params.judgeAction !== null
         ? {
             legacyLabel:

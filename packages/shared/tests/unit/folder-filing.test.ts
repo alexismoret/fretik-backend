@@ -109,7 +109,6 @@ const answered = (
   status: "answered",
   point: "drive.file",
   policy: {
-    mode: "on",
     questionVersion: 2,
     thresholds: { folder: 0.75 },
     minChosenProbability: { folder: 0.5 },
@@ -206,30 +205,10 @@ describe("readFilingVerdict", () => {
     expect(verdict).toMatchObject({ file: false, reason: "unknown_option" });
   });
 
-  test("in shadow, the would-be folder is recorded and nothing moves", () => {
-    const verdict = readFilingVerdict(
-      answered(choice("f2", 0.9, 0.95), {
-        policy: {
-          mode: "shadow",
-          questionVersion: 2,
-          thresholds: { folder: 0.75 },
-          minChosenProbability: { folder: 0.5 },
-        },
-      }),
-      folders,
-    );
-    expect(verdict).toMatchObject({
-      file: false,
-      reason: "shadow",
-      folderId: "f2",
-    });
-  });
-
   test("the bars are the ones the service echoed", () => {
     const verdict = readFilingVerdict(
       answered(choice("f1", 0.8, 0.8), {
         policy: {
-          mode: "on",
           questionVersion: 2,
           thresholds: { folder: 0.85 },
           minChosenProbability: { folder: 0.5 },
@@ -247,7 +226,7 @@ describe("readFilingVerdict", () => {
     });
     expect(
       readFilingVerdict(
-        { status: "skipped", point: "drive.file", reason: "egress" },
+        { status: "skipped", point: "drive.file", reason: "rate_limited" },
         folders,
       ),
     ).toEqual({ file: false, reason: "skipped" });
@@ -333,10 +312,10 @@ describe("filingJournalEntry", () => {
     });
     expect(
       entry(
-        { status: "skipped", point: "drive.file", reason: "egress" },
+        { status: "skipped", point: "drive.file", reason: "rate_limited" },
         false,
       ),
-    ).toMatchObject({ outcome: "fell_open", reason: "egress" });
+    ).toMatchObject({ outcome: "fell_open", reason: "rate_limited" });
     expect(entry(null, false)).toMatchObject({
       outcome: "fell_open",
       reason: "unreachable",
@@ -344,20 +323,12 @@ describe("filingJournalEntry", () => {
     });
   });
 
-  test("shadow records the choice and marks it not applied", () => {
-    expect(
-      entry(
-        answered(choice("f2", 0.9, 0.95), {
-          policy: {
-            mode: "shadow",
-            questionVersion: 2,
-            thresholds: { folder: 0.75 },
-            minChosenProbability: { folder: 0.5 },
-          },
-        }),
-        false,
-      ),
-    ).toMatchObject({ outcome: "left", applied: false, reason: "shadow" });
+  test("a considered leave-it is applied: it decided where the document stays", () => {
+    expect(entry(answered(choice("f2", 0.9, 0.6)), false)).toMatchObject({
+      outcome: "left",
+      applied: true,
+      reason: "below_threshold",
+    });
   });
 });
 

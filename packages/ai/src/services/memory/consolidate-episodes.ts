@@ -227,7 +227,7 @@ export const consolidateEpisodes = async (input: {
         { teamId, organizationId },
       )
     : null;
-  const prescreen = readPrescreen(prescreenResponse);
+  const skip = readPrescreen(prescreenResponse);
   const journalPrescreen = async (
     judgeAction: "MERGE" | "REVISE" | "NOOP" | null,
   ): Promise<void> => {
@@ -238,12 +238,12 @@ export const consolidateEpisodes = async (input: {
         teamId,
         subjectId: prescreenSubject,
         response: prescreenResponse,
-        verdict: prescreen,
+        skip,
         judgeAction,
       }),
     );
   };
-  if (prescreen.skip && !prescreen.shadow) {
+  if (skip) {
     await journalPrescreen(null);
     return NOOP;
   }
@@ -287,8 +287,8 @@ export const consolidateEpisodes = async (input: {
       return parsed;
     },
   );
-  // The judge's answer is the prescreen's reference label while it runs in
-  // shadow: every night measures how often a skip would have been right.
+  // The judge's answer labels the prescreen rows it overruled: a cluster the
+  // prescreen sent on and the judge left as NOOP is a skip it missed.
   await journalPrescreen(output?.action ?? null);
   if (!output || output.action === "NOOP") return NOOP;
 

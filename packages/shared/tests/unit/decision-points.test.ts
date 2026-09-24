@@ -7,7 +7,7 @@ import { DECISION_POINTS, familyOf } from "../../src/decisions/points";
  *
  * Each rule is something a reviewer would miss in a diff and a user would
  * pay for in production: a threshold no answer can sit on, a hot-path point
- * switched on with no evidence, a redactable point with nothing to redact.
+ * that waits on a second transport, a point nothing proves.
  */
 
 const points = Object.values(DECISION_POINTS);
@@ -27,8 +27,8 @@ describe("the decision-point registry", () => {
   });
 
   test("every threshold is a centesimal strictly inside (0, 1)", () => {
-    // 0 and 1 are not thresholds, they are switches — and a switch belongs in
-    // `mode`, where a reader looks for one.
+    // 0 and 1 are not thresholds, they are switches — and a point that must
+    // not decide is removed from the registry, not pinned to a bar.
     for (const spec of points) {
       for (const family of Object.values(spec.families)) {
         expect(family.threshold).toBeGreaterThan(0);
@@ -53,33 +53,22 @@ describe("the decision-point registry", () => {
     }
   });
 
-  test("a hot-path point may not default to `on` without evidence", () => {
+  test("a hot-path point never waits on a second transport", () => {
+    // A person is waiting on the turn: a timeout falls back to the path the
+    // point replaced, never to another call.
     for (const spec of points) {
-      if (spec.path === "hot" && spec.defaultMode === "on") {
-        expect(spec.evalGate.evidence).toBeDefined();
-      }
-      if (spec.path === "hot") expect(spec.fallbackTransport).toBe(false);
-    }
-  });
-
-  test("a redactable point declares what it would redact", () => {
-    for (const spec of points) {
-      if (spec.egress === "redactable") {
-        expect(spec.state.content.length).toBeGreaterThan(0);
-      }
-      if (spec.egress === "metadata") {
-        expect(spec.state.content).toEqual([]);
+      if (spec.path === "hot") {
+        expect(spec.fallbackTransport).toBe(false);
+        expect(spec.timeoutMs).toBeLessThanOrEqual(2000);
       }
     }
   });
 
-  test("every content key is also admitted", () => {
-    // A content key nobody admits is a redaction rule that guards nothing,
-    // which reads as protection in review and is not.
+  test("every point names the suites that prove it", () => {
+    // Every point decides; the only thing that says a bar is right is the
+    // suite that measured it, re-run when the question or the bar changes.
     for (const spec of points) {
-      for (const key of spec.state.content) {
-        expect(spec.state.admit).toContain(key);
-      }
+      expect(spec.evalGate.suites.length).toBeGreaterThan(0);
     }
   });
 
@@ -91,11 +80,13 @@ describe("the decision-point registry", () => {
     expect(gate.state.admit).toContain("eventType");
   });
 
-  test("the gate's content list covers every sensitive fact, fixed and dynamic", () => {
+  test("the gate admits every fact family's dynamic namespace", () => {
+    // A criterion about a team's own field reads `customFields.*`; one the
+    // gate never admitted would be judged on a state that lacks it.
     const gate = DECISION_POINTS["workflow.gate"];
-    expect(gate.state.content).toContain("documentSummary");
-    expect(gate.state.content).toContain("customFields.");
-    expect(gate.state.content).toContain("payload.");
+    expect(gate.state.admit).toContain("documentSummary");
+    expect(gate.state.admit).toContain("customFields.");
+    expect(gate.state.admit).toContain("payload.");
   });
 });
 

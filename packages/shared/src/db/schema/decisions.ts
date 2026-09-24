@@ -75,8 +75,9 @@ export const decisionLog = pgTable(
      * gate, `filed` / `left` / `fell_open` for the filer.
      */
     outcome: varchar("outcome", { length: 20 }).notNull(),
-    /** Whether the verdict CHANGED what happened. False in shadow and on a
-     * fall-open, which is how the two are told apart from a real decision. */
+    /** Whether the verdict CHANGED what happened. False on a fall-open, where
+     * the path ran as if the point were absent — which is how it is told
+     * apart from a real decision. */
     applied: boolean("applied").notNull(),
     /** Why, when there is a reason worth a code: the fall-open cause, or why a
      * document was left where it was. */

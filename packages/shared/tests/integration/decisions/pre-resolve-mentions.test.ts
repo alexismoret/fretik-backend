@@ -49,7 +49,6 @@ const recording = (): {
         status: "answered",
         point: "graph.entity-match",
         policy: {
-          mode: "shadow",
           questionVersion: 1,
           thresholds: { ent: 0.8 },
           minChosenProbability: { ent: 0.5 },

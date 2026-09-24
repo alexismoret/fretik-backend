@@ -17,8 +17,9 @@ import { chunkForBulk } from "../../lib/db-bulk";
 
 /**
  * One decision to journal. `label` may ride along only with source `legacy`:
- * a point in shadow journals its verdict next to what the path it would
- * replace decided, which is the measurement shadow mode exists for.
+ * what the path behind the point decided when it ran anyway — the
+ * consolidation judge on a cluster the prescreen handed it — which labels
+ * the point's verdict for free.
  */
 export type JournalEntry = Omit<
   NewDecisionLogRow,
@@ -96,7 +97,7 @@ export const recordDecisions = async (
  * what happened next (`run_outcome`, `document_moved`) only fills an empty
  * label: it is weaker evidence, and it must not undo what someone said.
  *
- * `legacy` is what the path a shadow point would replace decided, written
+ * `legacy` is what the path behind the point decided when it ran, written
  * with the row. It is a reference, not the truth, and any later label
  * replaces it.
  */

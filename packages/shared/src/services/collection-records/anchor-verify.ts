@@ -1,11 +1,11 @@
-import { probabilityOf, thresholdFor } from "@fretik/shared/decisions/policy";
+import { probabilityOf, thresholdFor } from "../../decisions/policy";
 import type {
   DecisionQuestion,
   DecisionResponse,
-} from "@fretik/shared/schemas/decisions";
-import type { RecordAnchor } from "@fretik/shared/services/collection-records/anchor";
-import type { JournalEntry } from "@fretik/shared/services/decisions/journal";
-import { answerJournalEntry } from "@fretik/shared/services/decisions/journal-entry";
+} from "../../schemas/decisions";
+import type { JournalEntry } from "../decisions/journal";
+import { answerJournalEntry } from "../decisions/journal-entry";
+import type { RecordAnchor } from "./anchor";
 
 /**
  * The resolver's second opinion on its review band.
@@ -16,12 +16,24 @@ import { answerJournalEntry } from "@fretik/shared/services/decisions/journal-en
  * text and answers, per record, "is this the record the text means?". A
  * confident yes promotes the link, a confident no drops it, and anything in
  * between leaves it exactly as the resolver had it.
+ *
+ * Asked by the jobs resolver (`workers/memory-resolve.ts`); here so the
+ * decision evals ask and read it word for word. Changing the wording bumps the
+ * point's `questionVersion` in `decisions/points.ts`.
  */
 
 export const VERIFY_POINT = "memory.resolve.verify";
 
 export const anchorQuestionId = (recordId: string): string => `anc:${recordId}`;
 
+/**
+ * Question version 2: it asks about the WORDS the resolver matched, and
+ * names what else they could be. Version 1 asked whether the text referred
+ * to "this specific record" and hedged on plain references (0.76–0.85 for a
+ * supplier named by its short name) while leaving ordinary words just above
+ * the drop bar (0.11–0.12 for "summit", "orange"). Measured 2026-09-24,
+ * `evals:decisions`.
+ */
 export const buildAnchorQuestion = (
   anchor: RecordAnchor,
   collectionName: string | null,
@@ -30,11 +42,11 @@ export const buildAnchorQuestion = (
   instructions: [
     `Record: "${anchor.label}"${collectionName ? ` (${collectionName})` : ""}.`,
     `The text contains "${anchor.matchedText}".`,
-    "Does the text refer to this specific record?",
+    "Does the text refer to this record?",
   ].join("\n"),
   criteria: {
     true: "The text refers to this record.",
-    false: "The text refers to something else, or to nothing specific.",
+    false: `The text uses "${anchor.matchedText}" as an ordinary word, or for someone or something else.`,
   },
 });
 
@@ -48,7 +60,7 @@ export type AnchorVerdict = "confirm" | "drop" | "keep";
 export const readAnchorVerdicts = (
   response: DecisionResponse | null,
   recordIds: readonly string[],
-): { verdicts: Map<string, AnchorVerdict>; shadow: boolean } => {
+): Map<string, AnchorVerdict> => {
   const verdicts = new Map<string, AnchorVerdict>();
   const answered = response?.status === "answered" ? response : null;
   for (const recordId of recordIds) {
@@ -70,7 +82,7 @@ export const readAnchorVerdicts = (
             : "keep",
     );
   }
-  return { verdicts, shadow: answered?.policy.mode === "shadow" };
+  return verdicts;
 };
 
 export const anchorJournalEntries = (params: {
@@ -79,7 +91,6 @@ export const anchorJournalEntries = (params: {
   eventId: string;
   response: DecisionResponse | null;
   verdicts: ReadonlyMap<string, AnchorVerdict>;
-  shadow: boolean;
 }): JournalEntry[] =>
   [...params.verdicts.entries()].map(([recordId, verdict]) =>
     answerJournalEntry({
@@ -93,6 +104,6 @@ export const anchorJournalEntries = (params: {
       response: params.response,
       questionCount: params.verdicts.size,
       outcome: verdict,
-      applied: verdict !== "keep" && !params.shadow,
+      applied: verdict !== "keep",
     }),
   );

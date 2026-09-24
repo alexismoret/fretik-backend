@@ -5,12 +5,13 @@ import { badRequest, throwHttpError } from "../../lib/errors";
 import {
   liveTriggerCompletenessError,
   UpdateWorkflowSchema,
-  workflowCriterionError,
   type UpdateWorkflowInput,
   type WorkflowResponse,
 } from "../../schemas/workflows";
 import { resyncVectorUserScope } from "../ai-vectors/resync-user-scope";
+import type { DecisionEvaluator } from "../decisions/remote";
 import { filterTeamMemberIds } from "../team/members";
+import { lintCriterion } from "./criterion-lint";
 import { getWorkflowRow } from "./get";
 import { serializeWorkflow } from "./serialize";
 import { validateWorkflowExternalApps } from "./validate-external-apps";
@@ -31,6 +32,9 @@ export const updateWorkflow = async (params: {
   teamId: string;
   input: UpdateWorkflowInput;
   requester?: WorkflowRequester;
+  /** How the criterion lint reaches the decision model; in-process from
+   * the AI service, over HTTP from everywhere else. */
+  evaluator?: DecisionEvaluator;
 }): Promise<WorkflowResponse | undefined> => {
   const input = UpdateWorkflowSchema.parse(params.input);
 
@@ -128,11 +132,18 @@ export const updateWorkflow = async (params: {
       existingRow ??
       (await db.query.workflows.findFirst({
         where: { id: params.id, teamId: params.teamId },
-        columns: { status: true },
+        columns: { status: true, organizationId: true },
       }));
     if (!current) return undefined;
     if (current.status === "active") {
-      const criterionError = workflowCriterionError(input.triggerCriterion);
+      const criterionError = await lintCriterion({
+        criterion: input.triggerCriterion,
+        context: {
+          teamId: params.teamId,
+          organizationId: current.organizationId,
+        },
+        ...(params.evaluator ? { evaluator: params.evaluator } : {}),
+      });
       if (criterionError) {
         return throwHttpError(400, badRequest(criterionError));
       }

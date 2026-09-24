@@ -26,14 +26,10 @@ const update: ProposedPromotion = {
   content: "The weekly report goes out on Monday mornings.",
 };
 
-const answered = (
-  probabilities: Record<string, number>,
-  mode: "on" | "shadow" = "on",
-): DecisionResponse => ({
+const answered = (probabilities: Record<string, number>): DecisionResponse => ({
   status: "answered",
   point: "memory.promote.support",
   policy: {
-    mode,
     questionVersion: 1,
     thresholds: { sup: 0.5 },
     minChosenProbability: {},
@@ -110,13 +106,10 @@ describe("readSupport", () => {
 
 describe("supportJournalEntries", () => {
   test("rows are keyed by the fact, so another night's check is the same row", () => {
-    const response = answered(
-      {
-        [supportQuestionId(0, 0)]: 0.9,
-        [supportQuestionId(0, 1)]: 0.1,
-      },
-      "shadow",
-    );
+    const response = answered({
+      [supportQuestionId(0, 0)]: 0.9,
+      [supportQuestionId(0, 1)]: 0.1,
+    });
     const rows = supportJournalEntries({
       organizationId: "org",
       teamId: "team",
@@ -130,6 +123,8 @@ describe("supportJournalEntries", () => {
       ["e2", "sup:learned/invoices-approval.md", "dropped"],
     ]);
     expect(rows.map((r) => r.probability)).toEqual([0.9, 0.1]);
-    for (const row of rows) expect(row.applied).toBe(false);
+    // One supporting episode is short of the two an ADD needs: the write is
+    // refused, and that refusal is what these rows record as applied.
+    for (const row of rows) expect(row.applied).toBe(true);
   });
 });

@@ -114,7 +114,6 @@ const recording = (
         status: "answered",
         point: SUGGEST_KIND_POINT,
         policy: {
-          mode: "on",
           questionVersion: 1,
           thresholds: { kind: 0.8 },
           minChosenProbability: { kind: 0.6 },

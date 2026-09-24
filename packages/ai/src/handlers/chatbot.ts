@@ -93,7 +93,6 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { HTTPException } from "hono/http-exception";
 import { streamSSE } from "hono/streaming";
 import { buildSpeakerContext } from "../agents/chatbot/speaker-context";
-import { measureAddressee } from "../services/addressee/measure";
 import { summariseMissedMessages } from "../services/catch-up-summary";
 import { notifyMentionedMembers } from "../services/chatbot-mention-email";
 import { shouldContinueTurn } from "../services/turn-continuation/decide";
@@ -3258,30 +3257,6 @@ chatbotRoutes.post("/stream", async (c) => {
     participants: conversation.members,
   });
 
-  // Shared conversation: would this message have been for the assistant?
-  // Measured off the turn's path, changes nothing (see `addressee/measure.ts`).
-  if (conversation.members.length >= 2 && organization) {
-    const texts = speakerHistory
-      .filter((m) => m.role === "user" || m.role === "assistant")
-      .map((m) =>
-        m.role === "assistant"
-          ? `Assistant: ${uiMessageText(m)}`
-          : uiMessageText(m),
-      );
-    const latest = texts.at(-1);
-    if (latest !== undefined) {
-      measureAddressee({
-        organizationId: organization.id,
-        teamId: team.id,
-        conversationId,
-        turnKey: streamId,
-        participants: conversation.members.map((p) => p.name),
-        message: latest,
-        recent: texts.slice(-7, -1),
-      });
-    }
-  }
-
   const callOptions: ChatbotCallOptions = {
     organizationId: organization.id,
     teamId: team.id,
@@ -3909,7 +3884,7 @@ chatbotInternalRoutes.post("/invoke", async (c) => {
     return c.json(
       {
         code: "UNKNOWN_RECALL_MODE",
-        message: `Unknown recall mode: "${recallModeHeader}" (expected judge | verbatim | adaptive | decision)`,
+        message: `Unknown recall mode: "${recallModeHeader}" (expected judge | verbatim | adaptive)`,
       },
       400,
     );

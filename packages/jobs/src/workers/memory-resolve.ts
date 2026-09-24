@@ -11,18 +11,18 @@ import {
   matchSpansToRecords,
   type RecordAnchor,
 } from "@fretik/shared/services/collection-records/anchor";
-import { recordDecisions } from "@fretik/shared/services/decisions/journal";
-import { remoteEvaluator } from "@fretik/shared/services/decisions/remote";
-import { linkEventToRecords } from "@fretik/shared/services/domain-events/link-records";
-import { type Job, Worker } from "bullmq";
-import { z } from "zod";
 import {
   anchorJournalEntries,
   anchorQuestionId,
   buildAnchorQuestion,
   readAnchorVerdicts,
   VERIFY_POINT,
-} from "../lib/memory-resolve-verify";
+} from "@fretik/shared/services/collection-records/anchor-verify";
+import { recordDecisions } from "@fretik/shared/services/decisions/journal";
+import { remoteEvaluator } from "@fretik/shared/services/decisions/remote";
+import { linkEventToRecords } from "@fretik/shared/services/domain-events/link-records";
+import { type Job, Worker } from "bullmq";
+import { z } from "zod";
 import {
   MEMORY_RESOLVE_QUEUE,
   type MemoryResolveJobData,
@@ -102,8 +102,8 @@ const buildEventText = (
 
 /**
  * Ask the decision model about the links in the review band. Returns what to
- * confirm and what to drop; both empty in shadow, on no answer, or when the
- * band is empty — the resolver's own verdict then stands unchanged.
+ * confirm and what to drop; both empty on no answer, on an unsure one, or when
+ * the band is empty — the resolver's own verdict then stands unchanged.
  */
 const verifyReviewBand = async (params: {
   event: DomainEvent;
@@ -140,7 +140,7 @@ const verifyReviewBand = async (params: {
     },
     { teamId: event.teamId, organizationId: event.organizationId },
   );
-  const { verdicts, shadow } = readAnchorVerdicts(
+  const verdicts = readAnchorVerdicts(
     response,
     band.map((a) => a.recordId),
   );
@@ -151,10 +151,8 @@ const verifyReviewBand = async (params: {
       eventId: event.id,
       response,
       verdicts,
-      shadow,
     }),
   );
-  if (shadow) return none;
   const applied = { confirmed: new Set<string>(), dropped: new Set<string>() };
   for (const [recordId, verdict] of verdicts) {
     if (verdict === "confirm") applied.confirmed.add(recordId);

@@ -1,9 +1,6 @@
 import { fitState, planChunks } from "@fretik/shared/decisions/budget";
 import { decisionPoint, familyOf } from "@fretik/shared/decisions/points";
-import {
-  parseDecisionOverrides,
-  resolvePolicy,
-} from "@fretik/shared/decisions/policy";
+import { resolvePolicy } from "@fretik/shared/decisions/policy";
 import type {
   DecisionAnswer,
   DecisionMissingReason,
@@ -15,34 +12,18 @@ import { evaluateChunk } from "./evaluate";
 import { takeRateBudget } from "./rate-budget";
 
 /**
- * Run one decision point: policy, egress, budget, then the engine.
+ * Run one decision point: policy, budget, then the engine.
  *
  * Every caller goes through here — the HTTP route that background workers
  * reach, and the in-process callers inside this service — so the rules that
- * make a decision safe to send are enforced in ONE place: a point that is
- * off is not asked, a content point is not asked when content may not leave,
- * content keys are stripped from a redactable state, and nothing past the
- * point's allow-list ever reaches the vendor.
+ * make a decision safe to send are enforced in ONE place: nothing past the
+ * point's allow-list ever reaches the vendor, a state never outgrows its
+ * token budget, and no point spends past the per-minute rate.
  *
- * Three switches, all read at MODULE LOAD like `RECALL_MODE`: they take
- * effect on the next restart, never halfway through a batch.
+ * There is no switch. Both transports are zero-data-retention routes, the
+ * same content already reaches the chat models, and a point that must not
+ * decide is removed from the registry rather than left dormant.
  */
-
-/** A malformed value is a BOOT failure: an override that silently matched
- * nothing would leave an operator believing a gate is off while it keeps
- * deciding. */
-const OVERRIDES = parseDecisionOverrides(process.env["DECISION_OVERRIDES"]);
-
-/** Content egress. Jev's routes on both transports are zero-data-retention,
- * so the default is allowed; a deployment whose policy says content may not
- * leave sets this to `false`, and redactable points degrade to metadata. */
-const CONTENT_EGRESS = process.env["DECISION_CONTENT_EGRESS"] !== "false";
-
-/** The global kill switch. Every caller falls open on it: off is the
- * behaviour that shipped before any decision point existed. */
-const ENABLED = process.env["DECISIONS_ENABLED"] !== "false";
-
-export const decisionsEnabled = (): boolean => ENABLED;
 
 /**
  * A request whose questions do not belong to the point they claim. Our bug,
@@ -69,18 +50,8 @@ export const decidePoint = async (
   context: { teamId: string; organizationId?: string },
 ): Promise<DecisionResponse> => {
   const point = request.point;
-  if (!ENABLED) return { status: "skipped", point, reason: "disabled" };
-
-  const policy = resolvePolicy(point, {
-    overrides: OVERRIDES,
-    contentEgress: CONTENT_EGRESS,
-  });
-  if (policy.mode === "off") return { status: "skipped", point, reason: "off" };
-  if (!policy.runnable) return { status: "skipped", point, reason: "egress" };
-
-  const fitted = fitState(policy.spec, request.state, {
-    redactContent: policy.redactContent,
-  });
+  const policy = resolvePolicy(point);
+  const fitted = fitState(policy.spec, request.state);
   const plan = planChunks(request.questions, fitted.tokens);
 
   const admitted = await takeRateBudget(plan.chunks.length, policy.spec.path);
@@ -92,7 +63,6 @@ export const decidePoint = async (
     point,
     teamId: context.teamId,
     questionVersion: policy.spec.questionVersion,
-    mode: policy.echo.mode,
     ...(request.subject !== undefined
       ? { subjectType: request.subject.type, subjectId: request.subject.id }
       : {}),

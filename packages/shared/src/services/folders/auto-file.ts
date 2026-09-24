@@ -120,8 +120,7 @@ export type FilingVerdict =
         | "root"
         | "unknown_option"
         | "no_confidence"
-        | "below_threshold"
-        | "shadow";
+        | "below_threshold";
       confidence?: number;
       probability?: number;
       folderId?: string;
@@ -131,13 +130,12 @@ export type FilingVerdict =
  * Read the answer into a filing, or a reason not to file.
  *
  * Every reason is a way of leaving the document exactly where it is, which is
- * always safe. Three are worth naming. A MISSING confidence (the gateway does
+ * always safe. Two are worth naming. A MISSING confidence (the gateway does
  * not report one) is not a low one — but it is not evidence of certainty
  * either, and this is the decision that needs evidence, so it does not file.
  * The chosen option must also carry a real share of the probability: a
  * confident distribution over two near-identical folders can still pick the
- * wrong twin. And `shadow` files nothing while recording what it would have
- * done.
+ * wrong twin.
  */
 export const readFilingVerdict = (
   response: DecisionResponse | null,
@@ -173,14 +171,6 @@ export const readFilingVerdict = (
     return {
       file: false,
       reason: "below_threshold",
-      folderId: chosen.choice,
-      ...scores,
-    };
-  }
-  if (response.policy.mode === "shadow") {
-    return {
-      file: false,
-      reason: "shadow",
       folderId: chosen.choice,
       ...scores,
     };
@@ -242,9 +232,9 @@ const FELL_OPEN_REASONS = new Set(["unreachable", "skipped", "no_answer"]);
  * without a database.
  *
  * `applied` is whether the verdict CHANGED what happened: a filing that
- * moved the document, or a considered "leave it". It is false for a shadow
- * verdict, for a fall-open, and for a filing that lost the race to a person
- * who moved the document first.
+ * moved the document, or a considered "leave it". It is false for a
+ * fall-open, and for a filing that lost the race to a person who moved the
+ * document first.
  */
 export const filingJournalEntry = (params: {
   documentId: string;
@@ -298,12 +288,7 @@ export const filingJournalEntry = (params: {
         : (missing?.reason ?? verdict.reason);
     return { ...base, outcome: "fell_open", applied: false, reason };
   }
-  return {
-    ...base,
-    outcome: "left",
-    applied: verdict.reason !== "shadow",
-    reason: verdict.reason,
-  };
+  return { ...base, outcome: "left", applied: true, reason: verdict.reason };
 };
 
 /**

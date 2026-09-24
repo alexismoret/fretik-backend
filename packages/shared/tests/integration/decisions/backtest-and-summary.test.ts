@@ -84,7 +84,6 @@ const fakeEvaluator =
       status: "answered",
       point: "workflow.gate",
       policy: {
-        mode: "on",
         questionVersion: 2,
         thresholds: { wf: 0.15 },
         minChosenProbability: {},
@@ -187,7 +186,7 @@ describe("backtestCriterion", () => {
     expect(result.threshold).toBe(0.15);
   });
 
-  test("a criterion activation would refuse is refused before any call", async () => {
+  test("a criterion with an id in it is refused before any call", async () => {
     const workflowId = await createWorkflow(crypto.randomUUID());
     let calls = 0;
     const error = await caught(() =>
@@ -195,15 +194,52 @@ describe("backtestCriterion", () => {
         workflowId,
         teamId: ws.teamId,
         organizationId: ws.organizationId,
-        criterion: "The file is facture_2026_03.pdf exactly.",
+        criterion: `The document id is ${crypto.randomUUID()}.`,
         evaluator: () => {
           calls += 1;
           return Promise.resolve(null);
         },
       }),
     );
-    expect(error?.message).toContain("specific file");
+    expect(error?.message).toContain("specific id");
     expect(calls).toBe(0);
+  });
+
+  test("a criterion the lint refuses replays nothing", async () => {
+    const watched = crypto.randomUUID();
+    const workflowId = await createWorkflow(watched);
+    await createEvent({
+      type: "document.uploaded",
+      payload: { folderId: watched },
+    });
+    const asked: string[] = [];
+    const error = await caught(() =>
+      backtestCriterion({
+        workflowId,
+        teamId: ws.teamId,
+        organizationId: ws.organizationId,
+        criterion: "The file is the scan the client sent this morning.",
+        evaluator: (request) => {
+          asked.push(request.point);
+          const response: DecisionResponse = {
+            status: "answered",
+            point: request.point,
+            policy: {
+              questionVersion: 1,
+              thresholds: { one: 0.8, cmp: 0.8, open: 0.8 },
+              minChosenProbability: {},
+            },
+            answers: { one: { type: "boolean", probability: 0.93 } },
+            missing: [],
+            transport: "openrouter",
+            latencyMs: 10,
+          };
+          return Promise.resolve(response);
+        },
+      }),
+    );
+    expect(error?.message).toContain("one specific file or item");
+    expect(asked).toEqual(["workflow.criterion.lint"]);
   });
 });
 

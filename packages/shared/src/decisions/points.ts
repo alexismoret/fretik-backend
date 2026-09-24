@@ -1,4 +1,3 @@
-import type { DecisionMode } from "../schemas/decisions";
 import { FACT_REGISTRY } from "../services/facts/registry";
 import type { DecisionPointKey } from "./keys";
 
@@ -9,10 +8,11 @@ import type { DecisionPointKey } from "./keys";
  * It is to the decision model what `role-bindings.ts` is to the chat models:
  * the one hand-written place, because nothing an API publishes can say which
  * bar a verdict must clear, or what happens when no verdict comes. Those are
- * choices about a JOB, and each number below is changed by a reviewed PR,
- * never by an env var someone forgot on one container. The operator's
- * emergency lever is `DECISION_OVERRIDES` (see `./policy.ts`), read in ONE
- * process and echoed back in every answer.
+ * choices about a JOB, and each number below is changed by a reviewed PR with
+ * the measurement that justifies it — there is no env var to set one on a
+ * single container. Every point here decides; there is no dormant mode. What
+ * stands between a wrong verdict and the product is the bar, and what stands
+ * between an outage and the product is `noAnswer`.
  *
  * What is NOT here, on purpose: anything a team tunes. The criteria a team
  * controls are descriptions it writes on its own elements — a workflow's
@@ -21,8 +21,6 @@ import type { DecisionPointKey } from "./keys";
  * probabilities; a sentence on the thing itself asks them to say what they
  * mean.
  */
-
-export type { DecisionMode };
 
 /**
  * One family of questions inside a point, keyed by the question-id prefix
@@ -76,18 +74,11 @@ export interface DecisionPointSpec {
      * never reaches the vendor.
      */
     admit: readonly string[];
-    /** The admitted keys that reproduce workspace CONTENT rather than
-     * describing it. Dropped when content egress is off. */
-    content: readonly string[];
     /** Per-value character ceiling (a list counts as one value). Defaults to
      * `MAX_VALUE_CHARS`; a point whose state IS long text (a cluster of
      * episodes, a transcript) raises it and relies on `maxTokens`. */
     maxValueChars?: number;
   };
-  /** `content` = the state IS content (a message, a transcript), so the point
-   * is skipped outright when content egress is off. `redactable` = content
-   * keys are dropped and the rest is asked. `metadata` = no content at all. */
-  egress: "metadata" | "redactable" | "content";
   /** `hot` runs inside a user's turn: short timeout, never a second transport. */
   path: "hot" | "background";
   timeoutMs: number;
@@ -99,9 +90,8 @@ export interface DecisionPointSpec {
     policy: "all" | "consequential" | "sampled" | "none";
     sampleRate?: number;
   };
-  defaultMode: DecisionMode;
-  /** What proves this point is sound, and where the proof was recorded. A
-   * `hot` point may not default to `on` without `evidence`. */
+  /** What proves this point is sound: the suites to re-run when its question,
+   * state or bar changes, and the last run that passed them. */
   evalGate: {
     suites: readonly string[];
     evidence?: {
@@ -159,19 +149,6 @@ const gateAdmit = (): string[] => {
   return [...admitted];
 };
 
-const gateContent = (): string[] => {
-  const content = new Set<string>();
-  for (const family of Object.values(FACT_REGISTRY)) {
-    for (const descriptor of family.facts) {
-      if (descriptor.sensitive === true) content.add(descriptor.key);
-    }
-    if (family.dynamicPrefix?.sensitive === true) {
-      content.add(family.dynamicPrefix.prefix);
-    }
-  }
-  return [...content];
-};
-
 // ==================== //
 // THE REGISTRY         //
 // ==================== //
@@ -197,14 +174,76 @@ export const DECISION_POINTS: Readonly<
       wf: { kind: "boolean", signal: "probability", threshold: 0.15 },
     },
     noAnswer: "proceed",
-    state: { maxTokens: 6000, admit: gateAdmit(), content: gateContent() },
-    egress: "redactable",
+    state: { maxTokens: 6000, admit: gateAdmit() },
     path: "background",
     timeoutMs: 2500,
     fallbackTransport: true,
     journal: { policy: "all" },
-    defaultMode: "on",
-    evalGate: { suites: ["jobs unit: workflow-gate"] },
+    evalGate: { suites: ["jobs unit: workflow-gate", "evals:decisions"] },
+  },
+
+  "workflow.criterion.lint": {
+    key: "workflow.criterion.lint",
+    purpose:
+      "Whether a trigger criterion, as written, can gate anything: does it name one particular item, does it need a comparison or a count, does it let every input through. Asked when a criterion is saved on a live workflow, activated, tested, or written by the assistant. It replaced three regexes that each knew a few phrasings in two languages.",
+    questionVersion: 1,
+    families: {
+      // Each bar sits mid-gap between the two sides as measured, because
+      // both errors cost: a verdict here REFUSES a sentence someone wrote,
+      // and a flawed criterion let through refuses real firings (visible as
+      // `filtered` runs, which is why no answer lets it through). Measured
+      // 2026-09-24 (`evals:decisions`, 23 cases × 5, in English, French,
+      // Spanish and German): sound criteria at most one 0.38, cmp 0.64 (a
+      // year named), open 0.40; flawed ones one 0.84–0.93, cmp 0.97–0.98,
+      // open 0.87–0.91.
+      one: { kind: "boolean", signal: "probability", threshold: 0.7 },
+      cmp: { kind: "boolean", signal: "probability", threshold: 0.8 },
+      open: { kind: "boolean", signal: "probability", threshold: 0.65 },
+    },
+    noAnswer: "proceed",
+    state: { maxTokens: 500, admit: ["criterion"] },
+    // The assistant writes criteria inside a person's turn.
+    path: "hot",
+    timeoutMs: 1500,
+    fallbackTransport: false,
+    // Nothing to journal against: a draft has no id yet, and no later event
+    // labels a lint verdict right or wrong.
+    journal: { policy: "none" },
+    evalGate: {
+      suites: [
+        "shared unit: criterion-lint",
+        "evals:decisions",
+        "evals:langfuse -- --suite descriptions",
+      ],
+    },
+  },
+
+  "workflow.criterion.missing": {
+    key: "workflow.criterion.missing",
+    purpose:
+      "Whether an event workflow the assistant created WITHOUT a trigger criterion is, by its goal, meant for only one kind of the inputs its trigger delivers. A yes adds a hint to the tool result asking for the criterion; it never refuses anything.",
+    questionVersion: 1,
+    families: {
+      // Mid-gap. A wrong hint pushes a criterion onto a workflow meant for
+      // every input, and the gate then refuses what that criterion does not
+      // name; a missed one leaves the playbook sorting its own inputs.
+      // Measured 2026-09-24 (`evals:decisions`, 7 cases × 5): goals for one
+      // kind 0.75–0.94, goals for every input 0.26–0.36 — including one
+      // whose trigger already narrows the inputs (0.28).
+      narrow: { kind: "boolean", signal: "probability", threshold: 0.55 },
+    },
+    noAnswer: "skip",
+    state: {
+      maxTokens: 1200,
+      admit: ["name", "goal", "description", "trigger"],
+    },
+    path: "hot",
+    timeoutMs: 1500,
+    fallbackTransport: false,
+    journal: { policy: "none" },
+    evalGate: {
+      suites: ["evals:decisions", "evals:langfuse -- --suite descriptions"],
+    },
   },
 
   "drive.file": {
@@ -237,15 +276,12 @@ export const DECISION_POINTS: Readonly<
         "documentLanguage",
         "extension",
       ],
-      content: ["documentSummary", "mentionedOrganizations"],
     },
-    egress: "redactable",
     path: "background",
     timeoutMs: 2500,
     fallbackTransport: true,
     journal: { policy: "all" },
-    defaultMode: "on",
-    evalGate: { suites: ["shared unit: folder-filing"] },
+    evalGate: { suites: ["shared unit: folder-filing", "evals:decisions"] },
   },
 
   "memory.consolidate.prescreen": {
@@ -264,21 +300,17 @@ export const DECISION_POINTS: Readonly<
     state: {
       maxTokens: 9000,
       admit: ["today", "episodes", "recentActivity"],
-      content: ["episodes", "recentActivity"],
       // The state IS the episodes; the token budget bounds it, not a clip.
       maxValueChars: 24_000,
     },
-    egress: "content",
     path: "background",
     timeoutMs: 4000,
     fallbackTransport: true,
     journal: { policy: "all" },
-    // Shadow until the evals say otherwise: the judge still runs every time,
-    // and each verdict is journaled next to what the judge decided.
-    defaultMode: "shadow",
     evalGate: {
       suites: [
         "evals:memory -- --case mem-consolidate-noop,mem-consolidate-merge,mem-consolidate-revise,mem-consolidate-reanchor",
+        "evals:decisions",
       ],
     },
   },
@@ -287,39 +319,50 @@ export const DECISION_POINTS: Readonly<
     key: "memory.resolve.verify",
     purpose:
       "Whether a mention the resolver matched in its review band really refers to the record. One question per record in the band, all about the event's text: a confident yes confirms the link, a confident no drops it, anything else leaves it suggested.",
-    questionVersion: 1,
+    // v2 names what a false match looks like (an ordinary word, someone
+    // else) instead of "nothing specific".
+    questionVersion: 2,
     families: {
       // A SYMMETRIC band, one bar for both ends: confirm at or above it,
       // drop at or below 1 minus it. Both ends move a link out of the review
       // band a person would otherwise have to look at, so both are held to
-      // the same certainty.
-      anc: { kind: "boolean", signal: "probability", threshold: 0.9 },
+      // the same certainty. Measured 2026-09-24 on v2 (`evals:decisions`, 8
+      // cases × 5): true references 0.82–0.95, ordinary words and namesakes
+      // 0.02–0.11. At the old 0.90 half of each side stayed in the band and
+      // the point decided nothing; 0.75 decides all of them, 0.07 and 0.14
+      // clear of the nearest answer.
+      anc: { kind: "boolean", signal: "probability", threshold: 0.75 },
     },
     noAnswer: "legacy",
     state: {
       maxTokens: 2500,
       admit: ["eventType", "text"],
-      content: ["text"],
       maxValueChars: 4000,
     },
-    egress: "content",
     path: "background",
     timeoutMs: 2500,
     fallbackTransport: true,
     journal: { policy: "all" },
-    defaultMode: "shadow",
-    evalGate: { suites: ["jobs unit: memory-resolve-verify"] },
+    evalGate: {
+      suites: ["shared unit: anchor-verify", "evals:decisions"],
+    },
   },
 
   "graph.link-type-match": {
     key: "graph.link-type-match",
     purpose:
       'Whether a relation name no key or spelling matches means the same as a relation type the team already has (`employed_by` for `works_for`). One choice over the relation types of the same source collection, plus an explicit "none of these".',
-    questionVersion: 1,
+    // v2 writes every option as the same sentence about the same two
+    // records, and drops the inverse readings v1 showed: with them, the
+    // model took `subsidiary_of` for `owns`.
+    questionVersion: 2,
     families: {
       // A wrong reuse files facts under the wrong meaning, which is worse
       // than one more near-duplicate type a person can merge later. So a
-      // reuse needs the filer's certainty.
+      // reuse needs the filer's certainty. Measured 2026-09-24 on v2
+      // (`evals:decisions`, 9 cases × 5): synonyms at confidence 0.92–0.99,
+      // inverse-direction and unrelated names answered "none" at 0.93+, and
+      // the one wrong pick left (`invested_in` → `owns`) at 0.36.
       type: {
         kind: "choice",
         signal: "confidence",
@@ -331,15 +374,12 @@ export const DECISION_POINTS: Readonly<
     state: {
       maxTokens: 500,
       admit: ["relation", "from", "to"],
-      content: [],
     },
-    egress: "metadata",
     path: "background",
     timeoutMs: 2500,
     fallbackTransport: true,
     journal: { policy: "all" },
-    defaultMode: "shadow",
-    evalGate: { suites: ["shared unit: link-type-match"] },
+    evalGate: { suites: ["shared unit: link-type-match", "evals:decisions"] },
   },
 
   "memory.distill.worth": {
@@ -357,23 +397,24 @@ export const DECISION_POINTS: Readonly<
     state: {
       maxTokens: 8000,
       admit: ["transcript"],
-      content: ["transcript"],
       maxValueChars: 32_000,
     },
-    egress: "content",
     path: "background",
     timeoutMs: 4000,
     fallbackTransport: true,
     journal: { policy: "all" },
-    defaultMode: "shadow",
-    evalGate: { suites: ["evals:memory -- --case mem-distill-*"] },
+    evalGate: {
+      suites: ["evals:memory -- --case mem-distill-*", "evals:decisions"],
+    },
   },
 
   "memory.promote.support": {
     key: "memory.promote.support",
     purpose:
       "Whether each episode of a promotion cluster actually states the team fact the promoter proposes to store. One question per (proposed fact, episode); the count of supporting episodes decides whether the write happens.",
-    questionVersion: 1,
+    // v2: an episode that SETS the fact (a decision, a rule, a standing
+    // request) supports it too.
+    questionVersion: 2,
     families: {
       // Per episode, a plain majority reading: the count across episodes is
       // what carries the rule (two for a new fact, one for a correction).
@@ -383,16 +424,15 @@ export const DECISION_POINTS: Readonly<
     state: {
       maxTokens: 9000,
       admit: ["episodes"],
-      content: ["episodes"],
       maxValueChars: 24_000,
     },
-    egress: "content",
     path: "background",
     timeoutMs: 4000,
     fallbackTransport: true,
     journal: { policy: "all" },
-    defaultMode: "shadow",
-    evalGate: { suites: ["evals:memory -- --case mem-promote-*"] },
+    evalGate: {
+      suites: ["evals:memory -- --case mem-promote-*", "evals:decisions"],
+    },
   },
 
   "graph.entity-match": {
@@ -415,21 +455,18 @@ export const DECISION_POINTS: Readonly<
     state: {
       maxTokens: 1500,
       admit: ["filename", "documentSummary"],
-      content: ["documentSummary"],
     },
-    egress: "redactable",
     path: "background",
     timeoutMs: 2500,
     fallbackTransport: true,
     journal: { policy: "all" },
-    defaultMode: "shadow",
-    evalGate: { suites: ["shared unit: entity-match"] },
+    evalGate: { suites: ["shared unit: entity-match", "evals:decisions"] },
   },
 
   "chat.turn.continuation": {
     key: "chat.turn.continuation",
     purpose:
-      'Whether the short last message of a turn that did tool work announces an action it never performed ("let me check…" then nothing), so the turn should continue. Runs beside the classifier it would replace; until measured, the classifier decides.',
+      'Whether the short last message of a turn that did tool work announces an action it never performed ("let me check…" then nothing), so the turn should continue. The classifier it replaced answers only when this one cannot.',
     questionVersion: 1,
     families: {
       // A wrong "continue" re-runs work the person already has; a wrong
@@ -441,105 +478,51 @@ export const DECISION_POINTS: Readonly<
     state: {
       maxTokens: 800,
       admit: ["message"],
-      content: ["message"],
     },
-    egress: "content",
     // Inside a person's turn: short deadline, never a second transport.
     path: "hot",
     timeoutMs: 1500,
     fallbackTransport: false,
     journal: { policy: "all" },
-    defaultMode: "shadow",
     evalGate: {
-      suites: ["evals:langfuse -- --suite doctrine (dead-final-step cases)"],
+      suites: [
+        "evals:langfuse -- --suite doctrine (dead-final-step cases)",
+        "evals:decisions",
+      ],
     },
-  },
-
-  "workflow.turn.convergence": {
-    key: "workflow.turn.convergence",
-    purpose:
-      "How close a workflow run's current task is to done, after a turn that called tools but closed no task. A four-level score journaled next to the turn counters that stop a run that no longer converges; measurement only, it changes nothing.",
-    questionVersion: 1,
-    families: {
-      // Read as "stuck" below this position on the 0..3 scale. Shadow only:
-      // the counters stay the safety net, and this is what they are compared
-      // against once runs' outcomes label it.
-      conv: { kind: "score", signal: "score", threshold: 0.5 },
-    },
-    noAnswer: "skip",
-    state: {
-      maxTokens: 2500,
-      admit: ["task", "turn", "tools"],
-      content: ["task", "turn"],
-      maxValueChars: 4000,
-    },
-    egress: "content",
-    path: "background",
-    timeoutMs: 2500,
-    fallbackTransport: true,
-    journal: { policy: "all" },
-    defaultMode: "shadow",
-    evalGate: { suites: ["measurement only: joined to workflow_runs.error"] },
   },
 
   "chat.recall-select": {
     key: "chat.recall-select",
     purpose:
-      "Which retrieved candidates help answer the message, on the turns where retrieval was too weak to serve deterministically (the ones `adaptive` hands to the recall judge). One yes/no per candidate; the kept ones go through the SAME verbatim renderer. Only reached under RECALL_MODE / X-Recall-Mode `decision`.",
-    questionVersion: 1,
+      "Which retrieved candidates help answer the message, on the turns where retrieval was too weak to serve deterministically (the ones `adaptive` used to hand straight to the recall judge). One yes/no per candidate, and one per record the message's words matched; the kept ones go through the SAME verbatim renderer, and the judge answers only when this one cannot.",
+    // v2 asks about the matched records too (`anc`, the resolve-verify
+    // question): the renderer passed them through, and a homonym's graph made
+    // a block out of a message nothing answered.
+    questionVersion: 2,
     families: {
       rel: { kind: "boolean", signal: "probability", threshold: 0.5 },
+      // The resolve-verify bar for the same question (true references
+      // 0.82–0.95). Not mid-gap: "quel horizon de placement…" scored the
+      // project Horizon at 0.62 here, and a kept homonym IS the block.
+      anc: { kind: "boolean", signal: "probability", threshold: 0.75 },
     },
     noAnswer: "legacy",
     state: {
       maxTokens: 1500,
       admit: ["message", "recent"],
-      content: ["message", "recent"],
     },
-    egress: "content",
     path: "hot",
     timeoutMs: 1500,
     fallbackTransport: false,
     journal: { policy: "all" },
-    // Hot path: `on` needs recorded evidence (`evalGate.evidence`). Until
-    // then, the `decision` recall mode journals and falls back to the judge;
-    // an A/B that must act sets DECISION_OVERRIDES
-    // {"chat.recall-select":{"mode":"on"}} on the AI service it runs against.
-    defaultMode: "shadow",
     evalGate: {
       suites: [
-        "evals:recall -- --mode decision --repeats 10 (parity 23/23, lower p50)",
-        "evals:langfuse -- --suite memory-recall --recall-mode decision",
+        "evals:recall -- --repeats 10 (23/23)",
+        "evals:langfuse -- --suite memory-recall",
+        "evals:decisions",
       ],
     },
-  },
-
-  "chat.addressee": {
-    key: "chat.addressee",
-    purpose:
-      "In a conversation with several people, whether a message is addressed to the assistant or to the others. The assistant answers every message today; this measures how often it should not, before anything lets it stay quiet.",
-    questionVersion: 1,
-    families: {
-      addr: { kind: "boolean", signal: "probability", threshold: 0.3 },
-    },
-    noAnswer: "proceed",
-    state: {
-      maxTokens: 2000,
-      admit: ["participants", "message", "recent"],
-      content: ["participants", "message", "recent"],
-      maxValueChars: 3000,
-    },
-    egress: "content",
-    // Fire-and-forget from the stream route: never waited on, so background.
-    path: "background",
-    timeoutMs: 2500,
-    fallbackTransport: true,
-    journal: { policy: "all" },
-    // Shadow for good until a person can see "Fretik did not answer" and
-    // ask it to: staying quiet with no way back would be the invisible
-    // failure every other point here is built to avoid.
-    defaultMode: "shadow",
-    evalGate: { suites: ["measurement only"] },
   },
 
   "external-apps.mcp.suggest-kind": {
@@ -562,18 +545,17 @@ export const DECISION_POINTS: Readonly<
     state: {
       maxTokens: 600,
       admit: ["server", "serverDescription"],
-      content: [],
     },
-    // A server's own tool list is its configuration, not workspace content.
-    egress: "metadata",
     path: "background",
     timeoutMs: 5000,
     fallbackTransport: true,
     journal: { policy: "all" },
-    // `on` is safe by construction: the answer is shown, never applied.
-    defaultMode: "on",
     evalGate: {
-      suites: ["shared unit: mcp-suggest-kinds", "labels: admin accept/reject"],
+      suites: [
+        "shared unit: mcp-suggest-kinds",
+        "evals:decisions",
+        "labels: admin accept/reject",
+      ],
     },
   },
 };

@@ -170,13 +170,6 @@ export const installTestEnv = (): void => {
   process.env.LANGFUSE_SECRET_KEY = "";
   process.env.LANGFUSE_BASE_URL = "";
 
-  // The decision engine — memory passes, the relation writer, the chat's
-  // continuation check and the workflow handler all call it in-process, some
-  // fire-and-forget. Off for every suite, so none of them can reach the
-  // decision provider from a test that never meant to. A suite ABOUT the
-  // engine switches it back on before importing it (`decisions-engine.test.ts`).
-  process.env.DECISIONS_ENABLED = "false";
-
   if (!integration) return;
 
   assertDisposableDatabase();

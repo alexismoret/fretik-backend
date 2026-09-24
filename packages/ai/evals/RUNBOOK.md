@@ -256,18 +256,59 @@ were, and how they went away:
 
 `judge` is the rollback — one env var, no deploy, previous behaviour exactly.
 
-**`decision` (built 2026-09-24, not measured yet).** `adaptive` with the
-judge's 43 % of turns handed to the decision model first: one yes/no per
-candidate (`chat.recall-select`), the kept ones through the same verbatim
-renderer, the judge on any miss. Its point ships in `shadow`, where it only
-journals and the judge still decides, so an A/B that must ACT sets
-`DECISION_OVERRIDES={"chat.recall-select":{"mode":"on"}}` on the process that
-runs recall: the eval's own for `evals:recall` (it calls `runUnifiedRecall`
-in-process), the AI service's for `evals:langfuse`. The gate before it goes
-`on` by default: `evals:recall -- --mode decision --repeats 10` at parity with
-`adaptive` (23/23) and a lower p50, then
-`evals:langfuse -- --suite memory-recall --recall-mode decision`, with the
-result recorded as `evalGate.evidence` in `points.ts`.
+**Since 2026-09-24 an escalated `adaptive` turn asks the decision model
+first**: one yes/no per candidate (`chat.recall-select`), the kept ones
+rendered by the same verbatim renderer, and the LLM judge only when that call
+cannot answer. There is no separate mode and no switch — `judge` is still the
+rollback for the whole selector. The numbers for this shape are in
+`### evals:decisions` below and in the recall section's latest run.
+
+### `evals:decisions` — every decision point, asked for real
+
+`bun run evals:decisions` asks each point in
+`@fretik/shared/decisions/points.ts` through the REAL engine (`decidePoint`:
+allow-list, token budget, bars, transports) with the question builders and
+verdict readers production uses. Cases are in `evals/decisions/cases.ts`; a
+case lists the product outcomes it accepts, and the process exits 1 on any
+case below 100 %. No database, no service, no judge: the whole suite (114
+cases) at ten repeats is 1 140 calls, about 2 ¢, and two minutes — it spans
+two windows of the engine's 1 000-a-minute budget, and a call the budget
+refuses waits for the next window rather than counting as a failure.
+
+```bash
+bun run evals:decisions                       # 3 repeats
+bun run evals:decisions -- --repeats 10       # the gate
+bun run evals:decisions -- --point drive.file --case file-invoice
+```
+
+**It is the gate for any change to a point's question, state or bar.** Each
+point's `evalGate.suites` names it. The first run (2026-09-24) found three
+things no unit test could, and each was fixed by MEASURING, not by moving a
+bar blind:
+
+- `graph.link-type-match` offered each type's inverse reading, and the model
+  took `subsidiary_of` for `owns` — a reuse that files every fact backwards.
+  Question v2 (one direction, one sentence per option): synonyms at
+  confidence 0.92–0.99, inverse names refused at 0.93+.
+- `memory.resolve.verify` at 0.90 left half of each side in the review band
+  and decided nothing. Question v2 names what a false match looks like; true
+  references 0.82–0.95, ordinary words and namesakes 0.02–0.11; bar 0.75.
+- `memory.promote.support` read an episode where a person SET a rule ("from
+  now on, as a PDF") at 0.48 against 0.5. Question v2 counts setting a fact as
+  support: 0.91, with unrelated episodes still at 0.02.
+- `workflow.criterion.lint` replaced three regexes (a filename, a comparison,
+  "no criterion"), each a list of phrasings in two languages; one eval run
+  wrote four "every document" sentences none of them listed. 25 cases in four
+  languages, traps both ways (a year, a duration, one client's documents, a
+  file TYPE must pass). Its first `open` wording, "lets every input run", read
+  "a file added to the Drive, whatever its type" as a restriction (0.26); asking
+  "by what they are, or only by how they arrive?" puts every such sentence at
+  0.87–0.91 and sound criteria at 0.40 at most.
+
+One limit is recorded rather than tested: the trigger gate does not refuse a
+condition carried by a single field's VALUE ("a new company … for a client"
+against `relationship: supplier` came back at 0.60). Until conditions on
+values have a home of their own, they belong in the playbook's first task.
 
 ### `STANDING_MODE` / `X-Standing-Mode` — how to run the standing-layer A/B
 

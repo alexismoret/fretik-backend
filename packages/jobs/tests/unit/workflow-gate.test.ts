@@ -70,7 +70,6 @@ const answered = (
   status: "answered",
   point: "workflow.gate",
   policy: {
-    mode: "on",
     questionVersion: 2,
     thresholds: { wf: 0.15 },
     minChosenProbability: {},
@@ -149,15 +148,14 @@ describe("readGateVerdicts", () => {
   });
 
   test("the threshold is the one the SERVICE echoed, not a local constant", () => {
-    // An operator override set on the AI service must reach this worker
-    // without being set twice.
+    // A worker still on the previous deploy judges by the bar the question
+    // was asked under.
     const [verdict] = readGateVerdicts(
       [workflow({})],
       answered(
         { [id]: { type: "boolean", probability: 0.2 } },
         {
           policy: {
-            mode: "on",
             questionVersion: 2,
             thresholds: { wf: 0.3 },
             minChosenProbability: {},
@@ -168,28 +166,6 @@ describe("readGateVerdicts", () => {
     );
     expect(verdict?.allowed).toBe(false);
     expect(verdict?.decision?.threshold).toBe(0.3);
-  });
-
-  test("in shadow, a negative is recorded and NOT acted on", () => {
-    const [verdict] = readGateVerdicts(
-      [workflow({})],
-      answered(
-        { [id]: { type: "boolean", probability: 0.02 } },
-        {
-          policy: {
-            mode: "shadow",
-            questionVersion: 2,
-            thresholds: { wf: 0.15 },
-            minChosenProbability: {},
-          },
-        },
-      ),
-      now,
-    );
-    expect(verdict?.allowed).toBe(true);
-    expect(verdict?.decision?.outcome).toBe("allowed");
-    expect(verdict?.decision?.shadow).toBe(true);
-    expect(verdict?.decision?.probability).toBe(0.02);
   });
 
   test("an unreachable engine falls open, and says so", () => {
@@ -206,11 +182,11 @@ describe("readGateVerdicts", () => {
   test("a skipped point falls open with the skip's own reason", () => {
     const [verdict] = readGateVerdicts(
       [workflow({})],
-      { status: "skipped", point: "workflow.gate", reason: "off" },
+      { status: "skipped", point: "workflow.gate", reason: "rate_limited" },
       now,
     );
     expect(verdict?.allowed).toBe(true);
-    expect(verdict?.decision?.reason).toBe("off");
+    expect(verdict?.decision?.reason).toBe("rate_limited");
   });
 
   test("a question the engine could not answer falls open with its reason", () => {
@@ -332,24 +308,14 @@ describe("gateJournalEntries", () => {
     expect(JSON.stringify(row)).not.toContain("supplier invoice");
   });
 
-  test("a shadow verdict and a fall-open are journaled as NOT applied", () => {
-    // Neither changed what happened. Counting them as decisions would credit
-    // the gate with launches it never refused.
-    const [shadow] = journal(
-      answered(
-        { [id]: { type: "boolean", probability: 0.02 } },
-        {
-          policy: {
-            mode: "shadow",
-            questionVersion: 2,
-            thresholds: { wf: 0.15 },
-            minChosenProbability: {},
-          },
-        },
-      ),
+  test("a refusal is applied, a fall-open is NOT", () => {
+    // A fall-open changed nothing. Counting it as a decision would credit the
+    // gate with launches it never judged.
+    const [refused] = journal(
+      answered({ [id]: { type: "boolean", probability: 0.02 } }),
       [workflow({})],
     );
-    expect(shadow?.applied).toBe(false);
+    expect(refused).toMatchObject({ outcome: "filtered", applied: true });
     const [fellOpen] = journal(null, [workflow({})]);
     expect(fellOpen).toMatchObject({
       outcome: "fell_open",

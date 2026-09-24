@@ -37,6 +37,14 @@ export const supportQuestionId = (
   episodeIndex: number,
 ): string => `sup:${promotionIndex.toString()}-${episodeTag(episodeIndex)}`;
 
+/**
+ * Question version 2: an episode that SETS the fact — a decision, a rule, a
+ * standing request ("from now on, send it as a PDF") — supports it. Version 1
+ * asked only whether it stated or applied the fact, and the episode in which a
+ * person asked for the rule sat at 0.48 against a bar of 0.5, one run in ten
+ * refusing a preference the team had set and then followed. Measured
+ * 2026-09-24, `evals:decisions`.
+ */
 export const buildSupportQuestions = (
   promotions: readonly ProposedPromotion[],
   episodeCount: number,
@@ -48,11 +56,11 @@ export const buildSupportQuestions = (
         type: "boolean",
         instructions: [
           `Proposed team fact:\n${promotion.content.slice(0, 1_500)}`,
-          `Does episode ${episodeTag(j)} state this fact, or describe the team acting on it?`,
+          `Does episode ${episodeTag(j)} state this fact, set it (a decision, a rule or a standing request), or describe the team acting on it?`,
         ].join("\n\n"),
         criteria: {
-          true: `Episode ${episodeTag(j)} states or applies this fact.`,
-          false: `Episode ${episodeTag(j)} does not state or apply this fact.`,
+          true: `Episode ${episodeTag(j)} states, sets or applies this fact.`,
+          false: `Episode ${episodeTag(j)} does not state, set or apply this fact.`,
         },
       };
     }
@@ -66,7 +74,6 @@ export interface SupportVerdict {
   /** Per promotion index: whether the count clears the rule. Unanswered → true
    * (the legacy path decides, as before the check existed). */
   allowed: boolean[];
-  shadow: boolean;
 }
 
 export const readSupport = (
@@ -94,7 +101,6 @@ export const readSupport = (
         ? true
         : count >= REQUIRED_SUPPORT[promotion.action];
     }),
-    shadow: answered?.policy.mode === "shadow",
   };
 };
 
@@ -122,7 +128,7 @@ export const supportJournalEntries = (params: {
         response: params.response,
         questionCount,
         outcome: params.verdict.allowed[i] ? "kept" : "dropped",
-        applied: params.verdict.allowed[i] === false && !params.verdict.shadow,
+        applied: params.verdict.allowed[i] === false,
       }),
     ),
   );

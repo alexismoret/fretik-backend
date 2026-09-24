@@ -15,12 +15,10 @@ import { isAnnouncedActionStop } from "./judge";
 /**
  * Should a turn whose last message is short, after tool work, continue?
  *
- * Two readers of the same message, asked side by side so neither adds its
- * latency to the other: the classifier this replaces (an LLM answering one
- * word) and the decision model (a probability). Until the point is live the
- * classifier decides and the probability is journaled next to its answer,
- * which is the measurement the switch waits on. Once live, the probability
- * decides, and the classifier is the answer when no probability came back.
+ * The decision model answers with a probability. The classifier it replaced
+ * (an LLM answering one word) is asked only when no probability came back, so
+ * an outage costs one extra call on the turns it touches and nothing on the
+ * others.
  */
 
 export const CONTINUATION_POINT = "chat.turn.continuation";
@@ -36,25 +34,15 @@ export const CONTINUATION_QUESTION: DecisionQuestion = {
   },
 };
 
+/** The model's verdict, or null when it did not answer. */
 export const readContinuation = (
   response: DecisionResponse | null,
-): { verdict: boolean | null; shadow: boolean } => {
-  if (response?.status !== "answered") return { verdict: null, shadow: false };
+): boolean | null => {
+  if (response?.status !== "answered") return null;
   const p = probabilityOf(response.answers["announce"]);
   const bar = thresholdFor(response.policy, "announce");
-  return {
-    verdict: p === null || bar === undefined ? null : p >= bar,
-    shadow: response.policy.mode === "shadow",
-  };
+  return p === null || bar === undefined ? null : p >= bar;
 };
-
-/** The decision: the model's when it is live and answered, else the
- * classifier's. */
-export const decideContinuation = (
-  model: { verdict: boolean | null; shadow: boolean },
-  classifier: boolean,
-): boolean =>
-  !model.shadow && model.verdict !== null ? model.verdict : classifier;
 
 export const continuationJournalEntry = (params: {
   organizationId: string;
@@ -63,8 +51,8 @@ export const continuationJournalEntry = (params: {
   turnKey: string;
   response: DecisionResponse | null;
   continued: boolean;
+  /** False when the classifier decided because the model did not answer. */
   applied: boolean;
-  classifier: boolean;
 }): JournalEntry =>
   answerJournalEntry({
     organizationId: params.organizationId,
@@ -78,7 +66,6 @@ export const continuationJournalEntry = (params: {
     questionCount: 1,
     outcome: params.continued ? "continue" : "stop",
     applied: params.applied,
-    legacyLabel: params.classifier ? "true" : "false",
   });
 
 export const shouldContinueTurn = async (params: {
@@ -96,25 +83,23 @@ export const shouldContinueTurn = async (params: {
   // definition, nothing to ask anyone.
   if (text.length === 0) return true;
 
-  const [classifier, response] = await Promise.all([
-    isAnnouncedActionStop(text),
-    (params.evaluator ?? inProcessEvaluator)(
-      {
-        point: CONTINUATION_POINT,
-        state: { message: text },
-        questions: { announce: CONTINUATION_QUESTION },
-        ...(params.conversationId !== undefined
-          ? { sessionId: params.conversationId }
-          : {}),
-      },
-      { teamId: params.teamId, organizationId: params.organizationId },
-    ),
-  ]);
-  const model = readContinuation(response);
-  const continued = decideContinuation(model, classifier);
+  const response = await (params.evaluator ?? inProcessEvaluator)(
+    {
+      point: CONTINUATION_POINT,
+      state: { message: text },
+      questions: { announce: CONTINUATION_QUESTION },
+      ...(params.conversationId !== undefined
+        ? { sessionId: params.conversationId }
+        : {}),
+    },
+    { teamId: params.teamId, organizationId: params.organizationId },
+  );
+  const verdict = readContinuation(response);
+  const continued = verdict ?? (await isAnnouncedActionStop(text));
 
   if (params.conversationId !== undefined) {
-    await recordDecisions([
+    // Not awaited: the turn is waiting on `continued`, not on the journal.
+    void recordDecisions([
       continuationJournalEntry({
         organizationId: params.organizationId,
         teamId: params.teamId,
@@ -122,10 +107,14 @@ export const shouldContinueTurn = async (params: {
         turnKey: params.turnKey ?? crypto.randomUUID(),
         response,
         continued,
-        applied: !model.shadow && model.verdict !== null,
-        classifier,
+        applied: verdict !== null,
       }),
-    ]);
+    ]).catch((error: unknown) => {
+      console.warn(
+        "[turn-continuation] decision journal write failed:",
+        error instanceof Error ? error.message : error,
+      );
+    });
   }
   return continued;
 };

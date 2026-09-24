@@ -1,15 +1,14 @@
-import type {
-  DecisionAnswered,
-  DecisionResponse,
-} from "@fretik/shared/schemas/decisions";
-import { DecisionQuestionSchema } from "@fretik/shared/schemas/decisions";
 import { describe, expect, test } from "bun:test";
+import {
+  DecisionQuestionSchema,
+  type DecisionResponse,
+} from "../../src/schemas/decisions";
 import {
   anchorJournalEntries,
   anchorQuestionId,
   buildAnchorQuestion,
   readAnchorVerdicts,
-} from "../../src/lib/memory-resolve-verify";
+} from "../../src/services/collection-records/anchor-verify";
 
 /**
  * The resolver's second opinion on its review band. The band is symmetric
@@ -17,14 +16,10 @@ import {
  * every other case leaves the link as the resolver scored it.
  */
 
-const answered = (
-  probabilities: Record<string, number>,
-  over: Partial<DecisionAnswered> = {},
-): DecisionResponse => ({
+const answered = (probabilities: Record<string, number>): DecisionResponse => ({
   status: "answered",
   point: "memory.resolve.verify",
   policy: {
-    mode: "on",
     questionVersion: 1,
     thresholds: { anc: 0.9 },
     minChosenProbability: {},
@@ -38,12 +33,11 @@ const answered = (
   missing: [],
   transport: "openrouter",
   latencyMs: 90,
-  ...over,
 });
 
 describe("readAnchorVerdicts", () => {
   test("confirm at the bar, drop at one minus the bar, keep in between", () => {
-    const { verdicts } = readAnchorVerdicts(
+    const verdicts = readAnchorVerdicts(
       answered({ a: 0.9, b: 0.1, c: 0.5, d: 0.11 }),
       ["a", "b", "c", "d"],
     );
@@ -56,44 +50,25 @@ describe("readAnchorVerdicts", () => {
   });
 
   test("no answer keeps the resolver's own verdict", () => {
-    expect(
-      Object.fromEntries(readAnchorVerdicts(null, ["a"]).verdicts),
-    ).toEqual({ a: "keep" });
-    expect(
-      Object.fromEntries(readAnchorVerdicts(answered({}), ["a"]).verdicts),
-    ).toEqual({ a: "keep" });
-  });
-
-  test("shadow is reported so the caller acts on nothing", () => {
-    const { shadow } = readAnchorVerdicts(
-      answered(
-        { a: 0.99 },
-        {
-          policy: {
-            mode: "shadow",
-            questionVersion: 1,
-            thresholds: { anc: 0.9 },
-            minChosenProbability: {},
-          },
-        },
-      ),
-      ["a"],
+    expect(Object.fromEntries(readAnchorVerdicts(null, ["a"]))).toEqual({
+      a: "keep",
+    });
+    expect(Object.fromEntries(readAnchorVerdicts(answered({}), ["a"]))).toEqual(
+      { a: "keep" },
     );
-    expect(shadow).toBe(true);
   });
 });
 
 describe("anchorJournalEntries", () => {
-  test("one row per record, aimed at it, applied only when live and decisive", () => {
+  test("one row per record, aimed at it, applied only when decisive", () => {
     const response = answered({ a: 0.95, b: 0.5 });
-    const { verdicts } = readAnchorVerdicts(response, ["a", "b"]);
+    const verdicts = readAnchorVerdicts(response, ["a", "b"]);
     const rows = anchorJournalEntries({
       organizationId: "org",
       teamId: "team",
       eventId: "e1",
       response,
       verdicts,
-      shadow: false,
     });
     expect(rows.map((r) => [r.targetId, r.outcome, r.applied])).toEqual([
       ["a", "confirm", true],

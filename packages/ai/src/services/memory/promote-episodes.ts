@@ -338,11 +338,9 @@ export const promoteEpisodes = async (input: {
         verdict,
       }),
     );
-    if (!verdict.shadow) {
-      proposed.forEach((p, i) => {
-        if (verdict.allowed[i] === false) refused.add(p.path);
-      });
-    }
+    proposed.forEach((p, i) => {
+      if (verdict.allowed[i] === false) refused.add(p.path);
+    });
   }
 
   const sources = episodes.map((e) => `episode:${e.id}`).join(", ");

@@ -32,39 +32,50 @@ export const MAX_LINK_TYPE_CANDIDATES = 40;
 export const linkTypeQuestionId = (normalizedKey: string): string =>
   `type:${normalizedKey}`;
 
+/** `employed_by` → `employed by`: a phrase reads, a key does not. */
+const asPhrase = (key: string): string =>
+  key.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+
+/**
+ * Question version 2. Every option is written as the same sentence about
+ * the same two records, and no option shows its inverse reading.
+ *
+ * Version 1 offered "owns (read the other way: is owned by)", and the model
+ * took `subsidiary_of` for `owns` on the strength of that inverse — a reuse
+ * that files every fact backwards, because a type is reused in ONE direction
+ * only. Measured 2026-09-24 (`evals:decisions`): the inverse pick went, and
+ * the true synonyms rose.
+ */
 export const buildLinkTypeQuestion = (
   rawKey: string,
   candidates: readonly LinkTypeCandidate[],
 ): DecisionQuestion => {
   const criteria: Record<string, string> = {
     [NEW_TYPE_OPTION]:
-      "None of these relations means the same thing as the proposed one.",
+      "None of these says the same thing with the two records in the same roles.",
   };
   for (const c of candidates) {
-    criteria[c.id] = c.inverseLabel
-      ? `${c.label} (read the other way: ${c.inverseLabel})`
-      : c.label;
+    criteria[c.id] = `The first record ${c.label} the second record.`;
   }
   return {
     type: "choice",
-    instructions: `A relation between two records was named "${rawKey}". Which existing relation type means the same thing, in the same direction?`,
+    instructions: `A relation between two records was named "${rawKey}", read as: the first record ${asPhrase(rawKey)} the second record. Which existing relation says the same thing, with each record in the same role? A relation that is only true read the other way round is not the same.`,
     criteria,
   };
 };
 
 /**
  * The existing type to reuse, or null to create a new one. Reuse needs the
- * point's confidence AND a real share for the winner; shadow reuses nothing.
+ * point's confidence AND a real share for the winner.
  */
 export const readLinkTypeVerdict = (
   response: DecisionResponse | null,
   questionId: string,
   candidates: readonly LinkTypeCandidate[],
-): { reuseId: string | null; chosenId: string | null; shadow: boolean } => {
+): { reuseId: string | null; chosenId: string | null } => {
   if (response?.status !== "answered") {
-    return { reuseId: null, chosenId: null, shadow: false };
+    return { reuseId: null, chosenId: null };
   }
-  const shadow = response.policy.mode === "shadow";
   const chosen = chosenOf(response.answers[questionId]);
   const chosenId =
     chosen && candidates.some((c) => c.id === chosen.choice)
@@ -77,11 +88,7 @@ export const readLinkTypeVerdict = (
     chosen?.confidence !== undefined &&
     chosen.confidence >= bar &&
     (chosen.probability ?? 0) >= minChosen;
-  return {
-    reuseId: chosenId !== null && sure && !shadow ? chosenId : null,
-    chosenId,
-    shadow,
-  };
+  return { reuseId: chosenId !== null && sure ? chosenId : null, chosenId };
 };
 
 export const linkTypeJournalEntry = (params: {

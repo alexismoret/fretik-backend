@@ -45,7 +45,7 @@
  *   ...  -- --run-name <name>       # explicit dataset-run name
  *   ...  -- --candidate <profileKey> # pin turns to a registry profile (C3 gate)
  *   ...  -- --page-build-candidate <profileKey> # pin the PAGE BUILDER's model
- *   ...  -- --recall-mode judge|verbatim|adaptive|decision # which memory selector serves the turns
+ *   ...  -- --recall-mode judge|verbatim|adaptive # which memory selector serves the turns
  *   ...  -- --standing-mode episodes|none # whether <standing_memory> is served
  *   ...  -- --case <id> --repeats 3 # N passes of each case, one run, means not samples
  * ==================================================================

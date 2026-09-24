@@ -366,7 +366,6 @@ const FactDescriptorSchema = z.object({
   labelKey: z.string(),
   agentHint: z.string(),
   available: z.boolean(),
-  sensitive: z.boolean().optional(),
 });
 
 const EventFactsDescriptorSchema = z.object({
@@ -380,7 +379,6 @@ const EventFactsDescriptorSchema = z.object({
       prefix: z.string(),
       labelKey: z.string(),
       agentHint: z.string(),
-      sensitive: z.boolean(),
     })
     .optional(),
 });
@@ -483,7 +481,7 @@ export const describeTriggerCriterionForAgent = (): string =>
     "One sentence, judged against the event's facts (`get_trigger_catalog`) before a run launches.",
     "Describe the KIND of input, stated positively ('the document is a supplier invoice').",
     "NEVER a filename, an id, or a number or date to compare — activation refuses them; put such a check in the first task.",
-    "Null = every firing runs.",
+    "Omitted or null = every firing runs.",
   ].join(" ");
 
 /** Compact trigger reference for the `manageWorkflow` tool — generated from the

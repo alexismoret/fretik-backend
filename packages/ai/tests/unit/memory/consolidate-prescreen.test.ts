@@ -1,7 +1,4 @@
-import type {
-  DecisionAnswered,
-  DecisionResponse,
-} from "@fretik/shared/schemas/decisions";
+import type { DecisionResponse } from "@fretik/shared/schemas/decisions";
 import { DecisionQuestionSchema } from "@fretik/shared/schemas/decisions";
 import { describe, expect, test } from "bun:test";
 import {
@@ -16,8 +13,8 @@ import {
  *
  * A wrong skip leaves a duplicate or a stale fact standing, so every rule
  * pinned here narrows skipping: only a confident double "no", never on a
- * missing answer, never in shadow, never for a cluster whose staleness is a
- * date the decision model cannot be trusted to compare.
+ * missing answer, never for a cluster whose staleness is a date the decision
+ * model cannot be trusted to compare.
  */
 
 const now = new Date("2026-09-24T03:00:00Z");
@@ -26,12 +23,10 @@ const daysAgo = (n: number) => new Date(now.getTime() - n * 86_400_000);
 const answered = (
   same: number | null,
   conflict: number | null,
-  over: Partial<DecisionAnswered> = {},
 ): DecisionResponse => ({
   status: "answered",
   point: "memory.consolidate.prescreen",
   policy: {
-    mode: "on",
     questionVersion: 1,
     thresholds: { same: 0.1, conflict: 0.1 },
     minChosenProbability: {},
@@ -46,7 +41,6 @@ const answered = (
   transport: "openrouter",
   latencyMs: 80,
   costUsd: 0.00002,
-  ...over,
 });
 
 describe("isRiskyCluster", () => {
@@ -83,53 +77,39 @@ describe("isRiskyCluster", () => {
 
 describe("readPrescreen", () => {
   test("only a confident no to BOTH questions skips", () => {
-    expect(readPrescreen(answered(0.05, 0.02)).skip).toBe(true);
-    expect(readPrescreen(answered(0.05, 0.3)).skip).toBe(false);
-    expect(readPrescreen(answered(0.4, 0.02)).skip).toBe(false);
+    expect(readPrescreen(answered(0.05, 0.02))).toBe(true);
+    expect(readPrescreen(answered(0.05, 0.3))).toBe(false);
+    expect(readPrescreen(answered(0.4, 0.02))).toBe(false);
   });
 
   test("the bar is exclusive: sitting on it is not a no", () => {
-    expect(readPrescreen(answered(0.1, 0.02)).skip).toBe(false);
+    expect(readPrescreen(answered(0.1, 0.02))).toBe(false);
   });
 
   test("a missing answer is never a no", () => {
-    expect(readPrescreen(answered(0.02, null)).skip).toBe(false);
-    expect(readPrescreen(null).skip).toBe(false);
+    expect(readPrescreen(answered(0.02, null))).toBe(false);
+    expect(readPrescreen(null)).toBe(false);
     expect(
       readPrescreen({
         status: "skipped",
         point: "memory.consolidate.prescreen",
-        reason: "egress",
-      }).skip,
-    ).toBe(false);
-  });
-
-  test("in shadow the verdict is read, and flagged as not to be acted on", () => {
-    const verdict = readPrescreen(
-      answered(0.02, 0.02, {
-        policy: {
-          mode: "shadow",
-          questionVersion: 1,
-          thresholds: { same: 0.1, conflict: 0.1 },
-          minChosenProbability: {},
-        },
+        reason: "rate_limited",
       }),
-    );
-    expect(verdict).toEqual({ skip: true, shadow: true });
+    ).toBe(false);
   });
 });
 
 describe("prescreenJournalEntries", () => {
   const rows = (
     judgeAction: "MERGE" | "REVISE" | "NOOP" | null,
-    verdict = { skip: false, shadow: true },
+    skip = false,
   ) =>
     prescreenJournalEntries({
       organizationId: "org",
       teamId: "team",
       subjectId: "0199",
       response: answered(0.05, 0.6),
-      verdict,
+      skip,
       judgeAction,
     });
 
@@ -143,9 +123,9 @@ describe("prescreenJournalEntries", () => {
     for (const row of rows(null)) expect(row.legacyLabel).toBeUndefined();
   });
 
-  test("a shadow skip is journaled as not applied, a live one as applied", () => {
-    expect(rows(null, { skip: true, shadow: true })[0]?.applied).toBe(false);
-    expect(rows(null, { skip: true, shadow: false })[0]?.applied).toBe(true);
+  test("a skip is journaled as applied, a hand-off to the judge is not", () => {
+    expect(rows(null, true)[0]?.applied).toBe(true);
+    expect(rows("NOOP", false)[0]?.applied).toBe(false);
   });
 
   test("the call's cost is split across the two questions", () => {

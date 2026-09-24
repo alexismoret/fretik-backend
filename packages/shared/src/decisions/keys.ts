@@ -11,6 +11,8 @@
  */
 export const DECISION_POINT_KEYS = [
   "workflow.gate",
+  "workflow.criterion.lint",
+  "workflow.criterion.missing",
   "drive.file",
   "memory.consolidate.prescreen",
   "memory.resolve.verify",
@@ -19,9 +21,7 @@ export const DECISION_POINT_KEYS = [
   "memory.promote.support",
   "graph.entity-match",
   "chat.turn.continuation",
-  "workflow.turn.convergence",
   "chat.recall-select",
-  "chat.addressee",
   "external-apps.mcp.suggest-kind",
 ] as const;
 

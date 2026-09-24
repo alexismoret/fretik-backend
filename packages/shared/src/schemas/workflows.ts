@@ -629,10 +629,6 @@ export const WorkflowGateDecisionSchema = z.object({
   /** The question wording this verdict answered (the registry's
    * `questionVersion`). Two versions never share a calibration. */
   questionVersion: z.number().int().positive().optional(),
-  /** The point ran in shadow: the verdict was recorded, not acted on. An
-   * `allowed` outcome with a probability under the threshold is what it
-   * WOULD have filtered. */
-  shadow: z.boolean().optional(),
   decidedAt: z.string(),
   /** Set when someone pressed "run anyway" on a filtered launch. */
   overriddenAt: z.string().optional(),
@@ -677,50 +673,30 @@ export type CriterionBacktestResponse = z.infer<
 >;
 
 /**
- * Criteria that would gate on the wrong thing, rejected at activation.
+ * The FORM of a trigger criterion: its length, and no id in it. A uuid is a
+ * format, not a way of saying something, so it is checked here, exactly and
+ * for free — an agent writing a criterion from one example writes the
+ * example's id into it, which passes the run it was written against and
+ * refuses every real firing afterwards.
  *
- * The failure this catches is specific and was predicted before a line of it
- * ran: an agent writing a criterion from ONE example file writes the example
- * into it — "the filename is facture_2026_03.pdf", "the document id is
- * 4f3a…". That passes the test run it was written against and silently
- * refuses every real firing afterwards, which is the exact shape of the
- * invisible failure the low threshold exists to avoid.
- *
- * Returns the reason it cannot go live, or null.
+ * What a criterion MEANS (one specific item, a comparison, "everything") is
+ * judged by the decision model in `services/workflows/criterion-lint.ts`,
+ * which calls this first. Returns the reason it cannot go live, or null.
  */
 export const workflowCriterionError = (criterion: string): string | null => {
   const parsed = workflowTriggerCriterionSchema.safeParse(criterion);
   if (!parsed.success) {
     return parsed.error.issues[0]?.message ?? "Invalid criterion.";
   }
-  const value = parsed.data;
   if (
-    /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(value)
+    /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(
+      parsed.data,
+    )
   ) {
     return "A criterion must not name a specific id — it has to hold for every future firing, not the one it was written against.";
   }
-  if (
-    /\b[\w.-]+\.(pdf|docx?|xlsx?|pptx?|csv|txt|md|png|jpe?g)\b/i.test(value)
-  ) {
-    return "A criterion must not name a specific file — describe what makes a document relevant instead.";
-  }
-  if (CRITERION_COMPARISON.test(value)) {
-    return "A criterion cannot compare numbers or dates: the gate judges what an input IS, not arithmetic. Put that check in the playbook's first task instead.";
-  }
   return null;
 };
-
-/**
- * A comparison against a number or a date: a symbol before a digit, or a
- * comparison word (English or French) with a digit shortly after it.
- *
- * The gate's model reads meaning; arithmetic, counting and date ordering are
- * exactly where it is unreliable, and a criterion like "amount over 1 000"
- * would be judged by feel. Refused rather than warned, because the failure is
- * the invisible one: a firing wrongly judged under the bar never runs.
- */
-const CRITERION_COMPARISON =
-  /[<>≤≥]=?\s*\d|(?:\b(?:over|above|below|under|more than|less than|greater than|fewer than|at least|at most|exceeds?|exceeding|before|after|older than|newer than|plus de|moins de|au moins|au plus|avant|apr[èe]s|d[ée]passe)\b|\b(?:sup|inf)[ée]rieure?s? [àa](?!\w))[^.;\n]{0,25}?\d/i;
 
 export const WorkflowRunErrorSchema = z.object({
   code: z.string().min(1).max(60),

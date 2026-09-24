@@ -195,12 +195,6 @@ export type DecisionMissingReason = (typeof DECISION_MISSING_REASONS)[number];
 
 /** Why the whole request was not evaluated. Never an incident by itself. */
 export const DECISION_SKIP_REASONS = [
-  /** `DECISIONS_ENABLED=false`, the global kill switch. */
-  "disabled",
-  /** The point's resolved mode is `off`. */
-  "off",
-  /** The point sends content and this deployment forbids content egress. */
-  "egress",
   /** The per-minute budget refused a background point. */
   "rate_limited",
 ] as const;
@@ -209,19 +203,13 @@ export type DecisionSkipReason = (typeof DECISION_SKIP_REASONS)[number];
 export const DECISION_TRANSPORTS = ["openrouter", "gateway"] as const;
 export type DecisionTransport = (typeof DECISION_TRANSPORTS)[number];
 
-export const DECISION_MODES = ["off", "shadow", "on"] as const;
-export type DecisionMode = (typeof DECISION_MODES)[number];
-
 /**
- * The thresholds the service resolved for this call, echoed back so a caller
- * in another process applies EXACTLY the numbers the operator set — the
- * registry default, overridden by `DECISION_OVERRIDES` where the call was
- * made. Without the echo, an override would have to be set identically on
- * every container that reads a verdict, and one forgotten container is a
- * gate running on a different bar from the one on the dashboard.
+ * The bars the question was asked under, echoed back with the answer. A
+ * caller in another container reads its verdict against THESE rather than
+ * its own copy of the registry, so a worker still running the previous
+ * deploy never judges a new question by an old bar.
  */
 export const DecisionPolicyEchoSchema = z.object({
-  mode: z.enum(["shadow", "on"]),
   questionVersion: z.number().int().positive(),
   thresholds: z.record(z.string(), z.number().min(0).max(1)),
   minChosenProbability: z.record(z.string(), z.number().min(0).max(1)),

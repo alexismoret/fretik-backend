@@ -142,9 +142,9 @@ export const resolveLinkType = async (data: {
     status: "suggested",
     source: "ai_extraction",
   });
-  // Journaled after the create, so a shadow verdict sits next to what the
-  // legacy path did: made a new type. The new type is the row a reviewer
-  // opens to see which existing one the model would have reused.
+  // Journaled after the create, so a verdict that did not reuse sits next to
+  // what happened instead: a new type. The new type is the row a reviewer
+  // opens to see which existing one the model leaned to.
   if (meaning) {
     await recordDecisions([
       linkTypeJournalEntry({

@@ -76,22 +76,20 @@ const DEFAULT_THRESHOLD = decisionPoint(GATE_POINT).families["wf"]?.threshold;
 /**
  * Read the response back into one verdict per workflow.
  *
- * Every branch that is not "the model answered, confidently negative, and the
- * point is live" allows the launch, and each records WHY, so a stretch of them
- * is legible rather than mysterious:
+ * Every branch that is not "the model answered, confidently negative" allows
+ * the launch, and each records WHY, so a stretch of them is legible rather
+ * than mysterious:
  *   - no criterion → no decision at all (`decision: null`): the run is
  *     ungated and its row says so by carrying nothing;
- *   - no response, a skipped point, or a missing answer → `fell_open`, with
+ *   - no response, a skipped call, or a missing answer → `fell_open`, with
  *     the reason. A run of these means the gate is not being applied, which is
- *     an incident unless the reason is an operator's switch;
+ *     an incident;
  *   - P(meets) at or above the threshold → `allowed`;
- *   - below it, point in `shadow` → `allowed` with `shadow: true`: the verdict
- *     is recorded and not acted on;
- *   - below it, point `on` → `filtered`, the only path that stops a launch.
+ *   - below it → `filtered`, the only path that stops a launch.
  *
- * The threshold is the one the SERVICE resolved and echoed, never a local
- * constant: an operator override set on the AI service reaches this worker
- * without being set twice.
+ * The threshold is the one the SERVICE echoed with the answer, never a local
+ * constant: a worker still on the previous deploy judges by the bar the
+ * question was asked under.
  */
 export const readGateVerdicts = (
   workflows: readonly Workflow[],
@@ -153,13 +151,11 @@ export const readGateVerdicts = (
     }
 
     const meets = probability >= threshold;
-    const shadow = answered?.policy.mode === "shadow";
     return {
       workflowId: workflow.id,
-      allowed: meets || shadow,
+      allowed: meets,
       decision: {
-        outcome: meets || shadow ? "allowed" : "filtered",
-        ...(shadow ? { shadow: true } : {}),
+        outcome: meets ? "allowed" : "filtered",
         criterion,
         probability,
         threshold,
@@ -175,8 +171,8 @@ export const readGateVerdicts = (
  * about. Ungated workflows (no criterion) have no decision and no row.
  *
  * Numbers only — the criterion stays on the run's own `gate_decision`
- * snapshot. `applied` is false in shadow and on a fall-open: neither verdict
- * changed what happened. The call's cost is split evenly across the
+ * snapshot. `applied` is false on a fall-open: that verdict changed nothing
+ * about what happened. The call's cost is split evenly across the
  * questions it answered, so a SUM over the journal is the real bill.
  */
 export const gateJournalEntries = (params: {
@@ -201,7 +197,7 @@ export const gateJournalEntries = (params: {
     subjectId: params.eventId,
     targetId: workflowId,
     outcome: decision.outcome,
-    applied: decision.outcome !== "fell_open" && decision.shadow !== true,
+    applied: decision.outcome !== "fell_open",
     reason: decision.reason ?? null,
     probability: decision.probability ?? null,
     confidence: null,

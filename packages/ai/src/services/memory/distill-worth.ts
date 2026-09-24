@@ -30,16 +30,12 @@ export const WORTH_QUESTION: DecisionQuestion = {
   },
 };
 
-export const readWorth = (
-  response: DecisionResponse | null,
-): { skip: boolean; shadow: boolean } => {
-  if (response?.status !== "answered") return { skip: false, shadow: false };
+/** Skip only on an answer under the bar; no answer distills as before. */
+export const readWorth = (response: DecisionResponse | null): boolean => {
+  if (response?.status !== "answered") return false;
   const p = probabilityOf(response.answers["worth"]);
   const bar = thresholdFor(response.policy, "worth");
-  return {
-    skip: p !== null && bar !== undefined && p < bar,
-    shadow: response.policy.mode === "shadow",
-  };
+  return p !== null && bar !== undefined && p < bar;
 };
 
 export const worthJournalEntry = (params: {
@@ -47,7 +43,7 @@ export const worthJournalEntry = (params: {
   teamId: string;
   conversationId: string;
   response: DecisionResponse | null;
-  verdict: { skip: boolean; shadow: boolean };
+  skip: boolean;
 }): JournalEntry =>
   answerJournalEntry({
     organizationId: params.organizationId,
@@ -58,6 +54,6 @@ export const worthJournalEntry = (params: {
     subjectId: params.conversationId,
     response: params.response,
     questionCount: 1,
-    outcome: params.verdict.skip ? "skip" : "distill",
-    applied: params.verdict.skip && !params.verdict.shadow,
+    outcome: params.skip ? "skip" : "distill",
+    applied: params.skip,
   });

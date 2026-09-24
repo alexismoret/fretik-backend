@@ -14,8 +14,8 @@ import {
 /**
  * Mentions matched to existing records by meaning. A wrong link attaches a
  * document to the wrong party, so only a confident, clear pick among the
- * offered candidates links; "another one", shadow, or silence leave the
- * mention to the spelling cascade.
+ * offered candidates links; "another one" or silence leave the mention to
+ * the spelling cascade.
  */
 
 const candidates = [
@@ -28,12 +28,10 @@ const answered = (
   choice: string,
   probability: number,
   confidence: number | null,
-  mode: "on" | "shadow" = "on",
 ): DecisionResponse => ({
   status: "answered",
   point: "graph.entity-match",
   policy: {
-    mode,
     questionVersion: 1,
     thresholds: { ent: 0.8 },
     minChosenProbability: { ent: 0.5 },
@@ -67,7 +65,7 @@ describe("readEntityVerdict", () => {
   test("a confident, clear pick links", () => {
     expect(
       readEntityVerdict(answered("r1", 0.8, 0.9), questionId, candidates),
-    ).toEqual({ linkId: "r1", chosenId: "r1", shadow: false });
+    ).toEqual({ linkId: "r1", chosenId: "r1" });
   });
 
   test("unsure, split or unreported confidence does not", () => {
@@ -94,16 +92,6 @@ describe("readEntityVerdict", () => {
       readEntityVerdict(answered("r9", 0.9, 0.95), questionId, candidates)
         .linkId,
     ).toBeNull();
-  });
-
-  test("shadow names the pick and links nothing", () => {
-    expect(
-      readEntityVerdict(
-        answered("r2", 0.9, 0.95, "shadow"),
-        questionId,
-        candidates,
-      ),
-    ).toEqual({ linkId: null, chosenId: "r2", shadow: true });
   });
 });
 

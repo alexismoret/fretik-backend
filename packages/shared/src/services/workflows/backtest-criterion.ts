@@ -6,13 +6,13 @@ import { badRequest, notFound, throwHttpError } from "../../lib/errors";
 import {
   CRITERION_BACKTEST_EVENTS,
   eventSubscriptions,
-  workflowCriterionError,
   type CriterionBacktestResponse,
   type WorkflowTriggerConfig,
 } from "../../schemas/workflows";
 import { remoteEvaluator, type DecisionEvaluator } from "../decisions/remote";
 import { resolveFactSheets } from "../facts/resolve";
 import type { FactSheet } from "../facts/types";
+import { lintCriterion } from "./criterion-lint";
 import { filterWorkflowConversationIds } from "./filter-workflow-conversation-ids";
 import { buildGateQuestion, GATE_POINT, gateQuestionId } from "./gate-question";
 import { getWorkflowRow } from "./get";
@@ -57,7 +57,11 @@ export const backtestCriterion = async (params: {
   requester?: WorkflowRequester;
   evaluator?: DecisionEvaluator;
 }): Promise<CriterionBacktestResponse> => {
-  const lintError = workflowCriterionError(params.criterion);
+  const lintError = await lintCriterion({
+    criterion: params.criterion,
+    context: { teamId: params.teamId, organizationId: params.organizationId },
+    ...(params.evaluator ? { evaluator: params.evaluator } : {}),
+  });
   if (lintError !== null) return throwHttpError(400, badRequest(lintError));
 
   const workflow = await getWorkflowRow({

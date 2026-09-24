@@ -49,8 +49,7 @@ export const factFamilyOf = (eventType: string): FactFamily | null => {
  * `dynamicPrefix` is how a registry of fixed keys describes a set that is not
  * fixed. A team's document fields are its own — `invoice_total` for one,
  * `dossier_number` for another — so they cannot be listed here, but a consumer
- * still has to know the namespace exists, that its members are readable, and
- * that they carry extracted CONTENT rather than metadata.
+ * still has to know the namespace exists and that its members are readable.
  */
 export interface FactFamilyDescriptor {
   family: FactFamily;
@@ -59,7 +58,6 @@ export interface FactFamilyDescriptor {
     prefix: string;
     labelKey: string;
     agentHint: string;
-    sensitive: boolean;
   };
 }
 
@@ -132,7 +130,6 @@ export const FACT_REGISTRY: Record<FactFamily, FactFamilyDescriptor> = {
         labelKey: "facts.document.summary",
         agentHint:
           "The extraction's factual summary of what the document is and says. The strongest signal for any 'is this mine?' judgement.",
-        sensitive: true,
       }),
       fact({
         key: "confidenceScore",
@@ -147,7 +144,6 @@ export const FACT_REGISTRY: Record<FactFamily, FactFamilyDescriptor> = {
         labelKey: "facts.document.mentionedOrganizations",
         agentHint:
           "Names of the organisations the document mentions, as resolved into records.",
-        sensitive: true,
       }),
       fact({
         key: "mentionCount",
@@ -175,7 +171,6 @@ export const FACT_REGISTRY: Record<FactFamily, FactFamilyDescriptor> = {
       labelKey: "facts.document.customFields",
       agentHint:
         "The team's own document fields, as extraction filled them — `customFields.<field key>`. Which keys exist is per team; read the team's field definitions to know them.",
-      sensitive: true,
     },
   },
 
@@ -205,7 +200,6 @@ export const FACT_REGISTRY: Record<FactFamily, FactFamilyDescriptor> = {
         kind: "text",
         labelKey: "facts.record.label",
         agentHint: "The record's display label.",
-        sensitive: true,
       }),
       fact({
         key: "status",
@@ -233,7 +227,6 @@ export const FACT_REGISTRY: Record<FactFamily, FactFamilyDescriptor> = {
       labelKey: "facts.record.fields",
       agentHint:
         "The record's own field values — `fields.<field key>`. Which keys exist depends on its collection.",
-      sensitive: true,
     },
   },
 
@@ -251,7 +244,6 @@ export const FACT_REGISTRY: Record<FactFamily, FactFamilyDescriptor> = {
         kind: "text",
         labelKey: "facts.link.fromLabel",
         agentHint: "Label of the record the link starts at.",
-        sensitive: true,
       }),
       fact({
         key: "fromCollectionKey",
@@ -264,7 +256,6 @@ export const FACT_REGISTRY: Record<FactFamily, FactFamilyDescriptor> = {
         kind: "text",
         labelKey: "facts.link.toLabel",
         agentHint: "Label of the record the link points at.",
-        sensitive: true,
       }),
       fact({
         key: "toCollectionKey",
@@ -332,7 +323,6 @@ export const FACT_REGISTRY: Record<FactFamily, FactFamilyDescriptor> = {
       labelKey: "facts.connector.payload",
       agentHint:
         "Whatever the connector put on the event — `payload.<key>`. Shapes differ per provider and per event kind; read the connector's manifest.",
-      sensitive: true,
     },
   },
 };

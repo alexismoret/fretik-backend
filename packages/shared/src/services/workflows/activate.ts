@@ -5,10 +5,11 @@ import { badRequest, throwHttpError } from "../../lib/errors";
 import { createWorkflowCronSchedule } from "../../lib/trigger-client";
 import { workflowFormActivationError } from "../../schemas/workflow-forms";
 import {
-  workflowCriterionError,
   workflowEventActivationError,
   type WorkflowResponse,
 } from "../../schemas/workflows";
+import type { DecisionEvaluator } from "../decisions/remote";
+import { lintCriterion } from "./criterion-lint";
 import { getWorkflowRow } from "./get";
 import { serializeWorkflow } from "./serialize";
 import { refreshWorkflowVectors } from "./vector-refresh";
@@ -24,6 +25,9 @@ export const activateWorkflow = async (params: {
   id: string;
   teamId: string;
   requester?: WorkflowRequester;
+  /** How the criterion lint reaches the decision model; in-process from
+   * the AI service, over HTTP from everywhere else. */
+  evaluator?: DecisionEvaluator;
 }): Promise<WorkflowResponse | undefined> => {
   const row = await getWorkflowRow(params);
   if (!row) return undefined;
@@ -61,7 +65,11 @@ export const activateWorkflow = async (params: {
   // agent writing a criterion from one example file writes the example into
   // it, which passes the test run it was written against and nothing after.
   if (row.triggerCriterion !== null) {
-    const criterionError = workflowCriterionError(row.triggerCriterion);
+    const criterionError = await lintCriterion({
+      criterion: row.triggerCriterion,
+      context: { teamId: row.teamId, organizationId: row.organizationId },
+      ...(params.evaluator ? { evaluator: params.evaluator } : {}),
+    });
     if (criterionError) return throwHttpError(400, badRequest(criterionError));
   }
 

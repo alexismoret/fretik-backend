@@ -12,12 +12,11 @@ import { redis } from "@fretik/shared/lib/redis";
  *
  * Fails OPEN on a Redis error. The budget is a courtesy to the provider, not
  * a safety property, and a Redis blip must not switch decisions off.
+ *
+ * A constant, not a setting: the provider's limit is the account's, and the
+ * margin under it is a choice made once, here.
  */
-const parseRpm = (): number => {
-  const raw = Number.parseInt(process.env["DECISIONS_RPM"] ?? "", 10);
-  return Number.isFinite(raw) && raw > 0 ? raw : 1_000;
-};
-const RPM = parseRpm();
+const RPM = 1_000;
 
 /** Background points stop at this share of the budget; hot ones use it all. */
 const BACKGROUND_SHARE = 0.8;

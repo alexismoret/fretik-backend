@@ -77,34 +77,28 @@ const RECALL_TIMEOUT_MS = 15_000;
  *
  * `adaptive` is the default, and it is the default on evidence rather than on
  * argument. Build the deterministic block, serve it when retrieval was
- * confident, hand the turn to the judge when it was not. Measured on the recall
- * suite at ten repeats: 23/23, the same score as `judge`, with the judge
- * running on 43 % of turns and recall's median falling from 2 246 ms to
- * 1 398 ms.
+ * confident, escalate the turn when it was not. Measured on the recall suite
+ * at ten repeats with the judge as the escalation: 23/23, the same score as
+ * `judge`, with the judge running on 43 % of turns and recall's median
+ * falling from 2 246 ms to 1 398 ms. An escalated turn now goes to the
+ * decision model first (`decision-select.ts`): one yes/no per candidate, the
+ * kept ones rendered by the same verbatim renderer. The judge runs only when
+ * that call cannot answer.
  *
- * `verbatim` never calls the judge and scores 17/23. What it loses is exactly
- * one family — abstention, refusing a candidate that scores well but does not
- * answer the message — and that is the judge job with no deterministic
- * substitute (the distributions overlap; see `JUDGE_ESCALATION_BEST_SCORE`).
- * Escalating on a weak gather buys the family back on the minority of turns
- * where the question arises.
+ * `verbatim` never escalates and scores 17/23. What it loses is exactly one
+ * family — abstention, refusing a candidate that scores well but does not
+ * answer the message — and that has no deterministic substitute (the
+ * distributions overlap; see `JUDGE_ESCALATION_BEST_SCORE`). Escalating on a
+ * weak gather buys the family back on the minority of turns where the
+ * question arises.
  *
  * `judge` is the pass this module was built around, kept as the rollback: one
  * env var restores the previous behaviour exactly, with no deploy.
  */
-/*
- * `decision` is `adaptive` with the judge's turns handed to the decision
- * model first (`decision-select.ts`): one yes/no per candidate, the kept
- * ones rendered verbatim, the judge on any failure. Opt-in only, and until
- * its point is live it journals and runs the judge anyway.
- */
-export type RecallMode = "judge" | "verbatim" | "adaptive" | "decision";
+export type RecallMode = "judge" | "verbatim" | "adaptive";
 
 export const isRecallMode = (raw: string): raw is RecallMode =>
-  raw === "judge" ||
-  raw === "verbatim" ||
-  raw === "adaptive" ||
-  raw === "decision";
+  raw === "judge" || raw === "verbatim" || raw === "adaptive";
 
 /**
  * The PROCESS default, read once at module load — which is why switching modes
@@ -894,13 +888,13 @@ export const runUnifiedRecall = async (
       mode === "judge" ? null : buildVerbatimBlock(gathered);
     const wouldEscalate =
       mode === "judge" ||
-      ((mode === "adaptive" || mode === "decision") &&
+      (mode === "adaptive" &&
         deterministic !== null &&
         shouldEscalateToJudge(deterministic));
-    // `decision`: the judge's turns go to the decision model first. A block
+    // An escalated `adaptive` turn goes to the decision model first. A block
     // from it is served like a deterministic one; null means the judge runs.
     const decided =
-      mode === "decision" && wouldEscalate
+      mode === "adaptive" && wouldEscalate
         ? await timeStage(
             turnTimings,
             "decision",

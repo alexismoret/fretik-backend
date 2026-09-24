@@ -102,7 +102,7 @@ export const buildKindQuestion = (
 };
 
 export type KindVerdict =
-  | { outcome: "suggested" | "shadow"; kind: McpToolKind }
+  | { outcome: "suggested"; kind: McpToolKind }
   | { outcome: "unsure"; kind: null };
 
 /**
@@ -129,10 +129,7 @@ export const readKindVerdict = (
   if (chosen.confidence < threshold || chosen.probability < minChosen) {
     return { outcome: "unsure", kind: null };
   }
-  return {
-    outcome: response.policy.mode === "shadow" ? "shadow" : "suggested",
-    kind: chosen.choice,
-  };
+  return { outcome: "suggested", kind: chosen.choice };
 };
 
 /**

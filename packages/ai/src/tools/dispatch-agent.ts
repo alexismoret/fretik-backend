@@ -2,6 +2,7 @@ import type { Agent, GenerateTextResult, ToolSet } from "ai";
 import { z } from "zod";
 import type { ChatbotCallOptions } from "../agents/chatbot";
 import { buildChatbotTool } from "../agents/shared/chatbot-tool";
+import type { AgentRuntimeContext } from "../agents/shared/runtime-context";
 import { createSubAgentExecute } from "../agents/shared/sub-agent";
 import { boundedText } from "../lib/persisted-output";
 
@@ -45,6 +46,40 @@ const SUB_AGENT_SUMMARY_BUDGET_CHARS = 24_000;
  * payload and decides whether to retry / give up — same contract as
  * any other tool failure.
  */
+
+/**
+ * What a sub-agent inherits from the turn that dispatched it: the same
+ * identity and the same RULES. The team's tool policies travel with it — a
+ * sub-agent runs the parent's tools, so without them a tool the team blocked
+ * reappeared one level down, and an approval-gated write ran unasked.
+ * Prompt fragments stay behind on purpose (the sub-agent's prompt is static).
+ */
+export const subAgentCallOptions = (
+  ctx: Pick<
+    AgentRuntimeContext,
+    | "teamId"
+    | "organizationId"
+    | "userId"
+    | "userName"
+    | "conversationId"
+    | "timeZone"
+    | "traceId"
+    | "workflowAutonomy"
+    | "toolPolicies"
+  >,
+  traceSuffix: string,
+): ChatbotCallOptions => ({
+  teamId: ctx.teamId,
+  organizationId: ctx.organizationId,
+  userId: ctx.userId,
+  userName: ctx.userName,
+  conversationId: ctx.conversationId,
+  timeZone: ctx.timeZone,
+  traceId: ctx.traceId ? `${ctx.traceId}.${traceSuffix}` : undefined,
+  // Inherit the enclosing workflow run's write gate (undefined for chat).
+  workflowAutonomy: ctx.workflowAutonomy,
+  toolPolicies: ctx.toolPolicies,
+});
 
 /**
  * Input schema of the `dispatchAgent` tool. Hoisted to module scope —
@@ -167,17 +202,7 @@ export const createDispatchAgentTool = <TTools extends ToolSet>(deps: {
     subAgent: () => deps.primary(),
     ...(deps.contextCeiling ? { contextCeiling: deps.contextCeiling } : {}),
     buildMessages: ({ task }) => [{ role: "user", content: task }],
-    buildCallOptions: (_input, ctx) => ({
-      teamId: ctx.teamId,
-      organizationId: ctx.organizationId,
-      userId: ctx.userId,
-      userName: ctx.userName,
-      conversationId: ctx.conversationId,
-      timeZone: ctx.timeZone,
-      traceId: ctx.traceId ? `${ctx.traceId}.sub` : undefined,
-      // Inherit the enclosing workflow run's write gate (undefined for chat).
-      workflowAutonomy: ctx.workflowAutonomy,
-    }),
+    buildCallOptions: (_input, ctx) => subAgentCallOptions(ctx, "sub"),
     formatResult: formatSubAgentResult,
     deadlineMs: DISPATCH_DEADLINE_MS,
     onDeadline,
@@ -192,17 +217,7 @@ export const createDispatchAgentTool = <TTools extends ToolSet>(deps: {
     subAgent: () => deps.cheap(),
     ...(deps.contextCeiling ? { contextCeiling: deps.contextCeiling } : {}),
     buildMessages: ({ task }) => [{ role: "user", content: task }],
-    buildCallOptions: (_input, ctx) => ({
-      teamId: ctx.teamId,
-      organizationId: ctx.organizationId,
-      userId: ctx.userId,
-      userName: ctx.userName,
-      conversationId: ctx.conversationId,
-      timeZone: ctx.timeZone,
-      traceId: ctx.traceId ? `${ctx.traceId}.sub-cheap` : undefined,
-      // Inherit the enclosing workflow run's write gate (undefined for chat).
-      workflowAutonomy: ctx.workflowAutonomy,
-    }),
+    buildCallOptions: (_input, ctx) => subAgentCallOptions(ctx, "sub-cheap"),
     formatResult: formatSubAgentResult,
     deadlineMs: DISPATCH_DEADLINE_MS,
     onDeadline,

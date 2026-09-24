@@ -213,6 +213,10 @@ export const approvalResponseSchema = z.object({
   decisionAt: z.coerce.date().nullable(),
   executedAt: z.coerce.date().nullable(),
   createdAt: z.coerce.date(),
+  /** Whether the person reading may grant or reject it. A granted approval
+   * runs with its requester's access, so a teammate who can see the card may
+   * still not decide it — the card shows why instead of a button that fails. */
+  viewerCanDecide: z.boolean(),
 });
 export type ApprovalResponse = z.infer<typeof approvalResponseSchema>;
 

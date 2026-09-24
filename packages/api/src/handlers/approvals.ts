@@ -33,6 +33,11 @@ import {
 } from "@fretik/shared/schemas/common/responses";
 import { ERROR_CODES } from "@fretik/shared/schemas/errors";
 import {
+  assertCanDecideApproval,
+  assertCanViewApproval,
+  isApprovalDecidableBy,
+} from "@fretik/shared/services/approvals/authorize";
+import {
   executeAndMutateForGrant,
   mutateForReject,
 } from "@fretik/shared/services/approvals/execute-decision";
@@ -75,9 +80,12 @@ approvalsRoutes.use("*", authMiddleware);
 
 const toDto = async (
   row: ToolApprovalRequest,
-  teamId: string,
+  viewer: { teamId: string; userId: string },
 ): Promise<ApprovalResponse> => {
-  const lang = await getTeamLocale(teamId);
+  const [lang, viewerCanDecide] = await Promise.all([
+    getTeamLocale(viewer.teamId),
+    isApprovalDecidableBy(row, viewer.userId),
+  ]);
   return {
     id: row.id,
     conversationId: row.conversationId,
@@ -98,6 +106,7 @@ const toDto = async (
     decisionAt: row.decisionAt,
     executedAt: row.executedAt,
     createdAt: row.createdAt,
+    viewerCanDecide,
   };
 };
 
@@ -356,6 +365,30 @@ const resumeWorkflowIfParked = async (
   }
 };
 
+/**
+ * The approval named in the path, for a caller who must be allowed to see it
+ * (`view`) or to decide it (`decide`) — see `services/approvals/authorize.ts`.
+ * The team scope alone says where an approval lives, not whom it concerns.
+ */
+const loadApprovalFor = async (params: {
+  id: string;
+  team: { id: string; organizationId: string };
+  userId: string;
+  intent: "view" | "decide";
+}): Promise<ToolApprovalRequest> => {
+  const approval = await getApprovalForCaller(params.id, params.team.id);
+  const caller = {
+    userId: params.userId,
+    organizationId: params.team.organizationId,
+  };
+  if (params.intent === "view") {
+    await assertCanViewApproval(approval, caller);
+  } else {
+    await assertCanDecideApproval(approval, caller);
+  }
+  return approval;
+};
+
 // ---- Handlers --------------------------------------------------------
 
 approvalsRoutes.openapi(getRoute, async (c) => {
@@ -365,8 +398,13 @@ approvalsRoutes.openapi(getRoute, async (c) => {
   if (!user) return c.json(forbidden("Authentication required"), 403);
 
   const { id } = c.req.valid("param");
-  const row = await getApprovalForCaller(id, team.id);
-  return c.json(await toDto(row, team.id), 200);
+  const row = await loadApprovalFor({
+    id,
+    team,
+    userId: user.id,
+    intent: "view",
+  });
+  return c.json(await toDto(row, { teamId: team.id, userId: user.id }), 200);
 });
 
 approvalsRoutes.openapi(operationSchemasRoute, async (c) => {
@@ -376,7 +414,12 @@ approvalsRoutes.openapi(operationSchemasRoute, async (c) => {
   if (!user) return c.json(forbidden("Authentication required"), 403);
 
   const { id } = c.req.valid("param");
-  const row = await getApprovalForCaller(id, team.id);
+  const row = await loadApprovalFor({
+    id,
+    team,
+    userId: user.id,
+    intent: "view",
+  });
 
   // Best-effort by design, unlike `validateModifiedPlan`: this feeds a form,
   // and a spec we cannot resolve costs the reviewer a nicer widget, never the
@@ -413,6 +456,7 @@ approvalsRoutes.openapi(grantRoute, async (c) => {
 
   const { id } = c.req.valid("param");
   const decision = c.req.valid("json");
+  await loadApprovalFor({ id, team, userId: user.id, intent: "decide" });
   // Status transition `pending → granted`. Tolerate WRONG_STATUS so a
   // double-click / retry lands in the idempotent execution path below.
   let approval: ToolApprovalRequest;
@@ -431,7 +475,10 @@ approvalsRoutes.openapi(grantRoute, async (c) => {
     decision,
   });
   await resumeWorkflowIfParked(approval.conversationId, "approved");
-  return c.json(await toDto(approval, team.id), 200);
+  return c.json(
+    await toDto(approval, { teamId: team.id, userId: user.id }),
+    200,
+  );
 });
 
 approvalsRoutes.openapi(modifyAndGrantRoute, async (c) => {
@@ -442,6 +489,7 @@ approvalsRoutes.openapi(modifyAndGrantRoute, async (c) => {
 
   const { id } = c.req.valid("param");
   const body = c.req.valid("json");
+  await loadApprovalFor({ id, team, userId: user.id, intent: "decide" });
 
   const { operations, summary } = await validateModifiedPlan(
     body.operations,
@@ -469,7 +517,10 @@ approvalsRoutes.openapi(modifyAndGrantRoute, async (c) => {
     teamId: team.id,
   });
   await resumeWorkflowIfParked(approval.conversationId, "approved");
-  return c.json(await toDto(approval, team.id), 200);
+  return c.json(
+    await toDto(approval, { teamId: team.id, userId: user.id }),
+    200,
+  );
 });
 
 approvalsRoutes.openapi(rejectRoute, async (c) => {
@@ -480,6 +531,7 @@ approvalsRoutes.openapi(rejectRoute, async (c) => {
 
   const { id } = c.req.valid("param");
   const body = c.req.valid("json");
+  await loadApprovalFor({ id, team, userId: user.id, intent: "decide" });
 
   let approval: ToolApprovalRequest;
   try {
@@ -499,7 +551,10 @@ approvalsRoutes.openapi(rejectRoute, async (c) => {
   }
   await mutateForReject(approval);
   await resumeWorkflowIfParked(approval.conversationId, "rejected");
-  return c.json(await toDto(approval, team.id), 200);
+  return c.json(
+    await toDto(approval, { teamId: team.id, userId: user.id }),
+    200,
+  );
 });
 
 export { approvalsRoutes };

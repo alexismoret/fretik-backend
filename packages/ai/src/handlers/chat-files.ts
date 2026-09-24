@@ -11,12 +11,12 @@ import {
   readSessionFile,
 } from "@fretik/shared/lib/chatbot-session-storage";
 import {
-  forbidden,
   notFound,
   teamRequired,
   throwHttpError,
 } from "@fretik/shared/lib/errors";
 import { getPresignedUrl } from "@fretik/shared/lib/s3";
+import { assertConversationAccess } from "@fretik/shared/services/ai/assert-conversation-access";
 import {
   PromoteSandboxFileError,
   promoteSandboxFileToDrive,
@@ -29,6 +29,7 @@ import {
 import { getSessionFilePreviewSource } from "@fretik/shared/services/documents/preview";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { and, desc, eq, ne } from "drizzle-orm";
+import type { Context } from "hono";
 import {
   deleteFile,
   resolveWorkspacePath,
@@ -94,6 +95,26 @@ const DOWNLOADABLE_DIRS = new Set<string>([
   WORKSPACE_DIRS.outputs,
 ]);
 
+/**
+ * Every route here addresses a conversation by the id in its path, and the
+ * session's team is not the audience of one: a chat belongs to its
+ * participants, a workflow run to whoever may see the workflow. Refuses (404)
+ * anything else — see `assertConversationAccess`.
+ */
+const assertCallerCanOpen = async (
+  c: Context<HonoLoggedAppType>,
+  conversationId: string,
+): Promise<void> => {
+  const team = c.get("team");
+  if (!team) return throwHttpError(403, teamRequired());
+  await assertConversationAccess({
+    conversationId,
+    teamId: team.id,
+    organizationId: team.organizationId,
+    userId: c.get("user").id,
+  });
+};
+
 // ==================== //
 // GET list             //
 // ==================== //
@@ -103,17 +124,7 @@ chatFilesRoutes.get("/conversation/:id/files", async (c) => {
   if (!team) return throwHttpError(403, teamRequired());
 
   const conversationId = c.req.param("id");
-
-  const conversation = await db.query.aiConversations.findFirst({
-    where: { id: conversationId },
-    columns: { id: true, teamId: true },
-  });
-  if (!conversation) {
-    return throwHttpError(404, notFound("Conversation not found"));
-  }
-  if (conversation.teamId !== team.id) {
-    return throwHttpError(403, forbidden());
-  }
+  await assertCallerCanOpen(c, conversationId);
 
   const rows = await db
     .select({
@@ -163,6 +174,7 @@ chatFilesRoutes.post("/conversation/:id/files", async (c) => {
     );
   }
 
+  await assertCallerCanOpen(c, conversationId);
   const row = await uploadChatFile({
     file,
     conversationId,
@@ -177,23 +189,6 @@ chatFilesRoutes.post("/conversation/:id/files", async (c) => {
 // GET workspace hub    //
 // ==================== //
 
-/** Shared guard: the conversation exists AND belongs to the caller's team. */
-const assertConversationInTeam = async (
-  conversationId: string,
-  teamId: string,
-): Promise<void> => {
-  const conversation = await db.query.aiConversations.findFirst({
-    where: { id: conversationId },
-    columns: { id: true, teamId: true },
-  });
-  if (!conversation) {
-    return throwHttpError(404, notFound("Conversation not found"));
-  }
-  if (conversation.teamId !== teamId) {
-    return throwHttpError(403, forbidden());
-  }
-};
-
 /**
  * Everything this conversation holds — what the user attached AND what the
  * agent produced — as one list. `/files` above stays what it always was: the
@@ -204,7 +199,7 @@ chatFilesRoutes.get("/conversation/:id/workspace", async (c) => {
   if (!team) return throwHttpError(403, teamRequired());
 
   const conversationId = c.req.param("id");
-  await assertConversationInTeam(conversationId, team.id);
+  await assertCallerCanOpen(c, conversationId);
 
   const files = await listConversationWorkspaceFiles({
     conversationId,
@@ -225,7 +220,7 @@ chatFilesRoutes.get("/conversation/:id/workspace/drive-state", async (c) => {
   if (!team) return throwHttpError(403, teamRequired());
 
   const conversationId = c.req.param("id");
-  await assertConversationInTeam(conversationId, team.id);
+  await assertCallerCanOpen(c, conversationId);
 
   const path = c.req.query("path");
   if (!path) {
@@ -272,7 +267,7 @@ chatFilesRoutes.post("/conversation/:id/workspace/promote", async (c) => {
   if (!team) return throwHttpError(403, teamRequired());
 
   const conversationId = c.req.param("id");
-  await assertConversationInTeam(conversationId, team.id);
+  await assertCallerCanOpen(c, conversationId);
 
   let body: unknown;
   try {
@@ -409,6 +404,7 @@ chatFilesRoutes.post("/conversation/:id/files/promote-to-drive", async (c) => {
     );
   }
 
+  await assertCallerCanOpen(c, conversationId);
   const result = await promoteChatFilesToDrive({
     fileIds,
     conversationId,
@@ -430,22 +426,14 @@ chatFilesRoutes.delete("/conversation/:id/files/:filename", async (c) => {
 
   const conversationId = c.req.param("id");
   const filename = c.req.param("filename");
+  await assertCallerCanOpen(c, conversationId);
 
   const row = await db.query.aiChatFiles.findFirst({
-    where: {
-      conversationId,
-      filename,
-    },
-    with: {
-      conversation: { columns: { teamId: true } },
-    },
+    columns: { id: true, hasMarkdown: true },
+    where: { conversationId, filename },
   });
-
-  if (!row || !row.conversation) {
+  if (!row) {
     return throwHttpError(404, notFound("Chat file not found"));
-  }
-  if (row.conversation.teamId !== team.id) {
-    return throwHttpError(403, forbidden());
   }
 
   // Façade `deleteFile` removes from sandbox + S3 in one call.
@@ -480,19 +468,10 @@ chatFilesRoutes.get("/conversation/:id/files/:filename/download", async (c) => {
   const conversationId = c.req.param("id");
   const filename = c.req.param("filename");
 
-  // Team ownership is a property of the CONVERSATION, so resolve it once
-  // here — every resolution branch below needs exactly this check, and
-  // hoisting it lets the `ai_chat_files` lookup drop its conversation join.
-  const conversation = await db.query.aiConversations.findFirst({
-    where: { id: conversationId },
-    columns: { id: true, teamId: true },
-  });
-  if (!conversation) {
-    return throwHttpError(404, notFound("Conversation not found"));
-  }
-  if (conversation.teamId !== team.id) {
-    return throwHttpError(403, forbidden());
-  }
+  // Access is a property of the CONVERSATION, so resolve it once here —
+  // every resolution branch below needs exactly this check, and hoisting it
+  // lets the `ai_chat_files` lookup drop its conversation join.
+  await assertCallerCanOpen(c, conversationId);
 
   // Three ways to name the file, resolved in this order:
   //  1. An explicit `?path=` wins outright. It names a workspace path

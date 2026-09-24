@@ -4,8 +4,15 @@ import { decideCapability } from "../../../authz/capabilities";
 import { levelRank } from "../../../authz/levels";
 import type { UserPrincipal } from "../../../authz/principal";
 import type { LoadedNode } from "../../../authz/resources/types";
+import { ceilingFor, inheritedCap } from "../../../authz/rules";
 import db from "../../../db";
-import { accessGrants, projects, team, user } from "../../../db/schema";
+import {
+  accessGrants,
+  aiConversationMembers,
+  projects,
+  team,
+  user,
+} from "../../../db/schema";
 import type {
   AccessHolder,
   InheritanceSource,
@@ -72,8 +79,15 @@ export const describeResourceAccess = async (input: {
       restricted: node.restricted,
       inheritsFrom,
       ownerRestrictsOnly: type === "workflow",
+      inheritedLevel: inheritedCap(type),
     },
     offeredLevels: [...adapter.offeredLevels],
+    groupLevels: [...(adapter.groupLevels ?? adapter.offeredLevels)],
+    // Nobody picked is its owner: the owner is never given anything.
+    ceilings: {
+      team: ceilingFor(node, { isOwner: false, inTeam: true }),
+      outsider: ceilingFor(node, { isOwner: false, inTeam: false }),
+    },
     shareablePrincipals: [...adapter.shareablePrincipals],
     policy: {
       crossTeam: decideCapability({
@@ -120,14 +134,48 @@ const loadHolders = async (
       ),
     );
 
-  const refs = rows.flatMap((row) =>
+  // A chat's participants are its seats, listed beside its grants; the owner
+  // is the owner, not a holder.
+  const seats =
+    type === "conversation"
+      ? (
+          await db
+            .select({
+              principalId: aiConversationMembers.userId,
+              grantedAt: aiConversationMembers.joinedAt,
+            })
+            .from(aiConversationMembers)
+            .where(
+              and(
+                eq(aiConversationMembers.conversationId, node.id),
+                ne(aiConversationMembers.role, "owner"),
+              ),
+            )
+        ).map((seat) => ({
+          principalType: "user" as const,
+          principalId: seat.principalId,
+          level: "use" as const,
+          grantedAt: seat.grantedAt,
+          grantedByUserId: null,
+          grantedByName: null,
+        }))
+      : [];
+  const seated = new Set(seats.map((seat) => seat.principalId));
+  const entries = [
+    ...rows.filter(
+      (row) => !(row.principalType === "user" && seated.has(row.principalId)),
+    ),
+    ...seats,
+  ];
+
+  const refs = entries.flatMap((row) =>
     row.principalType === "invitation"
       ? []
       : [{ type: row.principalType, id: row.principalId }],
   );
   const described = await resolvePrincipals(principal.organizationId, refs);
 
-  const holders = rows.flatMap((row): AccessHolder[] => {
+  const holders = entries.flatMap((row): AccessHolder[] => {
     if (row.principalType === "invitation") return [];
     // A principal that left the organization gets nothing from its grant
     // and is not listed; it counts again if it comes back.

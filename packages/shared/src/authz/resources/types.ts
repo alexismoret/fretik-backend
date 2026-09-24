@@ -27,6 +27,12 @@ export interface ResourceAdapter {
   readonly type: AccessResourceType;
   /** The levels the share dialog offers on this type, weakest first. */
   readonly offeredLevels: readonly AccessLevel[];
+  /**
+   * The levels a group — a team, a project, the organization — is offered,
+   * when narrower than `offeredLevels`: a chat is read by groups and taken
+   * part in by people.
+   */
+  readonly groupLevels?: readonly AccessLevel[];
   /** Who the share dialog lets a person share this type with. */
   readonly shareablePrincipals: readonly ShareablePrincipalType[];
   /**

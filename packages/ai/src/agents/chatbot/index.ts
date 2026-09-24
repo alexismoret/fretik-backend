@@ -195,6 +195,12 @@ export const ChatbotCallOptionsSchema = z.object({
    */
   participantsBlock: z.string().optional(),
   /**
+   * Someone who does not take part can read the conversation too — it is
+   * open to its team, or was given to people or groups to read. Adds the
+   * readers line to `{{collaborationBlock}}`.
+   */
+  openToReaders: z.boolean().optional(),
+  /**
    * Per-turn trace id. The handler generates this at the start of
    * `runChatbotTurn` (typically reusing the resumable `streamId`) and
    * threads it through so every step / fallback / tool log carries the
@@ -341,6 +347,7 @@ export const buildChatbotRuntimeContextBase = (
   teamCollectionsBlock: options.teamCollectionsBlock,
   enabledSkillsBlock: options.enabledSkillsBlock,
   participantsBlock: options.participantsBlock,
+  openToReaders: options.openToReaders,
   externalAppConnections: options.externalAppConnections,
   externalAppsBlock: options.externalAppsBlock,
   traceId: options.traceId,

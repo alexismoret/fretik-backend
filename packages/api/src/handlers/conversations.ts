@@ -1,4 +1,4 @@
-import { access } from "@fretik/shared/authz/http";
+import { access, teamOfResource } from "@fretik/shared/authz/http";
 import {
   authMiddleware,
   type HonoLoggedAppType,
@@ -31,7 +31,10 @@ import {
 } from "@fretik/shared/schemas/common/responses";
 import { createConversation } from "@fretik/shared/services/ai/create";
 import { deleteConversations } from "@fretik/shared/services/ai/delete";
-import { getConversation } from "@fretik/shared/services/ai/get";
+import {
+  getConversation,
+  getReadableConversation,
+} from "@fretik/shared/services/ai/get";
 import { listConversations } from "@fretik/shared/services/ai/list";
 import { addConversationMembers } from "@fretik/shared/services/ai/members/add";
 import { markConversationRead } from "@fretik/shared/services/ai/members/mark-read";
@@ -51,10 +54,13 @@ import { z } from "zod";
 
 /**
  * A chat belongs to its participants (`ai_conversation_members`): its owner
- * has full access, the others take part (`use`) — they read it, write in it,
- * rename it and bring colleagues in. Being in its team is not enough. The
- * routes on one conversation name that level (`access.resource`), and the
- * services stay gated on the caller's seat.
+ * has full access, the others take part (`use`) — they write in it, rename it
+ * and bring colleagues in. Whoever it is given to read (`view`) — a person,
+ * their team, the organization, or its team when it is opened — reads it and
+ * its messages, with no seat. Being in its team is not enough. The routes on
+ * one conversation name the level they need (`access.resource`) and act in
+ * the conversation's own team, whichever one the caller has open; the
+ * participants' services stay gated on the caller's seat.
  */
 const conversationRoutes = new OpenAPIHono<HonoLoggedAppType>();
 conversationRoutes.use("*", authMiddleware);
@@ -128,7 +134,7 @@ const getConversationRoute = createRoute({
   middleware: access.resource("conversation", "view"),
   summary: "Get an AI conversation",
   description:
-    "Return a single conversation the current user participates in: metadata, member roster, the caller's role and email opt-in, plus unread / action-required flags.",
+    "Return a conversation the caller may read: metadata, participants, and the caller's `level` on it (`view` reads, `use` takes part, `full` owns it). The caller's own state (role, email opt-in, unread / action-required, pin) is empty when they read it without taking part.",
   tags: ["Conversations"],
   request: { params: paramsIdSchema },
   responses: {
@@ -261,7 +267,7 @@ const addMembersRoute = createRoute({
   middleware: access.resource("conversation", "use"),
   summary: "Add conversation members",
   description:
-    "Add team members as participants. Ids that aren't real team members are ignored. Returns the refreshed roster.",
+    "Bring people of the conversation's team in as participants; anyone who takes part may. Ids that aren't people of that team are ignored, and someone who only read it now takes part. Returns the refreshed roster.",
   tags: ["Conversations"],
   request: {
     params: paramsIdSchema,
@@ -398,16 +404,9 @@ conversationRoutes.openapi(createConversationRoute, async (c) => {
 });
 
 conversationRoutes.openapi(getConversationRoute, async (c) => {
-  const user = c.get("user");
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
-
-  const { id } = c.req.valid("param");
-
-  const conversation = await getConversation({
-    id,
-    teamId: team.id,
-    userId: user.id,
+  const conversation = await getReadableConversation({
+    resource: c.get("resource"),
+    userId: c.get("user").id,
   });
   if (!conversation) {
     return throwHttpError(404, notFound("Conversation not found"));
@@ -418,15 +417,12 @@ conversationRoutes.openapi(getConversationRoute, async (c) => {
 
 conversationRoutes.openapi(updateConversationRoute, async (c) => {
   const user = c.get("user");
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
-
   const { id } = c.req.valid("param");
   const updates = c.req.valid("json");
 
   const updated = await updateConversation({
     id,
-    teamId: team.id,
+    teamId: teamOfResource(c.get("resource")),
     userId: user.id,
     updates,
   });
@@ -451,62 +447,27 @@ conversationRoutes.openapi(deleteConversationsRoute, async (c) => {
 });
 
 conversationRoutes.openapi(getMessagesRoute, async (c) => {
-  const user = c.get("user");
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
-
+  // Whoever may read the conversation reads its messages (`access.resource`).
   const { id } = c.req.valid("param");
-
-  const conversation = await getConversation({
-    id,
-    teamId: team.id,
-    userId: user.id,
-  });
-
-  if (!conversation) {
-    return throwHttpError(404, notFound("Conversation not found"));
-  }
-
   const { limit } = c.req.valid("query");
-  const messages = await getConversationMessages(conversation.id, limit);
+  const messages = await getConversationMessages(id, limit);
 
   return c.json(messages, 200);
 });
 
 conversationRoutes.openapi(getBackgroundTasksRoute, async (c) => {
-  const user = c.get("user");
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
-
   const { id } = c.req.valid("param");
-
-  const conversation = await getConversation({
-    id,
-    teamId: team.id,
-    userId: user.id,
-  });
-
-  if (!conversation) {
-    return throwHttpError(404, notFound("Conversation not found"));
-  }
-
-  const tasks = await listConversationTasks(conversation.id);
+  const tasks = await listConversationTasks(id);
 
   return c.json({ tasks: tasks.map(serializeConversationTask) }, 200);
 });
 
 conversationRoutes.openapi(addMembersRoute, async (c) => {
-  const user = c.get("user");
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
-
-  const { id } = c.req.valid("param");
   const { userIds } = c.req.valid("json");
 
   const members = await addConversationMembers({
-    conversationId: id,
-    teamId: team.id,
-    requesterId: user.id,
+    principal: c.get("principal"),
+    resource: c.get("resource"),
     userIds,
   });
 
@@ -514,14 +475,11 @@ conversationRoutes.openapi(addMembersRoute, async (c) => {
 });
 
 conversationRoutes.openapi(removeMemberRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
-
   const { id, userId } = c.req.valid("param");
 
   const members = await removeConversationMember({
     conversationId: id,
-    teamId: team.id,
+    teamId: teamOfResource(c.get("resource")),
     principal: c.get("principal"),
     targetUserId: userId,
   });
@@ -531,16 +489,14 @@ conversationRoutes.openapi(removeMemberRoute, async (c) => {
 
 conversationRoutes.openapi(updateMemberPreferencesRoute, async (c) => {
   const user = c.get("user");
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
-
+  const teamId = teamOfResource(c.get("resource"));
   const { id } = c.req.valid("param");
   const { emailOnCompletion, pinned } = c.req.valid("json");
 
   if (emailOnCompletion !== undefined) {
     await setMemberEmailPreference({
       conversationId: id,
-      teamId: team.id,
+      teamId,
       userId: user.id,
       emailOnCompletion,
     });
@@ -548,7 +504,7 @@ conversationRoutes.openapi(updateMemberPreferencesRoute, async (c) => {
   if (pinned !== undefined) {
     await setMemberPinned({
       conversationId: id,
-      teamId: team.id,
+      teamId,
       userId: user.id,
       pinned,
     });
@@ -559,7 +515,7 @@ conversationRoutes.openapi(updateMemberPreferencesRoute, async (c) => {
   // one that can be reported honestly.
   const conversation = await getConversation({
     id,
-    teamId: team.id,
+    teamId,
     userId: user.id,
   });
   if (!conversation) {
@@ -578,9 +534,6 @@ conversationRoutes.openapi(updateMemberPreferencesRoute, async (c) => {
 
 conversationRoutes.openapi(markReadRoute, async (c) => {
   const user = c.get("user");
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
-
   const { id } = c.req.valid("param");
 
   await markConversationRead({ conversationId: id, userId: user.id });

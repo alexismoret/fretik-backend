@@ -25,8 +25,9 @@ import { rejection } from "../../lib/expect-rejection";
  * below pairs two callers of the same team who differ in the one thing the
  * rule is about: taking part in the chat, or seeing the workflow.
  *
- * A seat is an explicit share, so it holds wherever the chat lives; being in
- * the chat's team is not one. And an organization's owner gets nothing here
+ * A seat is an explicit share, so it is honoured wherever the chat lives —
+ * to read it, for someone outside the chat's team, who cannot take part there
+ * (`levelCeiling`); being in the chat's team is not a share. And an organization's owner gets nothing here
  * by that role: they run the structure, not people's private work.
  *
  * The fixture's first user is the organization owner, the second a member.
@@ -109,7 +110,7 @@ describe("a chat belongs to its participants", () => {
     await expectAbsent(open(chat.id, teammate));
   });
 
-  test("a participant's seat holds outside the chat's team; the team alone gives nothing", async () => {
+  test("a participant's seat reaches a chat of a team they are not in; the team alone gives nothing", async () => {
     const [author, participant] = fx.userIds;
     // A team neither of them is in: only the seats can open it.
     const otherTeam = await fx.createTeam();

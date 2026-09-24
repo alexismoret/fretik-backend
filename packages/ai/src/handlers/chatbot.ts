@@ -1,4 +1,4 @@
-import { access } from "@fretik/shared/authz/http";
+import { access, teamOfResource } from "@fretik/shared/authz/http";
 import db, { type Transaction } from "@fretik/shared/db";
 import { aiChatFiles, aiMessages } from "@fretik/shared/db/schema";
 import {
@@ -10,11 +10,7 @@ import {
   readSessionFile,
 } from "@fretik/shared/lib/chatbot-session-storage";
 import { publishConversationTaskResume } from "@fretik/shared/lib/conversation-task-resume";
-import {
-  notFound,
-  teamRequired,
-  throwHttpError,
-} from "@fretik/shared/lib/errors";
+import { notFound, throwHttpError } from "@fretik/shared/lib/errors";
 import { redis } from "@fretik/shared/lib/redis";
 import { ANTI_BUFFERING_HEADERS } from "@fretik/shared/lib/sse-headers";
 import {
@@ -26,6 +22,7 @@ import {
   getConversationActiveStream,
   setConversationActiveStream,
 } from "@fretik/shared/services/ai/active-stream";
+import { chatAudience } from "@fretik/shared/services/ai/audience";
 import { loadCatchUpContext } from "@fretik/shared/services/ai/catch-up";
 import {
   publishConversationEvent,
@@ -35,7 +32,10 @@ import {
   isTurnDiscarded,
   markTurnDiscarded,
 } from "@fretik/shared/services/ai/discarded-turns";
-import { getConversation } from "@fretik/shared/services/ai/get";
+import {
+  getReadableConversation,
+  requireConversation,
+} from "@fretik/shared/services/ai/get";
 import { markConversationRead } from "@fretik/shared/services/ai/members/mark-read";
 import { applyMentions } from "@fretik/shared/services/ai/members/mention";
 import {
@@ -64,6 +64,7 @@ import {
 } from "@fretik/shared/services/ai/turn-log";
 import { recordTurnIncrementally } from "@fretik/shared/services/ai/turn-recorder";
 import { updateConversation } from "@fretik/shared/services/ai/update";
+import { getTeamBotUserId } from "@fretik/shared/services/auth/bot-user";
 import { hasResumableConversationTasks } from "@fretik/shared/services/conversation-tasks/list";
 import { emitDomainEvent } from "@fretik/shared/services/domain-events/emit";
 import { releaseSandbox } from "@fretik/shared/services/e2b/release-sandbox";
@@ -758,6 +759,14 @@ interface RunChatbotTurnParams {
   participantIds?: string[];
   callOptions: ChatbotCallOptions;
   /**
+   * Whose context the assistant gathers by itself this turn — recall, the
+   * memory index, standing memory, the persistent context: the sender's when
+   * nobody else reads the chat, the team's agent's otherwise
+   * (`chatAudience`). Absent → the sender's (`callOptions.userId`), as on the
+   * stateless `/invoke` path. The tools still act for the sender.
+   */
+  contextUserId?: string;
+  /**
    * If present, this turn's SSE output is buffered under this id so
    * a GET /:conversationId/stream request can tee the same stream.
    * Populated only for the user-facing POST /stream (resumable).
@@ -905,7 +914,7 @@ const buildTurnCallOptions = async (
   // Captured in a const so the truthiness narrowing survives into the
   // `propagateAttributes` callback closure below (a const can't change, so
   // TS keeps the `string` narrowing; a property access would widen back).
-  const activeMemoryUserId = params.callOptions.userId;
+  const activeMemoryUserId = params.contextUserId ?? params.callOptions.userId;
   const activeMemoryInputs = activeMemoryUserId
     ? buildActiveMemoryInputs(params.history, filenames)
     : null;
@@ -962,7 +971,7 @@ const buildTurnCallOptions = async (
             ...(params.conversationId !== undefined
               ? { sessionId: params.conversationId }
               : {}),
-            userId: activeMemoryUserId,
+            userId: params.callOptions.userId ?? activeMemoryUserId,
             tags: [`team:${params.callOptions.teamId}`],
           },
           () =>
@@ -1010,7 +1019,7 @@ const buildTurnCallOptions = async (
         {
           organizationId: params.callOptions.organizationId,
           teamId: params.callOptions.teamId,
-          userId: params.callOptions.userId,
+          userId: activeMemoryUserId,
           logPrefix: params.logPrefix,
         },
         { mode: standingMode },
@@ -2910,7 +2919,7 @@ const REWIND_REFUSAL_STATUS = {
 chatbotRoutes.post(
   "/stream",
   access.handler(
-    "A turn is written by a participant of its conversation (getConversation); a new chat is the caller's own.",
+    "A turn is written by someone who takes part in its conversation: `use`, decided by the engine on the body's conversationId (requireConversation).",
   ),
   async (c) => {
     // TTFT starts HERE. Everything below this line and above `runChatbotTurn` is
@@ -2920,9 +2929,7 @@ chatbotRoutes.post(
     const preludeTimings: StageTimings = {};
 
     const user = c.get("user");
-    const team = c.get("team");
     const organization = c.get("organization");
-    if (!team) return throwHttpError(403, teamRequired());
 
     const body: unknown = await c.req.json();
     const parsed = ChatStreamRequestSchema.safeParse(body);
@@ -2947,18 +2954,27 @@ chatbotRoutes.post(
       retriedMessageId,
     } = parsed.data;
 
-    const conversation = await timeStage(
+    // The turn runs in the chat's own team, whichever one the caller has
+    // open: taking part is only ever for the people of that team
+    // (`authz/rules.ts`), and its context is the one the assistant answers in.
+    const { resource, conversation } = await timeStage(
       preludeTimings,
       "getConversation",
-      getConversation({
-        id: conversationId,
-        teamId: team.id,
-        userId: user.id,
+      requireConversation({
+        principal: c.get("principal"),
+        conversationId,
+        level: "use",
       }),
     );
-    if (!conversation) {
-      return throwHttpError(404, notFound("Conversation not found"));
-    }
+    const teamId = conversation.teamId;
+    // What the assistant gathers by itself (recall, memory, the persistent
+    // context) is read for everyone the answer reaches: the sender's own when
+    // nobody else reads the chat, the team's otherwise — never one person's
+    // private memory or files where others will read what it writes.
+    const audience = chatAudience(resource.node, user.id);
+    const contextUserId = audience.others
+      ? await timeStage(preludeTimings, "contextUser", getTeamBotUserId(teamId))
+      : user.id;
 
     // Persist the new user message (last one in the incoming array),
     // attributed to its human author. This happens BEFORE the activation
@@ -3000,9 +3016,9 @@ chatbotRoutes.post(
             // Judge-only, and assembled after the await in `runUnifiedRecall`
             // from the history this has not waited for.
             recentTail: "",
-            teamId: team.id,
+            teamId,
             organizationId: organization.id,
-            userId: user.id,
+            userId: contextUserId,
             conversationId,
             agentType: "chatbot",
           })
@@ -3161,9 +3177,8 @@ chatbotRoutes.post(
         preludeTimings,
         "mentions",
         applyMentions({
-          conversationId,
-          teamId: team.id,
-          byUserId: user.id,
+          principal: c.get("principal"),
+          resource,
           mentionedUserIds,
         }),
       );
@@ -3253,12 +3268,13 @@ chatbotRoutes.post(
 
     const callOptions: ChatbotCallOptions = {
       organizationId: organization.id,
-      teamId: team.id,
+      teamId,
       userId: user.id,
       userName: user.name,
       conversationId,
       timeZone: c.req.header("X-Client-Timezone"),
       participantsBlock,
+      openToReaders: audience.readers,
       // Reuse the resumable streamId as the per-turn trace id so step /
       // zombie / fallback log lines all share one identifier — one grep
       // recovers the full turn end-to-end. (Distinct from the Langfuse
@@ -3277,7 +3293,7 @@ chatbotRoutes.post(
     } = await timeStage(
       preludeTimings,
       "resolveFlagship",
-      resolveTeamFlagship(team.id, conversation.modelProfileKey),
+      resolveTeamFlagship(teamId, conversation.modelProfileKey),
     );
     if (fellBack && conversation.modelProfileKey) {
       console.warn(
@@ -3295,6 +3311,7 @@ chatbotRoutes.post(
       agentWindow: window,
       participantIds: conversation.members.map((m) => m.userId),
       callOptions,
+      contextUserId,
       prefetchedGather,
       routeStartedAt,
       preludeTimings,
@@ -3351,20 +3368,8 @@ chatbotRoutes.get(
   "/:conversationId/stream",
   access.resource("conversation", "view", "conversationId"),
   async (c) => {
-    const user = c.get("user");
-    const team = c.get("team");
-    if (!team) return throwHttpError(403, teamRequired());
-
+    // Whoever reads the conversation watches its live turn.
     const conversationId = c.req.param("conversationId");
-    const conversation = await getConversation({
-      id: conversationId,
-      teamId: team.id,
-      userId: user.id,
-    });
-    if (!conversation) {
-      return throwHttpError(404, notFound("Conversation not found"));
-    }
-
     const activeStreamId = await getConversationActiveStream(conversationId);
     if (!activeStreamId) {
       return new Response(null, { status: 204 });
@@ -3442,20 +3447,8 @@ chatbotRoutes.post(
   "/:conversationId/stop",
   access.resource("conversation", "use", "conversationId"),
   async (c) => {
-    const user = c.get("user");
-    const team = c.get("team");
-    if (!team) return throwHttpError(403, teamRequired());
-
+    // Any participant stops the turn; a reader only watches it.
     const conversationId = c.req.param("conversationId");
-    const conversation = await getConversation({
-      id: conversationId,
-      teamId: team.id,
-      userId: user.id,
-    });
-    if (!conversation) {
-      return throwHttpError(404, notFound("Conversation not found"));
-    }
-
     const activeStreamId = await getConversationActiveStream(conversationId);
     if (!activeStreamId) {
       return c.json({ stopped: false, reason: "no-active-stream" }, 200);
@@ -3480,20 +3473,8 @@ chatbotRoutes.get(
   "/:conversationId/events",
   access.resource("conversation", "view", "conversationId"),
   async (c) => {
-    const user = c.get("user");
-    const team = c.get("team");
-    if (!team) return throwHttpError(403, teamRequired());
-
+    // Readers follow along too: turns, new messages, presence, typing.
     const conversationId = c.req.param("conversationId");
-    const conversation = await getConversation({
-      id: conversationId,
-      teamId: team.id,
-      userId: user.id,
-    });
-    if (!conversation) {
-      return throwHttpError(404, notFound("Conversation not found"));
-    }
-
     for (const [key, value] of Object.entries(ANTI_BUFFERING_HEADERS)) {
       c.header(key, value);
     }
@@ -3575,20 +3556,9 @@ chatbotRoutes.post(
   "/:conversationId/presence",
   access.resource("conversation", "view", "conversationId"),
   async (c) => {
+    // A reader shows among who is viewing, like a participant.
     const user = c.get("user");
-    const team = c.get("team");
-    if (!team) return throwHttpError(403, teamRequired());
-
     const conversationId = c.req.param("conversationId");
-    const conversation = await getConversation({
-      id: conversationId,
-      teamId: team.id,
-      userId: user.id,
-    });
-    if (!conversation) {
-      return throwHttpError(404, notFound("Conversation not found"));
-    }
-
     const body: unknown = await c.req.json().catch(() => ({}));
     const parsed = PresenceRequestSchema.safeParse(body);
     const present = parsed.success ? (parsed.data.present ?? true) : true;
@@ -3617,22 +3587,11 @@ chatbotRoutes.post(
   access.resource("conversation", "use", "conversationId"),
   async (c) => {
     const user = c.get("user");
-    const team = c.get("team");
-    if (!team) return throwHttpError(403, teamRequired());
-
     const conversationId = c.req.param("conversationId");
     const body: unknown = await c.req.json();
     const parsed = TypingRequestSchema.safeParse(body);
     if (!parsed.success) {
       return c.json({ code: "VALIDATION_ERROR", message: "Invalid body" }, 400);
-    }
-    const conversation = await getConversation({
-      id: conversationId,
-      teamId: team.id,
-      userId: user.id,
-    });
-    if (!conversation) {
-      return throwHttpError(404, notFound("Conversation not found"));
     }
 
     await publishTyping(
@@ -3671,13 +3630,9 @@ const ChatFeedbackSchema = z.object({
 chatbotRoutes.post(
   "/feedback",
   access.handler(
-    "Feedback on a message of a conversation the caller takes part in (getConversation).",
+    "Feedback on a message of a conversation the caller takes part in: `use`, decided by the engine on the body's conversationId (requireConversation).",
   ),
   async (c) => {
-    const user = c.get("user");
-    const team = c.get("team");
-    if (!team) return throwHttpError(403, teamRequired());
-
     const body: unknown = await c.req.json();
     const parsed = ChatFeedbackSchema.safeParse(body);
     if (!parsed.success) {
@@ -3692,15 +3647,13 @@ chatbotRoutes.post(
     }
     const { conversationId, messageId, traceId, type, comment } = parsed.data;
 
-    // Ownership check: only score traces from a conversation the caller owns.
-    const conversation = await getConversation({
-      id: conversationId,
-      teamId: team.id,
-      userId: user.id,
+    // Only those who take part score its answers: the thumb chosen is shown
+    // to everyone on the message, so a reader does not set it.
+    await requireConversation({
+      principal: c.get("principal"),
+      conversationId,
+      level: "use",
     });
-    if (!conversation) {
-      return throwHttpError(404, notFound("Conversation not found"));
-    }
 
     // Toggle off: delete the `user-feedback` score and drop the UX flag.
     if (type === "clear") {
@@ -3770,14 +3723,12 @@ chatbotRoutes.post(
   access.resource("conversation", "view", "conversationId"),
   async (c) => {
     const user = c.get("user");
-    const team = c.get("team");
-    if (!team) return throwHttpError(403, teamRequired());
-
     const conversationId = c.req.param("conversationId");
-
-    const conversation = await getConversation({
-      id: conversationId,
-      teamId: team.id,
+    // Summarised in the conversation's own team, whichever one is open.
+    const resource = c.get("resource");
+    const teamId = teamOfResource(resource);
+    const conversation = await getReadableConversation({
+      resource,
       userId: user.id,
     });
     if (!conversation) {
@@ -3805,14 +3756,14 @@ chatbotRoutes.post(
       {
         sessionId: conversationId,
         userId: user.id,
-        tags: [`team:${team.id}`],
+        tags: [`team:${teamId}`],
       },
       () =>
         summariseMissedMessages({
           missed,
           priorContext,
           participants: conversation.members,
-          teamId: team.id,
+          teamId,
         }),
     );
 

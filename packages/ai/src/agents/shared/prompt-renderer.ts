@@ -367,6 +367,31 @@ const formatDeferredToolList = (
  */
 
 /**
+ * The collaborative-conversation block: who takes part, and whether others
+ * read along. Empty for a chat nobody but its sender reads, so that prompt is
+ * byte-identical to the single-user case.
+ */
+const collaborationBlockFor = (ctx: AgentRuntimeContext): string => {
+  const hasParticipants =
+    ctx.participantsBlock !== undefined && ctx.participantsBlock.length > 0;
+  const lines: string[] = [];
+  if (hasParticipants) {
+    lines.push(
+      `This conversation is shared by several teammates:\n${ctx.participantsBlock}\n\nEach user message is prefixed with its sender in brackets — \`[Name]: …\`. Address people by name when it helps, and suggest @mentioning a teammate when their input is needed.`,
+    );
+  }
+  if (ctx.openToReaders === true) {
+    lines.push("People who do not take part can read this conversation too.");
+  }
+  if (hasParticipants || ctx.openToReaders === true) {
+    lines.push(
+      "Everyone here reads your answers: bring in a person's private material (their personal memory, files kept to them) only when they ask for it.",
+    );
+  }
+  return lines.join("\n\n");
+};
+
+/**
  * Build the chatbot system prompt for a given runtime context.
  *
  * `deferredTools` defaults to an empty set so callers can build the
@@ -443,13 +468,7 @@ export const buildChatbotSystemPrompt = async (
       ctx.externalAppsBlock && ctx.externalAppsBlock.length > 0
         ? ctx.externalAppsBlock
         : "_No external apps connected._",
-    // Collaborative-conversation block. Empty for solo conversations so the
-    // prompt is byte-identical to the single-user case; populated (roster +
-    // speaker-label instruction) once a second participant joins.
-    collaborationBlock:
-      ctx.participantsBlock && ctx.participantsBlock.length > 0
-        ? `This conversation is shared by several teammates:\n${ctx.participantsBlock}\n\nEach user message is prefixed with its sender in brackets — \`[Name]: …\`. Address people by name when it helps, and suggest @mentioning a teammate when their input is needed.`
-        : "",
+    collaborationBlock: collaborationBlockFor(ctx),
   };
   return {
     instructions: renderPrompt(prefix, variables),

@@ -12,14 +12,17 @@ import {
  * makes. The shapes of `/access/resources/{type}/{id}`.
  *
  * The types listed here are the ones whose sharing goes through the engine's
- * own grants (`access_grants`). Conversations keep their seats, collections
- * the grants the SQL tool enforces; they join with their own stores.
+ * own grants (`access_grants`). A chat's participants are its seats, which
+ * the grant store moves a person to and from (`services/access/sharing/
+ * grant-store.ts`); collections keep the grants the SQL tool enforces, and
+ * join with their own store.
  */
 export const SHARING_RESOURCE_TYPES = [
   "folder",
   "document",
   "page",
   "workflow",
+  "conversation",
 ] as const;
 export type SharingResourceType = (typeof SHARING_RESOURCE_TYPES)[number];
 export const sharingResourceTypeSchema = z.enum(SHARING_RESOURCE_TYPES);
@@ -140,9 +143,26 @@ export const resourceAccessSchema = z
        * owner's access, and nobody else may make it act as them.
        */
       ownerRestrictsOnly: z.boolean(),
+      /**
+       * The most what it inherits from gives, when less than full: a chat
+       * opened to its team is read there (`view`), taking part is a seat.
+       */
+      inheritedLevel: accessLevelSchema.nullable(),
     }),
     /** The levels this type can be shared at, weakest first. */
     offeredLevels: z.array(accessLevelSchema),
+    /** The levels a team, a project or the organization can be given. */
+    groupLevels: z.array(accessLevelSchema),
+    /**
+     * The most a person can hold on it, whatever is shared with them: one of
+     * its team, and anyone else. Below full on a restricted workflow, which
+     * runs as its owner (`view` for all), and on a chat, which only its
+     * team's people take part in (`view` for anyone else).
+     */
+    ceilings: z.object({
+      team: accessLevelSchema,
+      outsider: accessLevelSchema,
+    }),
     /** Who this type can be shared with. */
     shareablePrincipals: z.array(shareablePrincipalTypeSchema),
     /**

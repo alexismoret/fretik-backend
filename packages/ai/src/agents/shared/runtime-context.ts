@@ -242,6 +242,12 @@ export type AgentRuntimeContext = {
    */
   participantsBlock?: string;
   /**
+   * Someone who does not take part can read the conversation too: it is open
+   * to its team, or was given to people or groups to read. With the roster,
+   * it renders the `{{collaborationBlock}}` section.
+   */
+  openToReaders?: boolean;
+  /**
    * Active external-app connections (Outlook, Gmail, …) visible to this
    * turn — team-scoped rows + the caller's user-scoped rows, filtered
    * to `status = 'active'`. The handler loads them via

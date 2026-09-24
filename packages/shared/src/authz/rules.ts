@@ -58,6 +58,10 @@ const INHERITED_CAP: Partial<Record<AccessResourceType, AccessLevel>> = {
   conversation: "view",
 };
 
+/** The most a node of this type gives through inheritance, when less than full. */
+export const inheritedCap = (type: AccessResourceType): AccessLevel | null =>
+  INHERITED_CAP[type] ?? null;
+
 /** What the container gives: the project's level when it has one, else the team's. */
 const containerLevel = (
   principal: UserPrincipal,
@@ -92,23 +96,43 @@ const inheritedLevel = (
 };
 
 /**
- * Type-specific ceilings that depend on the node itself.
+ * The most a node gives this person, whatever is shared with them: a
+ * type-specific ceiling that depends on the node itself. A refusal above it
+ * offers nothing to request (`refusals.ts`), since no share would lift it.
  *
  * A restricted workflow runs WITH ITS OWNER'S ACCESS — their connections,
  * their private files. Anyone else who could run or edit it would act as
  * them, so for everyone but the owner it can be shown, never run or changed.
  * To work on it together, it is opened to the team, and then it runs as the
  * team's agent.
+ *
+ * Taking part in a chat is for the people of its team: the assistant answers
+ * there in the team's context (its connections, its memory), which a seat
+ * would lend to anyone outside it. Whoever else reaches the chat, because it
+ * was given to them or because they have left the team since, reads it.
  */
-const nodeCeiling = (
+export const levelCeiling = (
   principal: UserPrincipal,
   node: ResourceNode,
+): AccessLevel =>
+  ceilingFor(node, {
+    isOwner: node.ownerUserId === principal.userId,
+    inTeam: node.teamId !== null && principal.teamRoles.has(node.teamId),
+  });
+
+/**
+ * `levelCeiling` from the two facts it reads about the person — whether they
+ * own the node, whether they are in its team — so the share dialog can say
+ * what a kind of person may be given before anyone is picked.
+ */
+export const ceilingFor = (
+  node: ResourceNode,
+  person: { readonly isOwner: boolean; readonly inTeam: boolean },
 ): AccessLevel => {
-  if (
-    node.type === "workflow" &&
-    node.restricted &&
-    node.ownerUserId !== principal.userId
-  ) {
+  if (node.type === "workflow" && node.restricted && !person.isOwner) {
+    return "view";
+  }
+  if (node.type === "conversation" && node.teamId !== null && !person.inTeam) {
     return "view";
   }
   return "full";
@@ -126,5 +150,5 @@ export const computeLevel = (
     levelFromGrants(principal, node.grants),
     inheritedLevel(principal, node),
   );
-  return capLevel(level, nodeCeiling(principal, node));
+  return capLevel(level, levelCeiling(principal, node));
 };

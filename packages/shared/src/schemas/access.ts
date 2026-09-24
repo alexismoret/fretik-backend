@@ -186,7 +186,9 @@ export const accessAuditActionSchema = z.enum(ACCESS_AUDIT_ACTIONS);
  *   ROLE_REQUIRED       the capability needs a role the person does not have
  *   POLICY_DISABLED     an administrator turned the capability off
  *   GUEST_RESTRICTED    guests never do this
- *   LEVEL_CAP           the resource cannot be shared above a level
+ *   LEVEL_CAP           the resource gives the person no more than a level,
+ *                       whatever is shared with them: a restricted workflow
+ *                       anyone but its owner, a chat anyone outside its team
  *   CANNOT_EXCEED_OWN   nobody gives more than they have
  */
 export const ACCESS_DENIAL_REASONS = [

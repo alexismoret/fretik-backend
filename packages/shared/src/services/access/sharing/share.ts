@@ -56,10 +56,41 @@ export const shareResource = async (input: {
       ),
     );
   }
+  await writeShares({
+    principal,
+    node,
+    type,
+    grantees: [...grantees.values()],
+    level,
+  });
+  return describeResourceAccess({ principal, type, id });
+};
+
+/**
+ * Give these grantees `level` on a resource, in one transaction: the grants
+ * (or a chat's seats), their journal entries, the assistant's search index
+ * when someone new reaches it, and the pending requests the change answers —
+ * whose requesters are then told. The organization's policy applies to a NEW
+ * share beyond the resource's team or with the whole organization.
+ *
+ * Who may make the change is the caller's to check first: full access from
+ * the share dialog, taking part for a chat's participants bringing
+ * colleagues in (`services/ai/members/`).
+ */
+export const writeShares = async (input: {
+  principal: UserPrincipal;
+  node: LoadedNode;
+  type: SharingResourceType;
+  grantees: readonly Grantee[];
+  level: AccessLevel;
+}): Promise<void> => {
+  const { principal, node, type, level } = input;
+  const { id } = node;
   // The owner has full access already: a grant would say nothing more.
-  const targets = [...grantees.values()].filter(
+  const targets = input.grantees.filter(
     (grantee) => !(grantee.type === "user" && grantee.id === node.ownerUserId),
   );
+  if (targets.length === 0) return;
 
   const settled = await db.transaction(async (tx) => {
     const existing = await lockGrants(tx, { type, id }, targets);
@@ -120,11 +151,13 @@ export const shareResource = async (input: {
     resource: { type, id, name: node.name },
     level,
   });
-
-  return describeResourceAccess({ principal, type, id });
 };
 
-/** The level must be one this type offers, to principals it can be shared with. */
+/**
+ * The level must be one this type offers, to principals it can be shared
+ * with — and, for a group, one it offers groups (a chat is read by a team,
+ * taken part in by people).
+ */
 export const assertShareable = (
   type: SharingResourceType,
   level: AccessLevel,
@@ -146,6 +179,15 @@ export const assertShareable = (
     throwHttpError(
       400,
       badRequest(`A ${type} cannot be shared with a ${refused.type}.`),
+    );
+  }
+  const groupLevels = adapter.groupLevels ?? adapter.offeredLevels;
+  if (!groupLevels.includes(level) && refs.some((ref) => ref.type !== "user")) {
+    throwHttpError(
+      400,
+      badRequest(
+        `A team, a project or the organization is given a ${type} at ${groupLevels.join(", ")} access.`,
+      ),
     );
   }
 };

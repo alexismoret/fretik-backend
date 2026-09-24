@@ -39,7 +39,24 @@ const LEVEL_NAMES: Record<AccessLevel, string> = {
   full: "full",
 };
 
+/** Why a type gives someone no more than a level (`levelCeiling`). */
+const LEVEL_CAP_MESSAGES: Partial<Record<AccessResourceType, string>> = {
+  workflow:
+    "A restricted workflow runs with its owner's access: only its owner runs or changes it.",
+  conversation:
+    "Only the people of this chat's team take part in it. You can read it.",
+};
+
+/** Why a refusal above a type's ceiling can't be lifted by sharing. */
+export const levelCapMessage = (
+  type: AccessResourceType,
+  required: AccessLevel,
+): string =>
+  LEVEL_CAP_MESSAGES[type] ??
+  `Nothing shared with you gives ${LEVEL_NAMES[required]} access to this.`;
+
 const defaultResourceMessage = (
+  type: AccessResourceType,
   reason: AccessDenialReason,
   required: AccessLevel,
   current: AccessLevel | null,
@@ -52,7 +69,7 @@ const defaultResourceMessage = (
     case "GUEST_RESTRICTED":
       return "Guests can't do this.";
     case "LEVEL_CAP":
-      return `This can't be shared above ${LEVEL_NAMES[required]} access.`;
+      return levelCapMessage(type, required);
     case "CANNOT_EXCEED_OWN":
       return "You can't give more access than you have.";
     case "ROLE_REQUIRED":
@@ -105,7 +122,12 @@ export const throwResourceRefusal = async (input: {
     code: ERROR_CODES.ACCESS_DENIED,
     message:
       input.message ??
-      defaultResourceMessage(reason, input.required, input.current),
+      defaultResourceMessage(
+        input.resource.type,
+        reason,
+        input.required,
+        input.current,
+      ),
     access,
   });
 };

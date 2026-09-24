@@ -2,6 +2,8 @@ import { sql } from "drizzle-orm";
 import { adapterFor, requireAccess } from "../../../authz/access";
 import { atLeast } from "../../../authz/levels";
 import type { UserPrincipal } from "../../../authz/principal";
+import { throwResourceRefusal } from "../../../authz/refusals";
+import { levelCeiling } from "../../../authz/rules";
 import db from "../../../db";
 import { accessRequests } from "../../../db/schema";
 import {
@@ -22,7 +24,9 @@ import { buildRequestViews } from "./views";
  * refusal or a read-only share dialog.
  *
  * Only for a resource the person can see: one they cannot answers 404 like
- * any other, so a request never tells anyone it exists. Asking again while
+ * any other, so a request never tells anyone it exists. Nor for a level the
+ * resource never gives them, whatever is shared (`levelCeiling`): no answer
+ * could give it. Asking again while
  * the first request waits updates it — the level and the note — rather than
  * piling up requests (`access_requests_pending_resource_uidx`). A guest
  * receives what is shared with them and does not ask.
@@ -57,6 +61,16 @@ export const requestAccess = async (input: {
   }
   if (atLeast(current, level)) {
     return throwHttpError(400, badRequest("You already have this access."));
+  }
+  // No answer could give it: the resource stops below it for this person.
+  if (!atLeast(levelCeiling(principal, node), level)) {
+    return throwResourceRefusal({
+      principal,
+      resource: node,
+      required: level,
+      current,
+      reason: "LEVEL_CAP",
+    });
   }
 
   const message = input.message?.trim() ? input.message.trim() : null;

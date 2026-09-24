@@ -67,8 +67,9 @@ export const aiConversations = pgTable(
     // Access (see `db/schema/access.ts`). A conversation is private to its
     // participants (`ai_conversation_members`) unless it is opened to its
     // container: `accessRestricted = false` lets the team — or the project,
-    // when `projectId` is set — read it and join. Private by default,
-    // projects included: nobody's chat is published by being in a project.
+    // when `projectId` is set — read it; taking part stays a seat someone
+    // gives. Private by default, projects included: nobody's chat is
+    // published by being in a project.
     projectId: uuid("project_id").references(() => projects.id),
     accessRestricted: boolean("access_restricted").notNull().default(true),
 

@@ -273,9 +273,11 @@ export const documentsUnderFolders = async (
  */
 export const refreshAclsAfterAccessChange = async (input: {
   executor: Executor;
-  type: AclResourceType | "folder";
+  type: AclResourceType | "folder" | "conversation";
   id: string;
 }): Promise<void> => {
+  // A chat has no vectors of its own in the assistant's search index.
+  if (input.type === "conversation") return;
   if (input.type === "folder") {
     await refreshVectorAcls({
       executor: input.executor,

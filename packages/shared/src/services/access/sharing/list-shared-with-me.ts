@@ -28,7 +28,7 @@ import type {
 
 /**
  * What others have shared with this person, where they find it again: the
- * folders, documents, pages and workflows shared with them by name — and
+ * folders, documents, pages, workflows and chats shared with them by name — and
  * those shared with a team or project they are in, or with the whole
  * organization, from a team they are not part of. What sits in one of their
  * own teams, they browse to there; what they own, or shared themselves, is
@@ -231,7 +231,8 @@ const loadDetails = async (
 
   const details = new Map<string, Detail>();
   for (const share of shares) {
-    if (share.type === "folder") {
+    // Folders and chats carry nothing beyond their node.
+    if (share.type === "folder" || share.type === "conversation") {
       details.set(share.id, { mimeType: null, archived: false });
     }
   }

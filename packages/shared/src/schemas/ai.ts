@@ -6,6 +6,7 @@ import {
   aiVectorSourceTypeEnum,
   CONVERSATION_TASK_KINDS,
 } from "../db/schema";
+import { accessLevelSchema } from "./access";
 import { cursorParamSchema, paramsListSchema } from "./common/params";
 import { reasoningLevelSchema } from "./reasoning";
 
@@ -288,8 +289,13 @@ export const ConversationResponseSchema = z.object({
   /** Flagship model pinned to this conversation (chantier C8). Null = default. */
   modelProfileKey: z.string().nullable(),
   members: z.array(ConversationMemberSchema),
-  /** The current user's role in this conversation. */
-  role: conversationMemberRoleSchema,
+  /** The current user's role in this conversation; null when they only read it. */
+  role: conversationMemberRoleSchema.nullable(),
+  /**
+   * What the current user may do in it: `view` reads, `use` takes part,
+   * `full` is its owner's.
+   */
+  level: accessLevelSchema,
   /** The current user's personal end-of-turn email opt-in. */
   emailOnCompletion: z.boolean(),
   /** When the current user last read the conversation (catch-up anchor). */

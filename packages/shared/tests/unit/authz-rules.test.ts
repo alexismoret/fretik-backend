@@ -277,7 +277,24 @@ describe("type ceilings", () => {
       restricted: true,
       grants: [{ principalType: "user", principalId: ME, level: "use" }],
     });
-    expect(computeLevel(person({}), conversation)).toBe("use");
+    expect(computeLevel(member, conversation)).toBe("use");
+  });
+
+  test("taking part is for the conversation's team: outside it, a seat reads", () => {
+    const conversation = node({
+      type: "conversation",
+      restricted: true,
+      grants: [{ principalType: "user", principalId: ME, level: "use" }],
+    });
+    const elsewhere = person({ teams: { [OTHER_TEAM]: "member" } });
+    expect(computeLevel(elsewhere, conversation)).toBe("view");
+    // Its owner too, once they have left the team.
+    expect(
+      computeLevel(elsewhere, { ...conversation, ownerUserId: ME, grants: [] }),
+    ).toBe("view");
+    expect(
+      computeLevel(member, { ...conversation, ownerUserId: ME, grants: [] }),
+    ).toBe("full");
   });
 
   test("a workflow running with its owner's access can only be shown to others", () => {

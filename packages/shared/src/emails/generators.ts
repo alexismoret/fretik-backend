@@ -684,6 +684,8 @@ const resourceUrl = (resource: {
       return `${appUrl}/pages/${resource.id}`;
     case "workflow":
       return `${appUrl}/workflows/${resource.id}`;
+    case "conversation":
+      return `${appUrl}/chatbot/${resource.id}`;
   }
 };
 

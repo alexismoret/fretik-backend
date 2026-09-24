@@ -3,6 +3,7 @@ import type {
   aiConversations,
   user,
 } from "../../db/schema";
+import type { AccessLevel } from "../../schemas/access";
 
 /**
  * Single source of truth for serialising a collaborative conversation.
@@ -11,7 +12,8 @@ import type {
  * `conversationWith` relation selection and projects it through
  * `serializeConversation`, so the API shape can never drift between paths.
  * The projection exposes the full member roster plus the *current user's*
- * own per-conversation state (role, email opt-in, unread, action-required).
+ * own per-conversation state (role, email opt-in, unread, action-required),
+ * which is empty for someone who reads the conversation without a seat.
  *
  * Input types are derived from the Drizzle `$inferSelect` row types so they
  * stay locked to the schema; only the computed output shape is hand-written.
@@ -56,8 +58,13 @@ export type SerializedConversation = Omit<
 > & {
   /** Full participant roster (humans only — the bot is never a member). */
   members: ConversationMember[];
-  /** The current user's role in this conversation. */
-  role: ConversationMemberRole;
+  /** The current user's role in this conversation; null when they only read it. */
+  role: ConversationMemberRole | null;
+  /**
+   * What the current user may do in it: `view` reads, `use` takes part, `full`
+   * is its owner's.
+   */
+  level: AccessLevel;
   /** The current user's *personal* end-of-turn email opt-in. */
   emailOnCompletion: boolean;
   /** When the current user last read the conversation (catch-up anchor). */
@@ -97,9 +104,21 @@ export const conversationWith = {
   },
 } as const;
 
+/** The level a seat gives: the owner's is full, a participant's `use`. */
+const seatLevel = (seat: ConversationMemberRow | undefined): AccessLevel => {
+  if (seat === undefined) return "view";
+  return seat.role === "owner" ? "full" : "use";
+};
+
 export const serializeConversation = (
   row: ConversationRowWithMembers,
   userId: string,
+  /**
+   * The user's level, when the access engine has decided it; else their
+   * seat's, since every other read path holds only the chats they take part
+   * in.
+   */
+  level?: AccessLevel,
 ): SerializedConversation => {
   const { activeStreamId: _activeStreamId, members, ...conversation } = row;
   const current = members.find((m) => m.userId === userId);
@@ -116,11 +135,15 @@ export const serializeConversation = (
       image: m.user?.image ?? null,
       role: m.role,
     })),
-    role: current?.role ?? "member",
+    role: current?.role ?? null,
+    level: level ?? seatLevel(current),
     emailOnCompletion: current?.emailOnCompletion ?? false,
     lastReadAt,
     joinedAt: current?.joinedAt ?? row.createdAt,
-    unread: lastReadAt === null || lastReadAt < row.updatedAt,
+    // A reader does not follow the conversation: nothing is unread for them.
+    unread:
+      current !== undefined &&
+      (lastReadAt === null || lastReadAt < row.updatedAt),
     actionRequired:
       mentionedAt !== null && (lastReadAt === null || mentionedAt > lastReadAt),
     pinned: pinnedAt !== null,

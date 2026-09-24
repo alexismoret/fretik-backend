@@ -8,7 +8,7 @@ import { conversationAdapter } from "./resources/conversation";
 import { documentAdapter, folderAdapter } from "./resources/drive";
 import { collectionAdapter, projectAdapter } from "./resources/structure";
 import type { LoadedNode, ResourceAdapter } from "./resources/types";
-import { computeLevel } from "./rules";
+import { computeLevel, levelCeiling } from "./rules";
 
 /**
  * The engine's entry points for ONE resource (or a batch of one type): what
@@ -87,6 +87,11 @@ const refuseShortLevel = (input: {
 }): Promise<never> | undefined => {
   if (atLeast(input.resolved.level, input.required)) return undefined;
   if (input.principal.kind === "system") return undefined;
+  // Above what the node gives this person at all, no share would help.
+  const capped = !atLeast(
+    levelCeiling(input.principal, input.resolved.node),
+    input.required,
+  );
   return throwResourceRefusal({
     principal: input.principal,
     resource: {
@@ -97,6 +102,7 @@ const refuseShortLevel = (input: {
     },
     required: input.required,
     current: input.resolved.level,
+    ...(capped ? { reason: "LEVEL_CAP" as const } : {}),
   });
 };
 

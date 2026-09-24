@@ -9,7 +9,8 @@ import { getConversation } from "./get";
  * Create a conversation and seat its creator as the sole `owner`. The owner's
  * `lastReadAt` is stamped now so their brand-new conversation never shows up
  * as unread to themselves. Further participants join later through
- * `addConversationMembers` (the single, validated add path).
+ * `addConversationMembers`, an @mention or the share dialog — the same seats,
+ * journaled the same way (`writeShares`).
  */
 export const createConversation = async (data: {
   organizationId: string;

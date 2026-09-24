@@ -3,7 +3,7 @@ import type { UserPrincipal } from "../../../authz/principal";
 import { throwForbidden } from "../../../authz/refusals";
 import type { LoadedNode } from "../../../authz/resources/types";
 import db from "../../../db";
-import { documents, folders } from "../../../db/schema";
+import { aiConversations, documents, folders } from "../../../db/schema";
 import type {
   ResourceAccess,
   SharingResourceType,
@@ -27,7 +27,8 @@ import { requireSharingRights } from "./manage-rights";
  * workflows go through their own update, which keeps their legacy privacy
  * column in step and re-checks the apps a workflow may use; Drive items are
  * written here. Either way the change, the journal entry and the assistant's
- * search index move in one transaction.
+ * search index move in one transaction. A chat opened to its team is read
+ * there; taking part in it stays a seat someone gives.
  */
 export const setGeneralAccess = async (input: {
   principal: UserPrincipal;
@@ -71,6 +72,9 @@ export const setGeneralAccess = async (input: {
       case "folder":
       case "document":
         await restrictDriveItem({ principal, type, node, restricted });
+        break;
+      case "conversation":
+        await restrictConversation({ principal, node, restricted });
         break;
     }
   }
@@ -124,5 +128,28 @@ const restrictDriveItem = async (input: {
       metadata: { restricted, resourceName: node.name },
     });
     await refreshAclsAfterAccessChange({ executor: tx, type, id: node.id });
+  });
+};
+
+/** Open a chat to its team to read, or keep it to the people given it again. */
+const restrictConversation = async (input: {
+  principal: UserPrincipal;
+  node: LoadedNode;
+  restricted: boolean;
+}): Promise<void> => {
+  const { principal, node, restricted } = input;
+  await db.transaction(async (tx) => {
+    await tx
+      .update(aiConversations)
+      .set({ accessRestricted: restricted })
+      .where(eq(aiConversations.id, node.id));
+    await recordAccessEvent({
+      executor: tx,
+      organizationId: node.organizationId,
+      actorUserId: principal.userId,
+      action: "restriction.changed",
+      resource: { type: "conversation", id: node.id },
+      metadata: { restricted, resourceName: node.name },
+    });
   });
 };

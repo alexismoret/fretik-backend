@@ -117,6 +117,11 @@ export const ERROR_CODES = {
    * nobody who has full access: nobody could share it or delete it again.
    */
   LAST_FULL_ACCESS: "LAST_FULL_ACCESS",
+  /**
+   * 400 — taking part in a chat is for the people of its team. Someone
+   * outside it can be given the chat to read.
+   */
+  PARTICIPANT_OUTSIDE_TEAM: "PARTICIPANT_OUTSIDE_TEAM",
   /** An access request that was already answered, withdrawn or orphaned. */
   ACCESS_REQUEST_CLOSED: "ACCESS_REQUEST_CLOSED",
 

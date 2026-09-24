@@ -53,6 +53,12 @@ import {
 } from "../collection-records/bulk-update";
 import { queryCollectionRecords } from "../collection-records/query";
 import { getRecordSnapshots } from "../collection-records/snapshot-batch";
+import { requireCollectionAudienceAllowed } from "../collection-sharing/audience-policy";
+import {
+  assertCanManageType,
+  RECORD_DELETION_REFUSAL,
+  recordsShortOfFull,
+} from "../collection-sharing/write-access";
 import { confirmFullResync } from "../collection-sync/confirm-full-resync";
 import { createSyncSource } from "../collection-sync/create-source";
 import { deleteSyncSource } from "../collection-sync/delete-source";
@@ -371,6 +377,37 @@ const refuseKeptMirrors = async (
   };
 };
 
+/**
+ * Records someone else created, while the person's level on the team's
+ * content stops short of deleting them (the team's policy): refused whole,
+ * before any approval card opens.
+ */
+const refuseHeldDeletions = async (
+  ctx: ExecContext,
+  recordIds: readonly string[],
+): Promise<SandboxExecResponse | null> => {
+  const principal = await loadPrincipal({
+    organizationId: ctx.organizationId,
+    userId: ctx.userId,
+  });
+  // No principal is answered by `refuseKeptMirrors`, which runs first.
+  if (principal === null) return null;
+  const held = await recordsShortOfFull({
+    principal,
+    teamId: ctx.teamId,
+    recordIds,
+  });
+  if (held.length === 0) return null;
+  return {
+    status: "error",
+    message: `ACCESS_DENIED: ${RECORD_DELETION_REFUSAL} Held back: ${held
+      .map((record) => record.id)
+      .join(
+        ", ",
+      )}. Nothing was deleted. Tell the user a team lead can delete them; do not retry.`,
+  };
+};
+
 const bulkUpdate = async (
   ctx: ExecContext,
   actor: EventActor,
@@ -460,6 +497,8 @@ const bulkDelete = async (
   const { recordIds } = bulkDeleteArgs.parse(rawArgs);
   const kept = await refuseKeptMirrors(ctx, recordIds);
   if (kept !== null) return kept;
+  const held = await refuseHeldDeletions(ctx, recordIds);
+  if (held !== null) return held;
 
   return gateRecordWriteApproval({
     ctx,
@@ -892,6 +931,12 @@ const createType = async (
   rawArgs: Record<string, unknown>,
 ): Promise<SandboxExecResponse> => {
   const args = createTypeArgs.parse(rawArgs);
+  await requireCollectionAudienceAllowed({
+    userId: ctx.userId,
+    organizationId: ctx.organizationId,
+    teamId: ctx.teamId,
+    sharing: args.sharing,
+  });
   if (args.fields && args.fields.length > 0) {
     const created = await createCollectionWithFields({
       organizationId: ctx.organizationId,
@@ -968,6 +1013,23 @@ const updateType = async (
   const args = updateTypeArgs.parse(rawArgs);
   const collectionId = await resolveTeamType(ctx, args.collectionKey);
   if (collectionId === null) return unknownType(args.collectionKey);
+  if (args.sharing !== undefined) {
+    // Who may see a collection is its leads' to change when the team's
+    // policy keeps that from members, and never beyond the organization's.
+    await assertCanManageType({
+      collectionId,
+      teamId: ctx.teamId,
+      organizationId: ctx.organizationId,
+      userId: ctx.userId,
+      change: "sharing",
+    });
+    await requireCollectionAudienceAllowed({
+      userId: ctx.userId,
+      organizationId: ctx.organizationId,
+      teamId: ctx.teamId,
+      sharing: args.sharing,
+    });
+  }
 
   const hasMetadata =
     args.label !== undefined ||
@@ -1130,6 +1192,13 @@ const deleteType = async (
   const { collectionKey } = deleteTypeArgs.parse(rawArgs);
   const collectionId = await resolveTeamType(ctx, collectionKey);
   if (collectionId === null) return unknownType(collectionKey);
+  await assertCanManageType({
+    collectionId,
+    teamId: ctx.teamId,
+    organizationId: ctx.organizationId,
+    userId: ctx.userId,
+    change: "delete",
+  });
 
   const result = await deleteCollection({
     id: collectionId,

@@ -17,8 +17,11 @@ import { vectorizeSource } from "../vectorize";
  * list, never invents them. Re-runs are full replaces through
  * `upsertEpisode`; an unchanged `contentHash` skips the re-embed.
  *
- * Privacy: a single-member conversation distills to a PRIVATE episode
- * (`userId` = that member); ≥2 members → team-visible (`userId` NULL).
+ * Privacy: a conversation is its participants', so its episode is never the
+ * whole team's. A single-member conversation distills to a PRIVATE episode
+ * (`userId` = that member); with several members it is kept to its owner,
+ * who took part in all of it, until episodes can carry an audience of their
+ * own (the participants). A workflow run's follows its workflow.
  *
  * Output handling mirrors `extract-mentions.ts` (defensive parse degrading
  * to a no-op, never `Output.object`) for the same provider-pool reason.
@@ -234,6 +237,24 @@ export interface DistillConversationResult {
   episodeId?: string;
 }
 
+/**
+ * Whose episode a chat distills to: its only member's, else its owner's (the
+ * owner seat, else whoever created it). Never NULL, which would make it the
+ * whole team's: a chat is its participants', and the rest of the team could
+ * not read it.
+ */
+export const chatEpisodeOwner = (input: {
+  members: readonly { userId: string; role: "owner" | "member" }[];
+  creatorUserId: string | null;
+}): string | null => {
+  const [only, ...others] = input.members;
+  if (only !== undefined && others.length === 0) return only.userId;
+  return (
+    input.members.find((member) => member.role === "owner")?.userId ??
+    input.creatorUserId
+  );
+};
+
 export const distillConversation = async (input: {
   conversationId: string;
   teamId: string;
@@ -292,8 +313,10 @@ export const distillConversation = async (input: {
   const occurredFrom = first ? first.createdAt : null;
   const occurredTo = last ? last.createdAt : null;
 
-  // Privacy scope: exactly one member → private episode; the legacy
-  // memberless shape falls back to the creator; otherwise team-visible.
+  // Privacy scope: exactly one member → private episode; several → private
+  // to the conversation's owner (its owner seat, else its creator), never
+  // the team's: the chat was its participants', and the rest of the team
+  // could not read it. The legacy memberless shape falls back to the creator.
   // Workflow runs override this entirely: their conversations are memberless
   // and owned by the acting identity (team bot for team workflows), which
   // would make every team workflow's memory PRIVATE TO THE BOT — invisible
@@ -301,15 +324,11 @@ export const distillConversation = async (input: {
   // instead: owned workflow → private to the owner, team workflow → NULL.
   const members = await db.query.aiConversationMembers.findMany({
     where: { conversationId },
-    columns: { userId: true },
+    columns: { userId: true, role: true },
   });
   const episodeUserId = workflowRun
     ? (workflowOwner?.userId ?? null)
-    : members.length === 1
-      ? (members[0]?.userId ?? null)
-      : members.length === 0
-        ? (conversation.userId ?? null)
-        : null;
+    : chatEpisodeOwner({ members, creatorUserId: conversation.userId });
 
   // Candidate records = what the resolver linked to this conversation's
   // journal events. Confirmed links outrank suggested ones at the cap.

@@ -1,15 +1,9 @@
 import { access } from "@fretik/shared/authz/http";
-import type { UserPrincipal } from "@fretik/shared/authz/principal";
-import { requireSharingAudience } from "@fretik/shared/authz/sharing-policy";
 import {
   authMiddleware,
   type HonoLoggedAppType,
 } from "@fretik/shared/lib/auth-middleware";
 import { teamRequired } from "@fretik/shared/lib/errors";
-import {
-  type Audience,
-  audienceReach,
-} from "@fretik/shared/schemas/collection-sharing";
 import { paramsIdSchema } from "@fretik/shared/schemas/common/params";
 import {
   responseForbiddenSchema,
@@ -24,6 +18,7 @@ import {
   createCollectionWithFieldsRequestSchema,
   updateCollectionRequestSchema,
 } from "@fretik/shared/schemas/ontology";
+import { requireCollectionAudienceAllowed } from "@fretik/shared/services/collection-sharing/audience-policy";
 import { assertCanManageType } from "@fretik/shared/services/collection-sharing/write-access";
 import { createCollection } from "@fretik/shared/services/collections/create";
 import { createCollectionWithFields } from "@fretik/shared/services/collections/create-with-fields";
@@ -171,7 +166,7 @@ const updateRouteDef = createRoute({
   method: "patch",
   path: "/{id}",
   middleware: access.handler(
-    "The owning team, or an admin for an organization collection (assertCanManageType); sharing policies.",
+    "The owning team, or an admin for an organization collection (assertCanManageType); changing its sharing takes full access to the team's content, within the sharing policies.",
   ),
   summary: "Update a collection",
   tags: ["Collections"],
@@ -201,7 +196,7 @@ const deleteRouteDef = createRoute({
   method: "delete",
   path: "/{id}",
   middleware: access.handler(
-    "The owning team, or an admin for an organization collection (assertCanManageType).",
+    "The owning team with full access to its content, or an admin for an organization collection (assertCanManageType).",
   ),
   summary: "Delete a collection",
   description:
@@ -254,26 +249,17 @@ collectionRoutes.openapi(getRoute, async (c) => {
   return c.json(type, 200);
 });
 
-/** Sharing a collection as it is written must stay within the policies. */
-const assertSharingAllowed = async (
-  principal: UserPrincipal,
-  teamId: string,
-  sharing: Audience | undefined,
-): Promise<void> => {
-  if (sharing === undefined) return;
-  await requireSharingAudience({
-    principal,
-    resourceTeamId: teamId,
-    audience: audienceReach(sharing, teamId),
-  });
-};
-
 collectionRoutes.openapi(createRouteDef, async (c) => {
   const team = c.get("team");
   if (!team) return c.json(teamRequired(), 403);
   const user = c.get("user");
   const body = c.req.valid("json");
-  await assertSharingAllowed(c.get("principal"), team.id, body.sharing);
+  await requireCollectionAudienceAllowed({
+    userId: user.id,
+    organizationId: team.organizationId,
+    teamId: team.id,
+    sharing: body.sharing,
+  });
   const created = await createCollection({
     organizationId: team.organizationId,
     teamId: team.id,
@@ -295,7 +281,12 @@ collectionRoutes.openapi(createWithFieldsRouteDef, async (c) => {
   if (!team) return c.json(teamRequired(), 403);
   const user = c.get("user");
   const body = c.req.valid("json");
-  await assertSharingAllowed(c.get("principal"), team.id, body.sharing);
+  await requireCollectionAudienceAllowed({
+    userId: user.id,
+    organizationId: team.organizationId,
+    teamId: team.id,
+    sharing: body.sharing,
+  });
   const created = await createCollectionWithFields({
     organizationId: team.organizationId,
     teamId: team.id,
@@ -323,8 +314,14 @@ collectionRoutes.openapi(updateRouteDef, async (c) => {
     teamId: team.id,
     organizationId: team.organizationId,
     userId: user.id,
+    change: sharing === undefined ? "details" : "sharing",
   });
-  await assertSharingAllowed(c.get("principal"), team.id, sharing);
+  await requireCollectionAudienceAllowed({
+    userId: user.id,
+    organizationId: team.organizationId,
+    teamId: team.id,
+    sharing,
+  });
   const updated = await updateCollection({
     id,
     patch,
@@ -346,6 +343,7 @@ collectionRoutes.openapi(deleteRouteDef, async (c) => {
     teamId: team.id,
     organizationId: team.organizationId,
     userId: user.id,
+    change: "delete",
   });
   const result = await deleteCollection({
     id,

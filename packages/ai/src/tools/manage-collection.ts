@@ -5,6 +5,7 @@ import {
   fieldConfigSchema,
   fieldDefinitionTypeSchema,
 } from "@fretik/shared/schemas/field-definitions";
+import { requireCollectionAudienceAllowed } from "@fretik/shared/services/collection-sharing/audience-policy";
 import { assertCanManageType } from "@fretik/shared/services/collection-sharing/write-access";
 import { COLLECTION_LIMITS } from "@fretik/shared/services/collections/constants";
 import { createCollection } from "@fretik/shared/services/collections/create";
@@ -161,8 +162,15 @@ export const createManageCollectionTool = () =>
               "create requires key, label, and a one-line description.",
             );
           }
-          // A new collection is new team content: a viewer reads.
+          // A new collection is new team content: a viewer reads. How far it
+          // is shared follows the organization's policies, as in the app.
           await requireTurnContributor(ctx);
+          await requireCollectionAudienceAllowed({
+            userId: ctx.userId,
+            organizationId: ctx.organizationId,
+            teamId: ctx.teamId,
+            sharing: input.sharing,
+          });
           if (input.fields && input.fields.length > 0) {
             const created = await createCollectionWithFields({
               organizationId: ctx.organizationId,
@@ -229,12 +237,25 @@ export const createManageCollectionTool = () =>
         }
 
         // The type itself is its owner's to change — an org-level one takes an
-        // org admin — whatever write grant covers its records.
+        // org admin — whatever write grant covers its records. Deleting it or
+        // changing who sees it takes full access to the team's content.
         await assertCanManageType({
           collectionId,
           teamId: ctx.teamId,
           organizationId: ctx.organizationId,
           userId: ctx.userId,
+          change:
+            input.action === "delete"
+              ? "delete"
+              : input.sharing === undefined
+                ? "details"
+                : "sharing",
+        });
+        await requireCollectionAudienceAllowed({
+          userId: ctx.userId,
+          organizationId: ctx.organizationId,
+          teamId: ctx.teamId,
+          sharing: input.action === "delete" ? undefined : input.sharing,
         });
 
         if (input.action === "delete") {

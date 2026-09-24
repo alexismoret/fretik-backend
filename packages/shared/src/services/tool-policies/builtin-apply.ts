@@ -15,7 +15,11 @@ import { createCollectionRecord } from "../collection-records/create";
 import { deleteCollectionRecord } from "../collection-records/delete";
 import { setRecordStatus } from "../collection-records/set-status";
 import { setRecordData } from "../collection-records/update";
+import { requireRecordAudienceAllowed } from "../collection-sharing/audience-policy";
 import {
+  assertCanDeleteRecords,
+  assertCanManageType,
+  assertCanShareRecord,
   assertCanWriteLink,
   assertCanWriteRecord,
   assertCanWriteType,
@@ -467,11 +471,17 @@ const applyManageRecord: ToolCallApplyFn = async (ctx, args) => {
     userId: ctx.userId,
   };
 
+  const sharing =
+    args.sharing === undefined
+      ? undefined
+      : recordSharingSchema.parse(args.sharing);
+
   if (action === "create") {
     await assertCanWriteType({
       collectionId: str(args, "collectionId"),
       ...scope,
     });
+    await requireRecordAudienceAllowed({ ...scope, sharing });
     const record = await createCollectionRecord({
       organizationId: ctx.organizationId,
       teamId: ctx.teamId,
@@ -483,29 +493,28 @@ const applyManageRecord: ToolCallApplyFn = async (ctx, args) => {
         args.relations === undefined
           ? undefined
           : recordRelationInputSchema.array().parse(args.relations),
-      sharing:
-        args.sharing === undefined
-          ? undefined
-          : recordSharingSchema.parse(args.sharing),
+      sharing,
       actor,
     });
     return { ok: true, record: serializeRecord(record) };
   }
 
   // Every other action writes one existing record.
-  await assertCanWriteRecord({ recordId: str(args, "recordId"), ...scope });
+  const recordId = str(args, "recordId");
+  await assertCanWriteRecord({ recordId, ...scope });
 
   if (action === "update") {
+    if (sharing !== undefined) {
+      await assertCanShareRecord({ recordId, ...scope });
+      await requireRecordAudienceAllowed({ ...scope, sharing });
+    }
     const hasData = args.data !== undefined;
     const record = await setRecordData({
-      id: str(args, "recordId"),
+      id: recordId,
       data: hasData ? recordArg(args, "data") : undefined,
       merge: true,
       labelOverride: strOrNull(args, "labelOverride"),
-      sharing:
-        args.sharing === undefined
-          ? undefined
-          : recordSharingSchema.parse(args.sharing),
+      sharing,
       callerTeamId: ctx.teamId,
       actor,
     });
@@ -513,8 +522,9 @@ const applyManageRecord: ToolCallApplyFn = async (ctx, args) => {
   }
 
   if (action === "delete") {
+    await assertCanDeleteRecords({ recordIds: [recordId], ...scope });
     const result = await deleteCollectionRecord({
-      id: str(args, "recordId"),
+      id: recordId,
       actor,
     });
     return { ok: true, ...result };
@@ -558,8 +568,9 @@ const applyInstallSkill: ToolCallApplyFn = async (ctx, args) => {
 //
 // Only the destructive actions are gated, so only those apply here — anything
 // else reaching this map is a proposal/apply mismatch and throws rather than
-// guessing. Both re-assert the write grant: a proposal can sit pending for a
-// while, and a share revoked in between must not be honoured at grant time.
+// guessing. Both ask again: a proposal can sit pending for a while, and a
+// share revoked or a role lowered in between must not be honoured at grant
+// time.
 
 const applyManageCollection: ToolCallApplyFn = async (ctx, args) => {
   const action = str(args, "action");
@@ -567,11 +578,14 @@ const applyManageCollection: ToolCallApplyFn = async (ctx, args) => {
     throw new Error(`manageCollection "${action}" is not approval-gated`);
   }
   const collectionId = str(args, "collectionId");
-  await assertCanWriteType({
+  // The type is its owner's to delete, with full access to the team's
+  // content: asked again, as the proposal may have waited.
+  await assertCanManageType({
     collectionId,
     teamId: ctx.teamId,
     organizationId: ctx.organizationId,
     userId: ctx.userId,
+    change: "delete",
   });
   const result = await deleteCollection({
     id: collectionId,

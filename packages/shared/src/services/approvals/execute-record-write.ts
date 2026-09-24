@@ -12,6 +12,10 @@ import {
 import { bulkCreateCollectionRecords } from "../collection-records/bulk-create";
 import { bulkDeleteCollectionRecords } from "../collection-records/bulk-delete";
 import { bulkUpdateCollectionRecords } from "../collection-records/bulk-update";
+import {
+  RECORD_DELETION_REFUSAL,
+  recordsShortOfFull,
+} from "../collection-sharing/write-access";
 import type { EventActor } from "../domain-events/emit";
 import { markConsumed } from "./complete";
 import { isRecordWritePayload } from "./payload-guards";
@@ -22,10 +26,13 @@ import {
 
 /**
  * The chosen items whose record the requester may write; each other one is
- * answered in `byIndex` with its reason.
+ * answered in `byIndex` with its reason. A record mirroring a file kept from
+ * them takes `edit` on the file, and deleting a record someone else created
+ * takes full access to the team's content (the team's policy).
  */
-const withoutRefusedMirrors = async (
+const withoutRefusedRecords = async (
   approval: ToolApprovalRequest,
+  op: "update" | "delete",
   chosen: { index: number; item: ToolApprovalRecordWriteItem }[],
   byIndex: Map<number, ToolApprovalRecordResult>,
 ): Promise<{ index: number; item: ToolApprovalRecordWriteItem }[]> => {
@@ -43,6 +50,16 @@ const withoutRefusedMirrors = async (
           (r) => [r.id, r.error] as const,
         ),
   );
+  if (principal !== null && op === "delete") {
+    const held = await recordsShortOfFull({
+      principal,
+      teamId: approval.teamId,
+      recordIds,
+    });
+    for (const { id } of held) {
+      if (!refused.has(id)) refused.set(id, RECORD_DELETION_REFUSAL);
+    }
+  }
   return chosen.filter((c) => {
     const error =
       c.item.recordId === undefined ? undefined : refused.get(c.item.recordId);
@@ -124,7 +141,12 @@ export const executeRecordWriteApproval = async (params: {
   const writable =
     payload.op === "create"
       ? chosen
-      : await withoutRefusedMirrors(params.approval, chosen, byIndex);
+      : await withoutRefusedRecords(
+          params.approval,
+          payload.op,
+          chosen,
+          byIndex,
+        );
 
   if (payload.op === "create" && payload.collectionId !== undefined) {
     const collectionId = payload.collectionId;

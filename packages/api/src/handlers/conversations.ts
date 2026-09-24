@@ -287,7 +287,7 @@ const removeMemberRoute = createRoute({
   middleware: access.resource("conversation", "use"),
   summary: "Remove a conversation member",
   description:
-    "Remove a participant. The conversation owner cannot be removed. Returns the refreshed roster.",
+    "Anyone may leave; removing someone else takes full access to the conversation. The owner cannot be removed. Returns the refreshed roster.",
   tags: ["Conversations"],
   request: { params: memberIdParamsSchema },
   responses: {
@@ -514,7 +514,6 @@ conversationRoutes.openapi(addMembersRoute, async (c) => {
 });
 
 conversationRoutes.openapi(removeMemberRoute, async (c) => {
-  const user = c.get("user");
   const team = c.get("team");
   if (!team) return throwHttpError(403, teamRequired());
 
@@ -523,7 +522,7 @@ conversationRoutes.openapi(removeMemberRoute, async (c) => {
   const members = await removeConversationMember({
     conversationId: id,
     teamId: team.id,
-    requesterId: user.id,
+    principal: c.get("principal"),
     targetUserId: userId,
   });
 

@@ -106,14 +106,16 @@ export const cancelWorkflowTriggerRun = async (
 };
 
 /**
- * Mint a scoped public access token the browser uses to subscribe to a
- * team's workflow runs in realtime (`runs.subscribeToRunsWithTag`). Scoped
- * to the team tag only — never "all runs". `skipColumns` is baked into the
+ * Mint a scoped public access token the browser uses to follow ONE workflow's
+ * runs in realtime (`runs.subscribeToRunsWithTag`). Scoped to that workflow's
+ * tag only: a person reads the live status of the runs of a workflow they may
+ * view, never the whole team's, where a restricted workflow's task states
+ * would reach teammates it is kept from. `skipColumns` is baked into the
  * token so the browser cannot widen the projection. Also returns the Trigger
  * API base URL and the tag so the frontend needs no Trigger config of its own.
  */
 export const createWorkflowRealtimeToken = async (
-  teamId: string,
+  workflowId: string,
 ): Promise<{ token: string; url: string; tag: string }> => {
   assertConfigured();
   const url = process.env.TRIGGER_API_URL;
@@ -122,10 +124,11 @@ export const createWorkflowRealtimeToken = async (
       "TRIGGER_API_URL is not set — the browser cannot subscribe to Trigger.dev realtime. Set it in this service's env.",
     );
   }
+  const tag = workflowTag(workflowId);
   const token = await auth.createPublicToken({
-    scopes: { read: { tags: [workflowTeamTag(teamId)] } },
+    scopes: { read: { tags: [tag] } },
     expirationTime: "1hr",
     realtime: { skipColumns: ["payload", "output"] },
   });
-  return { token, url, tag: workflowTeamTag(teamId) };
+  return { token, url, tag };
 };

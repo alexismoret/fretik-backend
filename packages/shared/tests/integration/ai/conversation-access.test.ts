@@ -9,6 +9,7 @@ import {
 } from "../../../src/db/schema";
 import type { WorkflowPlaybook } from "../../../src/schemas/workflows";
 import { assertConversationAccess } from "../../../src/services/ai/assert-conversation-access";
+import { removeConversationMember } from "../../../src/services/ai/members/remove";
 import {
   createWorkspaceFixture,
   type WorkspaceFixture,
@@ -171,5 +172,37 @@ describe("a workflow run belongs to whoever may see the workflow", () => {
 
     const privateToOwner = await createRunConversation(owner);
     await expectAbsent(open(privateToOwner, member));
+  });
+});
+
+describe("who takes someone out of a chat", () => {
+  test("anyone leaves; only full access removes someone else, never the owner", async () => {
+    const [author, teammate] = fx.userIds;
+    const third = await fx.addPerson();
+    const chat = await fx.createConversation({ userId: author });
+    await db.insert(aiConversationMembers).values([
+      { conversationId: chat.id, userId: author, role: "owner" },
+      { conversationId: chat.id, userId: teammate, role: "member" },
+      { conversationId: chat.id, userId: third, role: "member" },
+    ]);
+    const remove = async (requester: string, target: string) =>
+      removeConversationMember({
+        conversationId: chat.id,
+        teamId: fx.teamId,
+        principal: await fx.principalOf(requester),
+        targetUserId: target,
+      });
+    const refused = async (promise: Promise<unknown>) => {
+      const error = await rejection(promise);
+      expect(error).toBeInstanceOf(HTTPException);
+      return (error as HTTPException).status;
+    };
+
+    expect(await refused(remove(teammate, third))).toBe(403);
+    expect(await refused(remove(teammate, author))).toBe(403);
+    const afterLeaving = await remove(teammate, teammate);
+    expect(afterLeaving.map((member) => member.userId)).not.toContain(teammate);
+    const afterRemoval = await remove(author, third);
+    expect(afterRemoval.map((member) => member.userId)).toEqual([author]);
   });
 });

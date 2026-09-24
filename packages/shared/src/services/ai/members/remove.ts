@@ -1,4 +1,6 @@
 import { and, eq } from "drizzle-orm";
+import { requireAccess } from "../../../authz/access";
+import type { UserPrincipal } from "../../../authz/principal";
 import db from "../../../db";
 import { aiConversationMembers } from "../../../db/schema";
 import { forbidden, notFound, throwHttpError } from "../../../lib/errors";
@@ -6,17 +8,20 @@ import type { ConversationMember } from "../conversation-serializer";
 import { getConversation } from "../get";
 
 /**
- * Remove a participant from a conversation. Any member may remove another, but
- * the `owner` can never be removed — that protects the creator from being
- * locked out of their own thread. Returns the refreshed roster.
+ * Remove a participant from a conversation. Anyone may leave; taking someone
+ * else out takes full access to it — its owner, or whoever it gives full
+ * access — not only a seat. The `owner` can never be removed, which protects
+ * the creator from being locked out of their own thread. Returns the
+ * refreshed roster.
  */
 export const removeConversationMember = async (data: {
   conversationId: string;
   teamId: string;
-  requesterId: string;
+  principal: UserPrincipal;
   targetUserId: string;
 }): Promise<ConversationMember[]> => {
-  const { conversationId, teamId, requesterId, targetUserId } = data;
+  const { conversationId, teamId, principal, targetUserId } = data;
+  const requesterId = principal.userId;
 
   const conversation = await getConversation({
     id: conversationId,
@@ -35,6 +40,15 @@ export const removeConversationMember = async (data: {
       forbidden("The conversation owner cannot be removed"),
     );
   }
+  if (targetUserId !== requesterId) {
+    await requireAccess({
+      principal,
+      type: "conversation",
+      id: conversationId,
+      required: "full",
+      notFoundMessage: "Conversation not found",
+    });
+  }
 
   await db
     .delete(aiConversationMembers)
@@ -45,10 +59,17 @@ export const removeConversationMember = async (data: {
       ),
     );
 
+  // Someone who left no longer reads the chat: the roster they leave behind
+  // is the one they just saw, without them.
+  if (targetUserId === requesterId) {
+    return conversation.members.filter(
+      (member) => member.userId !== requesterId,
+    );
+  }
   const refreshed = await getConversation({
     id: conversationId,
     teamId,
     userId: requesterId,
   });
-  return refreshed!.members;
+  return refreshed?.members ?? [];
 };

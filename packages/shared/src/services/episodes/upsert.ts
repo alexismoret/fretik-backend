@@ -4,6 +4,7 @@ import type { AiEpisode, AiEpisodeKind } from "../../db/schema";
 import { aiEpisodeRecords, aiEpisodes } from "../../db/schema";
 import { internalError, throwHttpError } from "../../lib/errors";
 import { redactSecrets } from "../../lib/redact-secrets";
+import { resyncVectorUserScope } from "../ai-vectors/resync-user-scope";
 import { emitDomainEvent, SYSTEM_ACTOR } from "../domain-events/emit";
 
 const MAX_TITLE_CHARS = 200;
@@ -108,6 +109,17 @@ export const upsertEpisode = async (input: {
         .returning();
       if (!updated) return throwHttpError(500, internalError());
       episode = updated;
+      // Whose memory it is moved (a chat's episode is no longer the team's):
+      // its vectors change hands in the same transaction, since an unchanged
+      // summary is not embedded again and would keep the old reader.
+      if (existing.userId !== updated.userId) {
+        await resyncVectorUserScope({
+          sourceType: "episodes",
+          sourceId: updated.id,
+          userId: updated.userId,
+          tx,
+        });
+      }
     } else {
       const [created] = await tx
         .insert(aiEpisodes)

@@ -8,7 +8,10 @@ import { deleteCollectionRecord } from "@fretik/shared/services/collection-recor
 import { setRecordStatus } from "@fretik/shared/services/collection-records/set-status";
 import { getRecordSnapshots } from "@fretik/shared/services/collection-records/snapshot-batch";
 import { setRecordData } from "@fretik/shared/services/collection-records/update";
+import { requireRecordAudienceAllowed } from "@fretik/shared/services/collection-sharing/audience-policy";
 import {
+  assertCanDeleteRecords,
+  assertCanShareRecord,
   assertCanWriteRecord,
   assertCanWriteType,
 } from "@fretik/shared/services/collection-sharing/write-access";
@@ -237,12 +240,19 @@ export const createManageRecordTool = () =>
             );
           }
           // A collection this team may write records into, by someone who
-          // contributes to it — asked before any card could open.
+          // contributes to it — asked before any card could open. A record
+          // shared on its own stays within the organization's policies.
           await assertCanWriteType({
             collectionId,
             teamId: ctx.teamId,
             organizationId: ctx.organizationId,
             userId: ctx.userId,
+          });
+          await requireRecordAudienceAllowed({
+            userId: ctx.userId,
+            organizationId: ctx.organizationId,
+            teamId: ctx.teamId,
+            sharing: input.sharing,
           });
           // Plain data write → rich `record_write` card (single item), same as
           // the Python bulk path. The gate writes directly at policy `auto`.
@@ -343,12 +353,27 @@ export const createManageRecordTool = () =>
         }
 
         // Owner team or a write grant/share — never write another team's record.
-        await assertCanWriteRecord({
-          recordId: input.recordId,
+        // Deleting it, or changing who sees it, takes full access to the
+        // team's content unless the person created it (the team's policy).
+        const scope = {
           teamId: ctx.teamId,
           organizationId: ctx.organizationId,
           userId: ctx.userId,
-        });
+        };
+        await assertCanWriteRecord({ recordId: input.recordId, ...scope });
+        if (input.action === "delete") {
+          await assertCanDeleteRecords({
+            recordIds: [input.recordId],
+            ...scope,
+          });
+        }
+        if (input.action === "update" && input.sharing !== undefined) {
+          await assertCanShareRecord({ recordId: input.recordId, ...scope });
+          await requireRecordAudienceAllowed({
+            ...scope,
+            sharing: input.sharing,
+          });
+        }
 
         if (input.action === "update") {
           const hasData = Object.keys(values).length > 0;

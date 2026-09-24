@@ -61,8 +61,8 @@ import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
  * Workflows — autonomous agents (definitions + runs). Thin wrappers over
  * `@fretik/shared/services/workflows/*`; execution itself is driven by
  * Trigger.dev against the AI service (see the root plan). The frontend
- * watches live runs through Trigger Realtime with the scoped token minted
- * by `POST /realtime-token`; this API stays the source of truth for
+ * watches one workflow's live runs through Trigger Realtime with the token
+ * minted by `POST /{id}/realtime-token`; this API stays the source of truth for
  * definitions, run history, and the Stop action.
  *
  * Each route on one workflow names the level it takes (`access.resource`):
@@ -456,14 +456,13 @@ const transcriptRoute = createRoute({
 
 const realtimeTokenRoute = createRoute({
   method: "post",
-  path: "/realtime-token",
-  middleware: access.session(
-    "A read token for the active team's run statuses, without payloads or outputs.",
-  ),
-  summary: "Mint a Trigger.dev Realtime token",
+  path: "/{id}/realtime-token",
+  middleware: access.resource("workflow", "view"),
+  summary: "Mint a Trigger.dev Realtime token for one workflow",
   description:
-    "Scoped public access token for the browser to subscribe to this team's workflow runs (tag `team:<id>`) via Trigger Realtime. Expires after 1 h — re-mint on demand.",
+    "Scoped public access token for the browser to follow this workflow's runs (tag `workflow:<id>`) via Trigger Realtime, without payloads or outputs. Expires after 1 h — re-mint on demand.",
   tags: ["Workflows"],
+  request: { params: paramsIdSchema },
   responses: {
     200: {
       content: {
@@ -476,9 +475,10 @@ const realtimeTokenRoute = createRoute({
         },
       },
       description:
-        "Public access token, Trigger API base URL, and the team tag to subscribe to",
+        "Public access token, Trigger API base URL, and the workflow tag to subscribe to",
     },
     ...responseForbiddenSchema,
+    ...responseNotFoundSchema,
     ...responseInternalErrorSchema,
   },
 });
@@ -695,9 +695,9 @@ workflowRoutes.openapi(transcriptRoute, async (c) => {
 });
 
 workflowRoutes.openapi(realtimeTokenRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return c.json(teamRequired(), 403);
-  const { token, url, tag } = await createWorkflowRealtimeToken(team.id);
+  const { token, url, tag } = await createWorkflowRealtimeToken(
+    c.req.valid("param").id,
+  );
   return c.json({ token, url, tag }, 200);
 });
 

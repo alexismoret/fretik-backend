@@ -13,6 +13,7 @@ import { isPageVarRef } from "../../schemas/pages";
 import { bulkDeleteCollectionRecords } from "../collection-records/bulk-delete";
 import { bulkUpdateCollectionRecords } from "../collection-records/bulk-update";
 import { createCollectionRecord } from "../collection-records/create";
+import { recordsShortOfFull } from "../collection-sharing/write-access";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
 import { createLink } from "../links/create";
 import { invalidateLink } from "../links/invalidate";
@@ -442,11 +443,21 @@ export const runPageRecordOperation = async (params: {
     ids: requested,
     principal,
   });
+  // Deleting a record someone else created takes full access to the team's
+  // content (the team's policy): those are refused, like records out of reach.
+  if (operation.mode === "delete" && principal.kind === "user") {
+    const held = await recordsShortOfFull({
+      principal,
+      teamId,
+      recordIds: [...owned],
+    });
+    for (const { id } of held) owned.delete(id);
+  }
   const refused = requested.filter((id) => !owned.has(id));
   if (owned.size === 0) {
     return {
       status: "error",
-      message: `none of the ${requested.length.toString()} ids is a record of this page's collection in your team.`,
+      message: `none of the ${requested.length.toString()} ids is a record of this page's collection in your team that you may ${operation.mode === "delete" ? "delete" : "change"}.`,
     };
   }
   const ids = requested.filter((id) => owned.has(id));

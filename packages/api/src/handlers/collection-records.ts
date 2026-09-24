@@ -1,8 +1,6 @@
 import { driveVisibility } from "@fretik/shared/authz/drive-sql";
 import { access } from "@fretik/shared/authz/http";
 import { partitionMirrorWrites } from "@fretik/shared/authz/mirror-writes";
-import type { UserPrincipal } from "@fretik/shared/authz/principal";
-import { requireSharingAudience } from "@fretik/shared/authz/sharing-policy";
 import {
   authMiddleware,
   type HonoLoggedAppType,
@@ -16,10 +14,6 @@ import {
   bulkRecordWriteRequestSchema,
   bulkRecordWriteResponseSchema,
 } from "@fretik/shared/schemas/bulk-operations";
-import {
-  audienceReach,
-  type RecordSharing,
-} from "@fretik/shared/schemas/collection-sharing";
 import { paramsIdSchema } from "@fretik/shared/schemas/common/params";
 import {
   nextCursorSchema,
@@ -66,8 +60,11 @@ import {
 } from "@fretik/shared/services/collection-records/retrieve";
 import { setRecordStatus } from "@fretik/shared/services/collection-records/set-status";
 import { setRecordData } from "@fretik/shared/services/collection-records/update";
+import { requireRecordAudienceAllowed } from "@fretik/shared/services/collection-sharing/audience-policy";
 import { assertCanReadRecord } from "@fretik/shared/services/collection-sharing/read-access";
 import {
+  assertCanDeleteRecords,
+  assertCanShareRecord,
   assertCanWriteRecord,
   assertCanWriteType,
 } from "@fretik/shared/services/collection-sharing/write-access";
@@ -290,7 +287,7 @@ const deleteRouteDef = createRoute({
   method: "delete",
   path: "/{id}",
   middleware: access.handler(
-    "Write access to the record (assertCanWriteRecord).",
+    "Write access to the record (assertCanWriteRecord), and full access to the team's content unless one created it (assertCanDeleteRecords).",
   ),
   summary: "Delete a record",
   tags: ["CollectionRecords"],
@@ -319,7 +316,7 @@ const bulkWriteRoute = createRoute({
   method: "post",
   path: "/bulk",
   middleware: access.handler(
-    "A collection the team may write records into (assertCanWriteType).",
+    "A collection the team may write records into (assertCanWriteType); deleting records someone else created takes full access to the team's content (assertCanDeleteRecords).",
   ),
   summary: "Create, update or delete many records in one request",
   description:
@@ -459,23 +456,6 @@ const getBulkOperationRoute = createRoute({
   },
 });
 
-/**
- * A record shared on its own (not inheriting its collection's sharing) must
- * stay within the organization's sharing policies, like any other share.
- */
-const assertRecordSharingAllowed = async (
-  principal: UserPrincipal,
-  teamId: string,
-  sharing: RecordSharing | undefined,
-): Promise<void> => {
-  if (sharing === undefined || sharing.inherit) return;
-  await requireSharingAudience({
-    principal,
-    resourceTeamId: teamId,
-    audience: audienceReach(sharing.audience, teamId),
-  });
-};
-
 collectionRecordRoutes.openapi(listRoute, async (c) => {
   const team = c.get("team");
   if (!team) return c.json(teamRequired(), 403);
@@ -598,7 +578,12 @@ collectionRecordRoutes.openapi(createRouteDef, async (c) => {
     organizationId: team.organizationId,
     userId: c.get("user").id,
   });
-  await assertRecordSharingAllowed(c.get("principal"), team.id, body.sharing);
+  await requireRecordAudienceAllowed({
+    userId: user.id,
+    organizationId: team.organizationId,
+    teamId: team.id,
+    sharing: body.sharing,
+  });
   const created = await createCollectionRecord({
     organizationId: team.organizationId,
     teamId: team.id,
@@ -622,13 +607,16 @@ collectionRecordRoutes.openapi(updateRouteDef, async (c) => {
   const user = c.get("user");
   const { id } = c.req.valid("param");
   const { data, sharing } = c.req.valid("json");
-  await assertCanWriteRecord({
-    recordId: id,
+  const scope = {
     teamId: team.id,
     organizationId: team.organizationId,
-    userId: c.get("user").id,
-  });
-  await assertRecordSharingAllowed(c.get("principal"), team.id, sharing);
+    userId: user.id,
+  };
+  await assertCanWriteRecord({ recordId: id, ...scope });
+  if (sharing !== undefined) {
+    await assertCanShareRecord({ recordId: id, ...scope });
+    await requireRecordAudienceAllowed({ ...scope, sharing });
+  }
   // `sharing` is owner-only — enforced inside the service via `callerTeamId`.
   const updated = await setRecordData({
     id,
@@ -660,12 +648,13 @@ collectionRecordRoutes.openapi(deleteRouteDef, async (c) => {
   const team = c.get("team");
   if (!team) return c.json(teamRequired(), 403);
   const { id } = c.req.valid("param");
-  await assertCanWriteRecord({
-    recordId: id,
+  const scope = {
     teamId: team.id,
     organizationId: team.organizationId,
     userId: c.get("user").id,
-  });
+  };
+  await assertCanWriteRecord({ recordId: id, ...scope });
+  await assertCanDeleteRecords({ recordIds: [id], ...scope });
   const result = await deleteCollectionRecord({ id });
   return c.json(result, 200);
 });
@@ -678,14 +667,15 @@ collectionRecordRoutes.openapi(bulkWriteRoute, async (c) => {
   // The acting user, as on every other write here. A bulk call is one request
   // that writes many rows, not a different kind of author.
   const actor = { actorType: "user" as const, actorUserId: user.id };
+  // Every op writes: a viewer reads, whatever the op.
+  await assertCanWriteType({
+    collectionId: body.collectionId,
+    teamId: team.id,
+    organizationId: team.organizationId,
+    userId: user.id,
+  });
 
   if (body.op === "create") {
-    await assertCanWriteType({
-      collectionId: body.collectionId,
-      teamId: team.id,
-      organizationId: team.organizationId,
-      userId: c.get("user").id,
-    });
     const result = await bulkCreateCollectionRecords({
       organizationId: team.organizationId,
       teamId: team.id,
@@ -744,9 +734,16 @@ collectionRecordRoutes.openapi(bulkWriteRoute, async (c) => {
     );
   }
 
+  const deletable = ids.filter((id) => owned.has(id));
+  await assertCanDeleteRecords({
+    recordIds: deletable,
+    teamId: team.id,
+    organizationId: team.organizationId,
+    userId: user.id,
+  });
   const result = await bulkDeleteCollectionRecords({
     teamId: team.id,
-    ids: ids.filter((id) => owned.has(id)),
+    ids: deletable,
     actor,
   });
   return c.json(

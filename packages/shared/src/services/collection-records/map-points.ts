@@ -111,7 +111,7 @@ export const getMapPoints = async (input: {
     JOIN public.locations loc ON loc.id = ${fkCol}
     WHERE collection_records.collection_id = ${input.collectionId}
       AND collection_records.status = 'confirmed'
-      ${visibility ? sql`AND ${visibility}` : sql``}
+      AND ${visibility}
       ${spatial}`;
 
   // Bounded count: we only need "≤ cap or not", so stop scanning at cap+1 rows —

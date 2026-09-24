@@ -179,8 +179,7 @@ export const aggregateRecords = async (data: {
     eq(collectionRecords.collectionId, collectionId),
     eq(collectionRecords.status, status),
   ];
-  const visibility = recordVisibilityCondition({ teamId, scope });
-  if (visibility) conditions.push(visibility);
+  conditions.push(recordVisibilityCondition({ teamId, scope }));
 
   // Filters compare columns on the extension table, which is already joined as
   // `e` below — so the predicates go straight into the WHERE, no correlated

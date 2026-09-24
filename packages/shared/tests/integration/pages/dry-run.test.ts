@@ -1,5 +1,7 @@
 import "@hono/zod-openapi";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import db from "../../../src/db";
+import { collectionGrants } from "../../../src/db/schema";
 import type { PageDefinition } from "../../../src/schemas/pages";
 import { dryRunPage } from "../../../src/services/pages/dry-run";
 import {
@@ -18,10 +20,10 @@ import {
  * collection in existence, including the team's own, and the test could not
  * tell a refusal from a lookup that never happened.
  *
- * The two `forbidden` cases below are also the addition
- * `docs/TEST-TRIAGE.md` asks for beside `page-data-boundary`: an unknown id
- * and another team's id must both refuse, and one dataset's refusal must cost
- * that dataset's block rather than the page.
+ * The `forbidden` cases below are also the addition `docs/TEST-TRIAGE.md`
+ * asks for beside `page-data-boundary`: an unknown id and another team's id
+ * must both refuse, unless that team shared the collection, and one dataset's
+ * refusal must cost that dataset's block rather than the page.
  */
 
 let fx: WorkspaceFixture;
@@ -129,18 +131,11 @@ describe("datasets that name a collection", () => {
     expect(JSON.stringify(result.samples.records)).not.toContain("neighbour");
   });
 
-  test("KNOWN GAP: a foreign collection reports `ok`, not `forbidden`", async () => {
-    // `collectionsSource` probes `where: { id }` with no scope at all, so the
-    // `forbidden` verdict fires only for an id that exists NOWHERE. A page
-    // pointed at another team's collection therefore reports an empty dataset
-    // rather than a refusal — the rows are still scoped (above), so this is a
-    // misleading MESSAGE, not a leak: the author is told "no rows, check your
-    // filters" when the truth is "not your collection".
-    //
-    // Not fixed here because the correct predicate is not `teamId` equality:
-    // reads legitimately honour cross-team grants (`collection-sharing/access`),
-    // and `PageDataSource` is handed no `organizationId` to check one against.
-    // Pinned so the day it is threaded through, this test fails and says so.
+  test("another organization's collection is refused, not reported empty", async () => {
+    // The verdict used to come from a probe with no scope at all, so it fired
+    // only for an id that exists NOWHERE: a page pointed at someone else's
+    // collection reported an empty dataset, and its author was told "no rows,
+    // check your filters" when the truth was "not your collection".
     const foreign = await otherFx.createCollection();
 
     const result = await run(
@@ -149,7 +144,31 @@ describe("datasets that name a collection", () => {
       ]),
     );
 
-    expect(result.samples.records?.status).toBe("ok");
+    expect(result.samples.records?.status).toBe("forbidden");
+  });
+
+  test("a colleague team's collection is readable once shared, and only then", async () => {
+    // Why the verdict is not `teamId` equality: reads honour the grants of
+    // `collection-sharing`. The same collection, in the same organization,
+    // before and after its owner team shares it with this one.
+    const colleagues = await fx.createTeam();
+    const shared = await fx.createCollection({ teamId: colleagues.id });
+    const definition = withDatasets([
+      { id: "records", kind: "collections", collectionId: shared.id },
+    ]);
+
+    expect((await run(definition)).samples.records?.status).toBe("forbidden");
+
+    await db.insert(collectionGrants).values({
+      organizationId: fx.organizationId,
+      collectionId: shared.id,
+      ownerTeamId: colleagues.id,
+      granteeTeamId: fx.teamId,
+    });
+
+    expect((await run(definition)).samples.records?.status).not.toBe(
+      "forbidden",
+    );
   });
 
   test("the team's OWN collection resolves — the refusal is not universal", async () => {

@@ -17,7 +17,7 @@ import {
   createCollectionWithFieldsRequestSchema,
   updateCollectionRequestSchema,
 } from "@fretik/shared/schemas/ontology";
-import { assertCanWriteType } from "@fretik/shared/services/collection-sharing/write-access";
+import { assertCanManageType } from "@fretik/shared/services/collection-sharing/write-access";
 import { createCollection } from "@fretik/shared/services/collections/create";
 import { createCollectionWithFields } from "@fretik/shared/services/collections/create-with-fields";
 import { deleteCollection } from "@fretik/shared/services/collections/delete";
@@ -224,7 +224,11 @@ collectionRoutes.openapi(getRoute, async (c) => {
   const team = c.get("team");
   if (!team) return c.json(teamRequired(), 403);
   const { id } = c.req.valid("param");
-  const type = await getCollection({ id, teamId: team.id });
+  const type = await getCollection({
+    id,
+    teamId: team.id,
+    organizationId: team.organizationId,
+  });
   return c.json(type, 200);
 });
 
@@ -276,10 +280,11 @@ collectionRoutes.openapi(updateRouteDef, async (c) => {
   const user = c.get("user");
   const { id } = c.req.valid("param");
   const { sharing, ...patch } = c.req.valid("json");
-  await assertCanWriteType({
+  await assertCanManageType({
     collectionId: id,
     teamId: team.id,
     organizationId: team.organizationId,
+    userId: user.id,
   });
   const updated = await updateCollection({
     id,
@@ -297,10 +302,11 @@ collectionRoutes.openapi(deleteRouteDef, async (c) => {
   if (!team) return c.json(teamRequired(), 403);
   const user = c.get("user");
   const { id } = c.req.valid("param");
-  await assertCanWriteType({
+  await assertCanManageType({
     collectionId: id,
     teamId: team.id,
     organizationId: team.organizationId,
+    userId: user.id,
   });
   const result = await deleteCollection({
     id,

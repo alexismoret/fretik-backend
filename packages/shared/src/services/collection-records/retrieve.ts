@@ -34,6 +34,10 @@ import {
 } from "../collection-schema/indexes";
 import { noteIndexWanted } from "../collection-schema/reconcile-indexes";
 import { readRecordDataBatch } from "../collection-schema/record-io";
+import {
+  assertCanReadRecord,
+  listReadableRecordIds,
+} from "../collection-sharing/read-access";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
 import { recordVisibilityCondition, resolveRecordTypeScope } from "./scope";
 
@@ -356,8 +360,7 @@ export const listCollectionRecords = async (data: {
     eq(collectionRecords.collectionId, collectionId),
     eq(collectionRecords.status, status),
   ];
-  const visibility = recordVisibilityCondition({ teamId, scope });
-  if (visibility) conditions.push(visibility);
+  conditions.push(recordVisibilityCondition({ teamId, scope }));
   if (documentId) {
     conditions.push(eq(collectionRecords.documentId, documentId));
   }
@@ -430,12 +433,13 @@ export const listCollectionRecords = async (data: {
   // No explicit `NULLS` clause, ever: a btree is `ASC NULLS LAST` /
   // `DESC NULLS FIRST`, so forcing `DESC NULLS LAST` costs a full sort
   // (measured: index scan → Seq Scan + Sort). The defaults match the index.
-  const sortTarget = scope.isForeign
-    ? null
-    : extensionSortColumn(
-        sortBy,
-        fieldDefs.find((field) => `field:${field.key}` === sortBy),
-      );
+  const sortTarget =
+    scope.access === "foreign"
+      ? null
+      : extensionSortColumn(
+          sortBy,
+          fieldDefs.find((field) => `field:${field.key}` === sortBy),
+        );
 
   const pageRows = async (): Promise<
     (typeof collectionRecords.$inferSelect)[]
@@ -544,8 +548,19 @@ export const listCollectionRecords = async (data: {
  * Fetch a single record with its outgoing + incoming links and the records on
  * the other end of each edge (plus the link type carrying the semantics). The
  * record's typed `data` and computed (relation/rollup) values are attached.
+ *
+ * Read on behalf of `teamId`: the record must be readable by it (404
+ * otherwise), and an edge whose far end it may not read is left out entirely —
+ * the far end travels in full, so showing the edge would show the record.
  */
-export const getCollectionRecord = async (data: { id: string }) => {
+export const getCollectionRecord = async (data: {
+  id: string;
+  teamId: string;
+  organizationId: string;
+}) => {
+  const viewer = { teamId: data.teamId, organizationId: data.organizationId };
+  await assertCanReadRecord({ recordId: data.id, ...viewer });
+
   const record = await db.query.collectionRecords.findFirst({
     where: { id: data.id },
     with: {
@@ -556,6 +571,21 @@ export const getCollectionRecord = async (data: { id: string }) => {
   if (!record) {
     return throwHttpError(404, notFound("Record not found"));
   }
+
+  const readableEnds = await listReadableRecordIds({
+    recordIds: [
+      ...record.outgoingLinks.map((link) => link.toRecordId),
+      ...record.incomingLinks.map((link) => link.fromRecordId),
+    ],
+    ...viewer,
+  });
+  const outgoingLinks = record.outgoingLinks.filter((link) =>
+    readableEnds.has(link.toRecordId),
+  );
+  const incomingLinks = record.incomingLinks.filter((link) =>
+    readableEnds.has(link.fromRecordId),
+  );
+
   const fieldDefs: FieldDefinition[] = record.teamId
     ? await getFieldDefinitionsForTeam({
         teamId: record.teamId,
@@ -576,6 +606,8 @@ export const getCollectionRecord = async (data: { id: string }) => {
   ]);
   return {
     ...record,
+    outgoingLinks,
+    incomingLinks,
     data: recordData.get(record.id) ?? {},
     computed: computed.get(record.id) ?? {},
   };

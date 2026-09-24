@@ -5,7 +5,7 @@ import {
 } from "@fretik/shared/schemas/field-definitions";
 import { countNonNullColumnValues } from "@fretik/shared/services/collection-records/field-data";
 import { isVirtualField } from "@fretik/shared/services/collection-schema/columns";
-import { assertCanWriteType } from "@fretik/shared/services/collection-sharing/write-access";
+import { assertCanEditTypeFields } from "@fretik/shared/services/collection-sharing/write-access";
 import { resolveCollectionId } from "@fretik/shared/services/collections/resolve";
 import { loadSyncProvenance } from "@fretik/shared/services/collections/sync-provenance";
 import { FIELD_DEFINITION_LIMITS } from "@fretik/shared/services/field-definitions/constants";
@@ -91,8 +91,9 @@ export const createManageFieldTool = () =>
           );
         }
 
-        // Owner team or a write grant — never edit another team's type's fields.
-        await assertCanWriteType({
+        // Fields are structure: the team's own type, or its own rows on an
+        // org-level type — never through a write grant on another team's type.
+        await assertCanEditTypeFields({
           collectionId,
           teamId: ctx.teamId,
           organizationId: ctx.organizationId,

@@ -3,7 +3,10 @@ import db from "../../db";
 import type { Collection, FieldDefinition } from "../../db/schema";
 import { collections } from "../../db/schema";
 import { notFound, throwHttpError } from "../../lib/errors";
-import { typeGrantedExists } from "../collection-sharing/access";
+import {
+  collectionReadableCondition,
+  typeGrantedExists,
+} from "../collection-sharing/access";
 
 /**
  * List the collections a team can see: its own team-scoped types, the
@@ -44,9 +47,20 @@ export const listCollections = async (data: {
  */
 export const getCollection = async (data: {
   id: string;
+  /** The reading team: the type must be readable by it (404 otherwise). */
   teamId: string;
+  organizationId: string;
 }): Promise<Collection & { fieldDefinitions: FieldDefinition[] }> => {
-  const row = await db.query.collections.findFirst({ where: { id: data.id } });
+  const [row] = await db
+    .select()
+    .from(collections)
+    .where(
+      and(
+        eq(collections.id, data.id),
+        collectionReadableCondition(data.teamId, data.organizationId),
+      ),
+    )
+    .limit(1);
   if (!row) {
     return throwHttpError(404, notFound("Collection not found"));
   }

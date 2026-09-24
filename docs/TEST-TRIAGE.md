@@ -125,16 +125,17 @@ input syntax for type uuid`, which would reach an anonymous caller as a 500
   unset, which is the proof. What is given up — that the embedding endpoint is
   reachable and still returns 2560 dimensions — was never this suite's job:
   `models:check -- --probe` and the evals talk to the live providers on purpose.
-- **KNOWN GAP, pinned — a page dataset over another team's collection reports
-  `ok`, not `forbidden`.** `collectionsSource` probes `where: { id }` with no
-  scope, so `forbidden` fires only for an id that exists nowhere. **No rows
-  cross** — verified in `integration/pages/dry-run.test.ts` against a real
-  neighbouring record — so this is a misleading message, not a leak: the author
-  is told "no rows, check your filters" when the truth is "not your collection".
-  Not fixed here because the right predicate is not `teamId` equality (reads
-  legitimately honour cross-team grants via `collection-sharing/access`) and
-  `PageDataSource` is handed no `organizationId` to check one against. The test
-  asserts today's behaviour and will fail the day that is threaded through.
+- **FIXED — a page dataset over another team's collection reported `ok`, not
+  `forbidden`.** `collectionsSource` probed `where: { id }` with no scope, so
+  `forbidden` fired only for an id that exists nowhere. No rows crossed (the
+  record services were scoped), so it was a misleading message rather than a
+  leak: the author was told "no rows, check your filters" when the truth was
+  "not your collection". The source now asks `canTeamReadCollection`, which
+  takes the organization from the team itself and honours the cross-team
+  grants of `collection-sharing/access`, the reason `teamId` equality was never
+  the right predicate. `integration/pages/dry-run.test.ts` pins both halves:
+  another organization's collection refuses, and a colleague team's collection
+  refuses until it is shared.
 - **`conversation-storage` swallows a database failure during sandbox bootstrap.**
   `pushMcpConnectionOverlay` soft-fails by design, which is right — but it means
   a genuinely broken MCP overlay is indistinguishable from an offline test.

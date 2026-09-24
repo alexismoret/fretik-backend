@@ -22,13 +22,15 @@ import { mockModule } from "../lib/mock-module";
  * Collection, filter keys and operators all come from the stored definition,
  * so a forged body cannot widen a page's reach.
  *
- * The db and the two record services are mocked at module level — the dynamic
- * imports below resolve AFTER, and let the tests read back exactly which
- * filters and limits reached the query layer.
+ * The db, the read-access check and the two record services are mocked at
+ * module level — the dynamic imports below resolve AFTER, and let the tests
+ * read back exactly which filters and limits reached the query layer. Which
+ * collections a team may read is the integration suite's claim
+ * (`integration/pages/dry-run.test.ts`); here it is a given.
  */
 
-/** Collection ids the mocked db "knows"; anything else resolves forbidden. */
-const knownCollections = new Set<string>(["type-1"]);
+/** Collection ids the team may read; anything else resolves forbidden. */
+const readableCollections = new Set<string>(["type-1"]);
 /** Field definitions the mocked team owns, per collection. */
 let fieldDefinitions: unknown[] = [];
 /** Every call the objects source made into the record services. */
@@ -40,16 +42,15 @@ await mockModule("../../src/db", {
   default: {
     query: {
       collections: {
-        findFirst: (args: { where?: { id?: string } }) =>
-          Promise.resolve(
-            args.where?.id !== undefined && knownCollections.has(args.where.id)
-              ? { id: args.where.id }
-              : undefined,
-          ),
         findMany: () => Promise.resolve([]),
       },
     },
   },
+});
+
+await mockModule("../../src/services/collection-sharing/read-access", {
+  canTeamReadCollection: (input: { collectionId: string }) =>
+    Promise.resolve(readableCollections.has(input.collectionId)),
 });
 
 await mockModule("../../src/services/collection-records/retrieve", {

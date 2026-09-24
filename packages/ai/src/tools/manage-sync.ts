@@ -423,6 +423,7 @@ export const createManageSyncTool = () =>
           const collection = await getCollection({
             id: source.collectionId,
             teamId: ctx.teamId,
+            organizationId: ctx.organizationId,
           });
           const app = appNameOf(
             source.providerKey,

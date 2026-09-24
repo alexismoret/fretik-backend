@@ -1,5 +1,9 @@
 import { sql } from "drizzle-orm";
 import db from "../../db";
+import {
+  assertCanReadRecord,
+  listReadableRecordIds,
+} from "../collection-sharing/read-access";
 
 /**
  * Node reachable from a set of seed records, walking active edges in both
@@ -106,9 +110,20 @@ export const getNeighborhood = async (data: {
 /**
  * List the active edges touching a record (either direction), with the link
  * type and the record on the other end of each edge.
+ *
+ * Read on behalf of `teamId`, with the same rule as `getCollectionRecord`: the
+ * record must be readable by it, and an edge whose far end it may not read is
+ * left out.
  */
-export const listLinksForRecord = async (data: { recordId: string }) => {
+export const listLinksForRecord = async (data: {
+  recordId: string;
+  teamId: string;
+  organizationId: string;
+}) => {
   const { recordId } = data;
+  const viewer = { teamId: data.teamId, organizationId: data.organizationId };
+  await assertCanReadRecord({ recordId, ...viewer });
+
   const [outgoing, incoming] = await Promise.all([
     db.query.links.findMany({
       where: {
@@ -127,5 +142,16 @@ export const listLinksForRecord = async (data: { recordId: string }) => {
       with: { linkType: true, fromRecord: true },
     }),
   ]);
-  return { outgoing, incoming };
+
+  const readableEnds = await listReadableRecordIds({
+    recordIds: [
+      ...outgoing.map((link) => link.toRecordId),
+      ...incoming.map((link) => link.fromRecordId),
+    ],
+    ...viewer,
+  });
+  return {
+    outgoing: outgoing.filter((link) => readableEnds.has(link.toRecordId)),
+    incoming: incoming.filter((link) => readableEnds.has(link.fromRecordId)),
+  };
 };

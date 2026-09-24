@@ -21,6 +21,7 @@ import {
   updateFieldDefinitionRequestSchema,
 } from "@fretik/shared/schemas/field-definitions";
 import {
+  assertCanEditTypeFields,
   assertCanWriteField,
   assertCanWriteType,
 } from "@fretik/shared/services/collection-sharing/write-access";
@@ -284,7 +285,9 @@ fieldDefinitionRoutes.openapi(createRouteDef, async (c) => {
       key: body.collectionKey ?? DOCUMENT_COLLECTION_KEY,
     }));
 
-  await assertCanWriteType({
+  // Fields are structure: the owning team's (or, on an org-level type, each
+  // team's own rows) — never added through a write grant on another team's type.
+  await assertCanEditTypeFields({
     collectionId,
     teamId: team.id,
     organizationId: team.organizationId,
@@ -314,14 +317,13 @@ fieldDefinitionRoutes.openapi(updateRouteDef, async (c) => {
   const team = c.get("team");
   if (!team) return c.json(teamRequired(), 403);
   const user = c.get("user");
-  // Org-vs-team scope is enforced by the existing row's teamId — the
-  // service rejects scope-crossing updates implicitly.
 
   const { id } = c.req.valid("param");
   await assertCanWriteField({
     fieldDefinitionId: id,
     teamId: team.id,
     organizationId: team.organizationId,
+    userId: user.id,
   });
   const body = c.req.valid("json");
   const { cascade, ...patch } = body;
@@ -344,6 +346,7 @@ fieldDefinitionRoutes.openapi(deleteRouteDef, async (c) => {
     fieldDefinitionId: id,
     teamId: team.id,
     organizationId: team.organizationId,
+    userId: user.id,
   });
   const { cascade } = c.req.valid("query");
   const result = await deleteFieldDefinition({

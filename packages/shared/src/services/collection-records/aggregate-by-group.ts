@@ -155,8 +155,7 @@ export const aggregateRecordsByGroup = async (data: {
     eq(collectionRecords.collectionId, collectionId),
     eq(collectionRecords.status, status),
   ];
-  const visibility = recordVisibilityCondition({ teamId, scope });
-  if (visibility) conditions.push(visibility);
+  conditions.push(recordVisibilityCondition({ teamId, scope }));
 
   const table = qualifiedCollectionTable(collectionId);
   const groupCol = sql.raw(`e."${groupKey}"`);

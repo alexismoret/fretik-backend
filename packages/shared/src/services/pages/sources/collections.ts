@@ -1,4 +1,3 @@
-import db from "../../../db";
 import type { RecordFilter } from "../../../schemas/ontology";
 import type {
   PageDataset,
@@ -11,6 +10,7 @@ import type {
 import { PAGE_LIMITS, isPageVarRef } from "../../../schemas/pages";
 import { aggregateRecords } from "../../collection-records/aggregate";
 import { listCollectionRecords } from "../../collection-records/retrieve";
+import { canTeamReadCollection } from "../../collection-sharing/read-access";
 import { buildPageFieldDescriptors } from "../field-descriptors";
 import type { PageDataSource } from "./types";
 import { toPageValue } from "./values";
@@ -183,11 +183,17 @@ export const collectionsSource: PageDataSource = {
       return { status: "error", message: "dataset has no collectionId" };
     }
 
-    const type = await db.query.collections.findFirst({
-      columns: { id: true },
-      where: { id: dataset.collectionId },
-    });
-    if (!type) return { status: "forbidden" };
+    // The collection id is written into the definition, by the agent or a
+    // person: it must be a type the team may read, never merely one that
+    // exists — on the public route that team is the page owner's.
+    if (
+      !(await canTeamReadCollection({
+        collectionId: dataset.collectionId,
+        teamId,
+      }))
+    ) {
+      return { status: "forbidden" };
+    }
 
     const filters = resolveFilters(dataset, state);
     // Read the descriptors BEFORE the rows: they are what a runtime sort key is

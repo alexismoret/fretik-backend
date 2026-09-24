@@ -50,7 +50,14 @@ there is no deny rule. Two ceilings cap the result, whatever is shared:
   project's people, else its team's); anyone else reads it.
 
 A **guest** is also held to their own terms at every door that writes a
-grant (never more than `edit`; `authz/guests.ts`).
+grant (never more than `edit`; `authz/guests.ts`). They take part in a chat
+only while they take part in the project it lives in: being a chat's
+participant carries no one outside its team or project. Their access lasts
+the organization's period (`guestAccessDays`); once every share has run out,
+the hourly sweep removes them from the organization
+(`services/access/guests/remove-expired-guests.ts`), journaled with its
+reason. Neither guests nor the teams' agents take a seat in Better Auth's
+`membershipLimit` (`services/organization/membership-limit.ts`).
 
 **Admins read nothing by role.** They run the structure (people, teams,
 policies) through capabilities; their access to content comes from their own
@@ -87,6 +94,7 @@ The app words it; the assistant reads the same payload.
 | Who may share, how far, with what?             | `services/access/sharing/`                                                 |
 | Asking for access, and answering               | `services/access/requests/`                                                |
 | Guests and invitations by email                | `services/access/guests/`, `lib/auth-*.ts`                                 |
+| Where can I work, and who invited me?          | `services/workspaces/list-workspaces.ts` (`GET /workspaces`)               |
 | What the assistant may read and search         | vector audiences (`services/ai-vectors/acl.ts`), `authz/sql-tool-scope.ts` |
 | The journal of every change                    | `services/access/record-event.ts`, read by `services/access/journal/`      |
 
@@ -101,7 +109,9 @@ refusal it did not predict still arrives as a 403 it can explain.
 `access.handler(why)` when the service decides, `access.public(why)` or
 `access.internal`. The route-coverage test of each service fails on a route
 without one. A handler that names a resource by id acts in that resource's
-own team (`teamOfResource`), never the caller's active one.
+own team (`teamOfResource`), never the caller's active one. The rare route
+about the person rather than one of their organizations (`/workspaces`) runs
+behind `sessionMiddleware`, which asks for a session and nothing more.
 
 **A new service.** Take a `principal` and decide with the engine
 (`requireAccess`, `requireCapability`). A background job passes a system
@@ -183,10 +193,15 @@ organization or team, and the isolation suite above holds the engine to it;
 Postgres enforcing it too would need every connection to carry the
 organization, which the pooled connections do not yet.
 
-**Guests.** An expired guest stays a member with nothing left to open (a
-cleanup job could remove them); Better Auth's `membershipLimit` counts guests
-and the teams' agents; guests are not billed (billing is out of scope).
+**Guests and billing.** Guests are not billed (billing is out of scope).
 
 **Seen from another team.** A member's chat list is their active team's (a
-chat of another team's project is reached from the project); a guest picks no
-model (the model list is a team's).
+chat of another team's project is reached from the project). With no team
+open, a guest's or a member's in no team yet, it is the chats of the projects
+they take part in.
+
+**The sandbox's connected tools.** A chat's sandbox names the tools of its
+team's connections, whoever is in the chat; calling one still goes through the
+caller's access and is refused when they may not use it. Naming only the
+caller's own belongs to the sandbox's provisioning (E2B), to be changed where
+it can be verified end to end.

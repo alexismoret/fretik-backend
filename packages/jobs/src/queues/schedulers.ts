@@ -4,6 +4,7 @@ import {
   DREAMING_SWEEP_JOB,
   EXTERNAL_SYNC_SWEEP_JOB,
   GC_DEMOTE_JOB,
+  GUEST_EXPIRY_SWEEP_JOB,
   JOURNAL_SWEEP_JOB,
   MCP_SNAPSHOT_REFRESH_JOB,
   MODEL_ALERT_SWEEP_JOB,
@@ -38,6 +39,9 @@ const SWEEP_INTERVAL_MS = 15_000;
 /** Reclaim stalled workflow runs every 5 min (backs the orchestrator's own
  * onFailure finalize; heartbeat-gap is 20 min, so 5 min is timely enough). */
 const STALL_SWEEP_INTERVAL_MS = 5 * 60_000;
+/** Hourly: a guest's period is counted in days, and what they owned while
+ * they took part is theirs until the sweep that removes them. */
+const GUEST_EXPIRY_SWEEP_INTERVAL_MS = 60 * 60_000;
 /** Dreaming at 03:00 UTC, GC an hour later — both in the quiet window. */
 const DREAMING_CRON = "0 3 * * *";
 const GC_CRON = "0 4 * * *";
@@ -144,6 +148,12 @@ export const registerSchedulers = async (): Promise<void> => {
     CONVERSATION_TASK_SWEEP_JOB,
     { every: STALL_SWEEP_INTERVAL_MS },
     { name: CONVERSATION_TASK_SWEEP_JOB, opts: CRON_OPTS },
+  );
+  // One indexed read, empty on almost every pass.
+  await maintenance.upsertJobScheduler(
+    GUEST_EXPIRY_SWEEP_JOB,
+    { every: GUEST_EXPIRY_SWEEP_INTERVAL_MS },
+    { name: GUEST_EXPIRY_SWEEP_JOB, opts: CRON_OPTS },
   );
   // Stays on the maintenance queue: one indexed read that is empty on almost
   // every pass, and at most one email. Nothing here can hold the worker.

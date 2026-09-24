@@ -10,6 +10,7 @@ import {
   sql,
   type SQL,
 } from "drizzle-orm";
+import { resolveAccessMany } from "../../authz/access";
 import {
   DOCUMENT_ACCESS_COLUMNS,
   driveVisibility,
@@ -156,10 +157,46 @@ type DocWithRelations = {
   mirrorRecord: { id: string; collectionId: string } | null;
 };
 
+/** A Drive item before the caller's level on it is known. */
+type ListedItem = DriveItem extends infer Item
+  ? Item extends unknown
+    ? Omit<Item, "level">
+    : never
+  : never;
+
+/**
+ * Each listed item with the caller's level on it, as the engine decides it:
+ * the item's menu offers what that level allows. One batched decision per
+ * kind of item, over a page the lists have already filtered to what the
+ * caller can open.
+ */
+const withLevels = async (
+  principal: Principal,
+  items: readonly ListedItem[],
+): Promise<DriveItem[]> => {
+  const idsOf = (type: ListedItem["type"]) =>
+    items.flatMap((item) => (item.type === type ? [item.data.id] : []));
+  const [folderLevels, documentLevels] = await Promise.all([
+    resolveAccessMany(principal, "folder", idsOf("folder")),
+    resolveAccessMany(principal, "document", idsOf("document")),
+  ]);
+  return items.map((item): DriveItem =>
+    item.type === "folder"
+      ? {
+          ...item,
+          level: folderLevels.get(item.data.id)?.level ?? "view",
+        }
+      : {
+          ...item,
+          level: documentLevels.get(item.data.id)?.level ?? "view",
+        },
+  );
+};
+
 const mapDocsToDriveItems = async (
   docs: DocWithRelations[],
   teamId: string,
-): Promise<DriveItem[]> => {
+): Promise<ListedItem[]> => {
   const readyDocs = docs.filter(hasStoredThumbnail);
   const thumbnailUrls = await Promise.all(
     readyDocs.map((d) => getPresignedUrl(buildDocumentThumbnailKey(d.id))),
@@ -237,11 +274,12 @@ const documentFilterExists = (
  * Retrieves documents matching advanced filters across all folders in a team.
  */
 const getFilteredDocuments = async (data: {
+  principal: Principal;
   teamId: string;
   params: DriveListParams;
   visibility: DriveVisibility;
 }): Promise<{ count: number; data: DriveItem[] }> => {
-  const { teamId, params, visibility } = data;
+  const { principal, teamId, params, visibility } = data;
   const { page, limit, search } = params;
   const offset = page * limit;
 
@@ -337,7 +375,10 @@ const getFilteredDocuments = async (data: {
 
   return {
     count: totalCount,
-    data: await mapDocsToDriveItems(orderedDocs, teamId),
+    data: await withLevels(
+      principal,
+      await mapDocsToDriveItems(orderedDocs, teamId),
+    ),
   };
 };
 
@@ -361,7 +402,12 @@ const getFolderExplorer = async (data: {
   const visibility = await driveVisibility(principal, teamId);
 
   if (hasAdvancedFilter(params)) {
-    const children = await getFilteredDocuments({ teamId, params, visibility });
+    const children = await getFilteredDocuments({
+      principal,
+      teamId,
+      params,
+      visibility,
+    });
     return {
       folder: null,
       children,
@@ -422,7 +468,7 @@ const getFolderExplorer = async (data: {
   const totalDocumentsCount = documentCount?.count ?? 0;
 
   // Folders first, then documents, one page across both.
-  const children: DriveItem[] = [];
+  const children: ListedItem[] = [];
   if (offset < totalFoldersCount) {
     const subFolders = await db
       .select()
@@ -478,7 +524,7 @@ const getFolderExplorer = async (data: {
     folder: currentFolder,
     children: {
       count: totalFoldersCount + totalDocumentsCount,
-      data: children,
+      data: await withLevels(principal, children),
     },
     breadcrumbs,
     project,

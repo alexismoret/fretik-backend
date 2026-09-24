@@ -12,6 +12,9 @@ import {
   invitation,
   member,
   projects,
+  signupAllowlist,
+  teamMember,
+  user,
 } from "../../../src/db/schema";
 import { parseApiError } from "../../../src/schemas/errors";
 import {
@@ -83,6 +86,9 @@ const { setOrganizationRole } =
   await import("../../../src/services/members/set-role");
 const { listConversations } = await import("../../../src/services/ai/list");
 const { deleteConversations } = await import("../../../src/services/ai/delete");
+const { listWorkspaces } =
+  await import("../../../src/services/workspaces/list-workspaces");
+const { projectsTakenPartIn } = await import("../../../src/authz/principal");
 
 const PASSWORD = "integration-password-1";
 
@@ -457,6 +463,120 @@ describe("accepting", () => {
   });
 });
 
+describe("someone with an account in another organization", () => {
+  test("is invited like anyone, signs in rather than up, and keeps their own organization", async () => {
+    const elsewhere = await createWorkspaceFixture();
+    const email = outsider();
+    let userId: string | null = null;
+    try {
+      // Their own account, in their own organization, in French.
+      await db.insert(signupAllowlist).values({ email });
+      const signUp = await auth.api.signUpEmail({
+        body: { name: "Paul Elsewhere", email, password: PASSWORD },
+      });
+      userId = signUp.user.id;
+      await db
+        .update(user)
+        .set({ emailVerified: true, language: "fr" })
+        .where(eq(user.id, userId));
+      await db.insert(member).values({
+        userId,
+        organizationId: elsewhere.organizationId,
+        role: "member",
+        createdAt: new Date(),
+      });
+      await db
+        .insert(teamMember)
+        .values({ userId, teamId: elsewhere.teamId, createdAt: new Date() });
+      const signIn = await auth.api.signInEmail({
+        body: { email, password: PASSWORD },
+        returnHeaders: true,
+      });
+      const headers = new Headers({ cookie: cookieHeader(signIn.headers) });
+      sent.length = 0;
+
+      const doc = await insertDocument();
+      const result = await inviteGuests({
+        principal: await fx.principalOf(ownerId),
+        type: "document",
+        id: doc.id,
+        emails: [email],
+        level: "view",
+      });
+
+      // Whether the address has an account is not the inviter's to learn.
+      expect(result.outcomes).toEqual([{ email, status: "invited" }]);
+      // The email, to that address alone, is in their language and says to
+      // sign in with the account they have.
+      expect(sent.map((message) => message.to)).toEqual([email]);
+      expect(sent[0]?.subject).toContain("a partagé");
+      expect(sent[0]?.html).toContain("Vous avez déjà un compte Fretik");
+
+      // Signed in, they find it in the app before opening any email.
+      const [sentInvitation] = await invitationsTo(email);
+      if (!sentInvitation) throw new Error("no invitation");
+      const before = await listWorkspaces({
+        userId,
+        email,
+        emailVerified: true,
+      });
+      expect(
+        before.invitations.map((waiting) => ({
+          id: waiting.id,
+          role: waiting.role,
+          alreadyMember: waiting.alreadyMember,
+          items: waiting.items.map((item) => item.id),
+        })),
+      ).toEqual([
+        {
+          id: sentInvitation.id,
+          role: "guest",
+          alreadyMember: false,
+          items: [doc.id],
+        },
+      ]);
+
+      await auth.api.acceptInvitation({
+        body: { invitationId: sentInvitation.id },
+        headers,
+      });
+
+      // A guest here, still a member of their own, with one account.
+      const after = await listWorkspaces({
+        userId,
+        email,
+        emailVerified: true,
+      });
+      expect(after.invitations).toEqual([]);
+      const byOrganization = (a: { id: string }, b: { id: string }) =>
+        a.id.localeCompare(b.id);
+      expect(
+        after.memberships
+          .map((m) => ({
+            id: m.organization.id,
+            role: m.role,
+            teams: m.teams.map((t) => t.id),
+          }))
+          .sort(byOrganization),
+      ).toEqual(
+        [
+          { id: fx.organizationId, role: "guest" as const, teams: [] },
+          {
+            id: elsewhere.organizationId,
+            role: "member" as const,
+            teams: [elsewhere.teamId],
+          },
+        ].sort(byOrganization),
+      );
+      expect(await levelOf(userId, doc.id)).toBe("view");
+    } finally {
+      if (userId !== null) await db.delete(user).where(eq(user.id, userId));
+      await db.delete(signupAllowlist).where(eq(signupAllowlist.email, email));
+      await elsewhere.cleanup();
+    }
+  });
+});
+
 describe("a guest in the organization", () => {
   test("is shared with directly, for the guest period, and told by email", async () => {
     await updateOrganizationPolicy({
@@ -732,8 +852,11 @@ describe("taking an invitation back", () => {
 });
 
 describe("a guest's own chats", () => {
-  /** A project of the team, with a chat of it the guest owns. */
-  const guestChatInProject = async (guestId: string) => {
+  /**
+   * A project of the team the guest takes part in until `until`, with a chat
+   * of it the guest owns.
+   */
+  const guestChatInProject = async (guestId: string, until?: Date) => {
     const [project] = await db
       .insert(projects)
       .values({
@@ -744,6 +867,15 @@ describe("a guest's own chats", () => {
       })
       .returning({ id: projects.id });
     if (!project) throw new Error("fixture: no project");
+    await db.insert(accessGrants).values({
+      organizationId: fx.organizationId,
+      resourceType: "project",
+      resourceId: project.id,
+      principalType: "user",
+      principalId: guestId,
+      level: "use",
+      expiresAt: until ?? null,
+    });
     const chat = await fx.createConversation({
       userId: guestId,
       projectId: project.id,
@@ -753,27 +885,73 @@ describe("a guest's own chats", () => {
       userId: guestId,
       role: "owner",
     });
-    return chat.id;
+    return { chatId: chat.id, projectId: project.id };
   };
 
-  test("are listed from the organization, having no team to list them from", async () => {
+  /** A guest's chats, from the projects they take part in. */
+  const chatsOf = async (guestId: string) =>
+    (
+      await listConversations({
+        scope: {
+          organizationId: fx.organizationId,
+          projectIds: projectsTakenPartIn(await fx.principalOf(guestId)),
+        },
+        userId: guestId,
+        agentType: "chatbot",
+        params: { limit: 20, page: 0 },
+      })
+    ).data.map((row) => row.id);
+
+  test("are listed from the projects they take part in, having no team to list them from", async () => {
     const guestId = await fx.addPerson({ role: "guest" });
-    const chatId = await guestChatInProject(guestId);
+    const { chatId } = await guestChatInProject(guestId);
     // Someone else's chat of the team is not the guest's to list.
     await fx.createConversation({ userId: ownerId });
 
-    const list = await listConversations({
-      scope: { organizationId: fx.organizationId },
-      userId: guestId,
-      agentType: "chatbot",
-      params: { limit: 20, page: 0 },
+    expect(await chatsOf(guestId)).toEqual([chatId]);
+  });
+
+  test("end with their part in the project, seats and their own chats alike", async () => {
+    const guestId = await fx.addPerson({ role: "guest" });
+    const { chatId, projectId } = await guestChatInProject(
+      guestId,
+      new Date(Date.now() + 60_000),
+    );
+    // Seated in a colleague's chat of the same project, beside a member of
+    // the organization who works neither in its team nor in the project.
+    const elsewhere = await fx.addPerson({ inTeam: false });
+    const colleagues = await fx.createConversation({
+      userId: ownerId,
+      projectId,
     });
-    expect(list.data.map((row) => row.id)).toEqual([chatId]);
+    await db.insert(aiConversationMembers).values([
+      { conversationId: colleagues.id, userId: ownerId, role: "owner" },
+      { conversationId: colleagues.id, userId: guestId, role: "member" },
+      { conversationId: colleagues.id, userId: elsewhere, role: "member" },
+    ]);
+    const levelIn = async (userId: string, id: string) =>
+      (await resolveAccess(await fx.principalOf(userId), "conversation", id))
+        ?.level ?? null;
+    expect(await levelIn(guestId, chatId)).toBe("full");
+    expect(await levelIn(guestId, colleagues.id)).toBe("use");
+
+    // Their period ends.
+    await db
+      .update(accessGrants)
+      .set({ expiresAt: new Date(Date.now() - 1000) })
+      .where(eq(accessGrants.principalId, guestId));
+
+    expect(await chatsOf(guestId)).toEqual([]);
+    expect(await levelIn(guestId, chatId)).toBeNull();
+    expect(await levelIn(guestId, colleagues.id)).toBeNull();
+    // A member who does not work there reads a chat they were seated in:
+    // the rule is a guest's alone.
+    expect(await levelIn(elsewhere, colleagues.id)).toBe("view");
   });
 
   test("are theirs to delete, and nobody else's chat is", async () => {
     const guestId = await fx.addPerson({ role: "guest" });
-    const chatId = await guestChatInProject(guestId);
+    const { chatId } = await guestChatInProject(guestId);
     const others = await fx.createConversation({ userId: ownerId });
     await db.insert(aiConversationMembers).values({
       conversationId: others.id,

@@ -26,6 +26,7 @@ export const serializePage = (row: Page): PageResponse => ({
   icon: row.icon,
   color: row.color,
   userId: row.userId,
+  teamId: row.teamId,
   projectId: row.projectId,
   definition: row.definition,
   runtimeErrors: row.runtimeErrors,

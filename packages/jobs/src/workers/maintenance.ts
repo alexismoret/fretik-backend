@@ -1,4 +1,5 @@
 import { createWorkerConnection } from "@fretik/shared/lib/queue/connection";
+import { removeExpiredGuests } from "@fretik/shared/services/access/guests/remove-expired-guests";
 import { sweepConversationTasks } from "@fretik/shared/services/conversation-tasks/sweep";
 import { runTelemetryRollup } from "@fretik/shared/services/model-registry/telemetry-rollup";
 import { markStalledRuns } from "@fretik/shared/services/workflows/mark-stalled-runs";
@@ -8,6 +9,7 @@ import {
   DREAMING_SWEEP_JOB,
   EXTERNAL_SYNC_SWEEP_JOB,
   GC_DEMOTE_JOB,
+  GUEST_EXPIRY_SWEEP_JOB,
   JOURNAL_SWEEP_JOB,
   MEMORY_MAINTENANCE_QUEUE,
   MODEL_ALERT_SWEEP_JOB,
@@ -60,6 +62,15 @@ export const startMaintenanceWorker = (): Worker => {
           if (created > 0) {
             console.info(
               `[workflow-trigger-sweep] enqueued ${created.toString()} event runs`,
+            );
+          }
+          return;
+        }
+        case GUEST_EXPIRY_SWEEP_JOB: {
+          const { removed } = await removeExpiredGuests();
+          if (removed > 0) {
+            console.info(
+              `[guest-expiry-sweep] removed ${removed.toString()} guests whose access ended`,
             );
           }
           return;

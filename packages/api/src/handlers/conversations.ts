@@ -1,14 +1,11 @@
 import { access, teamOfResource } from "@fretik/shared/authz/http";
 import { requirePlacement } from "@fretik/shared/authz/placement";
+import { projectsTakenPartIn } from "@fretik/shared/authz/principal";
 import {
   authMiddleware,
   type HonoLoggedAppType,
 } from "@fretik/shared/lib/auth-middleware";
-import {
-  notFound,
-  teamRequired,
-  throwHttpError,
-} from "@fretik/shared/lib/errors";
+import { notFound, throwHttpError } from "@fretik/shared/lib/errors";
 import { bodyIdListSchema, paramsIdSchema } from "@fretik/shared/schemas";
 import {
   AddConversationMembersSchema,
@@ -367,13 +364,14 @@ conversationRoutes.openapi(listConversationsRoute, async (c) => {
   const user = c.get("user");
   const team = c.get("team");
   const principal = c.get("principal");
-  // The team open, or — for a guest, who has none — the organization, where
-  // every chat they take part in lives in a project shared with them.
+  // The team open, or, with none (a guest, a member not in a team yet), the
+  // projects they take part in, whichever team holds them.
   const scope = team
     ? { teamId: team.id }
-    : principal.isGuest
-      ? { organizationId: principal.organizationId }
-      : throwHttpError(403, teamRequired());
+    : {
+        organizationId: principal.organizationId,
+        projectIds: projectsTakenPartIn(principal),
+      };
 
   const { agentType, pinned, paginate, cursor, ...params } =
     c.req.valid("query");

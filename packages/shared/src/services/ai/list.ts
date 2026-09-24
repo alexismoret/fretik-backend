@@ -1,4 +1,13 @@
-import { and, count, eq, ilike, isNull, sql, type SQL } from "drizzle-orm";
+import {
+  and,
+  count,
+  eq,
+  ilike,
+  inArray,
+  isNull,
+  sql,
+  type SQL,
+} from "drizzle-orm";
 import db from "../../db";
 import { aiConversationMembers, aiConversations } from "../../db/schema";
 import { idCursor } from "../../lib/cursor";
@@ -19,24 +28,33 @@ import {
 const PINNED_MAX = 50;
 
 /**
- * Where a list reads: the team the caller has open — or, for a guest, who
- * belongs to no team, the whole organization: every chat they take part in
- * sits in a project shared with them, whichever team holds it.
+ * Where a list reads: the team the caller has open — or, with no team open (a
+ * guest, a member not in a team yet), the projects they take part in,
+ * whichever team holds them. A chat of a project is theirs to take part in
+ * while they take part in the project, which is also when a guest may open it
+ * (`authz/rules.ts`).
  */
 export type ConversationScope =
-  { readonly teamId: string } | { readonly organizationId: string };
+  | { readonly teamId: string }
+  | {
+      readonly organizationId: string;
+      readonly projectIds: readonly string[];
+    };
 
 /** The scope as a relational `where` fragment on `ai_conversations`. */
 const whereScope = (scope: ConversationScope) =>
   "teamId" in scope
     ? { teamId: scope.teamId }
-    : { organizationId: scope.organizationId };
+    : {
+        organizationId: scope.organizationId,
+        projectId: { in: [...scope.projectIds] },
+      };
 
 /** The scope as a SQL condition on `ai_conversations`. */
 const scopeCondition = (scope: ConversationScope): SQL =>
   "teamId" in scope
     ? eq(aiConversations.teamId, scope.teamId)
-    : eq(aiConversations.organizationId, scope.organizationId);
+    : sql`${eq(aiConversations.organizationId, scope.organizationId)} and ${inArray(aiConversations.projectId, [...scope.projectIds])}`;
 
 /**
  * List the conversations the current user participates in for a given agent
@@ -94,6 +112,15 @@ export const listConversations = async (data: {
   nextCursor?: string | null;
 }> => {
   const { scope, userId, agentType, params, pinned } = data;
+
+  // No team open and no project taken part in: nothing of theirs to list.
+  if ("projectIds" in scope && scope.projectIds.length === 0) {
+    return {
+      count: 0,
+      data: [],
+      ...(data.paginate === "cursor" ? { nextCursor: null } : {}),
+    };
+  }
 
   if (pinned === true) {
     return await listPinnedConversations({ scope, userId, agentType, params });

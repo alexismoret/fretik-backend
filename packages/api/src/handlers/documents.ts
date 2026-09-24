@@ -872,6 +872,7 @@ documentRoutes.openapi(getDocumentDetailsRoute, async (c) => {
       fileUrl,
       fieldValues,
       fieldDefinitions,
+      level: c.get("resource").level,
     },
     200,
   );

@@ -1,4 +1,5 @@
-import { access } from "@fretik/shared/authz/http";
+import { requireAccess } from "@fretik/shared/authz/access";
+import { access, teamOfResource } from "@fretik/shared/authz/http";
 import {
   authMiddleware,
   type HonoLoggedAppType,
@@ -259,18 +260,32 @@ modelProfilesRoutes.use("*", authMiddleware);
  */
 modelProfilesRoutes.get(
   "/",
-  access.session(
-    "The model catalog and the active team's defaults, read by any member.",
+  access.handler(
+    "The model catalog with a team's defaults: the chat's team when `conversationId` names a chat the caller takes part in (use), else the active team.",
   ),
   async (c) => {
-    const team = c.get("team");
-    if (!team) return throwHttpError(403, teamRequired());
+    // A chat's turns run in its own team (its models, its depth), which for
+    // a guest or someone working in another team's project is not the team
+    // they have open, if any.
+    const conversationId = c.req.query("conversationId");
+    const teamId =
+      conversationId === undefined
+        ? (c.get("team")?.id ?? throwHttpError(403, teamRequired()))
+        : teamOfResource(
+            await requireAccess({
+              principal: c.get("principal"),
+              type: "conversation",
+              id: conversationId,
+              required: "use",
+              notFoundMessage: "Conversation not found",
+            }),
+          );
 
     const profiles = listProfilesForFunctionDisplay();
     const profileKeys = profiles.map((profile) => profile.key);
     const [metrics, settings, incidents] = await Promise.all([
       getModelMetrics(),
-      getTeamAiSettings(team.id),
+      getTeamAiSettings(teamId),
       // ONE grouped count for the whole page. Never fatal: a hub that fails to
       // render because an infra table is slow is worse than one showing no
       // incident history.

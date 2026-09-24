@@ -236,7 +236,7 @@ folderRoutes.openapi(getRootDriveRoute, async (c) => {
       projectId: params.projectId,
       params,
     });
-    return c.json(result, 200);
+    return c.json({ ...result, level: null }, 200);
   }
 
   const team = c.get("team");
@@ -248,11 +248,11 @@ folderRoutes.openapi(getRootDriveRoute, async (c) => {
     params,
   });
 
-  return c.json(result, 200);
+  return c.json({ ...result, level: null }, 200);
 });
 
 folderRoutes.openapi(getFolderExplorerRoute, async (c) => {
-  const teamId = teamOfResource(c.get("resource"));
+  const resource = c.get("resource");
 
   const { id } = c.req.valid("param");
   const params = c.req.valid("query");
@@ -260,11 +260,11 @@ folderRoutes.openapi(getFolderExplorerRoute, async (c) => {
   const result = await getFolder({
     principal: c.get("principal"),
     folderId: id,
-    teamId,
+    teamId: teamOfResource(resource),
     params,
   });
 
-  return c.json(result, 200);
+  return c.json({ ...result, level: resource.level }, 200);
 });
 
 folderRoutes.openapi(updateFolderRoute, async (c) => {

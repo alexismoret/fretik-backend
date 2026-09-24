@@ -131,6 +131,8 @@ export const GC_DEMOTE_JOB = "gc-demote";
 export const WORKFLOW_TRIGGER_SWEEP_JOB = "workflow-trigger-sweep";
 /** 5min — reclaims stalled (heartbeat-dead) workflow runs. */
 export const WORKFLOW_STALL_SWEEP_JOB = "workflow-stall-sweep";
+/** Hourly — guests whose access has run out leave their organization. */
+export const GUEST_EXPIRY_SWEEP_JOB = "guest-expiry-sweep";
 /** 5min — reconciles the conversation wait registry and re-signals owed
  * resumes (backstop for a completion or resume signal lost to a restart). */
 export const CONVERSATION_TASK_SWEEP_JOB = "conversation-task-sweep";

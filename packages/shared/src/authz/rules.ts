@@ -157,6 +157,23 @@ export const ceilingFor = (
   return "full";
 };
 
+/**
+ * A guest in a chat they no longer work in. A chat is taken part in by the
+ * people who work where it lives, and a guest works only in the projects
+ * shared with them: their seat in a project's chat, and a chat of their own
+ * there, were their part in the project, which ends with their period. A
+ * member who stops working there keeps reading the chat (`levelCeiling`); a
+ * guest keeps nothing of it but what was shared with them to read, for its
+ * own period.
+ */
+const guestOutsideChat = (
+  principal: UserPrincipal,
+  node: ResourceNode,
+): boolean =>
+  principal.isGuest &&
+  node.type === "conversation" &&
+  !worksWhere(principal, node);
+
 /** The person's effective level on the node, or null when they cannot see it. */
 export const computeLevel = (
   principal: UserPrincipal,
@@ -164,9 +181,13 @@ export const computeLevel = (
 ): AccessLevel | null => {
   if (node.organizationId !== principal.organizationId) return null;
 
+  const outside = guestOutsideChat(principal, node);
+  const grants: readonly GrantFact[] = outside
+    ? node.grants.filter((grant) => grant.seat !== true)
+    : node.grants;
   const level = maxLevel(
-    node.ownerUserId === principal.userId ? "full" : null,
-    levelFromGrants(principal, node.grants),
+    node.ownerUserId === principal.userId && !outside ? "full" : null,
+    levelFromGrants(principal, grants),
     inheritedLevel(principal, node),
   );
   return capLevel(level, levelCeiling(principal, node));

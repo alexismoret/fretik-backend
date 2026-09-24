@@ -1,4 +1,5 @@
 import { z } from "@hono/zod-openapi";
+import { accessLevelSchema } from "./access";
 import { paramsListSchema } from "./common/params";
 import { responseListSchema } from "./common/responses";
 import { documentStatusSchema } from "./documents";
@@ -113,16 +114,20 @@ export const DriveDocumentSchema = z.object({
 });
 
 /**
- * Unified drive item (folder or document)
+ * Unified drive item (folder or document), with the caller's level on it:
+ * its menu offers what that level allows (moving it or deleting it takes full
+ * access), so it never offers what the server would refuse.
  */
 export const DriveItemSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("folder"),
     data: FolderResponseSchema,
+    level: accessLevelSchema,
   }),
   z.object({
     type: z.literal("document"),
     data: DriveDocumentSchema,
+    level: accessLevelSchema,
   }),
 ]);
 
@@ -140,6 +145,12 @@ export const FolderDriveResponseSchema = z.object({
    * named so the path can start there. Null for a team's Drive.
    */
   project: z.object({ id: z.uuid(), name: z.string() }).nullable(),
+  /**
+   * The caller's level on the folder listed: adding to it takes edit. Null at
+   * a root, where adding is contributing to the team or taking part in the
+   * project (`authz/placement.ts`).
+   */
+  level: accessLevelSchema.nullable(),
 });
 
 export type FolderDriveResponse = z.infer<typeof FolderDriveResponseSchema>;

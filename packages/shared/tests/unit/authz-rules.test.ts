@@ -319,6 +319,51 @@ describe("type ceilings", () => {
     expect(computeLevel(member, conversation)).toBe("view");
   });
 
+  test("a guest's seat, and a chat of their own, end with their part in the project", () => {
+    const seated = node({
+      type: "conversation",
+      projectId: PROJECT,
+      restricted: true,
+      grants: [
+        { principalType: "user", principalId: ME, level: "use", seat: true },
+      ],
+    });
+    const own = node({
+      type: "conversation",
+      projectId: PROJECT,
+      restricted: true,
+      ownerUserId: ME,
+      grants: [
+        { principalType: "user", principalId: ME, level: "full", seat: true },
+      ],
+    });
+    const takingPart = person({
+      isGuest: true,
+      projects: { [PROJECT]: "use" },
+    });
+    expect(computeLevel(takingPart, seated)).toBe("use");
+    expect(computeLevel(takingPart, own)).toBe("full");
+
+    const periodOver = person({ isGuest: true });
+    expect(computeLevel(periodOver, seated)).toBeNull();
+    expect(computeLevel(periodOver, own)).toBeNull();
+    // What was shared with them to read lasts its own period.
+    const sharedToRead = {
+      ...seated,
+      grants: [
+        ...seated.grants,
+        {
+          principalType: "user" as const,
+          principalId: ME,
+          level: "view" as const,
+        },
+      ],
+    };
+    expect(computeLevel(periodOver, sharedToRead)).toBe("view");
+    // A member who stops working there keeps reading.
+    expect(computeLevel(person({}), seated)).toBe("view");
+  });
+
   test("a workflow running with its owner's access can only be shown to others", () => {
     const privateRun = node({
       type: "workflow",

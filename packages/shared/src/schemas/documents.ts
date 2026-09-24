@@ -4,6 +4,7 @@ import {
   documentStatusEnum,
   documentVersionActorEnum,
 } from "../db/schema";
+import { accessLevelSchema } from "./access";
 import { fieldDefinitionResponseSchema } from "./field-definitions";
 import { FolderBreadcrumbSchema } from "./folders";
 
@@ -228,6 +229,11 @@ export const GetDocumentDetailsResponseSchema = DocumentResponseSchema.extend({
    * render the right panel + edit form without a second round-trip.
    */
   fieldDefinitions: z.array(fieldDefinitionResponseSchema),
+  /**
+   * The caller's level on the document: the page offers changing it, its
+   * fields and its extraction at `edit`, and reads it below.
+   */
+  level: accessLevelSchema,
 });
 
 export type GetDocumentDetailsResponse = z.infer<

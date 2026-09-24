@@ -4,7 +4,7 @@ import type {
   TeamRole,
 } from "../schemas/access";
 import type { TeamAccessPolicy } from "../schemas/access-policy";
-import { capLevel, maxLevel } from "./levels";
+import { atLeast, capLevel, maxLevel } from "./levels";
 
 /**
  * WHO is asking — the input of every access decision.
@@ -104,7 +104,22 @@ export interface GrantFact {
   readonly principalType: "user" | "team" | "project" | "organization";
   readonly principalId: string;
   readonly level: AccessLevel;
+  /**
+   * A chat's seat (`ai_conversation_members`): its owner's, or taking part,
+   * given to someone who works where the chat lives. A guest keeps it only
+   * while they do (`rules.ts`).
+   */
+  readonly seat?: true;
 }
+
+/**
+ * The projects the person takes part in (`use` or more): where they work,
+ * whichever team holds them.
+ */
+export const projectsTakenPartIn = (principal: UserPrincipal): string[] =>
+  [...principal.projectLevels]
+    .filter(([, level]) => atLeast(level, "use"))
+    .map(([projectId]) => projectId);
 
 /**
  * The level a set of grants gives this person. A grant to a group is capped by

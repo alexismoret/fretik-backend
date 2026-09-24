@@ -78,6 +78,7 @@ export const conversationAdapter: ResourceAdapter = {
         principalType: "user",
         principalId: seat.userId,
         level: seat.role === "owner" ? "full" : "use",
+        seat: true,
       };
       mergeGrants(grants, seat.conversationId, [grant]);
     }

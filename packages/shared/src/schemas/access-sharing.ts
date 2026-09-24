@@ -1,6 +1,7 @@
 import { z } from "@hono/zod-openapi";
 import {
   accessLevelSchema,
+  accessRequestStatusSchema,
   capabilityDecisionSchema,
   shareablePrincipalTypeSchema,
 } from "./access";
@@ -23,6 +24,11 @@ export const SHARING_RESOURCE_TYPES = [
 export type SharingResourceType = (typeof SHARING_RESOURCE_TYPES)[number];
 export const sharingResourceTypeSchema = z.enum(SHARING_RESOURCE_TYPES);
 
+export const isSharingResourceType = (
+  type: string,
+): type is SharingResourceType =>
+  (SHARING_RESOURCE_TYPES as readonly string[]).includes(type);
+
 export const resourceAccessParamsSchema = z.object({
   type: sharingResourceTypeSchema.openapi({
     param: { name: "type", in: "path" },
@@ -37,12 +43,39 @@ export const resourceGrantParamsSchema = resourceAccessParamsSchema.extend({
   principalId: z.uuid().openapi({ param: { name: "principalId", in: "path" } }),
 });
 
-const personSchema = z.object({
+export const accessPersonSchema = z.object({
   userId: z.string(),
   name: z.string(),
   email: z.string(),
   image: z.string().nullable(),
 });
+export type AccessPerson = z.infer<typeof accessPersonSchema>;
+
+/**
+ * Someone asking for more access to a resource they can see
+ * (`/access/resources/{type}/{id}/requests`, `schemas/access-requests.ts`).
+ */
+export const accessRequestSchema = z
+  .object({
+    id: z.string(),
+    resource: z.object({
+      type: sharingResourceTypeSchema,
+      id: z.string(),
+      name: z.string(),
+    }),
+    requester: accessPersonSchema,
+    /** The level asked for. */
+    level: accessLevelSchema,
+    /** The requester's level when the request was read, null if none. */
+    currentLevel: accessLevelSchema.nullable(),
+    message: z.string().nullable(),
+    status: accessRequestStatusSchema,
+    createdAt: z.date(),
+    decidedAt: z.date().nullable(),
+    decidedBy: z.object({ userId: z.string(), name: z.string() }).nullable(),
+  })
+  .openapi("AccessRequest");
+export type AccessRequestView = z.infer<typeof accessRequestSchema>;
 
 /**
  * Someone, or a group, holding an explicit grant. `email` and `image` are a
@@ -92,9 +125,11 @@ export const resourceAccessSchema = z
     /** Whether the caller may change who has access: full access, not a guest. */
     canManage: z.boolean(),
     /** Its owner, who always has full access. Null when their account is gone. */
-    owner: personSchema.nullable(),
+    owner: accessPersonSchema.nullable(),
     /** The explicit grants, strongest first. */
     holders: z.array(accessHolderSchema),
+    /** Pending requests for more access, for whoever may answer them. */
+    requests: z.array(accessRequestSchema),
     general: z.object({
       /** Restricted: only the owner and the holders reach it. */
       restricted: z.boolean(),

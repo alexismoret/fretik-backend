@@ -1,0 +1,11 @@
+<mj-column width="100%">
+  <mj-text>{{ greeting }}</mj-text>
+
+  <mj-text padding-top="12px">{{ intro }}</mj-text>
+
+  {{#if ctaUrl}}
+  <mj-button href="{{ctaUrl}}" padding-top="28px" padding-bottom="28px">
+    {{ cta }}
+  </mj-button>
+  {{/if}}
+</mj-column>

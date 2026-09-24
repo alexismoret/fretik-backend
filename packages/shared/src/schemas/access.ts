@@ -172,6 +172,7 @@ export const ACCESS_AUDIT_ACTIONS = [
   "grant.removed",
   "restriction.changed",
   "owner.transferred",
+  "request.created",
   "request.decided",
 ] as const;
 export type AccessAuditAction = (typeof ACCESS_AUDIT_ACTIONS)[number];

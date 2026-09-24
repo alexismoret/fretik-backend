@@ -7,6 +7,8 @@ import type {
   SharingResourceType,
 } from "../../../schemas/access-sharing";
 import { recordAccessEvent } from "../record-event";
+import { tellRequestersAnswered } from "../requests/answered-by-share";
+import { settleRequestsAnsweredBy } from "../requests/settle-requests";
 import { describeResourceAccess } from "./describe";
 import {
   assertSomeoneKeepsFullAccess,
@@ -38,11 +40,11 @@ export const changeGrantLevel = async (input: {
   assertShareable(type, level, [holder]);
   const holderName = await principalName(principal.organizationId, holder);
 
-  await db.transaction(async (tx) => {
+  const settled = await db.transaction(async (tx) => {
     const current =
       (await lockGrants(tx, { type, id }, [holder]))[0] ??
       throwHttpError(404, notFound("Access not found"));
-    if (current.level === level) return;
+    if (current.level === level) return [];
     if (current.level === "full") {
       await assertSomeoneKeepsFullAccess(tx, node, [holder]);
     }
@@ -67,6 +69,20 @@ export const changeGrantLevel = async (input: {
         resourceName: node.name,
       },
     });
+    // Raising someone to what they asked for answers them.
+    return settleRequestsAnsweredBy(tx, {
+      organizationId: principal.organizationId,
+      resource: { type, id, name: node.name },
+      userIds: holder.type === "user" ? [holder.id] : [],
+      level,
+      deciderUserId: principal.userId,
+    });
+  });
+  await tellRequestersAnswered({
+    principal,
+    settled,
+    resource: { type, id, name: node.name },
+    level,
   });
 
   return describeResourceAccess({ principal, type, id });

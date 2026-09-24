@@ -1,6 +1,9 @@
-import { requireAccessForEach } from "@fretik/shared/authz/access";
+import {
+  idsByTeam,
+  requireAccessForEachResolved,
+} from "@fretik/shared/authz/access";
 import { requireFolderToAddTo } from "@fretik/shared/authz/drive";
-import { access } from "@fretik/shared/authz/http";
+import { access, teamOfResource } from "@fretik/shared/authz/http";
 import {
   authMiddleware,
   type HonoLoggedAppType,
@@ -167,7 +170,7 @@ const deleteFoldersRoute = createRoute({
   method: "delete",
   path: "",
   middleware: access.handler(
-    "Each folder takes full access; ids out of sight are skipped (requireAccessForEach).",
+    "Each folder takes full access, and is deleted in its own team; ids out of sight are skipped (requireAccessForEachResolved).",
   ),
   summary: "Delete multiple folders",
   description: "Delete multiple folders by ID",
@@ -232,8 +235,7 @@ folderRoutes.openapi(getRootDriveRoute, async (c) => {
 });
 
 folderRoutes.openapi(getFolderExplorerRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
+  const teamId = teamOfResource(c.get("resource"));
 
   const { id } = c.req.valid("param");
   const params = c.req.valid("query");
@@ -241,7 +243,7 @@ folderRoutes.openapi(getFolderExplorerRoute, async (c) => {
   const result = await getFolder({
     principal: c.get("principal"),
     folderId: id,
-    teamId: team.id,
+    teamId,
     params,
   });
 
@@ -250,10 +252,7 @@ folderRoutes.openapi(getFolderExplorerRoute, async (c) => {
 
 folderRoutes.openapi(updateFolderRoute, async (c) => {
   const user = c.get("user");
-  const team = c.get("team");
-  if (!team) {
-    return throwHttpError(403, teamRequired());
-  }
+  const teamId = teamOfResource(c.get("resource"));
 
   const { id } = c.req.valid("param");
   const updates = c.req.valid("json");
@@ -261,7 +260,7 @@ folderRoutes.openapi(updateFolderRoute, async (c) => {
 
   const updatedFolder = await updateFolder({
     id,
-    teamId: team.id,
+    teamId,
     updates,
     actor: { actorType: "user", actorUserId: user.id },
   });
@@ -271,27 +270,28 @@ folderRoutes.openapi(updateFolderRoute, async (c) => {
 
 folderRoutes.openapi(deleteFoldersRoute, async (c) => {
   const user = c.get("user");
-  const team = c.get("team");
-  if (!team) {
-    return throwHttpError(403, teamRequired());
-  }
-
   const { ids } = c.req.valid("json");
-  const deletable = await requireAccessForEach({
+  const deletable = await requireAccessForEachResolved({
     principal: c.get("principal"),
     type: "folder",
     ids,
     required: "full",
   });
-  if (deletable.length === 0) return c.json({ rowCount: 0 }, 200);
 
-  const res = await deleteFolders({
-    ids: deletable,
-    teamId: team.id,
-    actor: { actorType: "user", actorUserId: user.id },
-  });
+  // Each in its own team: a selection made in a folder shared from another
+  // team is that team's.
+  let rowCount = 0;
+  for (const [teamId, teamIds] of idsByTeam(deletable)) {
+    // oxlint-disable-next-line no-await-in-loop -- one team, rarely two
+    const res = await deleteFolders({
+      ids: teamIds,
+      teamId,
+      actor: { actorType: "user", actorUserId: user.id },
+    });
+    rowCount += res.rowCount ?? 0;
+  }
 
-  return c.json({ rowCount: res.rowCount }, 200);
+  return c.json({ rowCount }, 200);
 });
 
 export { folderRoutes };

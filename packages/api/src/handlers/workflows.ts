@@ -1,5 +1,5 @@
 import { requireAccess } from "@fretik/shared/authz/access";
-import { access } from "@fretik/shared/authz/http";
+import { access, teamOfResource } from "@fretik/shared/authz/http";
 import type { UserPrincipal } from "@fretik/shared/authz/principal";
 import type { WorkflowRun } from "@fretik/shared/db/schema";
 import {
@@ -83,13 +83,14 @@ workflowRoutes.use("*", authMiddleware);
  */
 const requireRun = async (params: {
   runId: string;
-  teamId: string;
   principal: UserPrincipal;
   level: AccessLevel;
 }): Promise<WorkflowRun> => {
+  // In the caller's organization, not their open team: a workflow shared from
+  // another team shows its runs where it opens.
   const run = await getWorkflowRunRow({
     id: params.runId,
-    teamId: params.teamId,
+    organizationId: params.principal.organizationId,
     principal: params.principal,
   });
   if (!run) return throwHttpError(404, notFound("Run not found"));
@@ -531,12 +532,11 @@ workflowRoutes.openapi(triggerCatalogRoute, async (c) => {
 });
 
 workflowRoutes.openapi(getRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return c.json(teamRequired(), 403);
+  const teamId = teamOfResource(c.get("resource"));
   const { id } = c.req.valid("param");
   const workflow = await getWorkflow({
     id,
-    teamId: team.id,
+    teamId,
     principal: c.get("principal"),
   });
   if (!workflow) return throwHttpError(404, notFound("Workflow not found"));
@@ -544,13 +544,12 @@ workflowRoutes.openapi(getRoute, async (c) => {
 });
 
 workflowRoutes.openapi(updateRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return c.json(teamRequired(), 403);
+  const teamId = teamOfResource(c.get("resource"));
   const { id } = c.req.valid("param");
   const body = c.req.valid("json");
   const workflow = await updateWorkflow({
     id,
-    teamId: team.id,
+    teamId,
     input: body,
     principal: c.get("principal"),
   });
@@ -559,12 +558,11 @@ workflowRoutes.openapi(updateRoute, async (c) => {
 });
 
 workflowRoutes.openapi(archiveRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return c.json(teamRequired(), 403);
+  const teamId = teamOfResource(c.get("resource"));
   const { id } = c.req.valid("param");
   const workflow = await archiveWorkflow({
     id,
-    teamId: team.id,
+    teamId,
     principal: c.get("principal"),
   });
   if (!workflow) return throwHttpError(404, notFound("Workflow not found"));
@@ -572,12 +570,11 @@ workflowRoutes.openapi(archiveRoute, async (c) => {
 });
 
 workflowRoutes.openapi(deleteRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return c.json(teamRequired(), 403);
+  const teamId = teamOfResource(c.get("resource"));
   const { id } = c.req.valid("param");
   const workflow = await deleteWorkflow({
     id,
-    teamId: team.id,
+    teamId,
     principal: c.get("principal"),
   });
   if (!workflow) return throwHttpError(404, notFound("Workflow not found"));
@@ -585,12 +582,11 @@ workflowRoutes.openapi(deleteRoute, async (c) => {
 });
 
 workflowRoutes.openapi(activateRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return c.json(teamRequired(), 403);
+  const teamId = teamOfResource(c.get("resource"));
   const { id } = c.req.valid("param");
   const workflow = await activateWorkflow({
     id,
-    teamId: team.id,
+    teamId,
     principal: c.get("principal"),
   });
   if (!workflow) return throwHttpError(404, notFound("Workflow not found"));
@@ -598,12 +594,11 @@ workflowRoutes.openapi(activateRoute, async (c) => {
 });
 
 workflowRoutes.openapi(pauseRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return c.json(teamRequired(), 403);
+  const teamId = teamOfResource(c.get("resource"));
   const { id } = c.req.valid("param");
   const workflow = await pauseWorkflow({
     id,
-    teamId: team.id,
+    teamId,
     principal: c.get("principal"),
   });
   if (!workflow) return throwHttpError(404, notFound("Workflow not found"));
@@ -611,14 +606,13 @@ workflowRoutes.openapi(pauseRoute, async (c) => {
 });
 
 workflowRoutes.openapi(runRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return c.json(teamRequired(), 403);
+  const teamId = teamOfResource(c.get("resource"));
   const { id } = c.req.valid("param");
   const body = c.req.valid("json");
 
   const workflow = await getWorkflowRow({
     id,
-    teamId: team.id,
+    teamId,
     principal: c.get("principal"),
     level: "use",
   });
@@ -647,13 +641,12 @@ workflowRoutes.openapi(runRoute, async (c) => {
 });
 
 workflowRoutes.openapi(listRunsRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return c.json(teamRequired(), 403);
+  const teamId = teamOfResource(c.get("resource"));
   const { id } = c.req.valid("param");
   const query = c.req.valid("query");
   const result = await listWorkflowRuns({
     workflowId: id,
-    teamId: team.id,
+    teamId,
     params: query,
     principal: c.get("principal"),
   });
@@ -661,12 +654,9 @@ workflowRoutes.openapi(listRunsRoute, async (c) => {
 });
 
 workflowRoutes.openapi(getRunRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return c.json(teamRequired(), 403);
   const { runId } = c.req.valid("param");
   const run = await requireRun({
     runId,
-    teamId: team.id,
     principal: c.get("principal"),
     level: "view",
   });
@@ -674,23 +664,18 @@ workflowRoutes.openapi(getRunRoute, async (c) => {
 });
 
 workflowRoutes.openapi(stopRunRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return c.json(teamRequired(), 403);
   const { runId } = c.req.valid("param");
   const principal = c.get("principal");
-  await requireRun({ runId, teamId: team.id, principal, level: "use" });
-  const run = await cancelWorkflowRun({ runId, teamId: team.id, principal });
+  const { teamId } = await requireRun({ runId, principal, level: "use" });
+  const run = await cancelWorkflowRun({ runId, teamId, principal });
   if (!run) return throwHttpError(404, notFound("Run not found"));
   return c.json(run, 200);
 });
 
 workflowRoutes.openapi(transcriptRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return c.json(teamRequired(), 403);
   const { runId } = c.req.valid("param");
   const run = await requireRun({
     runId,
-    teamId: team.id,
     principal: c.get("principal"),
     level: "view",
   });

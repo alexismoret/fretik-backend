@@ -9,17 +9,23 @@ import { workflowAccessWhere } from "./visibility";
  * Raw run row, if the principal reaches its workflow. Internal callers (the
  * turn handler, finalize, cancel) pass a system principal — and a team when
  * they have one: without it the lookup is by id across teams, which only a
- * caller holding the run's own id from a trusted source may do.
+ * caller holding the run's own id from a trusted source may do. A person's
+ * run is looked up in their organization, whichever team its workflow is in:
+ * a workflow shared from another team shows its runs too.
  */
 export const getWorkflowRunRow = async (params: {
   id: string;
   teamId?: string;
+  organizationId?: string;
   principal: Principal;
 }): Promise<WorkflowRun | undefined> =>
   db.query.workflowRuns.findFirst({
     where: {
       id: params.id,
       ...(params.teamId !== undefined ? { teamId: params.teamId } : {}),
+      ...(params.organizationId !== undefined
+        ? { organizationId: params.organizationId }
+        : {}),
       workflow: workflowAccessWhere(params.principal, "view"),
     },
   });

@@ -1,6 +1,8 @@
 import db from "../db";
 import type { RenderedApprovalSummary } from "../external-apps/i18n/render-summary";
 import { OTP_EXPIRY_MINUTES } from "../lib/auth-constants";
+import type { AccessLevel } from "../schemas/access";
+import type { SharingResourceType } from "../schemas/access-sharing";
 import { i18n } from "./i18n";
 import { renderMarkdownToEmailHtml } from "./markdown-to-html";
 import { renderEmail } from "./render";
@@ -666,4 +668,103 @@ export const generateSecurityNoticeEmail = async (
   );
 
   return { subject: t(`securityNotice.${params.kind}.subject`), html };
+};
+
+/** Where the app opens a resource that can be shared. */
+const resourceUrl = (resource: {
+  type: SharingResourceType;
+  id: string;
+}): string => {
+  switch (resource.type) {
+    case "document":
+      return `${appUrl}/document/${resource.id}`;
+    case "folder":
+      return `${appUrl}/drive/${resource.id}`;
+    case "page":
+      return `${appUrl}/pages/${resource.id}`;
+    case "workflow":
+      return `${appUrl}/workflows/${resource.id}`;
+  }
+};
+
+interface AccessRequestEmailParams {
+  requestId: string;
+  recipientName: string;
+  requesterName: string;
+  resourceName: string;
+  level: AccessLevel;
+  /** The requester's note, when they left one. */
+  message: string | null;
+}
+
+/**
+ * To someone who can answer an access request: who asks, for what, and why.
+ * The link opens the request where it is answered (`/shared`).
+ */
+export const generateAccessRequestEmail = async (
+  params: AccessRequestEmailParams,
+  lang: string,
+): Promise<EmailData> => {
+  const t = i18n.getFixedT(lang);
+  const names = {
+    requesterName: params.requesterName,
+    resourceName: params.resourceName,
+  };
+  const html = await renderEmail(
+    "access-request",
+    {
+      greeting: t("accessRequest.greeting", { name: params.recipientName }),
+      intro: t(`accessRequest.intro.${params.level}`, names),
+      // Empty omits the block (the template guards it with `{{#if}}`).
+      message: params.message ?? "",
+      messageLabel: t("accessRequest.messageLabel"),
+      ctaUrl: `${appUrl}/shared?request=${params.requestId}`,
+      cta: t("accessRequest.cta"),
+      footnote: t("accessRequest.footnote"),
+    },
+    lang,
+  );
+  return { subject: t("accessRequest.subject", names), html };
+};
+
+interface AccessRequestDecidedEmailParams {
+  recipientName: string;
+  resource: { type: SharingResourceType; id: string; name: string };
+  decision: "approved" | "denied";
+  /** The level granted, for an approval. */
+  level: AccessLevel | null;
+  deciderName: string;
+}
+
+/** To the requester: their request was answered, and how. */
+export const generateAccessRequestDecidedEmail = async (
+  params: AccessRequestDecidedEmailParams,
+  lang: string,
+): Promise<EmailData> => {
+  const t = i18n.getFixedT(lang);
+  const names = {
+    deciderName: params.deciderName,
+    resourceName: params.resource.name,
+  };
+  const approved = params.decision === "approved" && params.level !== null;
+  const html = await renderEmail(
+    "access-request-decided",
+    {
+      greeting: t("accessRequestDecided.greeting", {
+        name: params.recipientName,
+      }),
+      intro: approved
+        ? t(`accessRequestDecided.approved.intro.${params.level}`, names)
+        : t("accessRequestDecided.denied.intro", names),
+      ctaUrl: approved ? resourceUrl(params.resource) : "",
+      cta: t("accessRequestDecided.approved.cta"),
+    },
+    lang,
+  );
+  return {
+    subject: approved
+      ? t("accessRequestDecided.approved.subject", names)
+      : t("accessRequestDecided.denied.subject", names),
+    html,
+  };
 };

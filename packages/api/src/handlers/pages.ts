@@ -1,4 +1,4 @@
-import { access } from "@fretik/shared/authz/http";
+import { access, teamOfResource } from "@fretik/shared/authz/http";
 import {
   authMiddleware,
   type HonoLoggedAppType,
@@ -528,25 +528,23 @@ pageRoutes.openapi(createRouteDef, async (c) => {
 });
 
 pageRoutes.openapi(getRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return c.json(teamRequired(), 403);
+  const teamId = teamOfResource(c.get("resource"));
   const { id } = c.req.valid("param");
   const page = await getPage({
     pageId: id,
-    teamId: team.id,
+    teamId,
     principal: c.get("principal"),
   });
   return c.json(page, 200);
 });
 
 pageRoutes.openapi(updateRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return c.json(teamRequired(), 403);
+  const teamId = teamOfResource(c.get("resource"));
   const { id } = c.req.valid("param");
   const body = c.req.valid("json");
   const { page, warnings } = await updatePage({
     pageId: id,
-    teamId: team.id,
+    teamId,
     actingUserId: c.get("user").id,
     principal: c.get("principal"),
     input: body,
@@ -555,34 +553,31 @@ pageRoutes.openapi(updateRoute, async (c) => {
 });
 
 pageRoutes.openapi(deleteRouteDef, async (c) => {
-  const team = c.get("team");
-  if (!team) return c.json(teamRequired(), 403);
+  const teamId = teamOfResource(c.get("resource"));
   const { id } = c.req.valid("param");
   await deletePage({
     pageId: id,
-    teamId: team.id,
+    teamId,
     principal: c.get("principal"),
   });
   return c.json({ ok: true }, 200);
 });
 
 pageRoutes.openapi(versionsRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return c.json(teamRequired(), 403);
+  const teamId = teamOfResource(c.get("resource"));
   const { id } = c.req.valid("param");
   // Through `getPage` so a restricted page's history is as closed as the page.
-  await getPage({ pageId: id, teamId: team.id, principal: c.get("principal") });
-  const versions = await listPageVersions({ pageId: id, teamId: team.id });
+  await getPage({ pageId: id, teamId, principal: c.get("principal") });
+  const versions = await listPageVersions({ pageId: id, teamId });
   return c.json({ versions }, 200);
 });
 
 pageRoutes.openapi(restoreVersionRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return c.json(teamRequired(), 403);
+  const teamId = teamOfResource(c.get("resource"));
   const { id, versionNumber } = c.req.valid("param");
   const restored = await restorePageVersion({
     pageId: id,
-    teamId: team.id,
+    teamId,
     versionNumber,
     actingUserId: c.get("user").id,
     principal: c.get("principal"),
@@ -591,12 +586,11 @@ pageRoutes.openapi(restoreVersionRoute, async (c) => {
 });
 
 pageRoutes.openapi(publishRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return c.json(teamRequired(), 403);
+  const teamId = teamOfResource(c.get("resource"));
   const { id } = c.req.valid("param");
   const page = await publishPage({
     pageId: id,
-    teamId: team.id,
+    teamId,
     publishedByUserId: c.get("user").id,
     principal: c.get("principal"),
   });
@@ -604,45 +598,42 @@ pageRoutes.openapi(publishRoute, async (c) => {
 });
 
 pageRoutes.openapi(unpublishRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return c.json(teamRequired(), 403);
+  const teamId = teamOfResource(c.get("resource"));
   const { id } = c.req.valid("param");
   const page = await unpublishPage({
     pageId: id,
-    teamId: team.id,
+    teamId,
     principal: c.get("principal"),
   });
   return c.json(page, 200);
 });
 
 pageRoutes.openapi(dataRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return c.json(teamRequired(), 403);
+  const teamId = teamOfResource(c.get("resource"));
   const user = c.get("user");
   const { id } = c.req.valid("param");
   const { variables, datasetIds, queries, fresh } = c.req.valid("json");
 
   const page = await getPage({
     pageId: id,
-    teamId: team.id,
+    teamId,
     principal: c.get("principal"),
   });
-  // Cached for 20 s per team + definition version + request, with concurrent
+  // Cached for 20 s per reader + definition version + request, with concurrent
   // misses collapsed into one execution — a dashboard left open re-asks the
   // same aggregates on every glance. `fresh` is the refresh button's bypass.
   const connectionsEpoch = await externalConnectionsEpoch({
-    teamId: team.id,
+    teamId,
     userId: user.id,
   });
   const result = await cachedPageData({
     key: pageDataCacheKey({
       pageId: id,
-      // The VIEWER's team, which is also what scopes the queries below: a page
-      // shared across teams shows each reader their own records, so a key
-      // without the team would serve one team's rows to another.
-      teamId: team.id,
-      // And the viewer themselves: an external dataset resolved through a
-      // personal connection makes the answer viewer-specific.
+      // The page's team, which scopes the queries below…
+      teamId,
+      // …read as the viewer: they are shown what they may read there. An
+      // external dataset reads through the team's connections, as the
+      // published page does, or through one of the viewer's own.
       userId: user.id,
       definitionFingerprint: page.updatedAt.toISOString(),
       connectionsEpoch,
@@ -650,11 +641,13 @@ pageRoutes.openapi(dataRoute, async (c) => {
     }),
     ...(fresh !== undefined ? { fresh } : {}),
     run: async () => {
-      // The VIEWER's team scopes the queries — never the page owner's. Only the
-      // anonymous published route deliberately runs under the owner's scope.
+      // The page's own team scopes the queries, read as the viewer — never as
+      // its owner: a page shared from another team shows its data as far as
+      // the viewer may read it. Only the anonymous published route runs as
+      // the team's agent.
       const data = await runPageData({
         definition: page.definition,
-        teamId: team.id,
+        teamId,
         userId: user.id,
         reader: c.get("principal"),
         pageId: id,
@@ -668,7 +661,7 @@ pageRoutes.openapi(dataRoute, async (c) => {
       // carries the connections epoch, so connecting an app retires both.
       const connections = await buildPageConnectionReport({
         definition: page.definition,
-        teamId: team.id,
+        teamId,
         userId: user.id,
         pageId: id,
       });
@@ -679,18 +672,17 @@ pageRoutes.openapi(dataRoute, async (c) => {
 });
 
 pageRoutes.openapi(connectionsRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return c.json(teamRequired(), 403);
+  const teamId = teamOfResource(c.get("resource"));
   const { id } = c.req.valid("param");
 
   const page = await getPage({
     pageId: id,
-    teamId: team.id,
+    teamId,
     principal: c.get("principal"),
   });
   const connections = await buildPageConnectionReport({
     definition: page.definition,
-    teamId: team.id,
+    teamId,
     userId: c.get("user").id,
     pageId: id,
   });
@@ -698,8 +690,8 @@ pageRoutes.openapi(connectionsRoute, async (c) => {
 });
 
 pageRoutes.openapi(setConnectionRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return c.json(teamRequired(), 403);
+  const teamId = teamOfResource(c.get("resource"));
+  const { organizationId } = c.get("principal");
   const user = c.get("user");
   const { id, providerKey } = c.req.valid("param");
   const { connectionId } = c.req.valid("json");
@@ -708,29 +700,29 @@ pageRoutes.openapi(setConnectionRoute, async (c) => {
   // per-user and changes nothing for anyone else.
   const page = await getPage({
     pageId: id,
-    teamId: team.id,
+    teamId,
     principal: c.get("principal"),
   });
   if (connectionId !== null) {
     // Throws 404 when the connection is not one this caller may use, which is
     // the whole authorisation check: `setConnectionPreference` writes, it does
     // not authorise.
-    await getConnectionForCaller(connectionId, team.id, user.id);
+    await getConnectionForCaller(connectionId, teamId, user.id);
   }
   await setConnectionPreference({
-    organizationId: team.organizationId,
-    teamId: team.id,
+    organizationId,
+    teamId,
     userId: user.id,
     providerKey,
     pageId: id,
     connectionId,
   });
   // The viewer's cached page data resolved through the OLD account.
-  await bumpExternalConnectionsEpoch({ teamId: team.id, userId: user.id });
+  await bumpExternalConnectionsEpoch({ teamId, userId: user.id });
 
   const connections = await buildPageConnectionReport({
     definition: page.definition,
-    teamId: team.id,
+    teamId,
     userId: user.id,
     pageId: id,
   });
@@ -738,15 +730,15 @@ pageRoutes.openapi(setConnectionRoute, async (c) => {
 });
 
 pageRoutes.openapi(runRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return c.json(teamRequired(), 403);
+  const teamId = teamOfResource(c.get("resource"));
+  const { organizationId } = c.get("principal");
   const { id } = c.req.valid("param");
   const { operation, variables } = c.req.valid("json");
 
   const result = await runPageOperation({
     pageId: id,
-    organizationId: team.organizationId,
-    teamId: team.id,
+    organizationId,
+    teamId,
     userId: c.get("user").id,
     principal: c.get("principal"),
     operation,
@@ -756,12 +748,11 @@ pageRoutes.openapi(runRoute, async (c) => {
 });
 
 pageRoutes.openapi(errorsRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return c.json(teamRequired(), 403);
+  const teamId = teamOfResource(c.get("resource"));
   const { id } = c.req.valid("param");
   await appendPageRuntimeError({
     pageId: id,
-    teamId: team.id,
+    teamId,
     principal: c.get("principal"),
     report: c.req.valid("json"),
   });

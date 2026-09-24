@@ -132,7 +132,20 @@ export const requireAccessForEach = async (input: {
   type: EngineResourceType;
   ids: readonly string[];
   required: AccessLevel;
-}): Promise<string[]> => {
+}): Promise<string[]> =>
+  (await requireAccessForEachResolved(input)).map(({ id }) => id);
+
+/**
+ * `requireAccessForEach`, keeping each resource as the engine loaded it: a
+ * batch named by ids can span teams (a folder shared from another team), and
+ * each item is acted on in its own team (`idsByTeam`).
+ */
+export const requireAccessForEachResolved = async (input: {
+  principal: Principal;
+  type: EngineResourceType;
+  ids: readonly string[];
+  required: AccessLevel;
+}): Promise<{ id: string; resource: ResolvedResource }[]> => {
   const resolved = await resolveAccessMany(
     input.principal,
     input.type,
@@ -152,5 +165,18 @@ export const requireAccessForEach = async (input: {
       resolved: short.resource,
     });
   }
-  return visible.map(({ id }) => id);
+  return visible;
+};
+
+/** The ids of a resolved batch, by the team each resource lives in. */
+export const idsByTeam = (
+  resolved: readonly { id: string; resource: ResolvedResource }[],
+): Map<string, string[]> => {
+  const byTeam = new Map<string, string[]>();
+  for (const { id, resource } of resolved) {
+    const { teamId } = resource.node;
+    if (teamId === null) continue;
+    byTeam.set(teamId, [...(byTeam.get(teamId) ?? []), id]);
+  }
+  return byTeam;
 };

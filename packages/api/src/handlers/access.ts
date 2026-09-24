@@ -12,6 +12,13 @@ import {
 } from "@fretik/shared/schemas/access-api";
 import { DEFAULT_ORGANIZATION_ACCESS_POLICY } from "@fretik/shared/schemas/access-policy";
 import {
+  accessRequestListSchema,
+  accessRequestParamsSchema,
+  accessRequestSchema,
+  decideAccessRequestSchema,
+  requestAccessSchema,
+} from "@fretik/shared/schemas/access-requests";
+import {
   resourceAccessParamsSchema,
   resourceAccessSchema,
   resourceGrantParamsSchema,
@@ -26,9 +33,17 @@ import {
   responseInternalErrorSchema,
   responseNotFoundSchema,
 } from "@fretik/shared/schemas/common/responses";
+import { sharedWithMeSchema } from "@fretik/shared/schemas/shared-with-me";
 import { describeAccess } from "@fretik/shared/services/access/describe";
+import {
+  cancelAccessRequest,
+  decideAccessRequest,
+} from "@fretik/shared/services/access/requests/decide-request";
+import { listAccessRequests } from "@fretik/shared/services/access/requests/list-requests";
+import { requestAccess } from "@fretik/shared/services/access/requests/request-access";
 import { changeGrantLevel } from "@fretik/shared/services/access/sharing/change-grant-level";
 import { describeResourceAccess } from "@fretik/shared/services/access/sharing/describe";
+import { listSharedWithMe } from "@fretik/shared/services/access/sharing/list-shared-with-me";
 import { revokeGrant } from "@fretik/shared/services/access/sharing/revoke-grant";
 import { setGeneralAccess } from "@fretik/shared/services/access/sharing/set-general-access";
 import { shareResource } from "@fretik/shared/services/access/sharing/share";
@@ -40,7 +55,9 @@ import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
  * `/access` — the access engine, as the app reads it: who the caller is to
  * it, what the organization allows beyond the roles, the roles grid — and
  * who has access to one resource, which the share dialog reads and changes
- * (`/resources/{type}/{id}`).
+ * (`/resources/{type}/{id}`), what others shared with the caller
+ * (`/shared-with-me`), and the requests for more access, asked from a
+ * refusal and answered by whoever could share (`/requests`).
  *
  * The client decides nothing: it shows, hides or locks an action from the
  * decisions sent here, and a refusal it did not predict still arrives as a
@@ -232,6 +249,114 @@ const setGeneralAccessRoute = createRoute({
   responses: resourceAccessResponses,
 });
 
+const sharedWithMeRoute = createRoute({
+  method: "get",
+  path: "/shared-with-me",
+  middleware: access.session(
+    "What others shared with the caller, each item decided by the engine for them; nothing of anyone else's shares.",
+  ),
+  summary: "What others have shared with the caller",
+  description:
+    "Shared with them by name, or with a team, a project or the organization from a team they are not in. Newest first.",
+  tags: ["Access"],
+  responses: {
+    200: {
+      content: { "application/json": { schema: sharedWithMeSchema } },
+      description: "The items shared with the caller",
+    },
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+// --- Requests for more access -----------------------------------------------
+
+const accessRequestResponses = {
+  200: {
+    content: { "application/json": { schema: accessRequestSchema } },
+    description: "The request, as it now stands",
+  },
+  ...responseBadRequestSchema,
+  ...responseForbiddenSchema,
+  ...responseNotFoundSchema,
+  ...responseInternalErrorSchema,
+};
+
+const requestAccessRoute = createRoute({
+  method: "post",
+  path: "/resources/{type}/{id}/requests",
+  middleware: access.handler(
+    "The service decides on the resource the path names: only one the caller can see is asked for (one they cannot answers 404 like any other), never by a guest, and only for more than they have.",
+  ),
+  summary: "Ask for more access to a resource",
+  description:
+    "The people who hold full access to it are emailed. Asking again while the request waits updates it.",
+  tags: ["Access"],
+  request: {
+    params: resourceAccessParamsSchema,
+    body: {
+      content: { "application/json": { schema: requestAccessSchema } },
+      required: true,
+    },
+  },
+  responses: accessRequestResponses,
+});
+
+const listRequestsRoute = createRoute({
+  method: "get",
+  path: "/requests",
+  middleware: access.handler(
+    "The caller's own pending requests, and the pending ones on resources the engine finds they hold full access to; nothing else.",
+  ),
+  summary: "The requests waiting on the caller, and their own",
+  tags: ["Access"],
+  responses: {
+    200: {
+      content: { "application/json": { schema: accessRequestListSchema } },
+      description: "Pending requests to answer, and the caller's own",
+    },
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const decideRequestRoute = createRoute({
+  method: "post",
+  path: "/requests/{requestId}/decision",
+  middleware: access.handler(
+    "The service loads the request in the caller's organization and decides on its resource as the share dialog does: full access, never a guest. Approving is sharing, with the same policy checks.",
+  ),
+  summary: "Approve or deny a request for access",
+  description:
+    "Approving shares the resource at the level asked for, or the one sent. The requester is emailed the answer.",
+  tags: ["Access"],
+  request: {
+    params: accessRequestParamsSchema,
+    body: {
+      content: { "application/json": { schema: decideAccessRequestSchema } },
+      required: true,
+    },
+  },
+  responses: { ...accessRequestResponses, ...responseConflictSchema },
+});
+
+const cancelRequestRoute = createRoute({
+  method: "delete",
+  path: "/requests/{requestId}",
+  middleware: access.handler(
+    "Only the requester's own pending request: anyone else's, or one already answered, reads as missing.",
+  ),
+  summary: "Withdraw one's own request for access",
+  tags: ["Access"],
+  request: { params: accessRequestParamsSchema },
+  responses: {
+    204: { description: "The request is withdrawn" },
+    ...responseForbiddenSchema,
+    ...responseNotFoundSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
 accessRoutes.openapi(meRoute, async (c) => {
   const me = await describeAccess({
     principal: c.get("principal"),
@@ -318,6 +443,48 @@ accessRoutes.openapi(setGeneralAccessRoute, async (c) => {
     restricted: c.req.valid("json").restricted,
   });
   return c.json(model, 200);
+});
+
+accessRoutes.openapi(sharedWithMeRoute, async (c) => {
+  const shared = await listSharedWithMe(c.get("principal"));
+  return c.json(shared, 200);
+});
+
+accessRoutes.openapi(requestAccessRoute, async (c) => {
+  const { type, id } = c.req.valid("param");
+  const { level, message } = c.req.valid("json");
+  const request = await requestAccess({
+    principal: c.get("principal"),
+    type,
+    id,
+    level,
+    message,
+  });
+  return c.json(request, 200);
+});
+
+accessRoutes.openapi(listRequestsRoute, async (c) => {
+  const requests = await listAccessRequests(c.get("principal"));
+  return c.json(requests, 200);
+});
+
+accessRoutes.openapi(decideRequestRoute, async (c) => {
+  const { decision, level } = c.req.valid("json");
+  const request = await decideAccessRequest({
+    principal: c.get("principal"),
+    requestId: c.req.valid("param").requestId,
+    decision,
+    level,
+  });
+  return c.json(request, 200);
+});
+
+accessRoutes.openapi(cancelRequestRoute, async (c) => {
+  await cancelAccessRequest({
+    principal: c.get("principal"),
+    requestId: c.req.valid("param").requestId,
+  });
+  return c.body(null, 204);
 });
 
 export { accessRoutes };

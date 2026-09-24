@@ -87,6 +87,18 @@ export type ResourceEnv = HonoLoggedAppType & {
   Variables: { resource: ResolvedResource };
 };
 
+/**
+ * The team a `resource` route acts in: the resource's own, never the one the
+ * caller has open. A resource named by id is the same resource from every
+ * team, and one shared across teams opens, and changes at the level shared,
+ * wherever its link is followed: the engine has already decided the caller
+ * may. Only creating something happens in the active team.
+ */
+export const teamOfResource = (resource: ResolvedResource): string =>
+  // Every type a `resource` route names lives in a team; one that did not
+  // would have no team-scoped service behind it.
+  resource.node.teamId ?? throwNotVisible();
+
 const uuid = z.uuid();
 
 /** Whether `teamId` names a team of this organization. */

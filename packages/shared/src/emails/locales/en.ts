@@ -156,4 +156,38 @@ export default {
     notYou:
       "If this wasn't you, change your password right away and remove any passkey you don't recognize.",
   },
+
+  accessRequest: {
+    subject: "{{requesterName}} asked for access to {{resourceName}}",
+    greeting: "Hello {{name}},",
+    intro: {
+      view: '{{requesterName}} asked to view "{{resourceName}}".',
+      use: '{{requesterName}} asked to use "{{resourceName}}".',
+      edit: '{{requesterName}} asked to edit "{{resourceName}}".',
+      full: '{{requesterName}} asked for full access to "{{resourceName}}".',
+    },
+    messageLabel: "Their note",
+    cta: "Review the request",
+    footnote:
+      "You receive this because you have full access to it: only people with full access can answer.",
+  },
+
+  accessRequestDecided: {
+    greeting: "Hello {{name}},",
+    approved: {
+      subject: "You now have access to {{resourceName}}",
+      intro: {
+        view: '{{deciderName}} gave you access to view "{{resourceName}}".',
+        use: '{{deciderName}} gave you access to use "{{resourceName}}".',
+        edit: '{{deciderName}} gave you access to edit "{{resourceName}}".',
+        full: '{{deciderName}} gave you full access to "{{resourceName}}".',
+      },
+      cta: "Open it",
+    },
+    denied: {
+      subject: "Your request for {{resourceName}} was declined",
+      intro:
+        '{{deciderName}} declined your request for more access to "{{resourceName}}".',
+    },
+  },
 };

@@ -11,6 +11,8 @@ import type {
 } from "../../../schemas/access-sharing";
 import { refreshAclsAfterAccessChange } from "../../ai-vectors/acl";
 import { type AccessEvent, recordAccessEvents } from "../record-event";
+import { tellRequestersAnswered } from "../requests/answered-by-share";
+import { settleRequestsAnsweredBy } from "../requests/settle-requests";
 import { describeResourceAccess } from "./describe";
 import { lockGrants, upsertGrants } from "./grant-store";
 import { requireSharingRights } from "./manage-rights";
@@ -59,7 +61,7 @@ export const shareResource = async (input: {
     (grantee) => !(grantee.type === "user" && grantee.id === node.ownerUserId),
   );
 
-  await db.transaction(async (tx) => {
+  const settled = await db.transaction(async (tx) => {
     const existing = await lockGrants(tx, { type, id }, targets);
     const levelOf = new Map(
       existing.map((grant) => [principalKey(grant), grant.level]),
@@ -101,6 +103,22 @@ export const shareResource = async (input: {
     if (newcomers.length > 0) {
       await refreshAclsAfterAccessChange({ executor: tx, type, id });
     }
+    // Sharing with someone who asked answers them.
+    return settleRequestsAnsweredBy(tx, {
+      organizationId: principal.organizationId,
+      resource: { type, id, name: node.name },
+      userIds: targets.flatMap((target) =>
+        target.type === "user" ? [target.id] : [],
+      ),
+      level,
+      deciderUserId: principal.userId,
+    });
+  });
+  await tellRequestersAnswered({
+    principal,
+    settled,
+    resource: { type, id, name: node.name },
+    level,
   });
 
   return describeResourceAccess({ principal, type, id });

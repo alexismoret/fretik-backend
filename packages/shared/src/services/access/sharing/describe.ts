@@ -13,6 +13,7 @@ import type {
   SharingResourceType,
 } from "../../../schemas/access-sharing";
 import { getOrganizationAccessPolicy } from "../../organization/access-policy";
+import { listResourceRequests } from "../requests/list-requests";
 import { principalKey, resolvePrincipals } from "./principals";
 
 /**
@@ -23,7 +24,8 @@ import { principalKey, resolvePrincipals } from "./principals";
  * Everyone who can see the resource reads it (`view`), as in every shared
  * drive: knowing who else has access is part of knowing what one is looking
  * at. A guest sees only their own grant: the organization's people are not
- * theirs to list.
+ * theirs to list. The pending requests for more access are shown to whoever
+ * may answer them, and to no one else.
  */
 export const describeResourceAccess = async (input: {
   principal: UserPrincipal;
@@ -38,18 +40,26 @@ export const describeResourceAccess = async (input: {
     required: "view",
   });
   const adapter = adapterFor(type);
+  const canManage = level === "full" && !principal.isGuest;
 
-  const [holders, owner, inheritsFrom, policy] = await Promise.all([
+  const [holders, owner, inheritsFrom, policy, requests] = await Promise.all([
     loadHolders(principal, type, node),
     loadOwner(node.ownerUserId),
     inheritanceSourceOf(node),
     getOrganizationAccessPolicy(principal.organizationId),
+    canManage
+      ? listResourceRequests({
+          organizationId: principal.organizationId,
+          type,
+          id,
+        })
+      : [],
   ]);
 
   return {
     resource: { type, id, name: node.name, teamId: node.teamId },
     level,
-    canManage: level === "full" && !principal.isGuest,
+    canManage,
     owner,
     holders: principal.isGuest
       ? holders.filter(
@@ -77,6 +87,7 @@ export const describeResourceAccess = async (input: {
         policy,
       }),
     },
+    requests,
   };
 };
 

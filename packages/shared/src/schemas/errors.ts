@@ -117,6 +117,8 @@ export const ERROR_CODES = {
    * nobody who has full access: nobody could share it or delete it again.
    */
   LAST_FULL_ACCESS: "LAST_FULL_ACCESS",
+  /** An access request that was already answered, withdrawn or orphaned. */
+  ACCESS_REQUEST_CLOSED: "ACCESS_REQUEST_CLOSED",
 
   /**
    * Refused by the access engine, with the reason and who to ask in the

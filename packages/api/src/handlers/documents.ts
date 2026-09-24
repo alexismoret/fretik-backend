@@ -1,7 +1,10 @@
-import { requireAccessForEach } from "@fretik/shared/authz/access";
+import {
+  idsByTeam,
+  requireAccessForEachResolved,
+} from "@fretik/shared/authz/access";
 import { requireFolderToAddTo } from "@fretik/shared/authz/drive";
 import { driveVisibility } from "@fretik/shared/authz/drive-sql";
-import { access } from "@fretik/shared/authz/http";
+import { access, teamOfResource } from "@fretik/shared/authz/http";
 import type { Document, DocumentVersion } from "@fretik/shared/db/schema";
 import {
   authMiddleware,
@@ -208,7 +211,7 @@ const deleteDocumentsRoute = createRoute({
   method: "delete",
   path: "",
   middleware: access.handler(
-    "Each document takes full access; ids out of sight are skipped (requireAccessForEach).",
+    "Each document takes full access, and is deleted in its own team; ids out of sight are skipped (requireAccessForEachResolved).",
   ),
   summary: "Delete multiple documents",
   description: "Delete multiple documents by ID",
@@ -531,10 +534,7 @@ documentRoutes.get(
   "/upload/:documentId/progress",
   access.resource("document", "view", "documentId"),
   async (c) => {
-    const team = c.get("team");
-    if (!team) {
-      return throwHttpError(403, teamRequired());
-    }
+    const teamId = teamOfResource(c.get("resource"));
 
     // The progress bus is keyed by document id alone, so the authorization is
     // this pre-check: once the stream is open it relays whatever it is told.
@@ -543,14 +543,14 @@ documentRoutes.get(
     const documentId = c.req.param("documentId");
     if (
       !z.uuid().safeParse(documentId).success ||
-      !(await getUploadProgress({ documentId, teamId: team.id }))
+      !(await getUploadProgress({ documentId, teamId }))
     ) {
       return throwHttpError(404, notFound());
     }
 
     applyAntiBufferingHeaders(c);
     return streamSSE(c, async (stream) => {
-      await streamUploadProgress({ documentId, teamId: team.id, stream });
+      await streamUploadProgress({ documentId, teamId, stream });
     });
   },
 );
@@ -560,23 +560,23 @@ documentRoutes.get(
  * --
  */
 documentRoutes.openapi(deleteDocumentsRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) {
-    return throwHttpError(403, teamRequired());
-  }
-
   const { ids } = c.req.valid("json");
-  const deletable = await requireAccessForEach({
+  const deletable = await requireAccessForEachResolved({
     principal: c.get("principal"),
     type: "document",
     ids,
     required: "full",
   });
-  if (deletable.length === 0) return c.json({ rowCount: 0 }, 200);
 
-  const res = await deleteDocuments({ ids: deletable, teamId: team.id });
+  // Each in its own team: a selection made in a folder shared from another
+  // team is that team's.
+  let rowCount = 0;
+  for (const [teamId, teamIds] of idsByTeam(deletable)) {
+    // oxlint-disable-next-line no-await-in-loop -- one team, rarely two
+    rowCount += (await deleteDocuments({ ids: teamIds, teamId })).rowCount ?? 0;
+  }
 
-  return c.json({ rowCount: res.rowCount }, 200);
+  return c.json({ rowCount }, 200);
 });
 
 /**
@@ -584,10 +584,8 @@ documentRoutes.openapi(deleteDocumentsRoute, async (c) => {
  * --
  */
 documentRoutes.openapi(updateDocumentRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) {
-    return throwHttpError(403, teamRequired());
-  }
+  const teamId = teamOfResource(c.get("resource"));
+  const { organizationId } = c.get("principal");
 
   const { id } = c.req.valid("param");
   const updates = c.req.valid("json");
@@ -595,8 +593,8 @@ documentRoutes.openapi(updateDocumentRoute, async (c) => {
 
   const updatedDocument = await updateDocument({
     id,
-    teamId: team.id,
-    organizationId: team.organizationId,
+    teamId,
+    organizationId,
     updates,
   });
 
@@ -615,16 +613,14 @@ documentRoutes.openapi(updateDocumentRoute, async (c) => {
  * returns immediately; the document flips back to `processing`.
  */
 documentRoutes.openapi(reextractDocumentRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) {
-    return throwHttpError(403, teamRequired());
-  }
+  const teamId = teamOfResource(c.get("resource"));
+  const { organizationId } = c.get("principal");
 
   const { id } = c.req.valid("param");
   await reextractDocument({
     documentId: id,
-    teamId: team.id,
-    organizationId: team.organizationId,
+    teamId,
+    organizationId,
   });
 
   return c.json({ success: true }, 202);
@@ -663,15 +659,12 @@ documentRoutes.openapi(createAuthoredDocumentRoute, async (c) => {
  * --
  */
 documentRoutes.openapi(getDocumentContentRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) {
-    return throwHttpError(403, teamRequired());
-  }
+  const teamId = teamOfResource(c.get("resource"));
 
   const { id } = c.req.valid("param");
   const { document, content } = await getAuthoredContent({
     documentId: id,
-    teamId: team.id,
+    teamId,
   });
 
   return c.json({ document: formatDocumentResponse(document), content }, 200);
@@ -683,18 +676,16 @@ documentRoutes.openapi(getDocumentContentRoute, async (c) => {
  */
 documentRoutes.openapi(saveDocumentContentRoute, async (c) => {
   const user = c.get("user");
-  const team = c.get("team");
-  if (!team) {
-    return throwHttpError(403, teamRequired());
-  }
+  const teamId = teamOfResource(c.get("resource"));
+  const { organizationId } = c.get("principal");
 
   const { id } = c.req.valid("param");
   const { content, baseUpdatedAt } = c.req.valid("json");
 
   const result = await saveAuthoredContent({
     documentId: id,
-    teamId: team.id,
-    organizationId: team.organizationId,
+    teamId,
+    organizationId,
     content,
     actorContext: { actor: "human", userId: user.id },
     ...(baseUpdatedAt ? { expectedUpdatedAt: baseUpdatedAt } : {}),
@@ -715,15 +706,12 @@ documentRoutes.openapi(saveDocumentContentRoute, async (c) => {
  * --
  */
 documentRoutes.openapi(listDocumentVersionsRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) {
-    return throwHttpError(403, teamRequired());
-  }
+  const teamId = teamOfResource(c.get("resource"));
 
   const { id } = c.req.valid("param");
   const versions = await listDocumentVersions({
     documentId: id,
-    teamId: team.id,
+    teamId,
   });
 
   return c.json(
@@ -743,16 +731,14 @@ documentRoutes.openapi(listDocumentVersionsRoute, async (c) => {
  */
 documentRoutes.openapi(restoreDocumentVersionRoute, async (c) => {
   const user = c.get("user");
-  const team = c.get("team");
-  if (!team) {
-    return throwHttpError(403, teamRequired());
-  }
+  const teamId = teamOfResource(c.get("resource"));
+  const { organizationId } = c.get("principal");
 
   const { id, versionId } = c.req.valid("param");
   const result = await restoreDocumentVersion({
     documentId: id,
-    teamId: team.id,
-    organizationId: team.organizationId,
+    teamId,
+    organizationId,
     versionId,
     actorContext: { actor: "human", userId: user.id },
   });
@@ -772,16 +758,13 @@ documentRoutes.openapi(restoreDocumentVersionRoute, async (c) => {
  * --
  */
 documentRoutes.openapi(downloadDocumentVersionRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) {
-    return throwHttpError(403, teamRequired());
-  }
+  const teamId = teamOfResource(c.get("resource"));
 
   const { id, versionId } = c.req.valid("param");
   const result = await getDocumentVersionDownloadUrl({
     documentId: id,
     versionId,
-    teamId: team.id,
+    teamId,
   });
 
   return c.json(result, 200);
@@ -817,16 +800,13 @@ documentRoutes.openapi(listRecentDocumentsRoute, async (c) => {
  * round-trips.
  */
 documentRoutes.openapi(getDocumentDetailsRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) {
-    return c.json(teamRequired(), 403);
-  }
+  const teamId = teamOfResource(c.get("resource"));
 
   const { id } = c.req.valid("param");
 
-  const visibility = await driveVisibility(c.get("principal"), team.id);
+  const visibility = await driveVisibility(c.get("principal"), teamId);
   const { document, fileUrl, fieldValues, fieldDefinitions } =
-    await getDocumentDetails({ id, teamId: team.id, visibility });
+    await getDocumentDetails({ id, teamId, visibility });
 
   const breadcrumbs = await getDocumentBreadcrumbs({
     document: {
@@ -834,7 +814,7 @@ documentRoutes.openapi(getDocumentDetailsRoute, async (c) => {
       originalFilename: document.originalFilename,
       folderId: document.folderId,
     },
-    teamId: team.id,
+    teamId,
     visibility,
   });
 
@@ -883,13 +863,10 @@ documentRoutes.openapi(getDocumentDetailsRoute, async (c) => {
  * extraction pipeline already wrote.
  */
 documentRoutes.openapi(getDocumentPreviewSourceRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) {
-    return c.json(teamRequired(), 403);
-  }
+  const teamId = teamOfResource(c.get("resource"));
 
   const { id } = c.req.valid("param");
-  const source = await getDocumentPreviewSource({ id, teamId: team.id });
+  const source = await getDocumentPreviewSource({ id, teamId });
 
   return c.json(source, 200);
 });

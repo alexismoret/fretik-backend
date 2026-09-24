@@ -46,9 +46,9 @@ export const projectsReaching = (
 /**
  * The grant principals that give the person at least `level` — mirroring
  * `levelFromGrants`: a team viewer and a project viewer or participant only
- * ever get `view` from a grant to their group.
+ * ever get `view` from a grant to their group. Reads the grant as `g`.
  */
-const grantPrincipalMatch = (
+export const grantPrincipalMatch = (
   principal: UserPrincipal,
   level: AccessLevel,
 ): SQL => {

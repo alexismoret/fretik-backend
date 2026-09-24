@@ -1,6 +1,6 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import db from "../../db";
-import { aiVectors, folders, teamSettings } from "../../db/schema";
+import { aiVectors, documents, folders, teamSettings } from "../../db/schema";
 import {
   buildDocumentOriginalKey,
   buildDocumentPreviewPdfKey,
@@ -13,6 +13,7 @@ import { bulkDeleteCollectionRecords } from "../collection-records/bulk-delete";
 import { resolveDocumentRecordIds } from "../collection-records/resolve-document-record";
 import { type EventActor, SYSTEM_ACTOR } from "../domain-events/emit";
 import { emitDomainEventsBulk } from "../domain-events/emit-bulk";
+import { listFolderSubtreeIds } from "./subtree";
 
 /**
  * Deletes multiple folders and updates parent folder counts.
@@ -26,7 +27,7 @@ export const deleteFolders = async (data: {
   const actor = data.actor ?? SYSTEM_ACTOR;
 
   const existingFolders = await db.query.folders.findMany({
-    columns: { id: true, name: true, parentFolderId: true, fullPath: true },
+    columns: { id: true, name: true, parentFolderId: true },
     where: { id: { in: ids }, teamId },
   });
 
@@ -56,7 +57,31 @@ export const deleteFolders = async (data: {
         .where(eq(folders.id, id));
     }
 
-    // Every document in these folders and their subfolders.
+    // The folders the delete removes: these, and every folder below them
+    // (the parent FK cascades). Walked by parent pointer inside the team —
+    // see `listFolderSubtreeIds` for why the path string cannot be used.
+    const subtreeIds = await listFolderSubtreeIds({
+      rootIds: ids,
+      teamId,
+      executor: tx,
+    });
+
+    // A document of ANOTHER team filed in one of these folders is not ours
+    // to delete. `assertFolderInTeam` now refuses to create one, but rows
+    // written before it existed may still point here, and the cascade below
+    // would take them with the folder. Move them to their own drive root
+    // instead: the least surprising place for a file whose folder vanished.
+    await tx
+      .update(documents)
+      .set({ folderId: null })
+      .where(
+        and(
+          inArray(documents.folderId, subtreeIds),
+          ne(documents.teamId, teamId),
+        ),
+      );
+
+    // Every document of the team in these folders and their subfolders.
     //
     // No `status` filter: the folder delete cascades the rows away whatever
     // their status, so excluding `uploading` ones did not spare them — it
@@ -68,14 +93,7 @@ export const deleteFolders = async (data: {
         fileSize: true,
         fileHash: true,
       },
-      where: {
-        OR: [
-          { folderId: { in: ids } },
-          ...existingFolders.map((f) => ({
-            folder: { fullPath: { like: `${f.fullPath}%` } },
-          })),
-        ],
-      },
+      where: { teamId, folderId: { in: subtreeIds } },
     });
 
     // Superseded versions are real objects beside the live original, so they

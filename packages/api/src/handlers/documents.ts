@@ -47,7 +47,10 @@ import { createAuthoredDocument } from "@fretik/shared/services/documents/author
 import { deleteDocuments } from "@fretik/shared/services/documents/delete";
 import { listRecentDocuments } from "@fretik/shared/services/documents/list-recent";
 import { getDocumentPreviewSource } from "@fretik/shared/services/documents/preview";
-import { streamUploadProgress } from "@fretik/shared/services/documents/progress";
+import {
+  getUploadProgress,
+  streamUploadProgress,
+} from "@fretik/shared/services/documents/progress";
 import { reextractDocument } from "@fretik/shared/services/documents/reextract";
 import {
   getDocumentBreadcrumbs,
@@ -498,11 +501,26 @@ documentRoutes.openapi(uploadDocumentRoute, async (c) => {
  * SSE endpoint for real-time document processing progress.
  */
 documentRoutes.get("/upload/:documentId/progress", async (c) => {
-  const { documentId } = c.req.param();
+  const team = c.get("team");
+  if (!team) {
+    return throwHttpError(403, teamRequired());
+  }
+
+  // The progress bus is keyed by document id alone, so the authorization is
+  // this pre-check: once the stream is open it relays whatever it is told.
+  // A malformed id is refused here too — Postgres would reject it as a uuid
+  // and surface a 500.
+  const documentId = c.req.param("documentId");
+  if (
+    !z.uuid().safeParse(documentId).success ||
+    !(await getUploadProgress({ documentId, teamId: team.id }))
+  ) {
+    return throwHttpError(404, notFound());
+  }
 
   applyAntiBufferingHeaders(c);
   return streamSSE(c, async (stream) => {
-    await streamUploadProgress(documentId, stream);
+    await streamUploadProgress({ documentId, teamId: team.id, stream });
   });
 });
 

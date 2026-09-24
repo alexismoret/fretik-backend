@@ -7,6 +7,7 @@ import type { UpdateDocumentInput } from "../../schemas/documents";
 import { setRecordData } from "../collection-records/update";
 import { readRecordData } from "../collection-schema/record-io";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
+import { assertFolderInTeam } from "../folders/assert-in-team";
 import { scheduleDocumentVectorRefresh } from "./vector-refresh-queue";
 
 /**
@@ -59,7 +60,15 @@ export const updateDocument = async (data: {
     return throwHttpError(404, notFound());
   }
 
-  const folderHasChanged = existingDocument.folderId !== updates.folderId;
+  // `undefined` means "not moving": the route's schema leaves the field
+  // optional, and treating an omitted folder as a move adjusted both folders'
+  // counts while the row itself stayed put.
+  const folderHasChanged =
+    updates.folderId !== undefined &&
+    existingDocument.folderId !== updates.folderId;
+  if (folderHasChanged) {
+    await assertFolderInTeam({ folderId: updates.folderId, teamId });
+  }
   const originalFilename = keepFileExtension(
     existingDocument.originalFilename,
     updates.originalFilename,

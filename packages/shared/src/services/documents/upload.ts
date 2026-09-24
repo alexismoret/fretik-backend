@@ -19,6 +19,7 @@ import {
 } from "../../lib/errors";
 import { uploadToS3 } from "../../lib/s3";
 import { ERROR_CODES } from "../../schemas/errors";
+import { assertFolderInTeam } from "../folders/assert-in-team";
 import { findNameCollision, nextAvailableFilename } from "./name-collision";
 import { type DocumentFileMetadata, finalizeFailedDocument } from "./process";
 import { enqueueDocumentProcessing } from "./processing-queue";
@@ -129,6 +130,14 @@ export const createDocumentRecord = async (args: {
   };
 
   const run = async (tx: Transaction) => {
+    // The one insert every filing path goes through, so the folder check
+    // lives here rather than with each caller (see `assertFolderInTeam`).
+    await assertFolderInTeam({
+      folderId: metadata.folderId,
+      teamId,
+      executor: tx,
+    });
+
     const result = await tx
       .insert(documents)
       .values(documentToInsert)
@@ -219,6 +228,11 @@ export const uploadDocument = async (
   const fileHash = Bun.SHA256.hash(arrayBuffer, "hex");
 
   const mimeType = await assertFile(file, buffer);
+
+  // 2a. The destination folder must be the team's. `createDocumentRecord`
+  //     checks again at insert; checking here too refuses before any bytes
+  //     reach S3, so a refused upload leaves no orphan object behind.
+  await assertFolderInTeam({ folderId, teamId });
 
   // 2b. Same name, same folder — decide before any bytes move.
   const collision = await findNameCollision({

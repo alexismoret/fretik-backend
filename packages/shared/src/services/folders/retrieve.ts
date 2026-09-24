@@ -150,6 +150,7 @@ type DocWithRelations = {
   mimeType: string;
   status: DocumentStatus;
   source: DocumentSource;
+  projectId: string | null;
   createdAt: Date;
   updatedAt: Date;
   mirrorRecord: { id: string; collectionId: string } | null;
@@ -196,6 +197,7 @@ const mapDocsToDriveItems = async (
         mimeType: d.mimeType,
         status: d.status,
         thumbnailUrl: urlMap.get(d.id) ?? null,
+        projectId: d.projectId,
         fieldValues: d.mirrorRecord
           ? (fieldValuesById.get(d.mirrorRecord.id) ?? {})
           : {},
@@ -316,6 +318,7 @@ const getFilteredDocuments = async (data: {
       mimeType: true,
       status: true,
       source: true,
+      projectId: true,
       createdAt: true,
       updatedAt: true,
     },
@@ -453,6 +456,7 @@ const getFolderExplorer = async (data: {
           mimeType: true,
           status: true,
           source: true,
+          projectId: true,
           createdAt: true,
           updatedAt: true,
         },

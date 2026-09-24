@@ -221,6 +221,8 @@ describe("where new content lands", () => {
   test("a team's root and a project's root are different places", async () => {
     const teamFolder = await folderIn({ name: "Team" });
     const projectFolder = await folderIn({ name: "Project", projectId });
+    const teamFile = await documentIn({ folderId: null });
+    const projectFile = await documentIn({ folderId: null, projectId });
     const owner = await fx.principalOf(ownerId);
     const params = { page: 0, limit: 50, filters: [] };
 
@@ -238,12 +240,20 @@ describe("where new content lands", () => {
     });
     expect(teamRoot.children.data.map((item) => item.data.id)).toEqual([
       teamFolder.id,
+      teamFile.id,
     ]);
     expect(teamRoot.project).toBeNull();
     expect(projectRoot.children.data.map((item) => item.data.id)).toEqual([
       projectFolder.id,
+      projectFile.id,
     ]);
     expect(projectRoot.project).toEqual({ id: projectId, name: "Acme case" });
+
+    // Each item names its own place: what "Move to project" starts from.
+    const placeOf = (items: typeof teamRoot.children.data) =>
+      items.map((item) => item.data.projectId);
+    expect(placeOf(teamRoot.children.data)).toEqual([null, null]);
+    expect(placeOf(projectRoot.children.data)).toEqual([projectId, projectId]);
   });
 });
 

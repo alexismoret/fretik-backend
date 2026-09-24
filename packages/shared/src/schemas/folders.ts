@@ -105,6 +105,8 @@ export const DriveDocumentSchema = z.object({
   mimeType: z.string(),
   thumbnailUrl: z.string().nullable(),
   status: z.lazy(() => documentStatusSchema),
+  /** The project its tree belongs to; null for its team's Drive. */
+  projectId: z.uuid().nullable(),
   fieldValues: z.record(z.string(), z.unknown()),
   createdAt: z.date(),
   updatedAt: z.date(),

@@ -27,6 +27,8 @@ import type { PrincipalRef } from "./principals";
 
 export interface StoredGrant extends PrincipalRef {
   readonly level: AccessLevel;
+  /** When it ends (a guest's access period); null until someone removes it. */
+  readonly expiresAt: Date | null;
 }
 
 /** A grant as the share dialog lists it. */
@@ -50,7 +52,13 @@ export interface GrantStore {
   ): Promise<StoredGrant[]>;
   /** Every grant of the resource. */
   list(executor: Executor, resource: StoredResource): Promise<StoredHolder[]>;
-  /** Give these principals `level`, created or changed. */
+  /**
+   * Give these principals `level`, created or changed. `expiries` holds the
+   * end of the access of those whose access ends (guests, by `principalKey`);
+   * every other grant written lasts until removed. A store that cannot end a
+   * grant ignores it: a chat's seat lasts while its holder takes part in the
+   * project it lives in, which is where a guest's period ends.
+   */
   upsert(
     tx: Executor,
     write: {
@@ -59,6 +67,7 @@ export interface GrantStore {
       readonly refs: readonly PrincipalRef[];
       readonly level: AccessLevel;
       readonly actorUserId: string;
+      readonly expiries?: ReadonlyMap<string, Date>;
     },
   ): Promise<void>;
   /** Take these principals' access away. */

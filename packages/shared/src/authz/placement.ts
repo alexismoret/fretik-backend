@@ -163,3 +163,22 @@ export const teamOfProject = async (
   });
   return node.teamId ?? throwNotVisible("Project not found");
 };
+
+/**
+ * The team a chat's own lists read in (the pages it built, say): its own,
+ * for anyone who reads the chat, whatever team they have open — or none, for
+ * a guest. 404 for a chat they cannot read, like one that does not exist.
+ */
+export const teamOfConversation = async (
+  principal: Principal,
+  conversationId: string,
+): Promise<string> => {
+  const { node } = await requireAccess({
+    principal,
+    type: "conversation",
+    id: conversationId,
+    required: "view",
+    notFoundMessage: "Conversation not found",
+  });
+  return node.teamId ?? throwNotVisible("Conversation not found");
+};

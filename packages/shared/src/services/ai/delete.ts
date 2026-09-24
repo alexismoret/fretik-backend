@@ -11,13 +11,17 @@ import { deleteEpisodeVectors } from "../episodes/vectors";
  * Delete conversations. Only an `owner` may delete a collaborative
  * conversation — requested ids the user doesn't own are silently skipped, so
  * a member can never wipe a shared thread out from under the owner.
+ *
+ * Scoped to the organization, not to the team the caller has open: a chat is
+ * its owner's to delete wherever it lives — in another team's project, or in
+ * the project a guest was invited to.
  */
 export const deleteConversations = async (data: {
   ids: string[];
-  teamId: string;
+  organizationId: string;
   userId: string;
 }) => {
-  const { ids, teamId, userId } = data;
+  const { ids, organizationId, userId } = data;
 
   if (ids.length === 0) {
     return { rowCount: 0 };
@@ -26,7 +30,7 @@ export const deleteConversations = async (data: {
   const ownedRows = await db
     .select({
       conversationId: aiConversationMembers.conversationId,
-      organizationId: aiConversations.organizationId,
+      teamId: aiConversations.teamId,
       agentType: aiConversations.agentType,
     })
     .from(aiConversationMembers)
@@ -39,7 +43,7 @@ export const deleteConversations = async (data: {
         inArray(aiConversationMembers.conversationId, ids),
         eq(aiConversationMembers.userId, userId),
         eq(aiConversationMembers.role, "owner"),
-        eq(aiConversations.teamId, teamId),
+        eq(aiConversations.organizationId, organizationId),
       ),
     );
 
@@ -56,23 +60,27 @@ export const deleteConversations = async (data: {
     hiddenEpisodeIds = await hideEpisodesForConversations(tx, ownedIds);
 
     // Journal first — the rows are gone after this tx, and the events' own
-    // conversation FK column nulls on delete; the payload keeps the id. One
-    // team per call, so one org for the whole batch.
-    await emitDomainEventsBulk({
-      tx,
-      organizationId: ownedRows[0]!.organizationId,
-      teamId,
-      actor: { actorType: "user", actorUserId: userId },
-      events: ownedRows.map((row) => ({
-        type: "conversation.deleted",
-        subjectType: "conversation",
-        payload: {
-          conversationId: row.conversationId,
-          agentType: row.agentType,
-        },
-        dedupKey: `conversation.deleted:${row.conversationId}`,
-      })),
-    });
+    // conversation FK column nulls on delete; the payload keeps the id. Each
+    // chat's event goes to its own team's journal.
+    const byTeam = Map.groupBy(ownedRows, (row) => row.teamId);
+    for (const [teamId, rows] of byTeam) {
+      // eslint-disable-next-line no-await-in-loop -- one statement per team
+      await emitDomainEventsBulk({
+        tx,
+        organizationId,
+        teamId,
+        actor: { actorType: "user", actorUserId: userId },
+        events: rows.map((row) => ({
+          type: "conversation.deleted",
+          subjectType: "conversation",
+          payload: {
+            conversationId: row.conversationId,
+            agentType: row.agentType,
+          },
+          dedupKey: `conversation.deleted:${row.conversationId}`,
+        })),
+      });
+    }
     return tx
       .delete(aiConversations)
       .where(inArray(aiConversations.id, ownedIds))

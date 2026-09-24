@@ -1,6 +1,7 @@
 import { access } from "@fretik/shared/authz/http";
 import { type HonoLoggedAppType } from "@fretik/shared/lib/auth-middleware";
 import { responseInternalErrorSchema } from "@fretik/shared/schemas/common/responses";
+import { invitationItemSchema } from "@fretik/shared/schemas/members";
 import { getPublicInvitationPreview } from "@fretik/shared/services/invitations/get-public-preview";
 import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 import { z } from "zod";
@@ -16,6 +17,7 @@ import { z } from "zod";
  * mailed to, to whoever holds that mailed link — see the service for why that
  * is not an enumeration oracle. They let the landing page open on the right
  * form instead of walking an existing account into a sign-up that cannot work.
+ * `items` names what was shared with that address by email, as the email did.
  */
 const invitationRoutes = new OpenAPIHono<HonoLoggedAppType>();
 
@@ -32,6 +34,7 @@ const previewResponseSchema = z.object({
   expiresAt: z.date().optional(),
   hasAccount: z.boolean().optional(),
   alreadyMember: z.boolean().optional(),
+  items: z.array(invitationItemSchema).optional(),
 });
 
 const previewRoute = createRoute({

@@ -1,6 +1,7 @@
 import { access, teamOfResource } from "@fretik/shared/authz/http";
 import {
   requirePlacement,
+  teamOfConversation,
   teamOfProject,
 } from "@fretik/shared/authz/placement";
 import {
@@ -127,11 +128,11 @@ const listRoute = createRoute({
   method: "get",
   path: "/",
   middleware: access.session(
-    "The active team's pages the caller can see, or a project's (`projectId`, view on it): a restricted one only through its owner or a grant.",
+    "The active team's pages the caller can see, or a project's (`projectId`, view on it), or a chat's (`conversationId`, view on it): a restricted one only through its owner or a grant.",
   ),
   summary: "List the team's pages",
   description:
-    "Summaries only — node/dataset counts instead of the full tree. Newest-touched first. `conversationId` keeps the pages that conversation built (their `sourceConversationId`) — what the chat header's Pages control lists. `projectId` keeps one project's, wherever the caller's team.",
+    "Summaries only — node/dataset counts instead of the full tree. Newest-touched first. `conversationId` keeps the pages that conversation built (their `sourceConversationId`) — what the chat header's Pages control lists — read in the chat's own team. `projectId` keeps one project's, wherever the caller's team.",
   tags: ["Pages"],
   request: {
     query: z.object({
@@ -513,10 +514,14 @@ const errorsRoute = createRoute({
 pageRoutes.openapi(listRoute, async (c) => {
   const principal = c.get("principal");
   const { conversationId, projectId } = c.req.valid("query");
+  // A project's pages, or a chat's, are read where they live — from any
+  // team, or none for a guest; everything else is the active team's.
   const teamId =
-    projectId === undefined
-      ? c.get("team")?.id
-      : await teamOfProject(principal, projectId);
+    projectId !== undefined
+      ? await teamOfProject(principal, projectId)
+      : conversationId !== undefined
+        ? await teamOfConversation(principal, conversationId)
+        : c.get("team")?.id;
   if (!teamId) return c.json(teamRequired(), 403);
   const data = await listPages({
     teamId,

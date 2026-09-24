@@ -74,7 +74,7 @@ const listConversationsRoute = createRoute({
   method: "get",
   path: "/",
   middleware: access.session(
-    "The conversations the caller takes part in, in the active team.",
+    "The conversations the caller takes part in, in the active team — or, for a guest, who has none, in the organization.",
   ),
   summary: "List AI conversations",
   description:
@@ -187,7 +187,7 @@ const deleteConversationsRoute = createRoute({
   method: "delete",
   path: "/",
   middleware: access.handler(
-    "Only a conversation's owner deletes it; other ids are skipped (deleteConversations).",
+    "Only a conversation's owner deletes it, wherever it lives in the organization; other ids are skipped (deleteConversations).",
   ),
   summary: "Delete AI conversations",
   description: "Delete multiple conversations by id.",
@@ -366,13 +366,20 @@ const markReadRoute = createRoute({
 conversationRoutes.openapi(listConversationsRoute, async (c) => {
   const user = c.get("user");
   const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
+  const principal = c.get("principal");
+  // The team open, or — for a guest, who has none — the organization, where
+  // every chat they take part in lives in a project shared with them.
+  const scope = team
+    ? { teamId: team.id }
+    : principal.isGuest
+      ? { organizationId: principal.organizationId }
+      : throwHttpError(403, teamRequired());
 
   const { agentType, pinned, paginate, cursor, ...params } =
     c.req.valid("query");
 
   const result = await listConversations({
-    teamId: team.id,
+    scope,
     userId: user.id,
     agentType,
     params,
@@ -438,16 +445,12 @@ conversationRoutes.openapi(updateConversationRoute, async (c) => {
 });
 
 conversationRoutes.openapi(deleteConversationsRoute, async (c) => {
-  const user = c.get("user");
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
-
   const { ids } = c.req.valid("json");
 
   const res = await deleteConversations({
     ids,
-    teamId: team.id,
-    userId: user.id,
+    organizationId: c.get("principal").organizationId,
+    userId: c.get("user").id,
   });
 
   return c.json({ rowCount: res.rowCount }, 200);

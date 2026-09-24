@@ -126,7 +126,7 @@ export const loadSuggestionSources = async (
     ),
     soft(
       listConversations({
-        teamId: scope.teamId,
+        scope: { teamId: scope.teamId },
         userId: scope.userId,
         agentType: "chatbot",
         params: { limit: RECENT_CONVERSATIONS, page: 0 },

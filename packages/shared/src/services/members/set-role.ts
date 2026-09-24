@@ -8,13 +8,16 @@ import { forbidden, throwHttpError } from "../../lib/errors";
 import type { AssignableOrganizationRole } from "../../schemas/access";
 import { ERROR_CODES } from "../../schemas/errors";
 import type { OrganizationMember } from "../../schemas/members";
+import { endGuestPeriods } from "../access/guests/accept-invitation";
 import { recordAccessEvent } from "../access/record-event";
 import { getOrganizationMember } from "./directory";
 import { findMembership, lockOwners } from "./find";
 
 /**
- * Make someone an admin of the organization, or a member again. The admins
- * decide (`members.manage`).
+ * Make someone an admin of the organization, or a member again — or a guest a
+ * member, whose grants then stop ending with a guest's period. The admins
+ * decide (`members.manage`). Nobody is made a guest: a guest is someone from
+ * outside, invited onto what they see.
  *
  * An owner is changed only by an owner — an admin could otherwise demote the
  * person who can demote them — and never when they are the last one: the
@@ -58,6 +61,9 @@ export const setOrganizationRole = async (input: {
       .update(member)
       .set({ role: input.role })
       .where(eq(member.id, target.memberId));
+    if (target.role === "guest") {
+      await endGuestPeriods(tx, { organizationId, userId: target.userId });
+    }
     await recordAccessEvent({
       executor: tx,
       organizationId,

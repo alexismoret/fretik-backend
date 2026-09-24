@@ -1,11 +1,13 @@
 import { and, eq, gt } from "drizzle-orm";
 
+import { adapterFor } from "../../authz/access";
 import db from "../../db";
 import {
   invitation,
   signupAllowedDomains,
   signupAllowlist,
 } from "../../db/schema";
+import { grantsOfInvitation } from "../access/guests/invitation-grants";
 
 /**
  * Closed-beta sign-up gate. Self-serve registration is restricted while the
@@ -24,7 +26,11 @@ import {
 export const SIGNUP_INVITATION_HEADER = "x-fretik-invitation-id";
 
 export type SignupInvitation = {
-  /** The team the invitation joins first — the new account's UI language. */
+  /**
+   * The team whose language the new account starts in: the one the
+   * invitation joins first, or — for a guest, who joins none — the team of
+   * the first item shared with them.
+   */
   teamId: string | null;
   /**
    * Whether the sign-up presented THIS invitation's id. Only then may the
@@ -65,9 +71,23 @@ export const findSignupInvitation = async (params: {
   const chosen = presented ?? rows[0];
   return {
     // Better Auth stores a multi-team invitation as a comma-joined list.
-    teamId: chosen?.teamId?.split(",")[0] ?? null,
+    teamId:
+      chosen?.teamId?.split(",")[0] ??
+      (chosen ? await teamOfFirstItem(chosen.id) : null),
     ownershipProven: presented !== undefined,
   };
+};
+
+/** The team holding the first item an invitation was sent for, if any. */
+const teamOfFirstItem = async (
+  invitationId: string,
+): Promise<string | null> => {
+  const [first] = await grantsOfInvitation(db, invitationId);
+  if (!first) return null;
+  const node = (await adapterFor(first.type).loadNodes([first.id])).get(
+    first.id,
+  );
+  return node?.teamId ?? null;
 };
 
 /**

@@ -6,9 +6,14 @@ import {
 import { getOrgAdapter } from "better-auth/plugins/organization";
 import { z } from "zod";
 
+import { parseOrganizationRole } from "../authz/load-principal";
 import { sendOrganizationInvitationEmail } from "../services/invitations/send-invitation-email";
 import { MAX_MEMBERS_PER_TEAM, ORG_ADAPTER_OPTIONS } from "./auth-constants";
-import { onMembershipChanged } from "./auth-membership";
+import {
+  onGuestPromoted,
+  onInvitationAccepted,
+  onMembershipChanged,
+} from "./auth-membership";
 
 /**
  * Better Auth request hooks.
@@ -291,16 +296,40 @@ export const organizationTeamInvitationHooks = createAuthMiddleware(
         }
       }
 
+      // A guest invited to join as a member — an invitation sent before they
+      // came in as a guest — becomes one: that is what it invites them to.
+      // Nobody is ever moved DOWN by accepting: a member invited as a guest
+      // stays a member.
+      const invitedAs = parseOrganizationRole(invitation.role ?? "member");
+      const promoted =
+        parseOrganizationRole(member.role) === "guest" && invitedAs !== "guest"
+          ? await adapter.updateMember(member.id, invitedAs)
+          : null;
+
       // Written through the adapter, so no organization hook fired: the
       // cached principals learn of the new team here.
       await onMembershipChanged(invitation.organizationId);
+      if (promoted) {
+        await onGuestPromoted({
+          organizationId: invitation.organizationId,
+          userId: session.user.id,
+          userName: session.user.name,
+          role: invitedAs,
+        });
+      }
+      // What the invitation was shared for becomes theirs.
+      await onInvitationAccepted({
+        organizationId: invitation.organizationId,
+        invitationId: invitation.id,
+        userId: session.user.id,
+      });
 
-      // The member row is returned UNCHANGED — the whole point of intercepting
-      // this endpoint. Which team the invitee lands in is the client's call
-      // (`app/pages/invitation.vue` switches to it after accepting); their
-      // session already has an active organization and an active team, and
-      // neither is the plugin's to reassign here.
-      return ctx.json({ invitation: accepted, member });
+      // The member row is returned as it stands — unchanged but for a
+      // guest's promotion. Which team the invitee lands in is the client's
+      // call (`app/pages/invitation.vue` switches to it after accepting);
+      // their session already has an active organization and an active team,
+      // and neither is the plugin's to reassign here.
+      return ctx.json({ invitation: accepted, member: promoted ?? member });
     }
 
     return undefined;

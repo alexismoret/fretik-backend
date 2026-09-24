@@ -2,6 +2,8 @@ import { and, eq, sql } from "drizzle-orm";
 
 import db from "../../db";
 import { member, user } from "../../db/schema";
+import type { InvitationItem } from "../../schemas/members";
+import { describeInvitationItems } from "../access/guests/invitation-grants";
 
 /**
  * Public-safe projection of an organization invitation, shown on the
@@ -35,6 +37,13 @@ export interface PublicInvitationPreview {
    * The page says so instead of welcoming them somewhere they already are.
    */
   alreadyMember?: boolean;
+  /**
+   * What was shared with the address by email, which accepting gives: a
+   * guest's invitation names what they are invited to see, and the page
+   * opens the first one once they accept. The names are the ones the email
+   * already carried to the same person.
+   */
+  items?: InvitationItem[];
 }
 
 /**
@@ -109,10 +118,10 @@ export const getPublicInvitationPreview = async (
     teamName = team?.name ?? null;
   }
 
-  const account = await accountStateForEmail(
-    invitation.email,
-    invitation.organizationId,
-  );
+  const [account, items] = await Promise.all([
+    accountStateForEmail(invitation.email, invitation.organizationId),
+    describeInvitationItems(db, [invitationId]),
+  ]);
 
   return {
     found: true,
@@ -127,5 +136,6 @@ export const getPublicInvitationPreview = async (
     expiresAt: invitation.expiresAt,
     hasAccount: account.hasAccount,
     alreadyMember: account.alreadyMember,
+    items: items.get(invitationId) ?? [],
   };
 };

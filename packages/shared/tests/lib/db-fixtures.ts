@@ -115,7 +115,8 @@ export interface WorkspaceFixture {
    * `inTeam` is false. Removed by `cleanup` with everyone else.
    */
   addPerson: (options?: {
-    role?: "owner" | "admin" | "member";
+    role?: "owner" | "admin" | "member" | "guest";
+    /** Defaults to true, except for a guest, who belongs to no team. */
     inTeam?: boolean;
   }) => Promise<string>;
   /**
@@ -346,7 +347,7 @@ export const createWorkspaceFixture = async (): Promise<WorkspaceFixture> => {
       role: options?.role ?? "member",
       createdAt: new Date(),
     });
-    if (options?.inTeam ?? true) {
+    if (options?.inTeam ?? options?.role !== "guest") {
       await db
         .insert(teamMember)
         .values({ userId: row.id, teamId: t.id, createdAt: new Date() });

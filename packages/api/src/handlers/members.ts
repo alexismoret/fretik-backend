@@ -123,7 +123,7 @@ const cancelInvitationRoute = createRoute({
   method: "delete",
   path: "/invitations/{id}",
   middleware: access.handler(
-    "Whoever may invite into the invitation's team (members.invite there); one with no team takes members.manage (cancelInvitation).",
+    "Whoever may invite into the invitation's team (members.invite there); one with no team takes members.manage, and a guest's may also be withdrawn by the person who sent it (cancelInvitation).",
   ),
   summary: "Withdraw a pending invitation",
   tags: ["Members"],

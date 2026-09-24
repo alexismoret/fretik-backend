@@ -49,6 +49,29 @@ export default {
     expiration: "This invitation expires on {{expiresAt}}.",
     ignore:
       "If you didn't expect this invitation, you can safely ignore this email.",
+    subjectItem: '{{inviterName}} shared "{{itemName}}" with you',
+    messageItem: {
+      view: '{{inviterName}} invited you to view "{{itemName}}" in {{organizationName}} on Fretik.',
+      use: '{{inviterName}} invited you to use "{{itemName}}" in {{organizationName}} on Fretik.',
+      edit: '{{inviterName}} invited you to edit "{{itemName}}" in {{organizationName}} on Fretik.',
+      full: '{{inviterName}} gave you full access to "{{itemName}}" in {{organizationName}} on Fretik.',
+    },
+    itemLabel: "Shared with you: {{itemName}}",
+    guestLabel: "As a guest, you only see what is shared with you.",
+    ctaItem: "Accept and open",
+  },
+
+  sharedWithGuest: {
+    subject: '{{sharerName}} shared "{{resourceName}}" with you',
+    greeting: "Hello {{name}},",
+    intro: {
+      view: '{{sharerName}} shared "{{resourceName}}" with you in {{organizationName}}: you can view it.',
+      use: '{{sharerName}} shared "{{resourceName}}" with you in {{organizationName}}: you can use it.',
+      edit: '{{sharerName}} shared "{{resourceName}}" with you in {{organizationName}}: you can edit it.',
+      full: '{{sharerName}} gave you full access to "{{resourceName}}" in {{organizationName}}.',
+    },
+    until: "Your access lasts until {{date}}.",
+    cta: "Open it",
   },
 
   chatbotFinished: {

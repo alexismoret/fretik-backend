@@ -1,7 +1,10 @@
-import { APIError, createAuthMiddleware } from "better-auth/api";
-import { z } from "zod";
 import { bumpAccessVersion } from "../authz/load-principal";
 import db from "../db";
+import {
+  endGuestPeriods,
+  settleAcceptedInvitation,
+} from "../services/access/guests/accept-invitation";
+import { dropInvitationGrants } from "../services/access/guests/invitation-grants";
 import { recordAccessEvent } from "../services/access/record-event";
 import { bootstrapTeamWithBotUser } from "../services/auth/bot-user";
 import { duplicateOrgDefsToTeam } from "../services/field-definitions/duplicate-org-to-team";
@@ -17,10 +20,10 @@ import {
  *
  * Better Auth fires `organizationHooks` for most doors (removing a member,
  * removing a team member, changing a role), but not for `/organization/leave`
- * nor for the writes our own hooks make through its adapter (the team
- * invitation of `auth-hooks.ts`). Every door calls the same functions here, so
- * a person who leaves on their own is treated exactly like one who was
- * removed.
+ * (`auth-after-hooks.ts` catches it) nor for the writes our own hooks make
+ * through its adapter (the team invitation of `auth-hooks.ts`). Every door
+ * calls the same functions here, so a person who leaves on their own is
+ * treated exactly like one who was removed.
  *
  * Every step is best-effort and never blocks the membership change itself —
  * the change has already happened when these run, and each consumer re-checks
@@ -124,24 +127,68 @@ export const onMemberLeftTeam = async (input: {
   );
 };
 
-/** The shape `/organization/leave` answers with: the member row that left. */
-const leftMemberSchema = z.object({
-  organizationId: z.string(),
-  userId: z.string(),
-});
+/**
+ * An invitation was accepted — through Better Auth's endpoint or ours: what
+ * it was shared for becomes the person's (`services/access/guests/`).
+ * Best-effort like the rest of this file: the membership stands either way,
+ * and the invitation's grants wait, giving nothing, if this failed.
+ */
+export const onInvitationAccepted = async (input: {
+  organizationId: string;
+  invitationId: string;
+  userId: string;
+}): Promise<void> => {
+  await bestEffort("invitation grants", () => settleAcceptedInvitation(input));
+};
 
 /**
- * Better Auth `after` hook for the one door with no organization hook:
- * leaving. Runs only when the endpoint succeeded — a refused leave (the last
- * owner) left nothing to clean up.
+ * A guest accepted an invitation to join as a member, which made them one
+ * (`auth-hooks.ts`): their grants no longer end with a guest's period, and
+ * the journal records the change of role like any other.
  */
-export const organizationMembershipAfterHooks = createAuthMiddleware(
-  async (ctx) => {
-    if (ctx.path !== "/organization/leave") return;
-    const returned: unknown = ctx.context.returned;
-    if (returned instanceof APIError) return;
-    const left = leftMemberSchema.safeParse(returned);
-    if (!left.success) return;
-    await onMemberLeftOrganization(left.data);
-  },
-);
+export const onGuestPromoted = async (input: {
+  organizationId: string;
+  userId: string;
+  userName: string;
+  role: string;
+}): Promise<void> => {
+  await bestEffort("guest promotion", () =>
+    db.transaction(async (tx) => {
+      await endGuestPeriods(tx, input);
+      await recordAccessEvent({
+        executor: tx,
+        organizationId: input.organizationId,
+        actorUserId: input.userId,
+        action: "member.role_changed",
+        principal: { type: "user", id: input.userId },
+        metadata: { userName: input.userName, from: "guest", to: input.role },
+      });
+    }),
+  );
+};
+
+/**
+ * An invitation will never be accepted — declined by its recipient, or
+ * withdrawn: what it was shared for goes with it, and the journal says so.
+ */
+export const onInvitationClosed = async (input: {
+  organizationId: string;
+  invitationId: string;
+  email: string;
+  actorUserId: string | null;
+  action: "invitation.canceled" | "invitation.rejected";
+}): Promise<void> => {
+  await bestEffort("invitation grants", () =>
+    db.transaction(async (tx) => {
+      const dropped = await dropInvitationGrants(tx, input.invitationId);
+      await recordAccessEvent({
+        executor: tx,
+        organizationId: input.organizationId,
+        actorUserId: input.actorUserId,
+        action: input.action,
+        principal: { type: "invitation", id: input.invitationId },
+        metadata: { email: input.email, items: dropped.length },
+      });
+    }),
+  );
+};

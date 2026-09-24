@@ -3,6 +3,7 @@ import {
   accessLevelSchema,
   accessRequestStatusSchema,
   capabilityDecisionSchema,
+  SHAREABLE_PRINCIPAL_TYPES,
   shareablePrincipalTypeSchema,
 } from "./access";
 
@@ -49,8 +50,20 @@ export const resourceAccessParamsSchema = z.object({
   id: z.uuid().openapi({ param: { name: "id", in: "path" } }),
 });
 
+/**
+ * Who holds a grant, as the share dialog lists it: a principal one can pick,
+ * or someone invited from outside who has not accepted yet (`invitation`,
+ * the invitation's id) — whose grant gives nothing until they do.
+ */
+export const HOLDER_PRINCIPAL_TYPES = [
+  ...SHAREABLE_PRINCIPAL_TYPES,
+  "invitation",
+] as const;
+export type HolderPrincipalType = (typeof HOLDER_PRINCIPAL_TYPES)[number];
+export const holderPrincipalTypeSchema = z.enum(HOLDER_PRINCIPAL_TYPES);
+
 export const resourceGrantParamsSchema = resourceAccessParamsSchema.extend({
-  principalType: shareablePrincipalTypeSchema.openapi({
+  principalType: holderPrincipalTypeSchema.openapi({
     param: { name: "principalType", in: "path" },
   }),
   principalId: z.uuid().openapi({ param: { name: "principalId", in: "path" } }),
@@ -93,11 +106,12 @@ export type AccessRequestView = z.infer<typeof accessRequestSchema>;
 /**
  * Someone, or a group, holding an explicit grant. `email` and `image` are a
  * person's; `memberCount` is a group's (a team, a project, the whole
- * organization), its people only.
+ * organization), its people only. An `invitation` holder is an address that
+ * has not accepted yet: its name is the address.
  */
 export const accessHolderSchema = z
   .object({
-    principalType: shareablePrincipalTypeSchema,
+    principalType: holderPrincipalTypeSchema,
     principalId: z.string(),
     name: z.string(),
     email: z.string().nullable(),
@@ -106,6 +120,13 @@ export const accessHolderSchema = z
     level: accessLevelSchema,
     grantedAt: z.date(),
     grantedBy: z.object({ userId: z.string(), name: z.string() }).nullable(),
+    /** From outside the organization: a guest, or a guest still invited. */
+    guest: z.boolean(),
+    /**
+     * When it ends: a guest's access period, or, for an invitation, the day
+     * its link stops working. Null: until someone removes it.
+     */
+    expiresAt: z.date().nullable(),
   })
   .openapi("AccessHolder");
 export type AccessHolder = z.infer<typeof accessHolderSchema>;
@@ -180,6 +201,12 @@ export const resourceAccessSchema = z
       team: accessLevelSchema,
       outsider: accessLevelSchema,
       /**
+       * Someone from outside the organization: what an outsider may hold,
+       * and never full access — a guest does not share, move or delete what
+       * is not theirs.
+       */
+      guest: accessLevelSchema,
+      /**
        * Who `team` applies to, when that is not simply the people of its
        * team: for a chat in a project, the people who take part in the
        * project, whatever their team. Null otherwise.
@@ -195,6 +222,8 @@ export const resourceAccessSchema = z
     policy: z.object({
       crossTeam: capabilityDecisionSchema,
       organization: capabilityDecisionSchema,
+      /** Inviting guests from outside onto it, decided in its team. */
+      guests: capabilityDecisionSchema,
     }),
   })
   .openapi("ResourceAccess");
@@ -213,6 +242,51 @@ export const shareResourceSchema = z
   })
   .openapi("ShareResource");
 export type ShareResourceInput = z.infer<typeof shareResourceSchema>;
+
+/** One screen of addresses at a time, like inviting people to a team. */
+export const MAX_GUESTS_PER_INVITE = 20;
+
+/**
+ * Share a resource with people by email — whoever they are. Someone of the
+ * organization is given access at once; anyone else is invited as a guest
+ * and reaches it once they accept.
+ */
+export const inviteGuestsSchema = z
+  .object({
+    emails: z.array(z.email().max(320)).min(1).max(MAX_GUESTS_PER_INVITE),
+    level: accessLevelSchema,
+  })
+  .openapi("InviteGuests");
+export type InviteGuestsInput = z.infer<typeof inviteGuestsSchema>;
+
+/**
+ * What became of one address:
+ *
+ *   shared   they are in the organization already (a guest or a member):
+ *            they have access now
+ *   invited  an invitation is on its way — or was already, and now names
+ *            this item too; they reach it once they accept
+ *   failed   the email could not be sent; nothing was given, so sending
+ *            again is safe
+ */
+export const GUEST_INVITE_OUTCOMES = ["shared", "invited", "failed"] as const;
+export type GuestInviteOutcomeStatus = (typeof GUEST_INVITE_OUTCOMES)[number];
+
+export const guestInviteOutcomeSchema = z
+  .object({
+    email: z.string(),
+    status: z.enum(GUEST_INVITE_OUTCOMES),
+  })
+  .openapi("GuestInviteOutcome");
+export type GuestInviteOutcome = z.infer<typeof guestInviteOutcomeSchema>;
+
+export const guestInviteResultSchema = z
+  .object({
+    outcomes: z.array(guestInviteOutcomeSchema),
+    access: resourceAccessSchema,
+  })
+  .openapi("GuestInviteResult");
+export type GuestInviteResult = z.infer<typeof guestInviteResultSchema>;
 
 export const setGrantLevelSchema = z
   .object({ level: accessLevelSchema })

@@ -185,6 +185,7 @@ describe("sharing a chat", () => {
     expect(model.ceilings).toEqual({
       team: "full",
       outsider: "view",
+      guest: "view",
       insiders: null,
     });
     expect(model.general.inheritedLevel).toBe("view");

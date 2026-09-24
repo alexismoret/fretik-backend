@@ -108,11 +108,20 @@ export const inviteToTeam = async (input: {
     if (row.existing === null) continue;
     const role = parseOrganizationRole(row.existing.role);
     // A team agent is nobody to invite, and a guest sees what is shared
-    // with them: neither joins a team through an invitation.
-    if (role === "bot" || role === "guest") {
+    // with them: neither joins a team through an invitation. A guest who
+    // should work here is made a member first (`members/set-role.ts`).
+    if (role === "bot") {
       return throwHttpError(
         400,
         badRequest(`${row.email} can't be invited to a team.`),
+      );
+    }
+    if (role === "guest") {
+      return throwHttpError(
+        400,
+        badRequest(
+          `${row.email} is a guest of the organization: make them a member before adding them to a team.`,
+        ),
       );
     }
   }

@@ -1,6 +1,11 @@
+import db from "@fretik/shared/db";
+import { aiConversations } from "@fretik/shared/db/schema";
 import type { HonoLoggedAppType } from "@fretik/shared/lib/auth-middleware";
 import { redis } from "@fretik/shared/lib/redis";
+import { and, eq } from "drizzle-orm";
+import type { Context } from "hono";
 import { createMiddleware } from "hono/factory";
+import { z } from "zod";
 
 /**
  * Redis-backed per-team rate limiter for `POST /chatbot/stream`.
@@ -11,6 +16,14 @@ import { createMiddleware } from "hono/factory";
  * his team's limit is acceptable (the team can raise the limit via
  * env var if legitimately needed); ten casual users in the same team
  * sharing the budget is the right default.
+ *
+ * The team is the CONVERSATION's — the one whose settings and budget the
+ * turn runs on (`handlers/chatbot.ts` takes it from the conversation, never
+ * from the session) — so a turn in another team's project counts where it
+ * costs, and a guest, who has no team of their own, counts against the
+ * project that invited them. Only a body naming no conversation of the
+ * organization falls back to the session's team, and with neither, to the
+ * person: nobody is ever unmetered.
  *
  * Algorithm: sliding-log via Redis ZSET. Mirrors the pattern used by
  * `lib/rate-limit.ts::withSlot` so the Redis usage shape stays
@@ -30,10 +43,6 @@ import { createMiddleware } from "hono/factory";
  *   - `/internal/invoke` is NOT rate-limited — it's an authenticated
  *     service-to-service endpoint and the callers (api, worker) are
  *     trusted by design.
- *   - The middleware is a no-op when `c.get("team")` is absent (the
- *     upstream `authMiddleware` should have rejected the request
- *     before we even reach here, but the check keeps the middleware
- *     resilient to misconfiguration).
  */
 
 const DEFAULT_LIMIT_PER_MIN = 20;
@@ -49,7 +58,34 @@ const resolveLimit = (): number => {
 
 const LIMIT_PER_MIN = resolveLimit();
 
-const buildKey = (teamId: string): string => `chatbot:rate:${teamId}`;
+const streamBodySchema = z.looseObject({ conversationId: z.uuid() });
+
+/**
+ * The bucket a turn counts in: its conversation's team, else the session's
+ * team, else the person. Reading the body here costs nothing more: Hono
+ * keeps it for the handler's own `c.req.json()`.
+ */
+const bucketOf = async (c: Context<HonoLoggedAppType>): Promise<string> => {
+  const body = streamBodySchema.safeParse(
+    await c.req.json().catch((): unknown => null),
+  );
+  if (body.success) {
+    const [row] = await db
+      .select({ teamId: aiConversations.teamId })
+      .from(aiConversations)
+      .where(
+        and(
+          eq(aiConversations.id, body.data.conversationId),
+          eq(aiConversations.organizationId, c.get("principal").organizationId),
+        ),
+      );
+    if (row) return `chatbot:rate:${row.teamId}`;
+  }
+  const team = c.get("team");
+  return team
+    ? `chatbot:rate:${team.id}`
+    : `chatbot:rate:user:${c.get("user").id}`;
+};
 
 const makeToken = (): string =>
   `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
@@ -74,13 +110,7 @@ const computeRetryAfterSeconds = async (
 
 export const chatbotRateLimitMiddleware = createMiddleware<HonoLoggedAppType>(
   async (c, next) => {
-    const team = c.get("team");
-    if (!team) {
-      // authMiddleware should have handled this already; be defensive.
-      return next();
-    }
-
-    const key = buildKey(team.id);
+    const key = await bucketOf(c);
     const now = Date.now();
     const staleCutoff = now - WINDOW_MS;
 

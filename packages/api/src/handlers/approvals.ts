@@ -11,11 +11,7 @@ import {
   authMiddleware,
   type HonoLoggedAppType,
 } from "@fretik/shared/lib/auth-middleware";
-import {
-  forbidden,
-  teamRequired,
-  throwHttpError,
-} from "@fretik/shared/lib/errors";
+import { throwHttpError } from "@fretik/shared/lib/errors";
 import {
   approvalResponseSchema,
   grantApprovalRequestSchema,
@@ -43,7 +39,10 @@ import {
   executeAndMutateForGrant,
   mutateForReject,
 } from "@fretik/shared/services/approvals/execute-decision";
-import { getApprovalForCaller } from "@fretik/shared/services/approvals/get-by-id";
+import {
+  getApprovalForCaller,
+  getApprovalInOrganization,
+} from "@fretik/shared/services/approvals/get-by-id";
 import { grantApproval } from "@fretik/shared/services/approvals/grant";
 import { modifyAndGrantApproval } from "@fretik/shared/services/approvals/modify-and-grant";
 import { rejectApproval } from "@fretik/shared/services/approvals/reject";
@@ -385,15 +384,19 @@ const resumeWorkflowIfParked = async (
 /**
  * The approval named in the path, for a caller who must be allowed to see it
  * (`view`) or to decide it (`decide`) — see `services/approvals/authorize.ts`.
- * The team scope alone says where an approval lives, not whom it concerns.
+ * Found in the caller's organization, wherever it lives: everything after
+ * runs in its own team (`approval.teamId`), the one its conversation ran in,
+ * whatever team the caller has open — or none, for a guest in a project.
  */
 const loadApprovalFor = async (params: {
   id: string;
-  teamId: string;
   principal: UserPrincipal;
   intent: "view" | "decide";
 }): Promise<ToolApprovalRequest> => {
-  const approval = await getApprovalForCaller(params.id, params.teamId);
+  const approval = await getApprovalInOrganization(
+    params.id,
+    params.principal.organizationId,
+  );
   if (params.intent === "view") {
     await assertCanViewApproval(approval, params.principal);
   } else {
@@ -405,32 +408,17 @@ const loadApprovalFor = async (params: {
 // ---- Handlers --------------------------------------------------------
 
 approvalsRoutes.openapi(getRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return c.json(teamRequired(), 403);
-  const user = c.get("user");
-  if (!user) return c.json(forbidden("Authentication required"), 403);
-
   const principal = c.get("principal");
   const { id } = c.req.valid("param");
-  const row = await loadApprovalFor({
-    id,
-    teamId: team.id,
-    principal,
-    intent: "view",
-  });
-  return c.json(await toDto(row, { teamId: team.id, principal }), 200);
+  const row = await loadApprovalFor({ id, principal, intent: "view" });
+  return c.json(await toDto(row, { teamId: row.teamId, principal }), 200);
 });
 
 approvalsRoutes.openapi(operationSchemasRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return c.json(teamRequired(), 403);
   const user = c.get("user");
-  if (!user) return c.json(forbidden("Authentication required"), 403);
-
   const { id } = c.req.valid("param");
   const row = await loadApprovalFor({
     id,
-    teamId: team.id,
     principal: c.get("principal"),
     intent: "view",
   });
@@ -450,7 +438,7 @@ approvalsRoutes.openapi(operationSchemasRoute, async (c) => {
       // eslint-disable-next-line no-await-in-loop -- sequential per-op resolve
       const mcp = await resolveMcpWriteOp({
         op,
-        teamId: team.id,
+        teamId: row.teamId,
         userId: user.id,
         autonomy: null,
       });
@@ -463,50 +451,50 @@ approvalsRoutes.openapi(operationSchemasRoute, async (c) => {
 });
 
 approvalsRoutes.openapi(grantRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return c.json(teamRequired(), 403);
   const user = c.get("user");
-  if (!user) return c.json(forbidden("Authentication required"), 403);
-
   const { id } = c.req.valid("param");
   const decision = c.req.valid("json");
   const principal = c.get("principal");
-  await loadApprovalFor({ id, teamId: team.id, principal, intent: "decide" });
+  const { teamId } = await loadApprovalFor({
+    id,
+    principal,
+    intent: "decide",
+  });
   // Status transition `pending → granted`. Tolerate WRONG_STATUS so a
   // double-click / retry lands in the idempotent execution path below.
   let approval: ToolApprovalRequest;
   try {
-    approval = await grantApproval({ id, teamId: team.id, userId: user.id });
+    approval = await grantApproval({ id, teamId, userId: user.id });
   } catch (err) {
     if (!isWrongStatusError(err)) throw err;
-    approval = await getApprovalForCaller(id, team.id);
+    approval = await getApprovalForCaller(id, teamId);
     if (approval.status === "rejected") throw err;
   }
   // Execute per kind + substitute the persisted tool output. After this,
   // the next agent turn sees the outcome in history and won't re-call.
   approval = await executeAndMutateForGrant({
     approval,
-    teamId: team.id,
+    teamId,
     decision,
   });
   await resumeWorkflowIfParked(approval.conversationId, "approved");
-  return c.json(await toDto(approval, { teamId: team.id, principal }), 200);
+  return c.json(await toDto(approval, { teamId, principal }), 200);
 });
 
 approvalsRoutes.openapi(modifyAndGrantRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return c.json(teamRequired(), 403);
   const user = c.get("user");
-  if (!user) return c.json(forbidden("Authentication required"), 403);
-
   const { id } = c.req.valid("param");
   const body = c.req.valid("json");
   const principal = c.get("principal");
-  await loadApprovalFor({ id, teamId: team.id, principal, intent: "decide" });
+  const { teamId } = await loadApprovalFor({
+    id,
+    principal,
+    intent: "decide",
+  });
 
   const { operations, summary } = await validateModifiedPlan(
     body.operations,
-    team.id,
+    teamId,
     user.id,
   );
 
@@ -515,46 +503,46 @@ approvalsRoutes.openapi(modifyAndGrantRoute, async (c) => {
   try {
     approval = await modifyAndGrantApproval({
       id,
-      teamId: team.id,
+      teamId,
       userId: user.id,
       operations,
       summary,
     });
   } catch (err) {
     if (!isWrongStatusError(err)) throw err;
-    approval = await getApprovalForCaller(id, team.id);
+    approval = await getApprovalForCaller(id, teamId);
     if (approval.status === "rejected") throw err;
   }
   approval = await executeAndMutateForGrant({
     approval,
-    teamId: team.id,
+    teamId,
   });
   await resumeWorkflowIfParked(approval.conversationId, "approved");
-  return c.json(await toDto(approval, { teamId: team.id, principal }), 200);
+  return c.json(await toDto(approval, { teamId, principal }), 200);
 });
 
 approvalsRoutes.openapi(rejectRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return c.json(teamRequired(), 403);
   const user = c.get("user");
-  if (!user) return c.json(forbidden("Authentication required"), 403);
-
   const { id } = c.req.valid("param");
   const body = c.req.valid("json");
   const principal = c.get("principal");
-  await loadApprovalFor({ id, teamId: team.id, principal, intent: "decide" });
+  const { teamId } = await loadApprovalFor({
+    id,
+    principal,
+    intent: "decide",
+  });
 
   let approval: ToolApprovalRequest;
   try {
     approval = await rejectApproval({
       id,
-      teamId: team.id,
+      teamId,
       userId: user.id,
       feedback: body.feedback,
     });
   } catch (err) {
     if (!isWrongStatusError(err)) throw err;
-    approval = await getApprovalForCaller(id, team.id);
+    approval = await getApprovalForCaller(id, teamId);
     // Idempotent reject retry: already-rejected falls through to mutate.
     // granted/executing/consumed means the user actually approved — surface
     // the 409 so the frontend doesn't silently flip the UI.
@@ -562,7 +550,7 @@ approvalsRoutes.openapi(rejectRoute, async (c) => {
   }
   await mutateForReject(approval);
   await resumeWorkflowIfParked(approval.conversationId, "rejected");
-  return c.json(await toDto(approval, { teamId: team.id, principal }), 200);
+  return c.json(await toDto(approval, { teamId, principal }), 200);
 });
 
 export { approvalsRoutes };

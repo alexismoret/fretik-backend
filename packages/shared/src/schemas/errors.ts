@@ -123,6 +123,14 @@ export const ERROR_CODES = {
    * Anyone else can be given the chat to read.
    */
   PARTICIPANT_OUTSIDE_TEAM: "PARTICIPANT_OUTSIDE_TEAM",
+  /**
+   * 400 — a guest is given no more than a guest may hold on the item
+   * (`authz/guests.ts`): never full access, and on a chat outside their
+   * project, reading it.
+   */
+  GUEST_LEVEL_CEILING: "GUEST_LEVEL_CEILING",
+  /** 400 — the address is a team agent's account: nobody to give access to. */
+  INVITEE_NOT_INVITABLE: "INVITEE_NOT_INVITABLE",
   /** 409 — an archived project takes nothing new; restore it first. */
   PROJECT_ARCHIVED: "PROJECT_ARCHIVED",
   /** An access request that was already answered, withdrawn or orphaned. */

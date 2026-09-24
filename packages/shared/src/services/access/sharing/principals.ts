@@ -30,6 +30,11 @@ export interface DescribedPrincipal extends PrincipalRef {
   readonly image: string | null;
   /** A group's people; null for a person. */
   readonly memberCount: number | null;
+  /**
+   * A person from outside the organization, who sees only what is shared
+   * with them — and is given it on a guest's terms (`authz/guests.ts`).
+   */
+  readonly guest: boolean;
 }
 
 /** A principal someone picked, checked to be of the organization. */
@@ -48,7 +53,7 @@ const idsOf = (refs: readonly PrincipalRef[], type: ShareablePrincipalType) => [
   ...new Set(refs.filter((ref) => ref.type === type).map((ref) => ref.id)),
 ];
 
-/** People of the organization; its agents' accounts and guests are not. */
+/** People of the organization, its guests included; its agents are not people. */
 const loadPeople = async (organizationId: string, ids: string[]) => {
   if (ids.length === 0) return [];
   const rows = await db
@@ -85,8 +90,8 @@ const loadPeople = async (organizationId: string, ids: string[]) => {
   }
   return rows.flatMap((row): Grantee[] => {
     const role = parseOrganizationRole(row.role);
-    // Guests arrive with their own invitation flow; agents are not people.
-    if (role === "bot" || role === "guest") return [];
+    if (role === "bot") return [];
+    const guest = role === "guest";
     return [
       {
         type: "user",
@@ -95,7 +100,9 @@ const loadPeople = async (organizationId: string, ids: string[]) => {
         email: row.email,
         image: row.image,
         memberCount: null,
-        teamIds: teamsOf.get(row.id) ?? new Set(),
+        guest,
+        // A guest belongs to no team, whatever a stray row says.
+        teamIds: guest ? new Set() : (teamsOf.get(row.id) ?? new Set()),
       },
     ];
   });
@@ -125,6 +132,7 @@ const loadTeams = async (organizationId: string, ids: string[]) => {
     email: null,
     image: null,
     memberCount: row.memberCount,
+    guest: false,
     teamIds: new Set([row.id]),
   }));
 };
@@ -147,6 +155,7 @@ const loadProjects = async (organizationId: string, ids: string[]) => {
     email: null,
     image: null,
     memberCount: null,
+    guest: false,
     teamIds: new Set([row.teamId]),
   }));
 };
@@ -180,6 +189,7 @@ const loadOrganization = async (
       email: null,
       image: null,
       memberCount: people,
+      guest: false,
       teamIds: new Set(),
     },
   ];
@@ -188,7 +198,8 @@ const loadOrganization = async (
 /**
  * The principals of `refs` that exist in the organization, keyed by
  * `type:id`. One that does not — another organization's team, a stranger, an
- * agent's account — is simply absent, and the caller refuses it.
+ * agent's account — is simply absent, and the caller refuses it. A guest is
+ * present, flagged: what they may be given is the sharing service's call.
  */
 export const resolvePrincipals = async (
   organizationId: string,

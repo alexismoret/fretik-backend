@@ -1,8 +1,8 @@
-import { and, eq, gt, isNull, ne, or } from "drizzle-orm";
+import { and, eq, gt, isNull, ne, or, sql } from "drizzle-orm";
 import type { Executor } from "../../../../db";
 import { accessGrants, user } from "../../../../db/schema";
 import type { GrantStore, StoredGrant, StoredHolder } from "../grant-store";
-import type { PrincipalRef } from "../principals";
+import { type PrincipalRef, principalKey } from "../principals";
 
 /**
  * The engine's own grants (`access_grants`), where every shareable type keeps
@@ -34,6 +34,7 @@ export const accessGrantStore: GrantStore = {
         type: accessGrants.principalType,
         id: accessGrants.principalId,
         level: accessGrants.level,
+        expiresAt: accessGrants.expiresAt,
       })
       .from(accessGrants)
       .where(matching(resource, refs))
@@ -52,6 +53,7 @@ export const accessGrantStore: GrantStore = {
         grantedAt: accessGrants.createdAt,
         grantedByUserId: accessGrants.grantedByUserId,
         grantedByName: user.name,
+        expiresAt: accessGrants.expiresAt,
       })
       .from(accessGrants)
       .leftJoin(user, eq(user.id, accessGrants.grantedByUserId))
@@ -79,6 +81,7 @@ export const accessGrantStore: GrantStore = {
                 row.grantedByUserId === null || row.grantedByName === null
                   ? null
                   : { userId: row.grantedByUserId, name: row.grantedByName },
+              expiresAt: row.expiresAt,
             },
           ],
     );
@@ -97,6 +100,7 @@ export const accessGrantStore: GrantStore = {
           principalId: ref.id,
           level: write.level,
           grantedByUserId: write.actorUserId,
+          expiresAt: write.expiries?.get(principalKey(ref)) ?? null,
         })),
       )
       .onConflictDoUpdate({
@@ -109,8 +113,9 @@ export const accessGrantStore: GrantStore = {
         set: {
           level: write.level,
           grantedByUserId: write.actorUserId,
-          // A share made again is a share without an end date.
-          expiresAt: null,
+          // A share made again starts over: a guest's period from today,
+          // anyone else's without an end date.
+          expiresAt: sql`excluded.expires_at`,
         },
       });
   },

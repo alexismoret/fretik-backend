@@ -23,6 +23,7 @@ import { withdrawInvitationsToDeletedTeam } from "../services/invitations/withdr
 import { maximumTeamsFor } from "../services/organization/team-limit";
 import { scrubWorkflowNotificationRecipient } from "../services/workflows/scrub-notification-recipient";
 import { accountSecurity } from "./auth-account-security";
+import { organizationAfterHooks } from "./auth-after-hooks";
 import { recordAuthEvent } from "./auth-audit";
 import {
   INVITATION_EXPIRY_SECONDS,
@@ -33,11 +34,12 @@ import {
 import { organizationTeamInvitationHooks } from "./auth-hooks";
 import {
   journalAfterTheFact,
+  onInvitationAccepted,
+  onInvitationClosed,
   onMemberLeftOrganization,
   onMemberLeftTeam,
   onMembershipChanged,
   onTeamCreated,
-  organizationMembershipAfterHooks,
 } from "./auth-membership";
 import { passkeyOptions } from "./auth-passkey";
 import { sendEmail } from "./email";
@@ -209,8 +211,9 @@ const options = {
    */
   hooks: {
     before: organizationTeamInvitationHooks,
-    // The one membership change with no organization hook: leaving.
-    after: organizationMembershipAfterHooks,
+    // Leaving (the one membership change with no organization hook), and
+    // the directory endpoints' answers to a guest (`auth-after-hooks.ts`).
+    after: organizationAfterHooks,
   },
 
   databaseHooks: {
@@ -337,6 +340,31 @@ const options = {
         },
         afterAcceptInvitation: async (data) => {
           await onMembershipChanged(data.organization.id);
+          // What the invitation was shared for becomes theirs: a guest's
+          // items, or what was shared with a future member before they came.
+          await onInvitationAccepted({
+            organizationId: data.organization.id,
+            invitationId: data.invitation.id,
+            userId: data.user.id,
+          });
+        },
+        afterRejectInvitation: async (data) => {
+          await onInvitationClosed({
+            organizationId: data.organization.id,
+            invitationId: data.invitation.id,
+            email: data.invitation.email,
+            actorUserId: data.user.id,
+            action: "invitation.rejected",
+          });
+        },
+        afterCancelInvitation: async (data) => {
+          await onInvitationClosed({
+            organizationId: data.organization.id,
+            invitationId: data.invitation.id,
+            email: data.invitation.email,
+            actorUserId: data.cancelledBy.id,
+            action: "invitation.canceled",
+          });
         },
         afterRemoveMember: async (data) => {
           await onMemberLeftOrganization({

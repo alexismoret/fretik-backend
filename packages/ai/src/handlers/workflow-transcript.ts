@@ -3,11 +3,7 @@ import {
   authMiddleware,
   type HonoLoggedAppType,
 } from "@fretik/shared/lib/auth-middleware";
-import {
-  notFound,
-  teamRequired,
-  throwHttpError,
-} from "@fretik/shared/lib/errors";
+import { notFound, throwHttpError } from "@fretik/shared/lib/errors";
 import { ANTI_BUFFERING_HEADERS } from "@fretik/shared/lib/sse-headers";
 import {
   clearConversationActiveStream,
@@ -30,9 +26,11 @@ import { uuidv7TimestampMs } from "../lib/uuidv7-time";
  * turns; this endpoint streams the turn currently being generated, chunk
  * by chunk, same wire format as the chat's reconnection endpoint.
  *
- * Auth mirrors the API transcript route: Better Auth cookie + the run's
- * team + `view` on the parent workflow — NOT conversation membership,
- * because workflow conversations have no member roster.
+ * Auth mirrors the API transcript route: Better Auth cookie + the caller's
+ * organization + `view` on the parent workflow — NOT conversation
+ * membership, because workflow conversations have no member roster, and not
+ * the team the caller has open: a workflow shared from another team, or with
+ * a guest, shows its runs wherever it opens.
  */
 
 /** Same benefit-of-the-doubt window as the chat's reconnection endpoint:
@@ -64,14 +62,12 @@ workflowTranscriptRoutes.get(
     "A run's live transcript is read with view on its workflow (getWorkflowRunRow).",
   ),
   async (c) => {
-    const team = c.get("team");
-    if (!team) return throwHttpError(403, teamRequired());
-
+    const principal = c.get("principal");
     const runId = c.req.param("runId");
     const run = await getWorkflowRunRow({
       id: runId,
-      teamId: team.id,
-      principal: c.get("principal"),
+      organizationId: principal.organizationId,
+      principal,
     });
     if (!run) return throwHttpError(404, notFound("Run not found"));
     const conversationId = run.conversationId;

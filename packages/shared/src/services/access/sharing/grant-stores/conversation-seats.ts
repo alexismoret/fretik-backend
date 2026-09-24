@@ -48,10 +48,12 @@ const lockSeats = async (
       ),
     )
     .for("update");
+  // A seat lasts while its holder takes part where the chat lives.
   return rows.map((row) => ({
     type: "user" as const,
     id: row.userId,
     level: "use" as const,
+    expiresAt: null,
   }));
 };
 
@@ -184,6 +186,7 @@ export const conversationGrantStore: GrantStore = {
         type: "user",
         id: seat.userId,
         level: "use",
+        expiresAt: null,
         grantedAt: seat.joinedAt,
         grantedBy: null,
       })),

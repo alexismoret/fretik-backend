@@ -42,7 +42,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 const listFor = async (userId: string) =>
   listConversations({
-    teamId: fx.teamId,
+    scope: { teamId: fx.teamId },
     userId,
     agentType: "chatbot",
     params: { limit: 20, page: 0 },

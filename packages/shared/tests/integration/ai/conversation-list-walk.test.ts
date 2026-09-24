@@ -90,7 +90,7 @@ const walk = async (options: {
   userId?: string;
 }) =>
   listConversations({
-    teamId: fx.teamId,
+    scope: { teamId: fx.teamId },
     userId: options.userId ?? fx.userIds[0],
     agentType: "chatbot",
     params: { limit: options.limit, page: 0 },
@@ -257,7 +257,7 @@ describe("conversation list — keyset walk", () => {
     expect(walked.count).toBe(0);
 
     const paged = await listConversations({
-      teamId: fx.teamId,
+      scope: { teamId: fx.teamId },
       userId: fx.userIds[0],
       agentType: "chatbot",
       params: { limit: 3, page: 0 },
@@ -288,7 +288,7 @@ describe("conversation list — pinned split", () => {
     });
 
     const pinnedList = await listConversations({
-      teamId: fx.teamId,
+      scope: { teamId: fx.teamId },
       userId: userA,
       agentType: "chatbot",
       params: { limit: 25, page: 0 },
@@ -315,7 +315,7 @@ describe("conversation list — pinned split", () => {
     });
 
     const theirs = await listConversations({
-      teamId: fx.teamId,
+      scope: { teamId: fx.teamId },
       userId: userB,
       agentType: "chatbot",
       params: { limit: 25, page: 0 },
@@ -336,7 +336,7 @@ describe("conversation list — pinned split", () => {
     });
 
     const pinnedList = await listConversations({
-      teamId: fx.teamId,
+      scope: { teamId: fx.teamId },
       userId: userA,
       agentType: "chatbot",
       params: { limit: 25, page: 0 },
@@ -366,7 +366,7 @@ describe("conversation list — pinned split", () => {
 
     // "Walk 6" is the newest (index 6 was inserted with the smallest offset).
     const found = await listConversations({
-      teamId: fx.teamId,
+      scope: { teamId: fx.teamId },
       userId: userA,
       agentType: "chatbot",
       params: { limit: 25, page: 0, search: "Walk 6" },

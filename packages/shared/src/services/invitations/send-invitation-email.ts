@@ -1,4 +1,7 @@
-import { generateOrganizationInvitation } from "../../emails/generators";
+import {
+  generateOrganizationInvitation,
+  type InvitationItem,
+} from "../../emails/generators";
 import { sendEmail } from "../../lib/email";
 import { getTeamLocale } from "../field-definitions/get-locale";
 
@@ -18,6 +21,12 @@ export interface OrganizationInvitationEmailParams {
    * different paragraph and subject line.
    */
   existingMember?: boolean;
+  /**
+   * The item shared with them by email (`services/access/guests/`), with the
+   * team that holds it: the email names the item, and is written in that
+   * team's language when the invitation joins no team of its own.
+   */
+  item?: (InvitationItem & { teamId: string | null }) | null;
 }
 
 /**
@@ -25,18 +34,21 @@ export interface OrganizationInvitationEmailParams {
  *
  * Extracted from the Better Auth `sendInvitationEmail` callback because the
  * other invitation paths (`invite-to-team.ts`, the team hook in
- * `lib/auth-hooks.ts`) write their own `invitation` row and therefore send
- * their own email: two copies of "which locale, which template, which
- * subject" would drift the moment either is touched.
+ * `lib/auth-hooks.ts`, a guest invited from the share dialog) write their own
+ * `invitation` row and therefore send their own email: two copies of "which
+ * locale, which template, which subject" would drift the moment either is
+ * touched.
  *
  * Localized to the inviting TEAM's language — the invitee usually has no
- * account yet, so a per-user language isn't available (falls back to `en` for
- * organization-level invitations with no team).
+ * account yet, so a per-user language isn't available. A guest joins no team:
+ * theirs is the language of the team whose item they were invited onto
+ * (falls back to `en` for organization-level invitations with neither).
  */
 export const sendOrganizationInvitationEmail = async (
   params: OrganizationInvitationEmailParams,
 ): Promise<void> => {
-  const lang = params.teamId ? await getTeamLocale(params.teamId) : "en";
+  const localeTeamId = params.teamId ?? params.item?.teamId ?? null;
+  const lang = localeTeamId ? await getTeamLocale(localeTeamId) : "en";
 
   const { subject, html } = await generateOrganizationInvitation(
     {
@@ -47,6 +59,7 @@ export const sendOrganizationInvitationEmail = async (
       teamId: params.teamId,
       expiresAt: params.expiresAt,
       existingMember: params.existingMember ?? false,
+      item: params.item ?? null,
     },
     lang,
   );

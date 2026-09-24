@@ -159,6 +159,8 @@ export const ACCESS_AUDIT_ACTIONS = [
   "member.removed",
   "invitation.sent",
   "invitation.canceled",
+  "invitation.accepted",
+  "invitation.rejected",
   "team.created",
   "team.renamed",
   "team.deleted",

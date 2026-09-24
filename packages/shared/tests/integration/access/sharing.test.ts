@@ -195,6 +195,8 @@ describe("the share dialog's model", () => {
     expect(model.ceilings).toEqual({
       team: "full",
       outsider: "full",
+      // A guest never holds full access to what is not theirs.
+      guest: "edit",
       insiders: null,
     });
     expect(model.canManage).toBe(true);
@@ -298,6 +300,7 @@ describe("restricting", () => {
     expect(model.ceilings).toEqual({
       team: "view",
       outsider: "view",
+      guest: "view",
       insiders: null,
     });
     const row = await db.query.workflows.findFirst({

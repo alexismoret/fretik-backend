@@ -19,6 +19,8 @@ import {
   requestAccessSchema,
 } from "@fretik/shared/schemas/access-requests";
 import {
+  guestInviteResultSchema,
+  inviteGuestsSchema,
   resourceAccessParamsSchema,
   resourceAccessSchema,
   resourceGrantParamsSchema,
@@ -35,6 +37,7 @@ import {
 } from "@fretik/shared/schemas/common/responses";
 import { sharedWithMeSchema } from "@fretik/shared/schemas/shared-with-me";
 import { describeAccess } from "@fretik/shared/services/access/describe";
+import { inviteGuests } from "@fretik/shared/services/access/guests/invite-guests";
 import {
   cancelAccessRequest,
   decideAccessRequest,
@@ -197,6 +200,36 @@ const shareResourceRoute = createRoute({
     },
   },
   responses: resourceAccessResponses,
+});
+
+const inviteByEmailRoute = createRoute({
+  method: "post",
+  path: "/resources/{type}/{id}/invitations",
+  middleware: access.handler(
+    "The service decides on the resource the path names: full access, never a guest; the organization's policy for each new share, and guests.invite in the resource's team for anyone invited as a guest.",
+  ),
+  summary: "Share a resource with people by email",
+  description:
+    "Someone of the organization is given access at once; an address with an invitation on its way gets this item added to it; anyone else is invited as a guest and reaches the item once they accept. One outcome per address.",
+  tags: ["Access"],
+  request: {
+    params: resourceAccessParamsSchema,
+    body: {
+      content: { "application/json": { schema: inviteGuestsSchema } },
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      content: { "application/json": { schema: guestInviteResultSchema } },
+      description: "What became of each address, and the dialog's new model",
+    },
+    ...responseBadRequestSchema,
+    ...responseForbiddenSchema,
+    ...responseNotFoundSchema,
+    ...responseConflictSchema,
+    ...responseInternalErrorSchema,
+  },
 });
 
 const changeGrantRoute = createRoute({
@@ -408,6 +441,19 @@ accessRoutes.openapi(shareResourceRoute, async (c) => {
     level,
   });
   return c.json(model, 200);
+});
+
+accessRoutes.openapi(inviteByEmailRoute, async (c) => {
+  const { type, id } = c.req.valid("param");
+  const { emails, level } = c.req.valid("json");
+  const result = await inviteGuests({
+    principal: c.get("principal"),
+    type,
+    id,
+    emails,
+    level,
+  });
+  return c.json(result, 200);
 });
 
 accessRoutes.openapi(changeGrantRoute, async (c) => {

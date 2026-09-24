@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import { adapterFor, requireAccess } from "../../../authz/access";
 import { decideCapability } from "../../../authz/capabilities";
+import { guestCeilingFor } from "../../../authz/guests";
 import { levelRank } from "../../../authz/levels";
 import type { UserPrincipal } from "../../../authz/principal";
 import { projectParticipants } from "../../../authz/project-people";
@@ -15,20 +16,23 @@ import type {
   SharingResourceType,
 } from "../../../schemas/access-sharing";
 import { getOrganizationAccessPolicy } from "../../organization/access-policy";
+import { listInvitationHolders } from "../guests/invitation-grants";
 import { listResourceRequests } from "../requests/list-requests";
 import { listGrants } from "./grant-store";
 import { principalKey, resolvePrincipals } from "./principals";
 
 /**
  * The share dialog's model of one resource: its owner, who else holds a
- * grant and at what level, what it inherits from while it is open, and the
- * organization's sharing policy as it applies to the caller.
+ * grant and at what level — guests and the addresses invited but not in yet
+ * included — what it inherits from while it is open, and the organization's
+ * sharing policy as it applies to the caller.
  *
  * Everyone who can see the resource reads it (`view`), as in every shared
  * drive: knowing who else has access is part of knowing what one is looking
  * at. A guest sees only their own grant: the organization's people are not
- * theirs to list. The pending requests for more access are shown to whoever
- * may answer them, and to no one else.
+ * theirs to list. The pending requests for more access, and the invitations
+ * still waiting, are shown to whoever may manage who has access, and to no
+ * one else.
  */
 export const describeResourceAccess = async (input: {
   principal: UserPrincipal;
@@ -47,7 +51,7 @@ export const describeResourceAccess = async (input: {
 
   const [holders, owner, inheritsFrom, policy, requests, insiders] =
     await Promise.all([
-      loadHolders(principal, type, node),
+      loadHolders(principal, type, node, canManage),
       loadOwner(node.ownerUserId),
       inheritanceSourceOf(node),
       getOrganizationAccessPolicy(principal.organizationId),
@@ -86,6 +90,7 @@ export const describeResourceAccess = async (input: {
     ceilings: {
       team: ceilingFor(node, { isOwner: false, worksThere: true }),
       outsider: ceilingFor(node, { isOwner: false, worksThere: false }),
+      guest: guestCeilingFor(node),
       insiders,
     },
     shareablePrincipals: [...adapter.shareablePrincipals],
@@ -100,18 +105,32 @@ export const describeResourceAccess = async (input: {
         capability: "share.organization",
         policy,
       }),
+      guests: decideCapability({
+        principal,
+        capability: "guests.invite",
+        policy,
+        teamId: node.teamId,
+      }),
     },
     requests,
   };
 };
 
-/** The explicit grants, made readable, strongest first, then by name. */
+/**
+ * The explicit grants, made readable, strongest first, then by name — and,
+ * for whoever manages who has access, the invitations still waiting, which
+ * give nothing until they are accepted.
+ */
 const loadHolders = async (
   principal: UserPrincipal,
   type: SharingResourceType,
   node: LoadedNode,
+  canManage: boolean,
 ): Promise<AccessHolder[]> => {
-  const grants = await listGrants(db, { type, id: node.id });
+  const [grants, invited] = await Promise.all([
+    listGrants(db, { type, id: node.id }),
+    canManage ? listInvitationHolders(db, { type, id: node.id }) : [],
+  ]);
   const described = await resolvePrincipals(principal.organizationId, grants);
 
   const holders = grants.flatMap((grant): AccessHolder[] => {
@@ -130,9 +149,26 @@ const loadHolders = async (
         level: grant.level,
         grantedAt: grant.grantedAt,
         grantedBy: grant.grantedBy,
+        guest: who.guest,
+        expiresAt: grant.expiresAt,
       },
     ];
   });
+  for (const invitation of invited) {
+    holders.push({
+      principalType: "invitation",
+      principalId: invitation.invitationId,
+      name: invitation.email,
+      email: invitation.email,
+      image: null,
+      memberCount: null,
+      level: invitation.level,
+      grantedAt: invitation.grantedAt,
+      grantedBy: invitation.grantedBy,
+      guest: invitation.role === "guest",
+      expiresAt: invitation.expiresAt,
+    });
+  }
 
   return holders.sort(
     (a, b) =>

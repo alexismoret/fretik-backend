@@ -1,9 +1,11 @@
 import { z } from "@hono/zod-openapi";
 import {
+  accessLevelSchema,
   assignableOrganizationRoleSchema,
   organizationRoleSchema,
   teamRoleSchema,
 } from "./access";
+import { sharingResourceTypeSchema } from "./access-sharing";
 
 /**
  * The organization's people and its pending invitations, as the Members page
@@ -53,6 +55,17 @@ export const memberParamsSchema = z.object({
 
 // --- Invitations ------------------------------------------------------------
 
+/** An item shared with someone still invited: what accepting gives them. */
+export const invitationItemSchema = z
+  .object({
+    type: sharingResourceTypeSchema,
+    id: z.uuid(),
+    name: z.string(),
+    level: accessLevelSchema,
+  })
+  .openapi("InvitationItem");
+export type InvitationItem = z.infer<typeof invitationItemSchema>;
+
 export const pendingInvitationSchema = z
   .object({
     id: z.uuid(),
@@ -64,6 +77,11 @@ export const pendingInvitationSchema = z
     inviterName: z.string().nullable(),
     expiresAt: z.date(),
     createdAt: z.date(),
+    /**
+     * What was shared with them by email, waiting for their yes — all a
+     * guest's invitation gives; for a future member, what comes with the team.
+     */
+    items: z.array(invitationItemSchema),
   })
   .openapi("PendingInvitation");
 export type PendingInvitation = z.infer<typeof pendingInvitationSchema>;

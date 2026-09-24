@@ -75,9 +75,11 @@ export const collectionGrantStore: GrantStore = {
       .from(collectionGrants)
       .where(matching(resource.id, refs))
       .for("update");
+    // A collection is shared with teams, whose grants never end.
     return rows.map((row) => ({
       ...principalOf(row),
       level: levelOf(row.permission),
+      expiresAt: null,
     }));
   },
 
@@ -97,6 +99,7 @@ export const collectionGrantStore: GrantStore = {
     return rows.map((row): StoredHolder => ({
       ...principalOf(row),
       level: levelOf(row.permission),
+      expiresAt: null,
       grantedAt: row.grantedAt,
       grantedBy:
         row.grantedByUserId === null || row.grantedByName === null

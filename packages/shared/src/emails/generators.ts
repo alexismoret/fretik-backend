@@ -36,6 +36,20 @@ interface OrganizationInvitationParams {
    * `services/invitations/accept-team-invitation.ts`).
    */
   existingMember?: boolean;
+  /**
+   * The item the invitation was sent for, when it was sent from the share
+   * dialog: the email names it, and accepting opens it. A guest's invitation
+   * always has one — it is the only reason they are invited at all.
+   */
+  item?: InvitationItem | null;
+}
+
+/** An item shared by email, as an invitation names it. */
+export interface InvitationItem {
+  type: SharingResourceType;
+  id: string;
+  name: string;
+  level: AccessLevel;
 }
 
 /**
@@ -64,23 +78,31 @@ export const generateOrganizationInvitation = async (
   // that branch — but fall back to the generic copy rather than render a
   // sentence with a hole in it.
   const isTeamAccessForMember = Boolean(params.existingMember && teamName);
+  const item = params.item ?? null;
+  const isGuest = params.role === "guest";
 
-  const message = isTeamAccessForMember
-    ? t("organizationInvitation.messageExistingMember", {
+  const message = item
+    ? t(`organizationInvitation.messageItem.${item.level}`, {
         inviterName: params.inviterName,
-        teamName,
+        itemName: item.name,
         organizationName: params.organizationName,
       })
-    : teamName
-      ? t("organizationInvitation.messageWithTeam", {
+    : isTeamAccessForMember
+      ? t("organizationInvitation.messageExistingMember", {
           inviterName: params.inviterName,
           teamName,
           organizationName: params.organizationName,
         })
-      : t("organizationInvitation.message", {
-          inviterName: params.inviterName,
-          organizationName: params.organizationName,
-        });
+      : teamName
+        ? t("organizationInvitation.messageWithTeam", {
+            inviterName: params.inviterName,
+            teamName,
+            organizationName: params.organizationName,
+          })
+        : t("organizationInvitation.message", {
+            inviterName: params.inviterName,
+            organizationName: params.organizationName,
+          });
 
   const formattedExpiresAt = params.expiresAt.toLocaleDateString(
     dateLocale(lang),
@@ -99,18 +121,25 @@ export const generateOrganizationInvitation = async (
       organizationLabel: t("organizationInvitation.organizationLabel", {
         organizationName: params.organizationName,
       }),
-      teamLabel: teamName
-        ? t("organizationInvitation.teamLabel", { teamName })
-        : "",
+      teamLabel: item
+        ? t("organizationInvitation.itemLabel", { itemName: item.name })
+        : teamName
+          ? t("organizationInvitation.teamLabel", { teamName })
+          : "",
       // Empty string omits the line (the template guards it with `{{#if}}`):
-      // announcing a role we are not going to apply would be a lie.
-      roleLabel: isTeamAccessForMember
-        ? ""
-        : t("organizationInvitation.roleLabel", { roleName: params.role }),
+      // announcing a role we are not going to apply would be a lie. A guest
+      // holds no role to announce, only what is shared with them.
+      roleLabel: isGuest
+        ? t("organizationInvitation.guestLabel")
+        : isTeamAccessForMember
+          ? ""
+          : t("organizationInvitation.roleLabel", { roleName: params.role }),
       acceptUrl,
-      cta: isTeamAccessForMember
-        ? t("organizationInvitation.ctaExistingMember")
-        : t("organizationInvitation.cta"),
+      cta: item
+        ? t("organizationInvitation.ctaItem")
+        : isTeamAccessForMember
+          ? t("organizationInvitation.ctaExistingMember")
+          : t("organizationInvitation.cta"),
       expiration: t("organizationInvitation.expiration", {
         expiresAt: formattedExpiresAt,
       }),
@@ -119,11 +148,16 @@ export const generateOrganizationInvitation = async (
     lang,
   );
 
-  const subject = isTeamAccessForMember
-    ? t("organizationInvitation.subjectExistingMember", { teamName })
-    : t("organizationInvitation.subject", {
-        organizationName: params.organizationName,
-      });
+  const subject = item
+    ? t("organizationInvitation.subjectItem", {
+        inviterName: params.inviterName,
+        itemName: item.name,
+      })
+    : isTeamAccessForMember
+      ? t("organizationInvitation.subjectExistingMember", { teamName })
+      : t("organizationInvitation.subject", {
+          organizationName: params.organizationName,
+        });
 
   return { subject, html };
 };
@@ -775,4 +809,53 @@ export const generateAccessRequestDecidedEmail = async (
       : t("accessRequestDecided.denied.subject", names),
     html,
   };
+};
+
+interface SharedWithGuestEmailParams {
+  recipientName: string;
+  sharerName: string;
+  organizationName: string;
+  resource: { type: SharingResourceType; id: string; name: string };
+  level: AccessLevel;
+  /** When the guest's access ends; null when it lasts until removed. */
+  expiresAt: Date | null;
+}
+
+/**
+ * Something new shared with a guest. A guest does not browse the
+ * organization's workspace, so this email is how they learn it is there.
+ * Same layout as a decided request: a sentence and a button.
+ */
+export const generateSharedWithGuestEmail = async (
+  params: SharedWithGuestEmailParams,
+  lang: string,
+): Promise<EmailData> => {
+  const t = i18n.getFixedT(lang);
+  const names = {
+    sharerName: params.sharerName,
+    resourceName: params.resource.name,
+    organizationName: params.organizationName,
+  };
+  const intro = t(`sharedWithGuest.intro.${params.level}`, names);
+  const until =
+    params.expiresAt === null
+      ? ""
+      : t("sharedWithGuest.until", {
+          date: params.expiresAt.toLocaleDateString(dateLocale(lang), {
+            year: "numeric",
+            month: "long",
+            day: "numeric",
+          }),
+        });
+  const html = await renderEmail(
+    "access-request-decided",
+    {
+      greeting: t("sharedWithGuest.greeting", { name: params.recipientName }),
+      intro: until === "" ? intro : `${intro} ${until}`,
+      ctaUrl: resourceUrl(params.resource),
+      cta: t("sharedWithGuest.cta"),
+    },
+    lang,
+  );
+  return { subject: t("sharedWithGuest.subject", names), html };
 };

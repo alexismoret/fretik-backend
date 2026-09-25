@@ -30,12 +30,12 @@ export interface MoveDocumentsResult {
  * documents is reported in `failed`, never thrown: one stale id must not cost
  * the other hundred.
  *
- * What it deliberately does NOT do, unlike `updateDocument`:
+ * What it deliberately does NOT do:
  *  - No vector refresh. The indexed metadata (`buildDocumentVectorMetadata`)
  *    carries the filename, summary, language, fields and mentions, and no
- *    folder, so a move changes nothing an embedding holds. `updateDocument`
- *    schedules one anyway, which is a full re-vectorisation per document;
- *    on a bulk move that would be hundreds of enrichment passes for nothing.
+ *    folder (a folder-scoped search resolves it at query time), so a move
+ *    changes nothing an embedding holds — the same rule `updateDocument`
+ *    follows through `touchesIndexedFields`.
  *  - No `document:{id}` cache invalidation. Nothing writes that prefix any
  *    more, and `deleteKeysByPrefix` is a SCAN of the whole keyspace, so doing
  *    it per document would make a 200-document move 200 full scans.

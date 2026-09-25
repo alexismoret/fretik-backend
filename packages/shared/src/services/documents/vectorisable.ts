@@ -1,3 +1,5 @@
+import type { UpdateDocumentInput } from "../../schemas/documents";
+
 /**
  * Should this document be indexed for retrieval at all?
  *
@@ -62,3 +64,20 @@ export const vectorisationSkipReason = (
   }
   return null;
 };
+
+/**
+ * Whether an update touches anything the document's vectors carry.
+ *
+ * The indexed metadata (`buildDocumentVectorMetadata`) holds the filename,
+ * summary, language, fields and mentions, and NOT the folder: a search scoped
+ * to a folder resolves the folder's documents at query time. So a pure move
+ * changes nothing an embedding holds, and re-vectorising for it (chunking,
+ * an LLM enrichment pass per chunk, embeddings) was spent for nothing on every
+ * drag-and-drop. Written as "anything but the folder" rather than a list of
+ * indexed keys, so a field added to the schema later refreshes by default.
+ * Exported for its test.
+ */
+export const touchesIndexedFields = (updates: UpdateDocumentInput): boolean =>
+  Object.entries(updates).some(
+    ([key, value]) => key !== "folderId" && value !== undefined,
+  );

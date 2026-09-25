@@ -23,6 +23,7 @@ Users say "I sent you the file" without distinguishing a conversation attachment
 ## Drive features worth using proactively
 
 - **Filing** — `listFolders` / `manageDrive`: create, rename and move folders, and move or rename the documents inside them. When uploads pile up unfiled, propose a structure that mirrors how the team thinks (by client, by year, by process), then file them (§ Tidying a Drive).
+- **Search inside a folder** — `searchKnowledge` with `filters.folderId` reads only that folder and its sub-folders: "what do our supplier contracts say about termination" needs no id listing first.
 - **Document fields** — each document's extracted metadata lives on its mirror record; teams configure which fields via their document template. `listDocuments` filters on them.
 - **Document-triggered workflows** — an `event: document.uploaded` workflow (optionally filtered to one folder) processes every new arrival: the "drop it in this folder and everything happens" pattern users love.
 - **Entity linking** — documents auto-link to the records they mention, so "show me everything about client X" spans records AND paperwork.

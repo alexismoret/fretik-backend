@@ -207,6 +207,10 @@ export const promoteSandboxFileToDrive = async (args: {
       teamId,
       originalKey,
       metadata,
+      // Same rule as the sibling promoter: no folder named means nothing has
+      // said where this belongs, which is not the same as the root being
+      // chosen. An agent deliverable nobody filed is exactly the case.
+      autoFile: folderId === null,
     });
   } catch (error) {
     // Nothing usable exists yet — no versions, no extraction — so the terminal

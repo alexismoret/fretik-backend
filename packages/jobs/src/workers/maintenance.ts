@@ -1,13 +1,16 @@
 import { createWorkerConnection } from "@fretik/shared/lib/queue/connection";
 import { removeExpiredGuests } from "@fretik/shared/services/access/guests/remove-expired-guests";
 import { sweepConversationTasks } from "@fretik/shared/services/conversation-tasks/sweep";
+import { purgeDecisionLog } from "@fretik/shared/services/decisions/journal";
 import { runTelemetryRollup } from "@fretik/shared/services/model-registry/telemetry-rollup";
 import { markStalledRuns } from "@fretik/shared/services/workflows/mark-stalled-runs";
 import { type Job, Worker } from "bullmq";
 import {
   CONVERSATION_TASK_SWEEP_JOB,
+  DECISION_LOG_GC_JOB,
   DREAMING_SWEEP_JOB,
   EXTERNAL_SYNC_SWEEP_JOB,
+  FOLDER_DESCRIBE_SWEEP_JOB,
   GC_DEMOTE_JOB,
   GUEST_EXPIRY_SWEEP_JOB,
   JOURNAL_SWEEP_JOB,
@@ -19,6 +22,7 @@ import {
 } from "../queues/names";
 import { runDreamingSweep } from "./dreaming";
 import { runExternalSyncSweep } from "./external-sync";
+import { runFolderDescribeSweep } from "./folder-describe";
 import { runGcDemote } from "./gc-demote";
 import { runJournalSweep } from "./journal-sweep";
 import { runModelAlertSweep } from "./model-alert-sweep";
@@ -45,6 +49,15 @@ export const startMaintenanceWorker = (): Worker => {
           }
           return;
         }
+        case FOLDER_DESCRIBE_SWEEP_JOB: {
+          const { teams } = await runFolderDescribeSweep();
+          if (teams > 0) {
+            console.info(
+              `[folder-describe] fanned out ${teams.toString()} team jobs`,
+            );
+          }
+          return;
+        }
         case DREAMING_SWEEP_JOB: {
           const { teams } = await runDreamingSweep();
           console.info(`[dreaming] fanned out ${teams.toString()} team jobs`);
@@ -54,6 +67,13 @@ export const startMaintenanceWorker = (): Worker => {
           const { demoted, purged } = await runGcDemote();
           console.info(
             `[gc-demote] demoted ${demoted.toString()} stale episodes, purged ${purged.toString()} expired`,
+          );
+          return;
+        }
+        case DECISION_LOG_GC_JOB: {
+          const { unlabeled, labeled } = await purgeDecisionLog();
+          console.info(
+            `[decision-log-gc] purged ${unlabeled.toString()} unlabelled and ${labeled.toString()} labelled rows`,
           );
           return;
         }

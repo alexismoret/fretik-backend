@@ -14,6 +14,7 @@ import { b2bEfficiencySuite } from "./b2b-efficiency";
 import { bashExecutionSuite } from "./bash-execution";
 import { collectionGraphSuite } from "./collection-graph";
 import { collectionsAutonomySuite } from "./collections-autonomy";
+import { descriptionsSuite } from "./descriptions";
 import { dispatchAgentSuite } from "./dispatch-agent";
 import { doctrineSuite } from "./doctrine";
 import { edgeCasesSuite } from "./edge-cases";
@@ -55,5 +56,6 @@ export const allSuites: EvalSuite[] = [
   multimodalSuite,
   collectionGraphSuite,
   collectionsAutonomySuite,
+  descriptionsSuite,
   pagesSuite,
 ];

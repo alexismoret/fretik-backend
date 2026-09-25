@@ -18,6 +18,7 @@ import {
   responseNotFoundSchema,
 } from "@fretik/shared/schemas/common/responses";
 import {
+  answerSuggestionRequestSchema,
   confirmConnectionRequestSchema,
   connectionConfigResponseSchema,
   connectSessionRequestSchema,
@@ -32,6 +33,7 @@ import {
   mcpCatalogResponseSchema,
   mcpInspectRequestSchema,
   mcpInspectResponseSchema,
+  suggestionParamsSchema,
   testCredentialsRequestSchema,
   testCredentialsResponseSchema,
   updateConnectionRequestSchema,
@@ -51,12 +53,15 @@ import { testConnectionCredentials } from "@fretik/shared/services/external-apps
 import { updateConnection } from "@fretik/shared/services/external-apps/connections/update";
 import { readUpstreamStats } from "@fretik/shared/services/external-apps/exec/governor/permit";
 import { resolveGovernorPolicy } from "@fretik/shared/services/external-apps/exec/governor/policy";
+import { answerReadOnlySuggestion } from "@fretik/shared/services/external-apps/mcp/answer-kind-suggestion";
 import { isMcpConnection } from "@fretik/shared/services/external-apps/mcp/connection-kind";
 import { inspectMcpServer } from "@fretik/shared/services/external-apps/mcp/inspect-server";
+import { listReadOnlySuggestions } from "@fretik/shared/services/external-apps/mcp/list-kind-suggestions";
 import {
   getSnapshotForConnection,
   recordMcpIntrospectionError,
 } from "@fretik/shared/services/external-apps/mcp/snapshot-store";
+import { suggestMcpToolKinds } from "@fretik/shared/services/external-apps/mcp/suggest-kinds";
 import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 
 /**
@@ -214,6 +219,10 @@ const toConnectionDto = async (
   const snapshot = await getSnapshotForConnection(row);
   if (snapshot === undefined) return base;
   const withSignatures = options?.includeSignatures === true;
+  const readOnly = await listReadOnlySuggestions({
+    teamId: row.teamId,
+    snapshotId: snapshot.id,
+  });
   const actions: ConnectionActionEntry[] = snapshot.descriptor.actions.map(
     (a) => {
       const entry = {
@@ -221,6 +230,7 @@ const toConnectionDto = async (
         kind: a.kind,
         summary: a.summary,
         defaultLevel: a.approvalDefault,
+        ...(readOnly.has(a.name) ? { suggestedReadOnly: true } : {}),
       };
       if (!withSignatures || a.kind !== "read") return entry;
       // Spread — `exactOptionalPropertyTypes` keeps an explicit `undefined`
@@ -431,6 +441,39 @@ const updateRoute = createRoute({
     ...responseForbiddenSchema,
     ...responseNotFoundSchema,
     ...responseConflictSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const answerSuggestionRoute = createRoute({
+  method: "post",
+  path: "/connections/{id}/actions/{action}/suggestion",
+  middleware: access.handler(
+    "Same rule as a connection's permissions: a shared one takes team.settings.manage, a personal one is its owner's (answerReadOnlySuggestion).",
+  ),
+  summary: "Accept or reject a read-only suggestion on an MCP tool",
+  description:
+    "An MCP tool whose server did not declare it read-only is gated, and Fretik may suggest it only reads (`actions[].suggestedReadOnly`). `accept: true` sets the tool to run without approval; `accept: false` changes no permission and hides the suggestion. Both record the answer. A team-shared connection takes the right to manage the team's settings, a personal one is its owner's; `404` when no suggestion is pending for that tool.",
+  tags: ["ExternalApps"],
+  request: {
+    params: suggestionParamsSchema,
+    body: {
+      content: {
+        "application/json": { schema: answerSuggestionRequestSchema },
+      },
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      content: {
+        "application/json": { schema: externalAppConnectionResponseSchema },
+      },
+      description: "Connection, with the answer applied",
+    },
+    ...responseBadRequestSchema,
+    ...responseForbiddenSchema,
+    ...responseNotFoundSchema,
     ...responseInternalErrorSchema,
   },
 });
@@ -671,6 +714,16 @@ connectionsRoutes.openapi(confirmRoute, async (c) => {
       // Reflect the just-persisted fingerprint on the in-memory row so the DTO
       // reports `toolStatus: "ready"` without a re-read.
       row.toolFingerprint = result.fingerprint;
+      // Off the response: the suggestions are there by the time an admin
+      // opens the permissions, and the nightly refresh retries any miss.
+      void suggestMcpToolKinds({ connectionId: row.id }).catch(
+        (error: unknown) => {
+          console.warn(
+            `[external-apps] kind suggestions failed for ${row.id}:`,
+            error instanceof Error ? error.message : error,
+          );
+        },
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(
@@ -742,6 +795,24 @@ connectionsRoutes.openapi(updateRoute, async (c) => {
     concurrencyMode: patch.concurrencyMode,
     rateLimit: patch.rateLimit,
     maxConcurrent: patch.maxConcurrent,
+  });
+  return c.json(await toConnectionDto(row), 200);
+});
+
+connectionsRoutes.openapi(answerSuggestionRoute, async (c) => {
+  const team = c.get("team");
+  if (!team) return c.json(teamRequired(), 403);
+  const user = c.get("user");
+  if (!user) return c.json(forbidden("Authentication required"), 403);
+
+  const { id, action } = c.req.valid("param");
+  const { accept } = c.req.valid("json");
+  const row = await answerReadOnlySuggestion({
+    connectionId: id,
+    teamId: team.id,
+    principal: c.get("principal"),
+    actionName: action,
+    accept,
   });
   return c.json(await toConnectionDto(row), 200);
 });

@@ -194,6 +194,11 @@ export const promoteChatFilesToDrive = async (
           teamId,
           originalKey,
           metadata,
+          // No folder was named, so nothing has said where this belongs —
+          // unlike an upload from the Drive's root view, where the root IS
+          // the answer. That is the whole reason this is a flag rather than
+          // a check on `folderId === null` downstream.
+          autoFile: folderId === null,
         });
       } catch (enqueueErr) {
         const message =

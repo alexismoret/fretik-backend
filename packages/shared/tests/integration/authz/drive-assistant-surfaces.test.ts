@@ -7,11 +7,13 @@ import type { UserPrincipal } from "../../../src/authz/principal";
 import { teamAgentPrincipal } from "../../../src/authz/team-agent";
 import db from "../../../src/db";
 import {
+  accessGrants,
   aiEpisodes,
   aiVectors,
   type DomainEvent,
   domainEvents,
   type Workflow,
+  workflows,
 } from "../../../src/db/schema";
 import { refreshVectorAcls } from "../../../src/services/ai-vectors/acl";
 import { bootstrapTeamWithBotUser } from "../../../src/services/auth/bot-user";
@@ -19,6 +21,7 @@ import { anchorTextToRecords } from "../../../src/services/collection-records/an
 import { DOCUMENT_COLLECTION_KEY } from "../../../src/services/collections/constants";
 import { getDashboardActivity } from "../../../src/services/dashboard/get-activity";
 import { listRecordActivityCandidates } from "../../../src/services/episodes/dreaming-candidates";
+import { backtestCriterion } from "../../../src/services/workflows/backtest-criterion";
 import { keepVisibleTriggerPairs } from "../../../src/services/workflows/keep-visible-trigger-pairs";
 import { normalizeEntityName } from "../../../src/utils/normalizeEntityName";
 import {
@@ -36,7 +39,8 @@ import { buildDriveTree, type DriveTree } from "../../lib/drive-tree";
  *   - the search index gives a mirror record its file's audience;
  *   - a team digest is written only for what the whole team can see, and a
  *     file kept from the team takes its digest with it;
- *   - a workflow hears of a file only when its identity can open it;
+ *   - a workflow hears of a file only when its identity can open it, and
+ *     testing its condition replays only what the tester can open too;
  *   - the home feed names a file or a folder only to those who can open it.
  */
 
@@ -252,6 +256,103 @@ describe("workflow triggers", () => {
       "team:goneOpen",
       "team:root",
     ]);
+  });
+
+  test("testing a condition replays only what the workflow and its tester can both open", async () => {
+    const batch = crypto.randomUUID();
+    const [row] = await db
+      .insert(workflows)
+      .values({
+        organizationId: fx.organizationId,
+        teamId: fx.teamId,
+        name: "Replay",
+        triggerType: "event",
+        triggerConfig: {
+          event: { events: [{ type: "document.uploaded", filter: { batch } }] },
+        },
+        playbook: {
+          goal: "Sort what arrives",
+          tasks: [{ key: "t", title: "T", description: "", instructions: "i" }],
+        },
+        status: "active",
+        createdByUserId: tree.owner,
+      })
+      .returning({ id: workflows.id });
+    if (!row) throw new Error("fixture: workflow");
+    // Someone of another team may edit it, through a grant.
+    await db.insert(accessGrants).values({
+      organizationId: fx.organizationId,
+      resourceType: "workflow",
+      resourceId: row.id,
+      principalType: "user",
+      principalId: tree.outsider,
+      level: "edit",
+    });
+    const pathOfEvent = new Map<string, string>();
+    for (const path of [
+      "root",
+      "root-restricted",
+      "root-owned-by-member",
+      "closed/team/doc",
+      "closed/doc-for-outsider",
+    ]) {
+      const [event] = await db
+        .insert(domainEvents)
+        .values({
+          organizationId: fx.organizationId,
+          teamId: fx.teamId,
+          type: "document.uploaded",
+          actorType: "user",
+          actorUserId: tree.owner,
+          subjectType: "document",
+          payload: { documentId: tree.documents.get(path), batch },
+        })
+        .returning({ id: domainEvents.id });
+      if (!event) throw new Error("fixture: event");
+      pathOfEvent.set(event.id, path);
+    }
+
+    // Taken back out at the end: the home feed below reads this team's
+    // journal, and the suite's order is random.
+    const cleanup = () =>
+      db
+        .delete(domainEvents)
+        .where(inArray(domainEvents.id, [...pathOfEvent.keys()]));
+
+    const replayed = async (userId: string): Promise<string[]> => {
+      const { results } = await backtestCriterion({
+        workflowId: row.id,
+        teamId: fx.teamId,
+        organizationId: fx.organizationId,
+        criterion: "The document is an invoice.",
+        principal: await fx.principalOf(userId),
+        evaluator: () => Promise.resolve(null),
+      });
+      return results.map((r) => pathOfEvent.get(r.eventId) ?? r.eventId).sort();
+    };
+    try {
+      // It runs as the team's agent: never the member's own restricted file,
+      // though the member could open it.
+      expect(await replayed(tree.member)).toEqual(["closed/team/doc", "root"]);
+      // Nothing the agent hears of is open to someone of another team, and
+      // what is shared with them the agent does not hear of.
+      expect(await replayed(tree.outsider)).toEqual([]);
+      // A viewer reads the workflow; testing it is editing it.
+      const refused = await backtestCriterion({
+        workflowId: row.id,
+        teamId: fx.teamId,
+        organizationId: fx.organizationId,
+        criterion: "The document is an invoice.",
+        principal: await fx.principalOf(tree.viewer),
+        evaluator: () => Promise.resolve(null),
+      }).then(
+        () => null,
+        (error: unknown) => (error instanceof Error ? error.message : ""),
+      );
+      expect(refused).toContain("NOT_FOUND");
+    } finally {
+      await cleanup();
+    }
   });
 });
 

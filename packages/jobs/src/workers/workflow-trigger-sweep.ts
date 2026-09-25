@@ -9,19 +9,24 @@ import { listActiveEventWorkflows } from "@fretik/shared/services/workflows/list
 import { listExistingEventRuns } from "@fretik/shared/services/workflows/list-existing-event-runs";
 import { intFromEnv } from "../lib/env";
 import {
-  buildTriggerJobs,
+  buildGateJobs,
   pairWorkflowsWithEvents,
   selectTriggerCandidates,
 } from "../lib/workflow-trigger-matching";
-import { getWorkflowTriggerQueue } from "../queues/queues";
+import { getWorkflowGateQueue } from "../queues/queues";
 
 /**
  * The journal→workflow bridge — the event-trigger engine. Its own cursor
  * ("workflow-triggers") sweeps `domain_events` and, for every active
- * event-triggered workflow whose config matches an event, enqueues ONE run
- * creation on the dedicated `workflow-trigger` queue. The sweep itself is
- * fast (reads + BullMQ enqueue only); the slow `createWorkflowRun`
- * (Trigger.dev network call) runs off the queue.
+ * event-triggered workflow whose config matches an event, enqueues ONE GATE
+ * job per event on the dedicated `workflow-gate` queue. The sweep itself is
+ * fast (reads + BullMQ enqueue only); everything slower runs off a queue —
+ * the gate resolves the event's fact sheet and asks for a decision, then the
+ * `workflow-trigger` queue behind it makes the Trigger.dev call.
+ *
+ * One job per EVENT, not per (workflow, event) pair, because the gate asks
+ * one question per workflow about ONE shared state: twenty workflows
+ * listening for uploads cost one decision request, not twenty.
  *
  * Same journal-as-outbox design as the memory sweep: a worker/Redis outage
  * never loses events (the cursor just resumes). Three guards keep it safe:
@@ -32,14 +37,16 @@ import { getWorkflowTriggerQueue } from "../queues/queues";
  *     entering history is not a stream of business events.
  *   - dedup: the partial unique index on `(workflow_id, source_event_id)` is
  *     the truth; the batched `listExistingEventRuns` set + the
- *     `wfrun-{wf}-{event}` jobId skip it earlier so a re-swept event never
+ *     `wfgate-{event}` jobId skip it earlier so a re-swept event never
  *     double-fires.
  *
- * Deliberately NO rate limit here: every matched event becomes a run row so a
- * bulk upload is never silently dropped — the Trigger.dev per-workflow queue
- * is the backpressure (runs wait as `queued`). The runaway guard
- * (`WORKFLOW_EVENT_RUNS_PER_HOUR`) lives in the create worker, which pauses
- * the workflow loudly instead of dropping events.
+ * Deliberately NO rate limit here: every matched event reaches the gate, and
+ * every launch the gate allows becomes a run row, so a bulk upload is never
+ * silently dropped — the Trigger.dev per-workflow queue is the backpressure
+ * (runs wait as `queued`). The runaway guard (`WORKFLOW_EVENT_RUNS_PER_HOUR`)
+ * lives in the create worker, which pauses the workflow loudly instead of
+ * dropping events. The gate is not a rate limit either: it answers "is this
+ * firing this workflow's business", never "has there been enough of them".
  */
 
 const CURSOR_NAME = "workflow-triggers";
@@ -91,20 +98,20 @@ export const runWorkflowTriggerSweep = async (): Promise<{
       sourceEventIds: [...new Set(pairs.map((p) => p.event.id))],
     });
 
-    const jobs = buildTriggerJobs(pairs, existing);
+    const jobs = buildGateJobs(pairs, existing);
     // No .catch: a Redis enqueue failure must throw so the sweep fails and
     // the cursor (advanced only at the end) stays put — the next sweep
     // replays the batch, and the jobId + the existence set dedup the rest.
     if (jobs.length > 0) {
-      await getWorkflowTriggerQueue().addBulk(jobs);
+      await getWorkflowGateQueue().addBulk(jobs);
       created = jobs.length;
     }
   }
 
   // Advance past the WHOLE batch — every event was evaluated; the ones we
   // skipped (workflow-originated, unmatched) are permanently skipped. Every
-  // matched, non-duplicate event has a BullMQ job by now, so advancing is
-  // lossless for them.
+  // matched, non-duplicate event has a BullMQ gate job by now, so advancing
+  // is lossless for them.
   const last = events[events.length - 1];
   if (last) {
     await advanceWorkerCursor({ name: CURSOR_NAME, position: last.id });

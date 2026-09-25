@@ -22,7 +22,7 @@ import { getTeamBotUserId } from "../auth/bot-user";
  * An item that is gone can no longer be asked. Its entry says whether the
  * whole team could open it when it went (`teamOpen`, see
  * `authz/drive-sql.ts#teamOpenDriveItems`), and only then does it start a
- * run: every identity a workflow acts as is in the team.
+ * run, for an identity that is still in the team.
  *
  * Everything else — a record that mirrors nothing, a link, a connector event —
  * passes untouched: its own reads are gated where the run makes them.
@@ -93,10 +93,17 @@ const once = <T>(
   return pending;
 };
 
-export const keepVisibleTriggerPairs = async <
-  P extends { workflow: Workflow; event: DomainEvent },
->(
+type TriggerPair = { workflow: Workflow; event: DomainEvent };
+
+/**
+ * The pairs whose Drive subject the principal `principalOf` names for each
+ * workflow can open. The sweep asks it of the identity a run acts as; "test
+ * the condition" asks it of that identity and then of the person testing,
+ * who reads each replayed event's name.
+ */
+export const keepPairsOpenTo = async <P extends TriggerPair>(
   pairs: readonly P[],
+  principalOf: (workflow: Workflow) => Promise<UserPrincipal | null>,
 ): Promise<P[]> => {
   const mirrors = await mirroredDocuments(
     pairs.flatMap(({ event }) =>
@@ -133,12 +140,36 @@ export const keepVisibleTriggerPairs = async <
     adapterFor("folder").loadNodes(idsOf("folder")),
   ]);
 
-  // One principal per acting identity, loaded once for the batch.
+  const verdicts = await Promise.all(
+    pairs.map(async ({ workflow }, index) => {
+      const subject = subjects[index] ?? null;
+      if (subject === null) return true;
+      const principal = await principalOf(workflow);
+      if (principal === null) return false;
+      const node: LoadedNode | undefined = (
+        subject.type === "document" ? documents : folders
+      ).get(subject.id);
+      // Gone: open to the team when it went, and they are in the team.
+      if (node === undefined) {
+        return subject.teamOpen && principal.teamRoles.has(workflow.teamId);
+      }
+      return computeLevel(principal, node) !== null;
+    }),
+  );
+  return pairs.filter((_, index) => verdicts[index] === true);
+};
+
+/**
+ * The identity each workflow's runs act as (`create-run.ts`): the owner of a
+ * private workflow, the team's agent otherwise. Each is loaded once per
+ * resolver, so one resolver serves one batch.
+ */
+export const actingPrincipalResolver = (): ((
+  workflow: Workflow,
+) => Promise<UserPrincipal | null>) => {
   const bots = new Map<string, Promise<string>>();
   const principals = new Map<string, Promise<UserPrincipal | null>>();
-  const actingPrincipal = async (
-    workflow: Workflow,
-  ): Promise<UserPrincipal | null> => {
+  return async (workflow) => {
     const userId =
       workflow.userId ??
       (await once(bots, workflow.teamId, () =>
@@ -148,18 +179,9 @@ export const keepVisibleTriggerPairs = async <
       loadPrincipal({ organizationId: workflow.organizationId, userId }),
     );
   };
-
-  const verdicts = await Promise.all(
-    pairs.map(async ({ workflow }, index) => {
-      const subject = subjects[index] ?? null;
-      if (subject === null) return true;
-      const node: LoadedNode | undefined = (
-        subject.type === "document" ? documents : folders
-      ).get(subject.id);
-      if (node === undefined) return subject.teamOpen;
-      const principal = await actingPrincipal(workflow);
-      return principal !== null && computeLevel(principal, node) !== null;
-    }),
-  );
-  return pairs.filter((_, index) => verdicts[index] === true);
 };
+
+/** The pairs whose Drive subject the workflow's acting identity can open. */
+export const keepVisibleTriggerPairs = <P extends TriggerPair>(
+  pairs: readonly P[],
+): Promise<P[]> => keepPairsOpenTo(pairs, actingPrincipalResolver());

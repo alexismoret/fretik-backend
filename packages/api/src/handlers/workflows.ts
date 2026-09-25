@@ -16,6 +16,7 @@ import {
   teamRequired,
   throwHttpError,
 } from "@fretik/shared/lib/errors";
+import { createRedisRateLimitStore } from "@fretik/shared/lib/rate-limit";
 import { createWorkflowRealtimeToken } from "@fretik/shared/lib/trigger-client";
 import type { AccessLevel } from "@fretik/shared/schemas/access";
 import {
@@ -23,6 +24,7 @@ import {
   paramsListSchema,
 } from "@fretik/shared/schemas/common/params";
 import {
+  responseAlreadyExistSchema,
   responseBadRequestSchema,
   responseForbiddenSchema,
   responseInternalErrorSchema,
@@ -35,6 +37,8 @@ import {
 } from "@fretik/shared/schemas/workflow-triggers";
 import {
   CreateWorkflowSchema,
+  CriterionBacktestRequestSchema,
+  CriterionBacktestResponseSchema,
   RunWorkflowRequestSchema,
   UpdateWorkflowSchema,
   WorkflowActiveRunSchema,
@@ -44,6 +48,7 @@ import {
 import { getConversationMessages } from "@fretik/shared/services/ai/messages";
 import { activateWorkflow } from "@fretik/shared/services/workflows/activate";
 import { archiveWorkflow } from "@fretik/shared/services/workflows/archive";
+import { backtestCriterion } from "@fretik/shared/services/workflows/backtest-criterion";
 import { cancelWorkflowRun } from "@fretik/shared/services/workflows/cancel-run";
 import { createWorkflow } from "@fretik/shared/services/workflows/create";
 import { createWorkflowRun } from "@fretik/shared/services/workflows/create-run";
@@ -56,10 +61,12 @@ import { getWorkflowRunRow } from "@fretik/shared/services/workflows/get-run";
 import { listWorkflows } from "@fretik/shared/services/workflows/list";
 import { listActiveWorkflowRuns } from "@fretik/shared/services/workflows/list-active-runs";
 import { listWorkflowRuns } from "@fretik/shared/services/workflows/list-runs";
+import { overrideFilteredWorkflowRun } from "@fretik/shared/services/workflows/override-filtered-run";
 import { pauseWorkflow } from "@fretik/shared/services/workflows/pause";
 import { serializeWorkflowRun } from "@fretik/shared/services/workflows/serialize";
 import { updateWorkflow } from "@fretik/shared/services/workflows/update";
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
+import { rateLimiter } from "hono-rate-limiter";
 
 /**
  * Workflows — autonomous agents (definitions + runs). Thin wrappers over
@@ -333,18 +340,30 @@ const runRoute = createRoute({
   },
 });
 
+const listRunsQuerySchema = paramsListSchema.extend({
+  hideFiltered: z.enum(["true", "false"]).optional().openapi({
+    description:
+      "`true` leaves out the launches the trigger gate filtered out; the count follows.",
+  }),
+});
+
 const listRunsRoute = createRoute({
   method: "get",
   path: "/{id}/runs",
   middleware: access.resource("workflow", "view"),
   summary: "List a workflow's runs (paginated)",
   tags: ["Workflows"],
-  request: { params: paramsIdSchema, query: paramsListSchema },
+  request: { params: paramsIdSchema, query: listRunsQuerySchema },
   responses: {
     200: {
       content: {
         "application/json": {
-          schema: responseListSchema(WorkflowRunResponseSchema),
+          schema: responseListSchema(WorkflowRunResponseSchema).extend({
+            filteredCount: z.number().int().nonnegative().openapi({
+              description:
+                "The workflow's launches the trigger gate filtered out, whatever `hideFiltered` says.",
+            }),
+          }),
         },
       },
       description: "Runs, newest first",
@@ -437,6 +456,60 @@ const stopRunRoute = createRoute({
     },
     ...responseForbiddenSchema,
     ...responseNotFoundSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const criterionBacktestRoute = createRoute({
+  method: "post",
+  path: "/{id}/criterion/backtest",
+  middleware: access.resource("workflow", "edit"),
+  summary: "Test a trigger criterion on recent events",
+  description:
+    "Asks the trigger gate's own question about the workflow's last matching events (up to 20) and returns, per event, whether it would run or be filtered out. Uses the criterion and trigger sent, saved or not. Records nothing. Testing is editing: it takes edit on the workflow, and replays only events about items both the workflow's runs and the caller can open. 400 when the criterion would be refused at activation; 429 past 5 tests a minute.",
+  tags: ["Workflows"],
+  request: {
+    params: paramsIdSchema,
+    body: {
+      content: {
+        "application/json": { schema: CriterionBacktestRequestSchema },
+      },
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      content: {
+        "application/json": { schema: CriterionBacktestResponseSchema },
+      },
+      description: "One verdict per replayed event, newest first",
+    },
+    ...responseBadRequestSchema,
+    ...responseForbiddenSchema,
+    ...responseNotFoundSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const runAnywayRoute = createRoute({
+  method: "post",
+  path: "/runs/{runId}/run-anyway",
+  middleware: access.handler(
+    "Starting a filtered run takes use on its workflow (requireRun).",
+  ),
+  summary: "Start a run the trigger gate filtered out",
+  description:
+    "Overrides a `filtered` launch and starts it. The filtered row is replaced atomically — it holds the (workflow, source event) identity that dedups event runs — and the decision it carried is stamped `overridden` on the new run, so the refusal stays on the record of the launch that overruled it. 409 when someone already started it. This is also the only signal there is for a gate false negative.",
+  tags: ["Workflows"],
+  request: { params: runIdParamSchema },
+  responses: {
+    200: {
+      content: { "application/json": { schema: WorkflowRunResponseSchema } },
+      description: "The started run",
+    },
+    ...responseForbiddenSchema,
+    ...responseNotFoundSchema,
+    ...responseAlreadyExistSchema,
     ...responseInternalErrorSchema,
   },
 });
@@ -666,12 +739,49 @@ workflowRoutes.openapi(runRoute, async (c) => {
 workflowRoutes.openapi(listRunsRoute, async (c) => {
   const teamId = teamOfResource(c.get("resource"));
   const { id } = c.req.valid("param");
-  const query = c.req.valid("query");
+  const { hideFiltered, ...query } = c.req.valid("query");
   const result = await listWorkflowRuns({
     workflowId: id,
     teamId,
     params: query,
     principal: c.get("principal"),
+    hideFiltered: hideFiltered === "true",
+  });
+  return c.json(result, 200);
+});
+
+/**
+ * Test the condition — replays the criterion over the workflow's recent
+ * matching events. Every call spends up to twenty decisions, so it is capped
+ * per person per workflow: enough to iterate on a sentence, not enough to
+ * turn a button into a load generator.
+ */
+workflowRoutes.use(
+  "/:id/criterion/backtest",
+  rateLimiter<HonoLoggedAppType>({
+    windowMs: 60_000,
+    limit: 5,
+    standardHeaders: "draft-6",
+    keyGenerator: (c) => `${c.get("user").id}:${c.req.param("id") ?? ""}`,
+    store: createRedisRateLimitStore<HonoLoggedAppType>("rl:criterion-test:"),
+    requestPropertyName: "rateLimitCriterionTest",
+  }),
+);
+
+workflowRoutes.openapi(criterionBacktestRoute, async (c) => {
+  const teamId = teamOfResource(c.get("resource"));
+  const principal = c.get("principal");
+  const { id } = c.req.valid("param");
+  const body = c.req.valid("json");
+  const result = await backtestCriterion({
+    workflowId: id,
+    teamId,
+    organizationId: principal.organizationId,
+    criterion: body.criterion,
+    ...(body.triggerConfig !== undefined
+      ? { triggerConfig: body.triggerConfig }
+      : {}),
+    principal,
   });
   return c.json(result, 200);
 });
@@ -692,6 +802,15 @@ workflowRoutes.openapi(stopRunRoute, async (c) => {
   const { teamId } = await requireRun({ runId, principal, level: "use" });
   const run = await cancelWorkflowRun({ runId, teamId, principal });
   if (!run) return throwHttpError(404, notFound("Run not found"));
+  return c.json(run, 200);
+});
+
+workflowRoutes.openapi(runAnywayRoute, async (c) => {
+  const { runId } = c.req.valid("param");
+  const principal = c.get("principal");
+  // Starting a filtered launch is running its workflow: `use`, like any run.
+  const { teamId } = await requireRun({ runId, principal, level: "use" });
+  const run = await overrideFilteredWorkflowRun({ runId, teamId, principal });
   return c.json(run, 200);
 });
 

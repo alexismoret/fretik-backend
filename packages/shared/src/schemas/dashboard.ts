@@ -96,3 +96,28 @@ export type DashboardAttentionItem = z.infer<
 export type DashboardAttentionResponse = z.infer<
   typeof dashboardAttentionResponseSchema
 >;
+
+// ---------------------------------------------------------------------------
+// GET /dashboard/decisions
+// ---------------------------------------------------------------------------
+
+/** What Fretik's quick decisions did for the team over the window. */
+export const dashboardDecisionsResponseSchema = z.object({
+  days: z.number().int(),
+  /** Workflow launches the trigger gate filtered out. */
+  runsAvoided: z.number().int(),
+  /**
+   * ESTIMATED tokens those launches would have cost: each workflow's filtered
+   * count times the median of its executed event runs in the window. Null
+   * when no filtered workflow has an executed run to measure against — an
+   * estimate with nothing under it is not shown as zero.
+   */
+  tokensSavedEstimate: z.number().nullable(),
+  /** Documents the Drive filer placed, and how many of those were undone. */
+  documentsFiled: z.number().int(),
+  filingsUndone: z.number().int(),
+});
+
+export type DashboardDecisionsResponse = z.infer<
+  typeof dashboardDecisionsResponseSchema
+>;

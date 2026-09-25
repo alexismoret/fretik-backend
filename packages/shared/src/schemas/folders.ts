@@ -1,8 +1,8 @@
 import { z } from "@hono/zod-openapi";
+import { documentStatusEnum } from "../db/schema";
 import { accessLevelSchema } from "./access";
 import { paramsListSchema } from "./common/params";
 import { responseListSchema } from "./common/responses";
-import { documentStatusSchema } from "./documents";
 import { recordFilterSchema, type RecordFilter } from "./ontology";
 
 /**
@@ -42,6 +42,10 @@ export const driveListParamsSchema = paramsListSchema.extend({
 
 export type DriveListParams = z.infer<typeof driveListParamsSchema>;
 
+/** Hard cap on a folder description — see `services/folders/describe.ts`:
+ * sixty of these ride one filing decision inside a 32k context window. */
+export const FOLDER_DESCRIPTION_MAX_CHARS = 220;
+
 /**
  * Schéma de validation pour la création d'un dossier
  */
@@ -64,7 +68,19 @@ export type CreateFolderInput = z.infer<typeof CreateFolderSchema>;
  */
 export const UpdateFolderSchema = CreateFolderSchema.omit({
   projectId: true,
-}).partial();
+})
+  .partial()
+  .extend({
+    /**
+     * What this folder is for, read by the Drive filer when a document arrives
+     * with no destination. Setting it marks the description MANUAL, after which
+     * the nightly generator never touches it again — a person saying where
+     * things should go outranks anything inferred from what is already inside.
+     *
+     * Empty string clears it back to automatic.
+     */
+    description: z.string().max(FOLDER_DESCRIPTION_MAX_CHARS).nullish(),
+  });
 
 export type UpdateFolderInput = z.infer<typeof UpdateFolderSchema>;
 
@@ -77,6 +93,11 @@ export const FolderResponseSchema = z.object({
   parentFolderId: z.uuid().nullable(),
   subFolderCount: z.number().int().min(0),
   documentCount: z.number().int().min(0),
+  /** What this folder is for — what the Drive filer matches against. */
+  description: z.string().nullable(),
+  /** `manual` once a person has written it, `agent` when the assistant did;
+   * the generator leaves both be. */
+  descriptionSource: z.enum(["auto", "manual", "agent"]).nullable(),
   createdAt: z.date(),
   updatedAt: z.date(),
 });
@@ -94,6 +115,27 @@ export const FolderBreadcrumbSchema = z.object({
 export type FolderBreadcrumb = z.infer<typeof FolderBreadcrumbSchema>;
 
 /**
+ * A document the Drive filer placed, while it still sits where it was put.
+ * `decisionId` is what "undo" and "that's right" act on.
+ */
+export const AutoFiledSchema = z.object({
+  decisionId: z.uuid(),
+  /** The model's certainty. Null when the transport did not report one. */
+  confidence: z.number().min(0).max(1).nullable(),
+  filedAt: z.date(),
+  /** A person has said this is the right folder. */
+  confirmed: z.boolean(),
+});
+
+export type AutoFiled = z.infer<typeof AutoFiledSchema>;
+
+/** Where a document sits after its automatic filing was undone or confirmed. */
+export const FilingFeedbackResponseSchema = z.object({
+  id: z.uuid(),
+  folderId: z.uuid().nullable(),
+});
+
+/**
  * Simplified document for drive view. Custom fields ride along via
  * `fieldValues` so the list view can render badges (e.g. document type,
  * category) without joining the full definitions on every row —
@@ -105,10 +147,14 @@ export const DriveDocumentSchema = z.object({
   fileSize: z.number().int(),
   mimeType: z.string(),
   thumbnailUrl: z.string().nullable(),
-  status: z.lazy(() => documentStatusSchema),
+  // Read from the DB enum, not `./documents`: that module imports this one,
+  // and the cycle broke whichever side a process happened to load first.
+  status: z.enum(documentStatusEnum.enumValues),
   /** The project its tree belongs to; null for its team's Drive. */
   projectId: z.uuid().nullable(),
   fieldValues: z.record(z.string(), z.unknown()),
+  /** Null unless the filer placed it and it has not been moved since. */
+  autoFiled: AutoFiledSchema.nullable(),
   createdAt: z.date(),
   updatedAt: z.date(),
 });

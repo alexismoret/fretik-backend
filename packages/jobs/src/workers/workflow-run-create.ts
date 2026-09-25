@@ -48,7 +48,13 @@ export const startWorkflowRunCreateWorker =
     const worker = new Worker<WorkflowRunCreateJobData>(
       WORKFLOW_TRIGGER_QUEUE,
       async (job: Job<WorkflowRunCreateJobData>) => {
-        const { workflowId, teamId, sourceEventId, triggerPayload } = job.data;
+        const {
+          workflowId,
+          teamId,
+          sourceEventId,
+          triggerPayload,
+          gateDecision,
+        } = job.data;
 
         if (await eventRunExists({ workflowId, sourceEventId })) return;
 
@@ -80,6 +86,7 @@ export const startWorkflowRunCreateWorker =
           triggerType: "event",
           triggerPayload,
           sourceEventId,
+          ...(gateDecision !== undefined ? { gateDecision } : {}),
         });
       },
       { connection: createWorkerConnection(), concurrency: WORKER_CONCURRENCY },

@@ -23,9 +23,20 @@ export const createFolder = async (data: {
   /** The project whose root it is created at, when it has no parent. */
   projectId?: string | null;
   actor?: EventActor;
+  /** What the folder is for, stated at creation — what the Drive filer
+   * matches documents against. Written by a person or the assistant, so
+   * the nightly generator never replaces it. */
+  description?: { text: string; source: "manual" | "agent" };
 }) => {
   const { name, parentFolderId, teamId, userId } = data;
   const actor = data.actor ?? SYSTEM_ACTOR;
+  const description = data.description?.text.trim()
+    ? {
+        description: data.description.text.trim(),
+        descriptionSource: data.description.source,
+        descriptionGeneratedAt: new Date(),
+      }
+    : {};
 
   // Assert parent folder + Get full path
   const parent = parentFolderId
@@ -45,6 +56,7 @@ export const createFolder = async (data: {
         projectId:
           parent === null ? (data.projectId ?? null) : parent.projectId,
         createdById: userId,
+        ...description,
       })
       .returning();
 

@@ -103,7 +103,7 @@ import { streamSSE } from "hono/streaming";
 import { buildSpeakerContext } from "../agents/chatbot/speaker-context";
 import { summariseMissedMessages } from "../services/catch-up-summary";
 import { notifyMentionedMembers } from "../services/chatbot-mention-email";
-import { isAnnouncedActionStop } from "../services/turn-continuation/judge";
+import { shouldContinueTurn } from "../services/turn-continuation/decide";
 // Use node:stream/web's TransformStream rather than the DOM global:
 // Bun implements both, but the DOM lib's TransformStream clashes with
 // `AsyncIterableStream.pipeThrough` typings (DOM's ReadableStream has
@@ -2569,7 +2569,19 @@ export const runChatbotTurn = async (
             });
           } else if (deadFinalStep) {
             const lastStepText = (finalText ?? "").trim();
-            if (await isAnnouncedActionStop(lastStepText)) {
+            if (
+              await shouldContinueTurn({
+                finalText: lastStepText,
+                teamId: params.callOptions.teamId,
+                organizationId: params.callOptions.organizationId,
+                ...(params.conversationId !== undefined
+                  ? { conversationId: params.conversationId }
+                  : {}),
+                ...(params.resumableStreamId !== undefined
+                  ? { turnKey: params.resumableStreamId }
+                  : {}),
+              })
+            ) {
               await runContinuation(
                 modelMessages,
                 await result.responseMessages,

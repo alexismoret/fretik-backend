@@ -60,7 +60,57 @@ export const WORKFLOW_RUN_STATUS_VALUES = [
   "succeeded",
   "failed",
   "canceled",
+  /**
+   * The run executed and found nothing to do — the trigger input was not what
+   * this workflow is for. Distinct from `succeeded` because the two answer
+   * different questions: "did the playbook work?" and "was this launch worth
+   * making?". Folding them together is why the cost of a workflow firing on
+   * every upload was invisible until someone counted tokens by hand.
+   *
+   * Derived, never reported by the agent: `isNoOpOutcome` reads the task
+   * states a run closed with, so the turn protocol and the (separately
+   * deployed) Trigger.dev orchestrator stay byte-identical.
+   */
+  "not_applicable",
+  /**
+   * The run never started — the trigger gate judged the input irrelevant to
+   * this workflow's criterion. The row exists ON PURPOSE: a filtered launch
+   * that left no trace is a silent veto, and a workflow that stops firing with
+   * nothing to look at is the one failure mode this whole feature must not
+   * introduce. It carries the decision that produced it and offers
+   * "run anyway", which is also how a wrong filter gets labelled.
+   *
+   * Not `blocked`: that word already means two other things here — a workflow
+   * stuck waiting on an approval (`summarizeRunPressure`, the "Blocked" badge)
+   * and a tool-policy level — and a third meaning in the same UI would make
+   * all three unreadable.
+   */
+  "filtered",
 ] as const;
+
+/**
+ * The statuses a run can never leave. `finalizeRun`'s idempotency guard and
+ * every "is this run over" read share this list, so a new terminal status is
+ * declared once instead of being remembered in five `notInArray`s.
+ *
+ * `filtered` is terminal too: a filtered run is re-launched through the
+ * explicit override path, never by a finalize.
+ */
+export const WORKFLOW_RUN_TERMINAL_STATUSES = [
+  "succeeded",
+  "failed",
+  "canceled",
+  "not_applicable",
+  "filtered",
+] as const;
+
+const TERMINAL_RUN_STATUSES: ReadonlySet<string> = new Set(
+  WORKFLOW_RUN_TERMINAL_STATUSES,
+);
+
+/** True once a run can no longer change on its own. */
+export const isTerminalRunStatus = (status: string): boolean =>
+  TERMINAL_RUN_STATUSES.has(status);
 /**
  * Per-task lifecycle status. NOT a `pgEnum` — task states live inside the
  * `workflow_runs.task_states` jsonb, so this set is validated by Zod only.
@@ -470,6 +520,23 @@ export const currentWorkflowTask = (
   tasks.find((t) => t.status === "pending") ??
   null;
 
+/**
+ * Did this run conclude without doing any of its work?
+ *
+ * The signal is the playbook itself: every task terminal and NOT ONE of them
+ * completed. That is exactly the shape `completeTask({ outcome: "skipped",
+ * fatal: true })` leaves behind, which is the gesture the prompt tells the
+ * executor to make when the trigger input is not what the workflow is for —
+ * so the outcome is read off the run instead of asking the model to classify
+ * itself, and the turn protocol never learns a new status.
+ *
+ * A failed task is not a no-op: the run tried. An empty playbook is not one
+ * either — it never had work to skip, so it stays `succeeded` rather than
+ * being reported as a useless launch.
+ */
+export const isNoOpOutcome = (tasks: WorkflowTaskState[]): boolean =>
+  tasks.length > 0 && tasks.every((t) => t.status === "skipped");
+
 export const WorkflowRunUsageSchema = z.object({
   inputTokens: z.number().int().nonnegative().default(0),
   outputTokens: z.number().int().nonnegative().default(0),
@@ -496,6 +563,140 @@ export const WorkflowRunOutputSchema = z.object({
   sizeBytes: z.number().int().nonnegative().optional(),
 });
 export type WorkflowRunOutput = z.infer<typeof WorkflowRunOutputSchema>;
+
+// ==================== //
+// TRIGGER GATE         //
+// ==================== //
+
+/**
+ * How long a trigger criterion may be.
+ *
+ * Short on purpose. It is one sentence answering one question — "is this
+ * firing mine?" — and a criterion that needs a paragraph is a criterion
+ * nobody can verify at a glance, which is the property that makes a silent
+ * wrong veto possible.
+ */
+export const WORKFLOW_TRIGGER_CRITERION_MAX_CHARS = 600;
+
+export const workflowTriggerCriterionSchema = z
+  .string()
+  .trim()
+  .min(10, "A trigger criterion needs to say what makes a firing relevant.")
+  .max(WORKFLOW_TRIGGER_CRITERION_MAX_CHARS);
+
+/** What the gate did with one firing. */
+export const WORKFLOW_GATE_OUTCOMES = [
+  /** The criterion was judged and cleared the threshold — the run started. */
+  "allowed",
+  /** The criterion was judged and did not clear it — no run was started. */
+  "filtered",
+  /**
+   * No answer was available (the model was off, timed out, or errored) and
+   * the launch proceeded. The one outcome that must never be silent: it means
+   * the gate was not applied, and a stretch of these is an incident.
+   */
+  "fell_open",
+  /** A human overrode a filtered launch with "run anyway". */
+  "overridden",
+] as const;
+export const workflowGateOutcomeSchema = z.enum(WORKFLOW_GATE_OUTCOMES);
+export type WorkflowGateOutcome = z.infer<typeof workflowGateOutcomeSchema>;
+
+/**
+ * The decision behind one launch — or one refusal.
+ *
+ * Everything needed to answer "why did this not run?" without a join, and
+ * everything needed to tell later whether the gate was right: the
+ * probability, the threshold it was measured against, and the criterion
+ * EXACTLY as it read at the time.
+ */
+export const WorkflowGateDecisionSchema = z.object({
+  outcome: workflowGateOutcomeSchema,
+  /** The criterion as it read when judged — never re-read from the workflow. */
+  criterion: z.string().max(WORKFLOW_TRIGGER_CRITERION_MAX_CHARS).optional(),
+  /** P(relevant) the model returned. Absent when it never answered. */
+  probability: z.number().min(0).max(1).optional(),
+  /** The bar it was measured against, so a later threshold change is legible. */
+  threshold: z.number().min(0).max(1).optional(),
+  /** Why no answer was available — only on `fell_open`. */
+  reason: z.string().max(200).optional(),
+  latencyMs: z.number().int().nonnegative().optional(),
+  costUsd: z.number().nonnegative().optional(),
+  modelId: z.string().max(120).optional(),
+  /** Which transport answered. The gateway serves a floating model: its
+   * verdicts are acted on, never calibrated against. */
+  transport: z.enum(["openrouter", "gateway"]).optional(),
+  /** The question wording this verdict answered (the registry's
+   * `questionVersion`). Two versions never share a calibration. */
+  questionVersion: z.number().int().positive().optional(),
+  decidedAt: z.string(),
+  /** Set when someone pressed "run anyway" on a filtered launch. */
+  overriddenAt: z.string().optional(),
+  overriddenByUserId: z.string().optional(),
+});
+export type WorkflowGateDecision = z.infer<typeof WorkflowGateDecisionSchema>;
+
+/** How many recent events a criterion test replays. */
+export const CRITERION_BACKTEST_EVENTS = 20;
+
+/**
+ * "Test the condition": the criterion as typed (saved or not), and optionally
+ * the trigger being edited alongside it, since a person tests the pair.
+ */
+export const CriterionBacktestRequestSchema = z.object({
+  criterion: z.string().max(WORKFLOW_TRIGGER_CRITERION_MAX_CHARS),
+  triggerConfig: WorkflowTriggerConfigSchema.optional(),
+});
+export type CriterionBacktestRequest = z.infer<
+  typeof CriterionBacktestRequestSchema
+>;
+
+export const CriterionBacktestResultSchema = z.object({
+  eventId: z.uuid(),
+  eventType: z.string(),
+  occurredAt: z.date(),
+  /** A human handle on the event (a filename, a record's label), or null. */
+  label: z.string().nullable(),
+  /** `run` / `filtered` as the gate would decide today; `unknown` when no
+   * answer came back, which the real gate would have launched. */
+  outcome: z.enum(["run", "filtered", "unknown"]),
+  probability: z.number().min(0).max(1).nullable(),
+});
+
+export const CriterionBacktestResponseSchema = z.object({
+  /** The bar the verdicts were read against, or null when nothing answered. */
+  threshold: z.number().nullable(),
+  results: z.array(CriterionBacktestResultSchema),
+});
+export type CriterionBacktestResponse = z.infer<
+  typeof CriterionBacktestResponseSchema
+>;
+
+/**
+ * The FORM of a trigger criterion: its length, and no id in it. A uuid is a
+ * format, not a way of saying something, so it is checked here, exactly and
+ * for free — an agent writing a criterion from one example writes the
+ * example's id into it, which passes the run it was written against and
+ * refuses every real firing afterwards.
+ *
+ * What a criterion MEANS (one specific item, a comparison, "everything") is
+ * judged by the decision model in `services/workflows/criterion-lint.ts`,
+ * which calls this first. Returns the reason it cannot go live, or null.
+ */
+export const workflowCriterionError = (criterion: string): string | null => {
+  const parsed = workflowTriggerCriterionSchema.safeParse(criterion);
+  if (!parsed.success) {
+    return parsed.error.issues[0]?.message ?? "Invalid criterion.";
+  }
+  if (
+    /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(
+      parsed.data,
+    )
+  ) {
+    return "A criterion must not name a specific id — it has to hold for every future firing, not the one it was written against.";
+  }
+  return null;
+};
 
 export const WorkflowRunErrorSchema = z.object({
   code: z.string().min(1).max(60),
@@ -614,6 +815,18 @@ export const CreateWorkflowSchema = z
     color: z.string().max(20).optional(),
     triggerType: workflowTriggerTypeSchema.default("manual"),
     triggerConfig: WorkflowTriggerConfigSchema.default({}),
+    /**
+     * One sentence deciding whether a trigger firing deserves a run. Omitted
+     * or null leaves the workflow ungated — it fires on everything its
+     * subscriptions match, which is what every workflow did before the gate.
+     * `workflowCriterionError` is enforced at ACTIVATION, not here: the
+     * builder autosaves while the agent is still writing it.
+     */
+    triggerCriterion: z
+      .string()
+      .max(WORKFLOW_TRIGGER_CRITERION_MAX_CHARS)
+      .nullable()
+      .optional(),
     playbook: WorkflowPlaybookSchema,
     autonomy: workflowAutonomySchema.default("approval_required"),
     modelProfileKey: z.string().max(64).optional(),
@@ -641,6 +854,18 @@ export const UpdateWorkflowSchema = z
     color: z.string().max(20).optional(),
     triggerType: workflowTriggerTypeSchema.optional(),
     triggerConfig: WorkflowTriggerConfigSchema.optional(),
+    /**
+     * One sentence deciding whether a trigger firing deserves a run. Omitted
+     * or null leaves the workflow ungated — it fires on everything its
+     * subscriptions match, which is what every workflow did before the gate.
+     * `workflowCriterionError` is enforced at ACTIVATION, not here: the
+     * builder autosaves while the agent is still writing it.
+     */
+    triggerCriterion: z
+      .string()
+      .max(WORKFLOW_TRIGGER_CRITERION_MAX_CHARS)
+      .nullable()
+      .optional(),
     playbook: WorkflowPlaybookSchema.optional(),
     autonomy: workflowAutonomySchema.optional(),
     modelProfileKey: z.string().max(64).nullable().optional(),
@@ -688,6 +913,9 @@ export const WorkflowResponseSchema = z.object({
   status: workflowStatusSchema,
   triggerType: workflowTriggerTypeSchema,
   triggerConfig: WorkflowTriggerConfigSchema,
+  /** One sentence deciding whether a firing deserves a run. NULL = ungated,
+   * which is what every workflow created before the gate carries. */
+  triggerCriterion: z.string().nullable(),
   playbook: WorkflowPlaybookSchema,
   autonomy: workflowAutonomySchema,
   modelProfileKey: z.string().nullable(),
@@ -738,6 +966,9 @@ export const WorkflowRunResponseSchema = z.object({
   /** Pending approval id while `status === "needs_approval"` — lets the run
    * page render the same inline approve/reject card as the chat. */
   approvalRequestId: z.string().nullable(),
+  /** What the trigger gate decided about this launch, when it was gated. The
+   * run page reads it to explain a `filtered` row and offer "run anyway". */
+  gateDecision: WorkflowGateDecisionSchema.nullable(),
   isTest: z.boolean(),
   triggeredByUserId: z.uuid().nullable(),
   startedAt: isoDate.nullable(),

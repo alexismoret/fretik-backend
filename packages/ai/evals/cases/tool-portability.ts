@@ -17,8 +17,53 @@
  * (blocking-safe on models without parallel calls).
  */
 
+import db from "@fretik/shared/db";
+import { aiMemories } from "@fretik/shared/db/schema";
 import { checkGeneratedCsv } from "../file-content-check";
-import type { EvalSuite } from "../types";
+import type { EvalCaseContext, EvalSuite } from "../types";
+
+const MEMORY_PROBE_PATH = "eval/tp-memory-probe.md";
+const MEMORY_PROBE_CODE = "ORME-7342";
+const MEMORY_PROBE_CONTENT = [
+  "Mémo de clôture mensuelle (sonde d'éval).",
+  "",
+  "Le premier jour ouvré du mois, la personne de permanence déroule ces étapes dans l'ordre et coche chacune dans le tableau de suivi partagé.",
+  "",
+  "1. Rapprocher les relevés bancaires du mois écoulé avec les écritures saisies, et lister les écarts non expliqués.",
+  "2. Relancer les validations de factures restées en attente plus de dix jours, avec copie au responsable du budget concerné.",
+  "3. Vérifier que chaque note de frais du mois porte un justificatif lisible ; renvoyer les autres à leur auteur.",
+  "4. Exporter le grand livre du mois et le déposer dans le dossier d'archives du Drive, sous le nom du mois.",
+  "5. Envoyer à l'équipe le récapitulatif des écarts et des relances, avant midi.",
+  "",
+  "Une clôture n'est terminée que lorsque le code de ce mémo figure dans le tableau de suivi.",
+  "",
+  `Code de clôture : ${MEMORY_PROBE_CODE}`,
+].join("\n");
+
+/**
+ * The file `tp-memory-view` asks about. Its path and size are in the memory
+ * index every turn carries; its content is not, and it is never vectorized,
+ * so recall does not serve it — and were it ever indexed, the code sits past
+ * the head a recall block keeps. `memory` `view` is the way to its last line.
+ * Left standing on purpose: repeats run concurrently, and one repeat's cleanup
+ * would delete the file another is reading.
+ */
+const ensureMemoryProbe = async (ctx: EvalCaseContext): Promise<void> => {
+  await db
+    .insert(aiMemories)
+    .values({
+      organizationId: ctx.organizationId,
+      teamId: ctx.teamId,
+      userId: null,
+      scope: "team",
+      path: MEMORY_PROBE_PATH,
+      content: MEMORY_PROBE_CONTENT,
+      sizeBytes: Buffer.byteLength(MEMORY_PROBE_CONTENT, "utf8"),
+      createdByActor: "agent",
+      lastModifiedByActor: "agent",
+    })
+    .onConflictDoNothing();
+};
 
 export const toolPortabilitySuite: EvalSuite = {
   name: "tool-portability",
@@ -95,7 +140,10 @@ export const toolPortabilitySuite: EvalSuite = {
       assertions: [
         { type: "noError" },
         { type: "toolUsed", tools: ["python"], mode: "any" },
-        { type: "contains", value: "1596" },
+        // The value, in whatever thousands separator the answer's language
+        // writes it: "1 596" in French failed a literal "1596" on every
+        // correct answer (2026-09-24, 4 of 5).
+        { type: "regex", value: "\\b1[\\s.,]?596\\b" },
         {
           type: "custom",
           name: "at least one python call carries a multi-line script",
@@ -170,26 +218,37 @@ export const toolPortabilitySuite: EvalSuite = {
     },
     {
       id: "tp-memory-view",
-      description: "Memory introspection ask → memory(view) on a directory",
-      prompt:
-        "Montre-moi la liste des fichiers actuellement stockés dans ta mémoire (la mienne et celle de l'équipe). Si elle est vide, dis-le simplement.",
+      // It asked for the LIST of memory files until 2026-09-24. Since the
+      // memory index has been injected every turn (2026-09-09), that list is
+      // already in context, and the model rightly answered from it without a
+      // call — 4 of 5 "failures" were correct answers. A file's CONTENT is
+      // what only the tool reaches.
+      description:
+        "A memory file's content → memory(view) on its exact path, the index having only its path",
+      prompt: `Dans la mémoire de l'équipe, que dit la toute dernière ligne du fichier ${MEMORY_PROBE_PATH} ? Donne-moi juste le code qu'elle contient.`,
       tags: ["tool-portability", "memory"],
+      seed: ensureMemoryProbe,
       assertions: [
         { type: "noError" },
         { type: "toolUsed", tools: ["memory"], mode: "any" },
         {
           type: "custom",
-          name: "at least one memory call uses command=view",
+          name: "a memory call views the probe file by its path",
           fn: (result) => {
             const calls = result.toolCalls.filter((c) => c.name === "memory");
             if (calls.length === 0) return "no memory call observed";
             const viewed = calls.some((call) => {
-              const input = call.input as { command?: unknown };
-              return input?.command === "view";
+              const input = call.input as { command?: unknown; path?: unknown };
+              return (
+                input?.command === "view" &&
+                typeof input.path === "string" &&
+                input.path.endsWith(MEMORY_PROBE_PATH)
+              );
             });
-            return viewed || "no memory call used command=view";
+            return viewed || `no memory call viewed ${MEMORY_PROBE_PATH}`;
           },
         },
+        { type: "contains", value: MEMORY_PROBE_CODE },
       ],
     },
     {
@@ -262,7 +321,7 @@ export const toolPortabilitySuite: EvalSuite = {
     {
       id: "tp-websearch-date",
       description:
-        "Date-bounded web search → start_date parameter, not date-in-query prose",
+        "Date-bounded web search → published_after parameter, not date-in-query prose",
       prompt:
         "Cherche sur le web les annonces publiées strictement après le 1er janvier 2026 concernant la réglementation européenne sur l'IA, et cite 2 sources.",
       tags: ["tool-portability", "web"],
@@ -271,22 +330,24 @@ export const toolPortabilitySuite: EvalSuite = {
         { type: "toolUsed", tools: ["searchWeb"], mode: "any" },
         {
           type: "custom",
-          name: "a searchWeb call sets start_date=2026-01-01 (±1 day)",
+          // `start_date` until the 2026-09-12 rebuild on Perplexity +
+          // Parallel renamed it; the check kept failing every call since.
+          name: "a searchWeb call sets published_after=2026-01-01 (±1 day)",
           fn: (result) => {
             const calls = result.toolCalls.filter(
               (c) => c.name === "searchWeb",
             );
             if (calls.length === 0) return "no searchWeb call observed";
             const dated = calls.some((call) => {
-              const input = call.input as { start_date?: unknown };
+              const input = call.input as { published_after?: unknown };
               return (
-                typeof input?.start_date === "string" &&
-                /^2026-01-0[12]$/.test(input.start_date)
+                typeof input?.published_after === "string" &&
+                /^2026-01-0[12]$/.test(input.published_after)
               );
             });
             return (
               dated ||
-              "no searchWeb call carried start_date≈2026-01-01 — the date constraint stayed in prose"
+              "no searchWeb call carried published_after≈2026-01-01 — the date constraint stayed in prose"
             );
           },
         },
@@ -349,8 +410,10 @@ export const toolPortabilitySuite: EvalSuite = {
           type: "custom",
           name: "both attachments were opened (≥2 read/vision calls)",
           fn: (result) => {
+            // `extract` opens a PDF natively, and is what the model reaches
+            // for on invoice.pdf.
             const opens = result.toolCalls.filter((c) =>
-              ["read", "vision", "python"].includes(c.name),
+              ["read", "vision", "python", "extract"].includes(c.name),
             );
             return (
               opens.length >= 2 ||

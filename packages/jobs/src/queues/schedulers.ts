@@ -1,8 +1,10 @@
 import {
   COLLECTION_INDEX_SWEEP_JOB,
   CONVERSATION_TASK_SWEEP_JOB,
+  DECISION_LOG_GC_JOB,
   DREAMING_SWEEP_JOB,
   EXTERNAL_SYNC_SWEEP_JOB,
+  FOLDER_DESCRIBE_SWEEP_JOB,
   GC_DEMOTE_JOB,
   GUEST_EXPIRY_SWEEP_JOB,
   JOURNAL_SWEEP_JOB,
@@ -42,9 +44,20 @@ const STALL_SWEEP_INTERVAL_MS = 5 * 60_000;
 /** Hourly: a guest's period is counted in days, and what they owned while
  * they took part is theirs until the sweep that removes them. */
 const GUEST_EXPIRY_SWEEP_INTERVAL_MS = 60 * 60_000;
+
+/**
+ * 02:30 UTC — after the index sweep, before dreaming. The pass reads document
+ * summaries and writes one sentence per folder, so it wants the quiet window
+ * and nothing more: it is fan-out only here, and the LLM calls land on
+ * `folder-describe`.
+ */
+const FOLDER_DESCRIBE_CRON = "30 2 * * *";
 /** Dreaming at 03:00 UTC, GC an hour later — both in the quiet window. */
 const DREAMING_CRON = "0 3 * * *";
 const GC_CRON = "0 4 * * *";
+/** Twenty minutes after the episode GC, so the two batched deletes never
+ * share the quiet window's IO. */
+const DECISION_LOG_GC_CRON = "20 4 * * *";
 /** MCP tool-snapshot drift refresh at 05:00 UTC — after the memory window. */
 const MCP_REFRESH_CRON = "0 5 * * *";
 /** Object-index sweep at 02:00 UTC, ahead of the memory window: it issues
@@ -119,6 +132,11 @@ export const registerSchedulers = async (): Promise<void> => {
     },
   );
   await maintenance.upsertJobScheduler(
+    FOLDER_DESCRIBE_SWEEP_JOB,
+    { pattern: FOLDER_DESCRIBE_CRON, tz: "UTC" },
+    { name: FOLDER_DESCRIBE_SWEEP_JOB, opts: CRON_OPTS },
+  );
+  await maintenance.upsertJobScheduler(
     DREAMING_SWEEP_JOB,
     { pattern: DREAMING_CRON, tz: "UTC" },
     { name: DREAMING_SWEEP_JOB, opts: CRON_OPTS },
@@ -127,6 +145,11 @@ export const registerSchedulers = async (): Promise<void> => {
     GC_DEMOTE_JOB,
     { pattern: GC_CRON, tz: "UTC" },
     { name: GC_DEMOTE_JOB, opts: CRON_OPTS },
+  );
+  await maintenance.upsertJobScheduler(
+    DECISION_LOG_GC_JOB,
+    { pattern: DECISION_LOG_GC_CRON, tz: "UTC" },
+    { name: DECISION_LOG_GC_JOB, opts: CRON_OPTS },
   );
   await maintenance.upsertJobScheduler(
     WORKFLOW_TRIGGER_SWEEP_JOB,

@@ -1,4 +1,4 @@
-import { and, count, eq } from "drizzle-orm";
+import { and, count, eq, ne } from "drizzle-orm";
 import type { Principal } from "../../authz/principal";
 import db from "../../db";
 import { workflowRuns } from "../../db/schema";
@@ -15,26 +15,43 @@ import { serializeWorkflowRun } from "./serialize";
  * Gated on the PARENT workflow: one the principal cannot see (a colleague's
  * restricted workflow) → empty page, matching the existing "no such
  * workflow" soft-empty shape rather than throwing.
+ *
+ * `filteredCount` is the workflow's filtered launches, whatever the page
+ * shows. The history hides them by default, and a filtered launch is the only
+ * place a wrong refusal can be seen ("run anyway"), so the switch that reveals
+ * them carries their number rather than hiding that there are any.
  */
 export const listWorkflowRuns = async (params: {
   workflowId: string;
   teamId: string;
   params: ParamsList;
   principal: Principal;
-}): Promise<{ count: number; data: WorkflowRunResponse[] }> => {
+  /** Leave out the launches the trigger gate refused. Filtered server-side
+   * so the count, and therefore the pagination, stays exact. */
+  hideFiltered?: boolean;
+}): Promise<{
+  count: number;
+  data: WorkflowRunResponse[];
+  filteredCount: number;
+}> => {
   const { workflowId, teamId } = params;
   const { limit, page } = params.params;
+  const hideFiltered = params.hideFiltered === true;
 
   const visible = await getWorkflowRow({
     id: workflowId,
     teamId,
     principal: params.principal,
   });
-  if (!visible) return { count: 0, data: [] };
+  if (!visible) return { count: 0, data: [], filteredCount: 0 };
 
-  const [rows, [total]] = await Promise.all([
+  const [rows, [total], [filtered]] = await Promise.all([
     db.query.workflowRuns.findMany({
-      where: { workflowId, teamId },
+      where: {
+        workflowId,
+        teamId,
+        ...(hideFiltered ? { status: { ne: "filtered" as const } } : {}),
+      },
       orderBy: { createdAt: "desc" },
       limit,
       offset: page * limit,
@@ -46,6 +63,17 @@ export const listWorkflowRuns = async (params: {
         and(
           eq(workflowRuns.workflowId, workflowId),
           eq(workflowRuns.teamId, teamId),
+          hideFiltered ? ne(workflowRuns.status, "filtered") : undefined,
+        ),
+      ),
+    db
+      .select({ count: count() })
+      .from(workflowRuns)
+      .where(
+        and(
+          eq(workflowRuns.workflowId, workflowId),
+          eq(workflowRuns.teamId, teamId),
+          eq(workflowRuns.status, "filtered"),
         ),
       ),
   ]);
@@ -53,5 +81,6 @@ export const listWorkflowRuns = async (params: {
   return {
     count: total?.count ?? 0,
     data: rows.map(serializeWorkflowRun),
+    filteredCount: filtered?.count ?? 0,
   };
 };

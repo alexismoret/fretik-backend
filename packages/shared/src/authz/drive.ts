@@ -89,6 +89,8 @@ export type DriveAction =
       projectId?: string | null;
     }
   | { kind: "renameFolder"; folderId: string }
+  /** What a folder is for, which the Drive filer reads: writing it is editing the folder. */
+  | { kind: "describeFolder"; folderId: string }
   | { kind: "moveFolder"; folderId: string; parentFolderId: string | null }
   | { kind: "deleteFolder"; folderId: string }
   | {
@@ -112,7 +114,8 @@ export type DriveAction =
  *   create, upload       where it lands (`authz/placement.ts`): edit on the
  *                        destination folder, and contributing to its team —
  *                        or taking part in the project it lands in
- *   rename, write        edit on the item
+ *   rename, describe,    edit on the item
+ *   write
  *   move                 edit on the item and on where it lands; full on
  *                        the item when it changes project (`requireDriveMove`)
  *   delete a folder      full access: it takes everything inside with it
@@ -143,6 +146,7 @@ export const requireDriveAction = async (
       });
       return;
     case "renameFolder":
+    case "describeFolder":
       await requireFolder(principal, action.folderId, "edit");
       return;
     case "moveFolder":

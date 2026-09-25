@@ -15,8 +15,10 @@ import {
 import { recordAccessEvent } from "../access/record-event";
 import { refreshAclsAfterAccessChange } from "../ai-vectors/acl";
 import { resyncVectorUserScope } from "../ai-vectors/resync-user-scope";
+import type { DecisionEvaluator } from "../decisions/remote";
 import { filterTeamMemberIds } from "../team/members";
 import { requireWorkflowSettingsAllowed } from "./capabilities";
+import { lintCriterion } from "./criterion-lint";
 import { getWorkflowRow } from "./get";
 import { serializeWorkflow } from "./serialize";
 import { validateWorkflowExternalApps } from "./validate-external-apps";
@@ -35,6 +37,9 @@ export const updateWorkflow = async (params: {
   teamId: string;
   input: UpdateWorkflowInput;
   principal: Principal;
+  /** How the criterion lint reaches the decision model; in-process from
+   * the AI service, over HTTP from everywhere else. */
+  evaluator?: DecisionEvaluator;
 }): Promise<WorkflowResponse | undefined> => {
   const input = UpdateWorkflowSchema.parse(params.input);
 
@@ -126,6 +131,29 @@ export const updateWorkflow = async (params: {
     },
   });
 
+  // Same hole, one field over: the criterion lint lives in `activateWorkflow`
+  // too, so a criterion edited on a LIVE workflow skipped it — and a criterion
+  // naming the example file it was written against passes every test and
+  // refuses every real firing afterwards. On a draft or a paused workflow the
+  // text may be half-written; activation checks it then.
+  if (
+    input.triggerCriterion !== undefined &&
+    input.triggerCriterion !== null &&
+    existingRow.status === "active"
+  ) {
+    const criterionError = await lintCriterion({
+      criterion: input.triggerCriterion,
+      context: {
+        teamId: params.teamId,
+        organizationId: existingRow.organizationId,
+      },
+      ...(params.evaluator ? { evaluator: params.evaluator } : {}),
+    });
+    if (criterionError) {
+      return throwHttpError(400, badRequest(criterionError));
+    }
+  }
+
   // A workflow that becomes a form (or already is one) needs a public token.
   // Reuse the existing token when there is one — the link stays stable across
   // edits — and only mint a fresh one when it's missing.
@@ -165,6 +193,9 @@ export const updateWorkflow = async (params: {
           : {}),
         ...(input.triggerConfig !== undefined
           ? { triggerConfig: input.triggerConfig }
+          : {}),
+        ...(input.triggerCriterion !== undefined
+          ? { triggerCriterion: input.triggerCriterion }
           : {}),
         ...(input.playbook !== undefined ? { playbook: input.playbook } : {}),
         ...(input.autonomy !== undefined ? { autonomy: input.autonomy } : {}),

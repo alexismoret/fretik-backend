@@ -1,6 +1,6 @@
 {
   "name": "@fretik/shared",
-  "version": "0.7.55",
+  "version": "0.7.56",
   "private": true,
   "type": "module",
   "scripts": {
@@ -34,6 +34,7 @@
     "./file-types": "./src/file-types/index.ts",
     "./file-types/*": "./src/file-types/*.ts",
     "./model-registry/*": "./src/model-registry/*.ts",
+    "./decisions/*": "./src/decisions/*.ts",
     "./services/*": "./src/services/*.ts",
     "./lib/*": "./src/lib/*.ts",
     "./schemas": "./src/schemas/index.ts",
@@ -59,7 +60,7 @@
     "@nangohq/node": "^0.71.7",
     "@tailwindcss/cli": "^4.3.3",
     "@trigger.dev/sdk": "4.5.14",
-    "ai": "^7.0.85",
+    "ai": "^7.0.103",
     "aws4fetch": "^1.0.20",
     "better-auth": "^1.7.5",
     "bowser": "^2.14.1",

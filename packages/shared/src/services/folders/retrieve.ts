@@ -48,6 +48,7 @@ import { readRecordDataBatch } from "../collection-schema/record-io";
 import { DOCUMENT_COLLECTION_KEY } from "../collections/constants";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
 import { readProjectName } from "../projects/read";
+import { listAutoFiled } from "./list-auto-filed";
 
 /** Resolve a team's org-scoped `document` object-type id (its extension table). */
 const resolveDocumentTypeId = async (
@@ -146,6 +147,7 @@ export const getFolderBreadcrumbs = async (data: {
 
 type DocWithRelations = {
   id: string;
+  folderId: string | null;
   originalFilename: string;
   fileSize: number;
   mimeType: string;
@@ -224,6 +226,8 @@ const mapDocsToDriveItems = async (
         })
       : new Map<string, Record<string, unknown>>();
 
+  const autoFiled = await listAutoFiled({ teamId, documents: docs });
+
   return docs.map((d) => {
     return {
       type: "document" as const,
@@ -238,6 +242,7 @@ const mapDocsToDriveItems = async (
         fieldValues: d.mirrorRecord
           ? (fieldValuesById.get(d.mirrorRecord.id) ?? {})
           : {},
+        autoFiled: autoFiled.get(d.id) ?? null,
         createdAt: d.createdAt,
         updatedAt: d.updatedAt,
       },
@@ -351,6 +356,7 @@ const getFilteredDocuments = async (data: {
   const docs = await db.query.documents.findMany({
     columns: {
       id: true,
+      folderId: true,
       originalFilename: true,
       fileSize: true,
       mimeType: true,
@@ -497,6 +503,7 @@ const getFolderExplorer = async (data: {
       const docs = await db.query.documents.findMany({
         columns: {
           id: true,
+          folderId: true,
           originalFilename: true,
           fileSize: true,
           mimeType: true,

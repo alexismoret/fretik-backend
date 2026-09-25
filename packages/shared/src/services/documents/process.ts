@@ -30,7 +30,9 @@ import { preExtractionResponseSchema } from "../../schemas/pre-extraction";
 import { refreshSourceVectorAcl } from "../ai-vectors/acl";
 import { readRecordData } from "../collection-schema/record-io";
 import { MENTIONS_LINK_TYPE_KEY } from "../collections/seed-system-types";
+import { documentFacts } from "../facts/document";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
+import { autoFileDocument } from "../folders/auto-file";
 import {
   captureHtmlScreenshot,
   captureMarkdownScreenshot,
@@ -38,8 +40,10 @@ import {
   convertFirstPageToPdf,
 } from "./convert";
 import { joinDocumentPagesMarkdown } from "./markdown";
+import { mentionKey, preResolveMentions } from "./pre-resolve-mentions";
 import { syncDocumentGraph } from "./sync-document-graph";
 import { generateImageThumbnail, generatePdfThumbnail } from "./thumbnails";
+import { vectorisationSkipReason } from "./vectorisable";
 
 // ==================== //
 // TYPES                //
@@ -66,6 +70,14 @@ export interface DocumentProcessingJobData {
   documentId: string;
   organizationId: string;
   teamId: string;
+  /**
+   * File this document automatically if it has no folder when processing
+   * ends. An EXPLICIT request from the caller, never inferred from
+   * `folderId === null`: that value means "no destination" for a chat
+   * attachment and "the root, deliberately" for someone uploading from the
+   * root view, and moving the second kind is how a feature loses trust.
+   */
+  autoFile?: boolean;
   /** S3 key of the original file, written by `uploadDocument` before enqueue. */
   originalKey: string;
   metadata: DocumentFileMetadata;
@@ -155,6 +167,54 @@ const renderThumbnail = async (args: {
     }
     case "none":
       throw new Error("renderThumbnail called for a type with no thumbnail");
+  }
+};
+
+/**
+ * File a processed document, when it arrived with no destination and the
+ * caller asked for one.
+ *
+ * HERE and not at upload: the whole value of the decision is the semantic
+ * match, and the summary that makes it possible does not exist until the
+ * extraction has finished. A document that sits at the Drive root for the
+ * length of its own pipeline and is then filed, with a banner saying so, is
+ * the intended experience — the alternative is choosing a folder from a
+ * filename.
+ *
+ * NEVER THROWS, and that is not belt-and-braces. By the time this runs the
+ * document is already `ready` and the job's retry early-returns on that, so a
+ * throw here would fail the job, the retry would do nothing, and the only
+ * visible result would be an upload marked failed that in fact succeeded.
+ * `autoFileDocument` swallows its own; this catches everything before it,
+ * including the fact-sheet read.
+ *
+ * Awaited rather than fired and forgotten: the worker process can exit
+ * between jobs, and an orphaned promise is a document that is never filed.
+ */
+const maybeAutoFile = async (job: DocumentProcessingJobData): Promise<void> => {
+  if (job.autoFile !== true) return;
+  const documentId = job.metadata.id;
+  try {
+    const sheet = await documentFacts({
+      documentId,
+      teamId: job.teamId,
+    });
+    const filed = await autoFileDocument({
+      documentId,
+      teamId: job.teamId,
+      organizationId: job.organizationId,
+      sheet,
+    });
+    if (filed) {
+      console.info(
+        `[document-processing] ${documentId} auto-filed into ${filed.folderId}`,
+      );
+    }
+  } catch (error) {
+    console.warn(
+      `[document-processing] auto-file skipped for ${documentId}:`,
+      error instanceof Error ? error.message : error,
+    );
   }
 };
 
@@ -320,6 +380,11 @@ export const processDocument = async (
         .where(eq(documents.id, documentId));
     });
 
+    // A duplicate's extraction was cloned, not skipped — it has a summary and
+    // custom fields like any other document, so it deserves a destination for
+    // exactly the same reasons. Forgetting this exit is how a feature works
+    // for every file except the ones a team uploads twice.
+    await maybeAutoFile(job);
     emitUploadEvent({ documentId, status: "ready" });
     return;
   }
@@ -453,6 +518,20 @@ export const processDocument = async (
     confidenceScore: preExtractResult.confidenceScore?.toString(),
   };
 
+  // Parties whose names are close to existing records but not close enough
+  // for spelling to decide, matched by meaning HERE, before the transaction:
+  // it is a network call, and the fold below holds Postgres open.
+  const mentionHints = await preResolveMentions({
+    organizationId,
+    teamId,
+    documentId,
+    mentions: preExtractResult.entities,
+    context: {
+      filename: metadata.originalFilename,
+      documentSummary: preExtractResult.documentSummary,
+    },
+  });
+
   const graphResult = await db.transaction(async (tx) => {
     await tx
       .insert(documentProperties)
@@ -480,10 +559,14 @@ export const processDocument = async (
       folderId: metadata.folderId,
       filename: metadata.originalFilename,
       customFields: preExtractResult.customFields,
-      mentions: preExtractResult.entities.map((e) => ({
-        name: e.name,
-        confidence: e.confidence,
-      })),
+      mentions: preExtractResult.entities.map((e) => {
+        const recordId = mentionHints.get(mentionKey(e.name.trim()));
+        return {
+          name: e.name,
+          confidence: e.confidence,
+          ...(recordId !== undefined ? { recordId } : {}),
+        };
+      }),
       actor: uploadActor,
     });
 
@@ -517,43 +600,60 @@ export const processDocument = async (
     }
   }
 
-  try {
-    const vectorResult = await callAiService(
-      "/internal/vectorize",
-      {
-        sourceType: "documents",
-        sourceId: documentId,
-        content: vectorContent,
-        metadata: {
-          file_name: metadata.originalFilename,
-          file_type: metadata.mimeType,
-          page_count: preExtractResult.pageCount ?? null,
-          document_language: preExtractResult.documentLanguage ?? null,
-          document_summary: preExtractResult.documentSummary ?? null,
-          entities: mentionVectorInfo,
-          custom_fields: vectorisableCustomFields,
-        },
-        teamId,
-        organizationId,
-      },
-      aiVectorizeResponseSchema,
-      { teamId, organizationId },
-    );
-
-    if (!vectorResult.success) {
-      console.warn(
-        `[document-processing] AI service vector storage returned success=false for ${documentId}`,
-      );
-    }
-  } catch (error) {
-    // Vectorisation is best-effort — RAG can be re-indexed later; a failure
-    // here must not fail the whole job (the document is already `ready`).
-    console.error(
-      `[document-processing] AI service vector storage failed for ${documentId}:`,
-      error,
+  // A document the extraction could make nothing of is not worth indexing:
+  // in the index it is a row the semantic arm can return INSTEAD of a real
+  // answer, and every chunk of it is an embedding paid for. Deterministic by
+  // design — see `vectorisable.ts` for why this is not a model call.
+  const skipReason = vectorisationSkipReason({
+    documentSummary: preExtractResult.documentSummary,
+    confidenceScore: preExtractResult.confidenceScore,
+  });
+  if (skipReason !== null) {
+    console.info(
+      `[document-processing] not indexing ${documentId}: ${skipReason}`,
     );
   }
 
+  if (skipReason === null) {
+    try {
+      const vectorResult = await callAiService(
+        "/internal/vectorize",
+        {
+          sourceType: "documents",
+          sourceId: documentId,
+          content: vectorContent,
+          metadata: {
+            file_name: metadata.originalFilename,
+            file_type: metadata.mimeType,
+            page_count: preExtractResult.pageCount ?? null,
+            document_language: preExtractResult.documentLanguage ?? null,
+            document_summary: preExtractResult.documentSummary ?? null,
+            entities: mentionVectorInfo,
+            custom_fields: vectorisableCustomFields,
+          },
+          teamId,
+          organizationId,
+        },
+        aiVectorizeResponseSchema,
+        { teamId, organizationId },
+      );
+
+      if (!vectorResult.success) {
+        console.warn(
+          `[document-processing] AI service vector storage returned success=false for ${documentId}`,
+        );
+      }
+    } catch (error) {
+      // Vectorisation is best-effort — RAG can be re-indexed later; a failure
+      // here must not fail the whole job (the document is already `ready`).
+      console.error(
+        `[document-processing] AI service vector storage failed for ${documentId}:`,
+        error,
+      );
+    }
+  }
+
+  await maybeAutoFile(job);
   emitUploadEvent({ documentId, status: "ready" });
 };
 

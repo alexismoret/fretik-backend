@@ -46,6 +46,7 @@ export const listFolders = async (data: {
           AND ${doc.status} <> 'error'
           AND ${visibility.document(documentAccessColumnsOf(doc))}
       )`.mapWith(Number),
+      description: folders.description,
     })
     .from(folders)
     .where(

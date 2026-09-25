@@ -62,6 +62,36 @@ const asScore = (bound: number | string): number => {
   return Number.parseFloat(bound);
 };
 
+const incrBy = (key: string, by: number): number => {
+  const next = Number.parseInt(asValue(key) ?? "0", 10) + by;
+  store.set(key, { value: String(next) });
+  return next;
+};
+
+/** The queued commands `services/decisions/rate-budget.ts` issues, and no
+ * others. Replies are ioredis-shaped: one `[error, result]` per command. */
+interface MultiDouble {
+  incrby: (key: string, by: number) => MultiDouble;
+  expire: (key: string, seconds: number) => MultiDouble;
+  exec: () => Promise<[null, unknown][]>;
+}
+
+const multiDouble = (): MultiDouble => {
+  const queued: (() => unknown)[] = [];
+  const tx: MultiDouble = {
+    incrby: (key, by) => {
+      queued.push(() => incrBy(key, by));
+      return tx;
+    },
+    expire: () => {
+      queued.push(() => 1);
+      return tx;
+    },
+    exec: () => Promise.resolve(queued.map((run) => [null, run()])),
+  };
+  return tx;
+};
+
 const notImplemented = (name: string) => (): never => {
   throw new Error(
     `[redis-double] \`${name}\` is not implemented. Add it to tests/lib/redis-double.ts if the code under test needs it — do not point tests at a real Redis.`,
@@ -89,6 +119,9 @@ export const redisDouble = {
     store.set(key, { value: String(next) });
     return Promise.resolve(next);
   },
+  incrby: (key: string, by: number): Promise<number> =>
+    Promise.resolve(incrBy(key, by)),
+  multi: (): MultiDouble => multiDouble(),
   decr: (key: string): Promise<number> => {
     const next = Number.parseInt(asValue(key) ?? "0", 10) - 1;
     store.set(key, { value: String(next) });

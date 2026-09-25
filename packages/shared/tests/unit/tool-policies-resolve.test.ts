@@ -508,3 +508,31 @@ describe("uploadToDrive grant args — batch and pre-batch shapes", () => {
     ).toEqual(["a.pdf"]);
   });
 });
+
+describe("manageDrive grant args — batch and pre-batch shapes", () => {
+  /**
+   * Same trap as `uploadToDrive`: `moveDocument`, `moveFolder` and
+   * `deleteFolder` used to store one `documentId` / `folderId` and now store
+   * a list. A pending `deleteFolder` approval from before the deploy must
+   * still name its folder, or the grant would delete nothing and say "done".
+   */
+  test("reads the batch shape", () => {
+    expect(
+      strListOrSingle(
+        { action: "moveDocument", documentIds: ["d-1", "d-2"] },
+        "documentIds",
+        "documentId",
+      ),
+    ).toEqual(["d-1", "d-2"]);
+  });
+
+  test("still reads a grant stored before the batch change", () => {
+    expect(
+      strListOrSingle(
+        { action: "deleteFolder", folderId: "f-1" },
+        "folderIds",
+        "folderId",
+      ),
+    ).toEqual(["f-1"]);
+  });
+});

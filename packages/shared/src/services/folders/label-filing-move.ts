@@ -1,4 +1,7 @@
-import { labelDecisions } from "../decisions/journal";
+import {
+  labelDecisions,
+  labelDecisionsForSubjects,
+} from "../decisions/journal";
 import { FILING_POINT, ROOT_OPTION } from "./auto-file";
 
 /**
@@ -23,6 +26,22 @@ export const labelFilingOnMove = async (params: {
     teamId: params.teamId,
     point: FILING_POINT,
     subjectId: params.documentId,
+    label: params.toFolderId ?? ROOT_OPTION,
+    source: "document_moved",
+  });
+};
+
+/** `labelFilingOnMove` for many documents placed in the same folder at once. */
+export const labelFilingOnMoves = async (params: {
+  teamId: string;
+  documentIds: readonly string[];
+  toFolderId: string | null;
+}): Promise<void> => {
+  if (params.documentIds.length === 0) return;
+  await labelDecisionsForSubjects({
+    teamId: params.teamId,
+    point: FILING_POINT,
+    subjectIds: params.documentIds,
     label: params.toFolderId ?? ROOT_OPTION,
     source: "document_moved",
   });

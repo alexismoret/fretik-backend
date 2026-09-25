@@ -1,7 +1,12 @@
 import { and, eq, like, sql } from "drizzle-orm";
 import db from "../../db";
 import { folders } from "../../db/schema";
-import { internalError, notFound, throwHttpError } from "../../lib/errors";
+import {
+  badRequest,
+  internalError,
+  notFound,
+  throwHttpError,
+} from "../../lib/errors";
 import type { UpdateFolderInput } from "../../schemas/folders";
 import {
   emitDomainEvent,
@@ -41,6 +46,10 @@ export const updateFolder = async (data: {
   const parentChanged =
     updates.parentFolderId !== undefined &&
     updates.parentFolderId !== existingFolder.parentFolderId;
+
+  if (parentChanged && updates.parentFolderId) {
+    await assertNotOwnDescendant(id, updates.parentFolderId, teamId);
+  }
 
   if (nameChanged || parentChanged) {
     const parentFolderId = parentChanged
@@ -158,6 +167,51 @@ export const updateFolder = async (data: {
   }
 
   return updatedFolder;
+};
+
+/**
+ * Refuse a move that would put a folder inside itself or one of its own
+ * sub-folders.
+ *
+ * Nothing stopped it before: the parent pointers then form a loop that no
+ * longer reaches the root, so the whole branch vanishes from the tree, and
+ * the `fullPath` rewrite below nests the old path inside itself. Walked by
+ * parent id rather than by `fullPath` prefix, because two sibling folders can
+ * share a name, and a prefix check would refuse a legitimate move between
+ * them. Bounded, so a loop already in the data cannot hang the request.
+ */
+const MAX_FOLDER_DEPTH = 100;
+
+const parentOf = async (
+  folderId: string,
+  teamId: string,
+): Promise<string | null> => {
+  const row = await db.query.folders.findFirst({
+    columns: { parentFolderId: true },
+    where: { id: folderId, teamId },
+  });
+  return row?.parentFolderId ?? null;
+};
+
+const assertNotOwnDescendant = async (
+  folderId: string,
+  newParentId: string,
+  teamId: string,
+): Promise<void> => {
+  let cursor: string | null = newParentId;
+  for (let depth = 0; cursor !== null && depth < MAX_FOLDER_DEPTH; depth++) {
+    if (cursor === folderId) {
+      return throwHttpError(
+        400,
+        badRequest(
+          "A folder cannot be moved into itself or its own sub-folder",
+        ),
+      );
+    }
+    // Each step needs the previous one's answer.
+    // eslint-disable-next-line no-await-in-loop
+    cursor = await parentOf(cursor, teamId);
+  }
 };
 
 /**

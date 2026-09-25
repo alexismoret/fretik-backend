@@ -33,6 +33,13 @@ import type { FactSheet } from "../facts/types";
  * Run AFTER processing, never at upload: the whole value is the semantic
  * match, and the summary that makes it possible does not exist until the
  * extraction has finished.
+ *
+ * FILING CHANGES NOBODY'S ACCESS. A document at the root of its place (its
+ * team's Drive, or a project's) is offered only the folders open to that
+ * whole place: in the same tree, not restricted, under no restricted folder.
+ * Those have the root's audience, so the move hides the document from nobody
+ * (the person who added it included) and shows it to nobody new. A folder
+ * someone keeps to a few people is theirs to fill by hand.
  */
 
 export const FILING_POINT = "drive.file";
@@ -64,15 +71,53 @@ export interface FilingCandidate {
   description: string | null;
 }
 
-export const listFilingCandidates = async (params: {
+/** Where a document sits: a team's Drive, or a project's (`projectId`). */
+interface Place {
   teamId: string;
-}): Promise<FilingCandidate[]> =>
-  db.query.folders.findMany({
-    where: { teamId: params.teamId },
+  projectId: string | null;
+}
+
+/**
+ * The folders of a place open to that whole place: in its tree, not
+ * restricted, under no restricted folder (the engine's inheritance,
+ * `authz/rules.ts`). A folder inherits from its parent, so the walk starts at
+ * the tree's top-level folders and stops at every restricted one.
+ */
+const openFolderIdsOf = async (
+  place: Place,
+  executor: Pick<typeof db, "execute"> = db,
+): Promise<string[]> => {
+  const result = await executor.execute<{ id: string }>(sql`
+    WITH RECURSIVE open_folders AS (
+      SELECT f.id FROM folders f
+      WHERE f.team_id = ${place.teamId}
+        AND f.parent_folder_id IS NULL
+        AND f.project_id IS NOT DISTINCT FROM ${place.projectId}::uuid
+        AND NOT f.access_restricted
+
+      UNION
+
+      SELECT child.id FROM folders child
+      INNER JOIN open_folders parent ON child.parent_folder_id = parent.id
+      WHERE NOT child.access_restricted
+    )
+    SELECT id FROM open_folders
+  `);
+  return result.rows.map((row) => row.id);
+};
+
+export const listFilingCandidates = async (
+  place: Place,
+): Promise<FilingCandidate[]> => {
+  const open = await openFolderIdsOf(place);
+  if (open.length === 0) return [];
+  return db.query.folders.findMany({
+    where: { teamId: place.teamId, id: { in: open } },
     columns: { id: true, name: true, fullPath: true, description: true },
     orderBy: { documentCount: "desc" },
     limit: MAX_CANDIDATES,
   });
+};
 
 /**
  * The question: which of these folders, or none of them.
@@ -184,9 +229,11 @@ export const readFilingVerdict = (
 };
 
 /**
- * Move a document that is still at the root. False when it is not: a person
- * who filed it in the meantime has said where it goes, and that beats any
- * inference.
+ * Move a document that is still at the root of its place. False when it is
+ * not: a person who filed it in the meantime, or moved it to another place,
+ * has said where it goes, and that beats any inference. False too when the
+ * folder was closed to part of the place while the model answered: filing
+ * never narrows who sees a document.
  *
  * The move and the counter in ONE transaction, like every other move
  * (`documents/update.ts`). `folders.documentCount` orders the filing
@@ -195,17 +242,24 @@ export const readFilingVerdict = (
  */
 const moveFromRoot = async (params: {
   documentId: string;
-  teamId: string;
+  place: Place;
   folderId: string;
 }): Promise<boolean> => {
+  const { place } = params;
   const moved = await db.transaction(async (tx) => {
+    if (!(await openFolderIdsOf(place, tx)).includes(params.folderId)) {
+      return false;
+    }
     const [row] = await tx
       .update(documents)
       .set({ folderId: params.folderId })
       .where(
         and(
           eq(documents.id, params.documentId),
-          eq(documents.teamId, params.teamId),
+          eq(documents.teamId, place.teamId),
+          place.projectId === null
+            ? isNull(documents.projectId)
+            : eq(documents.projectId, place.projectId),
           isNull(documents.folderId),
         ),
       )
@@ -306,7 +360,16 @@ export const autoFileDocument = async (params: {
   evaluator?: DecisionEvaluator;
 }): Promise<{ folderId: string; confidence: number } | null> => {
   try {
-    const candidates = await listFilingCandidates({ teamId: params.teamId });
+    const document = await db.query.documents.findFirst({
+      where: { id: params.documentId, teamId: params.teamId },
+      columns: { projectId: true },
+    });
+    if (!document) return null;
+    const place: Place = {
+      teamId: params.teamId,
+      projectId: document.projectId,
+    };
+    const candidates = await listFilingCandidates(place);
     if (candidates.length === 0) return null;
 
     // The whole sheet goes: the engine cuts it to the point's allow-list
@@ -327,7 +390,7 @@ export const autoFileDocument = async (params: {
     const moved = verdict.file
       ? await moveFromRoot({
           documentId: params.documentId,
-          teamId: params.teamId,
+          place,
           folderId: verdict.folderId,
         })
       : false;

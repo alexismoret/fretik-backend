@@ -22,6 +22,12 @@ import { bulkCreateLinks, type LinkInput } from "../links/bulk-create";
 export interface DocumentGraphMention {
   name: string;
   confidence?: number;
+  /**
+   * An existing record this mention was already matched to, outside the
+   * transaction (`pre-resolve-mentions.ts`). Used as-is instead of the
+   * spelling cascade, which would otherwise create a suggested duplicate.
+   */
+  recordId?: string;
 }
 
 /** A record the document was folded into (the mention target), for vectorize metadata. */
@@ -37,7 +43,7 @@ export interface LinkedMention {
  * retarget extraction and deleting `company` degrades gracefully. Cached 30 min
  * (config, rarely changed) under `organization:{orgId}:document-mention-target`.
  */
-const resolveMentionTargetCollectionKey = async (
+export const resolveMentionTargetCollectionKey = async (
   organizationId: string,
 ): Promise<string> =>
   selectOrCache(async () => {
@@ -227,13 +233,15 @@ const linkMentions = async (input: {
     // A low-confidence mention may still link to an EXISTING record, but must
     // not create a fresh `suggested` stub — keeps the review queue signal-heavy.
     const createIfMissing = (mention.confidence ?? 1) >= MENTION_MIN_CONFIDENCE;
-    const resolved = await resolveRecord({
-      tx,
-      teamId,
-      collectionId: targetTypeId,
-      rawLabel: name,
-      createIfMissing,
-    });
+    const resolved = mention.recordId
+      ? { recordId: mention.recordId }
+      : await resolveRecord({
+          tx,
+          teamId,
+          collectionId: targetTypeId,
+          rawLabel: name,
+          createIfMissing,
+        });
     if (!resolved.recordId) continue;
     if (linkedIds.has(resolved.recordId)) continue;
     linkedIds.add(resolved.recordId);

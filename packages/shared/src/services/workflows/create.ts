@@ -55,6 +55,7 @@ export const createWorkflow = async (params: {
       status: "draft",
       triggerType: input.triggerType,
       triggerConfig: input.triggerConfig,
+      triggerCriterion: input.triggerCriterion ?? null,
       // A form workflow needs an opaque token to key its public URL from the
       // moment it exists (the builder shows the link before activation).
       ...(input.triggerType === "form"

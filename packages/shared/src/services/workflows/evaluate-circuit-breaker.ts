@@ -71,15 +71,22 @@ export const evaluateCircuitBreaker = async (params: {
   if (!workflow || workflow.status !== "active") return;
 
   const threshold = maxConsecutiveFailures();
-  // Walk the recent terminal, non-test runs newest-first: a succeeded or
-  // canceled run BREAKS the streak; an infra-failed run is skipped (neutral);
-  // playbook failures count. The scan window is bounded — a streak diluted by
-  // heavy infra noise past it simply waits for the next evaluation.
+  // Walk the recent terminal, non-test runs newest-first: a succeeded,
+  // canceled or not-applicable run BREAKS the streak; an infra-failed run is
+  // skipped (neutral); playbook failures count. The scan window is bounded —
+  // a streak diluted by heavy infra noise past it simply waits for the next
+  // evaluation.
+  //
+  // `not_applicable` belongs in the window: the playbook ran and concluded, so
+  // it is evidence the workflow is healthy. `filtered` is deliberately NOT —
+  // those runs never executed, and admitting them would let a burst of gated
+  // launches silently reset a real failure streak, which is the one thing this
+  // breaker exists to catch.
   const recent = await db.query.workflowRuns.findMany({
     where: {
       workflowId: run.workflowId,
       isTest: false,
-      status: { in: ["succeeded", "failed", "canceled"] },
+      status: { in: ["succeeded", "failed", "canceled", "not_applicable"] },
     },
     columns: { status: true, error: true },
     orderBy: { createdAt: "desc" },

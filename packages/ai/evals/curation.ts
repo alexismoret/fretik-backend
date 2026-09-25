@@ -90,6 +90,13 @@ export const CURATED: Record<string, CuratedCase> = {
   "doc-plain-language": { capability: "instruction-following", smoke: true },
   "doc-proactive-workflow": { capability: "reasoning" },
   "doc-proactive-memory": { capability: "reasoning" },
+  // ── "The description is the policy" (2026-09-24): the folder descriptions
+  // and trigger criteria the assistant writes, which the decision model then
+  // judges every document and firing against. See cases/descriptions.ts.
+  "desc-folder-purpose-described": { capability: "tool-use" },
+  "desc-folder-created-with-purpose": { capability: "tool-use" },
+  "desc-workflow-criterion": { capability: "tool-use" },
+  "desc-workflow-no-criterion": { capability: "tool-use" },
   // ── transform tool routing (2026-07): a document-scale translation must
   // route to `transform`, not python-authored literals; trivial text stays
   // inline. See cases/transform.ts. CORE tier (measures the prose + tool

@@ -1,4 +1,5 @@
 import type { AiVectorSourceType } from "@fretik/shared/db/schema";
+import type { WorkflowGateDecision } from "@fretik/shared/schemas/workflows";
 
 /**
  * Queue names + typed job payloads — the single source for every queue this
@@ -23,6 +24,14 @@ export const MEMORY_DREAMING_QUEUE = "memory-dreaming";
 // enqueues here; the slow part (createWorkflowRun → Trigger.dev network call)
 // runs on this queue so it never blocks the 15s journal/trigger sweeps.
 export const WORKFLOW_TRIGGER_QUEUE = "workflow-trigger";
+// Dedicated queue for the trigger GATE, which sits between the sweep and the
+// run creation above. It resolves a fact sheet (a couple of indexed reads) and
+// calls the AI service for a decision — a network hop, so the same rule that
+// keeps `createWorkflowRun` off the 15s maintenance queue applies here, one
+// step earlier. Its own queue rather than a stage of `workflow-trigger` so a
+// decision provider gone slow backs up decisions and not the creation of the
+// runs already cleared.
+export const WORKFLOW_GATE_QUEUE = "workflow-gate";
 // Dedicated queue for the nightly MCP tool-snapshot drift refresh — each pass
 // re-introspects every active MCP connection over the network (Nango proxy), so
 // it must never share the 15s maintenance queue.
@@ -48,6 +57,12 @@ export const VECTOR_RECONCILE_QUEUE = "vector-reconcile";
 // workflow-trigger sweeps would not run for as long as the crawl lasts. Same
 // reasoning `mcp-refresh` and `vector-reconcile` already carry.
 export const MODEL_SYNC_QUEUE = "model-sync";
+// Dedicated queue for the nightly folder-description pass. One cheap LLM call
+// per folder that needs one, fanned out per team — the same shape as dreaming,
+// and off the concurrency-1 maintenance queue for the same reason: a big
+// workspace would hold it for minutes and the 15s journal and trigger sweeps
+// would not run at all while it did.
+export const FOLDER_DESCRIBE_QUEUE = "folder-describe";
 /**
  * Collection sync — external-app-fed collections and columns.
  *
@@ -119,6 +134,36 @@ export interface WorkflowRunCreateJobData {
   teamId: string;
   sourceEventId: string;
   triggerPayload: Record<string, unknown>;
+  /**
+   * What the gate decided about this launch, when it was gated. Carried on
+   * the job so the run row records the verdict that produced it — absent for
+   * a workflow with no criterion, which is ungated by construction.
+   */
+  gateDecision?: WorkflowGateDecision;
+}
+
+/**
+ * One EVENT to gate, with every workflow it matched — jobId
+ * `wfgate-{eventId}` so a re-swept event asks nothing twice.
+ *
+ * Keyed by event rather than by (workflow, event) pair, and that is the whole
+ * economy of the gate: the fact sheet is resolved once and the decision model
+ * is asked ONE question per workflow in ONE call. Twenty workflows listening
+ * for uploads cost one request whose expensive half — the state — is paid for
+ * a single time, instead of twenty requests each re-sending it.
+ */
+export interface WorkflowGateJobData {
+  eventId: string;
+  teamId: string;
+  organizationId: string;
+  workflowIds: string[];
+}
+
+/** One team's nightly folder-description pass — jobId
+ * `folder-describe-{teamId}-{date}`. */
+export interface FolderDescribeTeamJobData {
+  teamId: string;
+  organizationId: string;
 }
 
 /** Maintenance job names (scheduled on MEMORY_MAINTENANCE_QUEUE). */
@@ -127,6 +172,9 @@ export const JOURNAL_SWEEP_JOB = "journal-sweep";
 export const DREAMING_SWEEP_JOB = "dreaming-sweep";
 /** 04:00 UTC cron — demotes stale episodes out of the recall index. */
 export const GC_DEMOTE_JOB = "gc-demote";
+/** 04:20 UTC cron — purges the decision log past its retention (unlabelled
+ * rows after 30 days, labelled ones after a year). Batched deletes. */
+export const DECISION_LOG_GC_JOB = "decision-log-gc";
 /** 15s — reads the journal and enqueues event-triggered workflow runs. */
 export const WORKFLOW_TRIGGER_SWEEP_JOB = "workflow-trigger-sweep";
 /** 5min — reclaims stalled (heartbeat-dead) workflow runs. */
@@ -182,6 +230,13 @@ export const EAGER_CONSOLIDATE_JOB = "eager-consolidate";
 
 /** Job name on WORKFLOW_TRIGGER_QUEUE. */
 export const WORKFLOW_RUN_CREATE_JOB = "workflow-run-create";
+/** Job name on WORKFLOW_GATE_QUEUE — decide which of an event's matched
+ * workflows deserve a run before any of them is created. */
+export const WORKFLOW_GATE_JOB = "workflow-gate";
+/** Job name on FOLDER_DESCRIBE_QUEUE — one team's folders. */
+export const FOLDER_DESCRIBE_TEAM_JOB = "folder-describe-team";
+/** 02:30 UTC cron on the maintenance queue — fans the above out per team. */
+export const FOLDER_DESCRIBE_SWEEP_JOB = "folder-describe-sweep";
 
 /**
  * Job names on VECTOR_RECONCILE_QUEUE. The sweep detects and enqueues; each

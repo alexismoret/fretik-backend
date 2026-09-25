@@ -22,7 +22,14 @@ import type {
   MemoryVectorMetadata,
   RecordVectorMetadata,
 } from "@fretik/shared/db/schema";
-import { aiEpisodes, aiMemories, aiVectors } from "@fretik/shared/db/schema";
+import {
+  aiEpisodes,
+  aiMemories,
+  aiVectors,
+  collectionRecords,
+  links,
+  linkTypes,
+} from "@fretik/shared/db/schema";
 import { deleteMemoryVectors } from "@fretik/shared/services/ai-memory/vector-refresh";
 import { buildRecordCard } from "@fretik/shared/services/collection-records/build-card";
 import { bulkDeleteCollectionRecords } from "@fretik/shared/services/collection-records/bulk-delete";
@@ -34,7 +41,7 @@ import { upsertEpisode } from "@fretik/shared/services/episodes/upsert";
 import { deleteEpisodeVectors } from "@fretik/shared/services/episodes/vectors";
 import { createLinkType } from "@fretik/shared/services/link-types/create";
 import { createLink } from "@fretik/shared/services/links/create";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, ilike, inArray, like, or, sql } from "drizzle-orm";
 import { vectorizeSource } from "../../src/services/vectorize";
 import { perturb, round, SCALE_SIGMA } from "./scale-vectors";
 
@@ -267,6 +274,9 @@ const frenchDate = (d: Date): { numeric: string; long: string } => ({
 export const nextDeliveryDate = (): { numeric: string; long: string } =>
   frenchDate(nextTuesday());
 
+/** Every fixture episode this run ensured — the ones the sweep keeps. */
+const ensuredEpisodeIds = new Set<string>();
+
 const ensureEpisode = async (
   scope: Scope,
   input: {
@@ -325,6 +335,7 @@ const ensureEpisode = async (
         userId: input.userId ?? null,
       });
     }
+    ensuredEpisodeIds.add(existing.id);
     return existing.id;
   }
   const { episode } = await upsertEpisode({
@@ -355,6 +366,7 @@ const ensureEpisode = async (
     organizationId: scope.organizationId,
     userId: episode.userId,
   });
+  ensuredEpisodeIds.add(episode.id);
   return episode.id;
 };
 
@@ -493,9 +505,117 @@ const ensureWorkflowCard = async (
   return sourceId;
 };
 
+/**
+ * Team memories the nightly pipeline DERIVED from this universe. The fixture
+ * episodes live in a real team, so the promoter reads them like any other and
+ * writes what it learned under `learned/` (2026-09-24: "Nordwind GmbH est le
+ * fournisseur retenu…", promoted at 03:01). Such a memory competes with the
+ * fixture's own for the block's memory slots, and a case then measures last
+ * night's pipeline rather than recall. Swept before every run, keyed on the
+ * fixture names the cleanup below already recognises episodes by.
+ */
+const FIXTURE_NAMES = [
+  "Nordwind",
+  "Sirius Immobilier",
+  "Vega Logistics",
+  "Callisto Systems",
+];
+
+const sweepDerivedMemories = async (scope: Scope): Promise<void> => {
+  const derived = await db
+    .select({ id: aiMemories.id })
+    .from(aiMemories)
+    .where(
+      and(
+        eq(aiMemories.teamId, scope.teamId),
+        like(aiMemories.path, "learned/%"),
+        or(
+          ...FIXTURE_NAMES.map((name) =>
+            ilike(aiMemories.content, `%${name}%`),
+          ),
+        ),
+      ),
+    );
+  for (const memory of derived) {
+    await deleteMemoryVectors(memory.id);
+    await db.delete(aiMemories).where(eq(aiMemories.id, memory.id));
+  }
+};
+
+/** Titles the fixture episodes carry — and the cleanup tears down by. */
+const isFixtureEpisodeTitle = (title: string): boolean =>
+  title.includes("Nordwind") ||
+  title.includes("Benchmark tarifaire fournisseurs") ||
+  title.includes("renégociation du bail Sirius") ||
+  title.includes("Vega Logistics") ||
+  title.includes("Callisto Systems");
+
+/**
+ * Episodes the nightly pipeline DERIVED from the fixture episodes: the
+ * consolidator merges them into new ones ("Contrat Nordwind GmbH 2027 —
+ * négociation et suivi", 2026-09-24) and supersedes the originals, which the
+ * next ensure recreates. Anything active under a fixture title this run did
+ * not ensure is such a merge, and goes.
+ */
+const sweepDerivedEpisodes = async (scope: Scope): Promise<void> => {
+  const active = await db.query.aiEpisodes.findMany({
+    where: { teamId: scope.teamId, state: "active" },
+    columns: { id: true, title: true },
+  });
+  const derived = active
+    .filter((e) => isFixtureEpisodeTitle(e.title))
+    .filter((e) => !ensuredEpisodeIds.has(e.id))
+    .map((e) => e.id);
+  if (derived.length === 0) return;
+  await deleteEpisodeVectors(derived);
+  await db.delete(aiEpisodes).where(inArray(aiEpisodes.id, derived));
+};
+
+/**
+ * Relations the nightly pipeline INFERRED between fixture records, and the
+ * link types it created on fixture collections for them. Measured 2026-09-24:
+ * Nordwind GmbH had gathered five (works_on and a second "fournit" to
+ * Horizon, outperforms to two distractors, distinct_from Nordwind
+ * Consulting), its GRAPH lines went from two to seven, the block overflowed
+ * its 2 000 chars and the renderer dropped the GRAPH section whole —
+ * `rec-multi-domain` 0/10 on main and on the branch alike. The one edge the
+ * cases are written against is the fixture's own.
+ */
+const sweepDerivedLinks = async (
+  scope: Scope,
+  collectionIds: string[],
+): Promise<void> => {
+  const fixtureRecords = db
+    .select({ id: collectionRecords.id })
+    .from(collectionRecords)
+    .where(inArray(collectionRecords.collectionId, collectionIds));
+  await db
+    .delete(links)
+    .where(
+      and(
+        eq(links.teamId, scope.teamId),
+        eq(links.source, "ai_inference"),
+        or(
+          inArray(links.fromRecordId, fixtureRecords),
+          inArray(links.toRecordId, fixtureRecords),
+        ),
+      ),
+    );
+  await db
+    .delete(linkTypes)
+    .where(
+      and(
+        eq(linkTypes.teamId, scope.teamId),
+        eq(linkTypes.source, "ai_extraction"),
+        inArray(linkTypes.fromCollectionId, collectionIds),
+      ),
+    );
+};
+
 export const ensureRecallFixtures = async (
   scope: Scope,
 ): Promise<RecallFixtures> => {
+  await sweepDerivedMemories(scope);
   const supplierTypeId = await ensureType(
     scope,
     SUPPLIER_COLLECTION_KEY,
@@ -571,6 +691,8 @@ export const ensureRecallFixtures = async (
       }),
     );
   }
+
+  await sweepDerivedLinks(scope, [supplierTypeId, projectTypeId]);
 
   // One active 1-hop link so the GRAPH arm has an edge to render.
   const existingLinkType = await db.query.linkTypes.findFirst({
@@ -758,6 +880,8 @@ export const ensureRecallFixtures = async (
     "Récap des livraisons fournisseurs en retard",
     "Workflow: Récap des livraisons fournisseurs en retard\nGoal: produire la liste des livraisons fournisseurs en retard et l'envoyer aux acheteurs.\nStarted by: manuellement, ou tous les lundis à 8h.\nSteps:\n1. Collecter les livraisons attendues — lister les livraisons dont la date prévue est dépassée.\n2. Recouper avec les fournisseurs — rattacher chaque retard à son fournisseur et à son contrat.\n3. Envoyer le récapitulatif — tableau des retards par fournisseur, envoyé aux acheteurs.",
   );
+
+  await sweepDerivedEpisodes(scope);
 
   return {
     organizationId: scope.organizationId,
@@ -990,14 +1114,7 @@ export const cleanupRecallFixtures = async (scope: Scope): Promise<void> => {
     columns: { id: true, title: true },
   });
   const fixtureEpisodeIds = episodes
-    .filter(
-      (e) =>
-        e.title.includes("Nordwind") ||
-        e.title.includes("Benchmark tarifaire fournisseurs") ||
-        e.title.includes("renégociation du bail Sirius") ||
-        e.title.includes("Vega Logistics") ||
-        e.title.includes("Callisto Systems"),
-    )
+    .filter((e) => isFixtureEpisodeTitle(e.title))
     .map((e) => e.id);
   if (fixtureEpisodeIds.length > 0) {
     await deleteEpisodeVectors(fixtureEpisodeIds);

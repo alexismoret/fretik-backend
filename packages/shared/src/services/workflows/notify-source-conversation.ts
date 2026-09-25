@@ -10,6 +10,11 @@ const STATUS_LABEL: Record<string, string> = {
   succeeded: "finished",
   failed: "failed",
   canceled: "was canceled",
+  // Its own wording, not "finished": the builder is watching this notice to
+  // learn whether the playbook works, and a test run that skipped every task
+  // because the input did not match is the one outcome a green word would
+  // misreport.
+  not_applicable: "found nothing to do",
 };
 
 /**
@@ -40,13 +45,7 @@ export const notifySourceConversation = async (params: {
     },
   });
   if (!run?.sourceConversationId) return { posted: false };
-  if (
-    run.status !== "succeeded" &&
-    run.status !== "failed" &&
-    run.status !== "canceled"
-  ) {
-    return { posted: false };
-  }
+  if (!(run.status in STATUS_LABEL)) return { posted: false };
   const conversationId = run.sourceConversationId;
 
   // Dedup: at most one notice per run, even if several terminal paths race.

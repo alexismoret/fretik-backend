@@ -18,7 +18,7 @@ export const createListFoldersTool = () =>
       "Inputs:",
       "- parentFolderId (optional): folder to list inside. Omit or null for the Drive root.",
       "",
-      "Output: { folders: [{ id, name, subFolderCount, documentCount }], parentFolderId }. Recurse by passing a returned id back as parentFolderId.",
+      "Output: { folders: [{ id, name, description, subFolderCount, documentCount }], parentFolderId }. `description` says what the folder is for (null if none yet). Recurse by passing a returned id back as parentFolderId.",
     ].join("\n"),
     inputSchema: z.object({
       parentFolderId: z
@@ -38,6 +38,7 @@ export const createListFoldersTool = () =>
           folders: folders.map((f) => ({
             id: f.id,
             name: f.name,
+            description: f.description,
             subFolderCount: f.subFolderCount,
             documentCount: f.documentCount,
           })),

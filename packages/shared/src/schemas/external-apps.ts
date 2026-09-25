@@ -331,6 +331,12 @@ export const connectionActionEntrySchema = z.object({
   kind: z.enum(["read", "write"]),
   summary: z.string(),
   defaultLevel: toolPolicyLevelSchema,
+  /**
+   * The server did not say whether this tool changes anything, and the
+   * decision model thinks it only reads. An admin's to accept or reject
+   * (`POST …/actions/{action}/suggestion`); until then the tool gates.
+   */
+  suggestedReadOnly: z.boolean().optional(),
   // Same opt-in signature as the provider catalogue, read from the connection's
   // stored snapshot descriptor instead of a manifest — an MCP server is where a
   // sync source's action list comes from when there is no hand-written
@@ -576,6 +582,21 @@ export const updateConnectionRequestSchema = z
   );
 export type UpdateConnectionRequest = z.infer<
   typeof updateConnectionRequestSchema
+>;
+
+export const suggestionParamsSchema = z.object({
+  id: z.uuid(),
+  /** The action's snake_case name, as `actions[].name` returns it. */
+  action: z.string().min(1).max(128),
+});
+
+export const answerSuggestionRequestSchema = z.object({
+  /** `true` runs the tool without approval from now on; `false` says the
+   * suggestion is wrong and changes no permission. */
+  accept: z.boolean(),
+});
+export type AnswerSuggestionRequest = z.infer<
+  typeof answerSuggestionRequestSchema
 >;
 
 export const deleteConnectionResponseSchema = z.object({

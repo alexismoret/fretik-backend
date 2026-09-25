@@ -107,3 +107,14 @@ const { resolveModel: resolveModelDouble } =
 await mockModule("../../src/lib/model-registry/resolve", {
   resolveModel: resolveModelDouble,
 });
+
+// The decision engine answers nothing in a unit test. The memory passes, the
+// relation writer and the chat's continuation check all reach it in-process,
+// some fire-and-forget, and none of them may reach the decision provider from
+// a test that never meant to. `null` is every caller's "no answer" branch —
+// the path each point replaced — so a suite not about a point sees exactly
+// what it saw before the point existed. A suite ABOUT a point passes its own
+// evaluator; the engine's suite imports `decide-point`, which stays real.
+await mockModule("../../src/services/decisions/in-process", {
+  inProcessEvaluator: () => Promise.resolve(null),
+});

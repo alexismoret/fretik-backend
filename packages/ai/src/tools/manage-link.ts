@@ -14,6 +14,7 @@ import { gateBuiltinWriteTool } from "../agents/shared/policy-tool-gate";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
 import { workflowWriteBackstop } from "../agents/shared/workflow-write-backstop";
 import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
+import { inProcessEvaluator } from "../services/decisions/in-process";
 
 /**
  * Domain tool (deferred) — connect or disconnect two records over a relation.
@@ -120,6 +121,7 @@ export const createManageLinkTool = () =>
           teamId: ctx.teamId,
           rawKey: input.relationKey,
           fromCollectionId: fromRecord.collectionId,
+          byMeaning: inProcessEvaluator,
         });
         const gate = await gateBuiltinWriteTool(ctx, {
           toolName: "manageLink",

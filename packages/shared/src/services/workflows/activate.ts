@@ -8,6 +8,8 @@ import {
   workflowEventActivationError,
   type WorkflowResponse,
 } from "../../schemas/workflows";
+import type { DecisionEvaluator } from "../decisions/remote";
+import { lintCriterion } from "./criterion-lint";
 import { getWorkflowRow } from "./get";
 import { serializeWorkflow } from "./serialize";
 import { refreshWorkflowVectors } from "./vector-refresh";
@@ -23,6 +25,9 @@ export const activateWorkflow = async (params: {
   id: string;
   teamId: string;
   requester?: WorkflowRequester;
+  /** How the criterion lint reaches the decision model; in-process from
+   * the AI service, over HTTP from everywhere else. */
+  evaluator?: DecisionEvaluator;
 }): Promise<WorkflowResponse | undefined> => {
   const row = await getWorkflowRow(params);
   if (!row) return undefined;
@@ -51,6 +56,21 @@ export const activateWorkflow = async (params: {
   if (row.triggerType === "event") {
     const eventError = workflowEventActivationError(row.triggerConfig);
     if (eventError) return throwHttpError(400, badRequest(eventError));
+  }
+
+  // The trigger criterion is checked at the same moment, and for a sharper
+  // version of the same reason: a bad one does not activate into silence, it
+  // activates into a workflow that LOOKS live and refuses every real firing.
+  // The failure it catches was predicted before a line of the gate ran — an
+  // agent writing a criterion from one example file writes the example into
+  // it, which passes the test run it was written against and nothing after.
+  if (row.triggerCriterion !== null) {
+    const criterionError = await lintCriterion({
+      criterion: row.triggerCriterion,
+      context: { teamId: row.teamId, organizationId: row.organizationId },
+      ...(params.evaluator ? { evaluator: params.evaluator } : {}),
+    });
+    if (criterionError) return throwHttpError(400, badRequest(criterionError));
   }
 
   // A form trigger autosaves incomplete drafts; the completeness gate (title +

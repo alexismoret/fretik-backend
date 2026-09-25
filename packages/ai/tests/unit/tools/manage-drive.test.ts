@@ -13,6 +13,7 @@ describe("manageDrive input schema — per-action validation is deferred to exec
   test.each([
     "createFolder",
     "renameFolder",
+    "describeFolder",
     "moveFolder",
     "deleteFolder",
     "moveDocument",
@@ -41,6 +42,28 @@ describe("manageDrive input schema — per-action validation is deferred to exec
         parentFolderId: null,
       }).success,
     ).toBe(true);
+  });
+
+  test("accepts an empty description, which clears it", () => {
+    expect(
+      manageDriveInputSchema.safeParse({
+        action: "describeFolder",
+        folderId: "018f0000-0000-7000-8000-000000000000",
+        description: "",
+      }).success,
+    ).toBe(true);
+  });
+
+  test("rejects a description longer than the filer reads", () => {
+    // The filer clips at the same length; past it, the extra words would
+    // be read by the team and ignored by the decision.
+    expect(
+      manageDriveInputSchema.safeParse({
+        action: "describeFolder",
+        folderId: "018f0000-0000-7000-8000-000000000000",
+        description: "x".repeat(221),
+      }).success,
+    ).toBe(false);
   });
 
   test("rejects an unknown action", () => {

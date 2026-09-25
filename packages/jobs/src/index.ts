@@ -25,6 +25,7 @@ import { registerSchedulers } from "./queues/schedulers";
 import { startCollectionIndexWorker } from "./workers/collection-index-sweep";
 import { startDreamingWorker } from "./workers/dreaming";
 import { startExternalSyncWorker } from "./workers/external-sync";
+import { startFolderDescribeWorker } from "./workers/folder-describe";
 import { startMaintenanceWorker } from "./workers/maintenance";
 import { startMcpRefreshWorker } from "./workers/mcp-refresh";
 import { startMemoryDistillWorker } from "./workers/memory-distill";
@@ -32,6 +33,7 @@ import { startMemoryResolveWorker } from "./workers/memory-resolve";
 import { startModelSyncWorker } from "./workers/model-sync";
 import { startRecordCardWorker } from "./workers/record-card";
 import { startVectorReconcileWorker } from "./workers/vector-reconcile";
+import { startWorkflowGateWorker } from "./workers/workflow-gate";
 import { startWorkflowRunCreateWorker } from "./workers/workflow-run-create";
 
 /**
@@ -64,6 +66,8 @@ startMemoryResolveWorker();
 startMemoryDistillWorker();
 startRecordCardWorker();
 startDreamingWorker();
+startFolderDescribeWorker();
+startWorkflowGateWorker();
 startWorkflowRunCreateWorker();
 startMaintenanceWorker();
 startMcpRefreshWorker();

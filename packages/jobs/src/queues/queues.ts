@@ -2,6 +2,7 @@ import { getProducerConnection } from "@fretik/shared/lib/queue/connection";
 import { Queue } from "bullmq";
 import {
   COLLECTION_INDEX_QUEUE,
+  FOLDER_DESCRIBE_QUEUE,
   MCP_REFRESH_QUEUE,
   MEMORY_DISTILL_QUEUE,
   MEMORY_DREAMING_QUEUE,
@@ -10,12 +11,15 @@ import {
   MODEL_SYNC_QUEUE,
   RECORD_CARD_QUEUE,
   VECTOR_RECONCILE_QUEUE,
+  WORKFLOW_GATE_QUEUE,
   WORKFLOW_TRIGGER_QUEUE,
   type DreamingTeamJobData,
   type EagerConsolidateJobData,
+  type FolderDescribeTeamJobData,
   type MemoryDistillJobData,
   type MemoryResolveJobData,
   type RecordCardJobData,
+  type WorkflowGateJobData,
   type WorkflowRunCreateJobData,
 } from "./names";
 
@@ -80,6 +84,25 @@ export const getWorkflowTriggerQueue = (): Queue<WorkflowRunCreateJobData> => {
     { connection: getProducerConnection() },
   );
   return workflowTriggerQueue;
+};
+
+let workflowGateQueue: Queue<WorkflowGateJobData> | null = null;
+
+export const getWorkflowGateQueue = (): Queue<WorkflowGateJobData> => {
+  workflowGateQueue ??= new Queue<WorkflowGateJobData>(WORKFLOW_GATE_QUEUE, {
+    connection: getProducerConnection(),
+  });
+  return workflowGateQueue;
+};
+
+let folderDescribeQueue: Queue<FolderDescribeTeamJobData> | null = null;
+
+export const getFolderDescribeQueue = (): Queue<FolderDescribeTeamJobData> => {
+  folderDescribeQueue ??= new Queue<FolderDescribeTeamJobData>(
+    FOLDER_DESCRIBE_QUEUE,
+    { connection: getProducerConnection() },
+  );
+  return folderDescribeQueue;
 };
 
 let mcpRefreshQueue: Queue | null = null;

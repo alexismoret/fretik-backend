@@ -20,6 +20,7 @@ import {
 // type-only, erased at runtime).
 import type { ReasoningLevelInput } from "../../schemas/reasoning";
 import type {
+  WorkflowGateDecision,
   WorkflowLimits,
   WorkflowNotifications,
   WorkflowPlaybook,
@@ -97,6 +98,23 @@ export const workflows = pgTable(
       .default({}),
 
     playbook: jsonb("playbook").$type<WorkflowPlaybook>().notNull(),
+
+    /**
+     * One sentence deciding whether a trigger firing deserves a run, judged
+     * by the decision model against the event's fact sheet.
+     *
+     * NULL is the whole migration story: no criterion means no gate, and the
+     * workflow fires exactly as it did before any of this shipped. So every
+     * workflow that already exists keeps its behaviour, and the feature
+     * arrives one workflow at a time as the builder agent writes criteria on
+     * the ones it creates or edits.
+     *
+     * A COLUMN rather than a key inside `trigger_config`, because it is not a
+     * trigger parameter: the same sentence will gate a connector event and a
+     * form submission, neither of which has a place in that jsonb, and the
+     * gate reads it on a path that must stay a cheap indexed select.
+     */
+    triggerCriterion: text("trigger_criterion"),
 
     // The external-app connections this workflow is BUILT ON — declared, not
     // derived: which apps a playbook reaches for lives in its prose, and no
@@ -233,6 +251,26 @@ export const workflowRuns = pgTable(
       () => aiConversations.id,
       { onDelete: "set null" },
     ),
+
+    /**
+     * What the trigger gate decided about THIS launch, and why.
+     *
+     * The READABLE answer lives on the run, because this is where someone
+     * asking "why did my workflow not fire?" looks. The numbers are also in
+     * `decision_log`, which carries no text and exists to calibrate the
+     * threshold; nothing a person reads should have to join the two. Every
+     * gated launch produces a row either way: allowed ones become the run that
+     * happened, refused ones a `filtered` row that exists precisely so the
+     * refusal is visible and reversible.
+     *
+     * The criterion is SNAPSHOTTED into it. Editing the workflow afterwards
+     * must not rewrite what a past decision was made against — that is the
+     * same rule the playbook snapshot in `task_states` already follows.
+     *
+     * NULL on every run that was never gated: manual runs, cron, tests, and
+     * every event run of a workflow with no criterion.
+     */
+    gateDecision: jsonb("gate_decision").$type<WorkflowGateDecision>(),
 
     // Trigger.dev run id (`run_...`) for runs.cancel + realtime subscribe.
     // NOT stable across a run's life: a run parked on an approval ends its

@@ -97,6 +97,7 @@ The app words it; the assistant reads the same payload.
 | Where can I work, and who invited me?          | `services/workspaces/list-workspaces.ts` (`GET /workspaces`)               |
 | What the assistant may read and search         | vector audiences (`services/ai-vectors/acl.ts`), `authz/sql-tool-scope.ts` |
 | The journal of every change                    | `services/access/record-event.ts`, read by `services/access/journal/`      |
+| What a decision point (Jev) may act on         | the rules of §6, on top of all the above                                   |
 
 The app decides nothing: it shows, hides or locks an action from the
 decisions the server sends (`GET /access/me`, each item's share model), and a
@@ -161,7 +162,32 @@ app's Settings → Access journal). An item is named only to a reader who can
 open it now: an admin reads that a private file was shared, by whom and with
 whom, never which file.
 
-## 6. Tests that hold it together
+## 6. Decisions (Jev) and access
+
+The decision engine (`decisions/points.ts`, the Jev model) answers judgement
+calls: does this event deserve a run, which folder fits this document, does
+this MCP tool only read. It never answers who may do what: every point works
+on what the engine above already allowed, and a feature built on one keeps
+three rules.
+
+- **It sees only what its identity can open.** The trigger gate hears of a
+  Drive item only when the workflow's identity can open it (the sweep's
+  `keepVisibleTriggerPairs`). "Test the condition" replays only the events its
+  runs would hear of and that the tester can open too, since each verdict
+  names its event (`keepPairsOpenTo`, once per principal).
+- **It never changes an audience.** The filer
+  (`services/folders/auto-file.ts`) moves a document only into a folder open
+  to its whole place (same tree, not restricted, under no restricted folder),
+  and checks it again inside the move. A folder's description, read by
+  everyone who opens the folder, is written only from the documents open to
+  all of them.
+- **Answering it is the action it stands for.** Accepting or rejecting an MCP
+  read-only suggestion is changing the connection's permissions
+  (`team.settings.manage` on a shared one); "run anyway" is running the
+  workflow (`use`); testing a condition is editing it (`edit`); undoing or
+  confirming a filing is editing the document.
+
+## 7. Tests that hold it together
 
 - `tests/unit/authz-rules`: the rules as a table.
 - `tests/integration/authz/list-agreement` and `drive-agreement`: the SQL list
@@ -171,8 +197,10 @@ whom, never which file.
   the journal.
 - `tests/integration/authz/organization-isolation`: grants naming another
   organization's people, planted by hand, give them nothing.
+- `tests/integration/authz/drive-assistant-surfaces` and
+  `tests/integration/decisions/auto-file`: the rules of §6 on a real Drive.
 
-## 7. Follow-ups, on purpose not done yet
+## 8. Follow-ups, on purpose not done yet
 
 **Dropping the legacy privacy columns** (`pages.user_id`, `workflows.user_id`).
 They still mean "private to this person" for the code of the release before
@@ -199,6 +227,14 @@ organization, which the pooled connections do not yet.
 chat of another team's project is reached from the project). With no team
 open, a guest's or a member's in no team yet, it is the chats of the projects
 they take part in.
+
+**Moving an item across a restricted folder.** A move takes edit on the item
+and on where it lands (`requireDriveMove`), and full only when it changes
+project. Taking a document out of a restricted folder to its team's root
+shows it to the whole team, though, the way sharing does, and moving one into
+a restricted folder hides it from everyone else. Asking for full access when
+a move crosses a restricted folder would match the project rule; it changes
+what members can do today, so it waits for that decision.
 
 **The sandbox's connected tools.** A chat's sandbox names the tools of its
 team's connections, whoever is in the chat; calling one still goes through the

@@ -2,13 +2,12 @@ import { describe, expect, test } from "bun:test";
 import {
   MAX_LINKS_PER_CALL,
   manageLinkInputSchema,
-  requestedEdges,
 } from "../../../src/tools/manage-link";
 
 /**
- * `manageLink` takes a list of edges and still takes the single-edge shape
- * every call in an older history carries. Per-action required fields are
- * checked in `execute` (a recoverable `toolError`), never by the schema.
+ * `manageLink` takes its edges as a list, one edge included. Per-action
+ * required fields are checked in `execute` (a recoverable `toolError`), never
+ * by the schema.
  */
 
 const parse = (input: Record<string, unknown>) =>
@@ -56,27 +55,17 @@ describe("manageLink input schema", () => {
   });
 });
 
-describe("requestedEdges", () => {
-  test("the top-level pair is one more edge, after the list", () => {
-    expect(
-      requestedEdges({
-        action: "link",
-        links: [{ fromRecordId: "a", toRecordId: "b" }],
-        fromRecordId: "c",
-        toDocumentId: "d",
-      }),
-    ).toEqual([
-      { fromRecordId: "a", toRecordId: "b" },
-      {
-        fromRecordId: "c",
-        fromDocumentId: undefined,
-        toRecordId: undefined,
-        toDocumentId: "d",
-      },
-    ]);
-  });
-
-  test("no top-level end adds nothing", () => {
-    expect(requestedEdges({ action: "link" })).toEqual([]);
+describe("the pre-batch single-edge shape", () => {
+  test("is stripped, not rejected, so execute answers with the new shape", () => {
+    // A call copied from an older conversation must reach `execute` (which
+    // returns a recoverable error naming `links`), not die in the SDK.
+    const parsed = parse({
+      action: "link",
+      relationKey: "works_for",
+      fromRecordId: "a",
+      toRecordId: "b",
+    });
+    expect(parsed.success).toBe(true);
+    expect(parsed.data).toEqual({ action: "link", relationKey: "works_for" });
   });
 });

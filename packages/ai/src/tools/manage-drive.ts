@@ -66,26 +66,18 @@ export const manageDriveInputSchema = z.object({
     .string()
     .uuid()
     .optional()
-    .describe("Folder to act on. Required for renameFolder / describeFolder."),
+    .describe("For renameFolder / describeFolder."),
   folderIds: z
     .array(z.string().uuid())
     .max(MAX_FOLDERS_PER_CALL)
     .optional()
-    .describe(
-      `Folders to move or delete, all at once. For moveFolder / deleteFolder. Max ${MAX_FOLDERS_PER_CALL.toString()}.`,
-    ),
-  documentId: z
-    .string()
-    .uuid()
-    .optional()
-    .describe("Document to rename. Required for renameDocument."),
+    .describe("For moveFolder / deleteFolder."),
+  documentId: z.string().uuid().optional().describe("For renameDocument."),
   documentIds: z
     .array(z.string().uuid())
     .max(MAX_DOCUMENTS_PER_CALL)
     .optional()
-    .describe(
-      `Documents to move, all to the same parentFolderId. For moveDocument. Max ${MAX_DOCUMENTS_PER_CALL.toString()}.`,
-    ),
+    .describe("For moveDocument, all to one parentFolderId."),
   parentFolderId: z
     .string()
     .uuid()
@@ -251,19 +243,18 @@ const resolveTargets = (
 export const createManageDriveTool = () =>
   tool({
     description: [
-      "Organise the Drive: folders and where documents live. Journaled and team-scoped.",
+      "Organise the Drive: folders and where documents live. Journaled, team-scoped.",
       "",
-      "- createFolder: name (+ optional parentFolderId, description). Creates a folder; omit parentFolderId for the root.",
+      "- createFolder: name (+ parentFolderId, description). No parentFolderId = root.",
       "- renameFolder: folderId + name.",
-      "- describeFolder: folderId + description. Files you or a workflow save to the Drive with no folder are then filed into the folder whose description fits.",
-      "- moveFolder: folderIds + parentFolderId (new parent; null = root).",
-      "- deleteFolder: folderIds. Deletes the folders AND their documents/subfolders — confirm with the user first.",
-      "- moveDocument: documentIds + parentFolderId (destination; null = root).",
-      "- renameDocument: documentId + name. The file type is kept whatever you send, so name it as a title.",
+      "- describeFolder: folderId + description. Files saved from chats or workflows with no folder are filed by these descriptions.",
+      "- moveFolder: folderIds + parentFolderId (null = root).",
+      "- deleteFolder: folderIds. Also deletes their documents and subfolders — confirm with the user first.",
+      "- moveDocument: documentIds + parentFolderId (null = root).",
+      "- renameDocument: documentId + name. The file type is kept, so name it as a title.",
       "",
-      `Moves and deletes take lists: group everything bound for one destination into ONE call (max ${MAX_DOCUMENTS_PER_CALL.toString()} documents / ${MAX_FOLDERS_PER_CALL.toString()} folders), never one call per item. Read \`failed\` before reporting.`,
-      "",
-      "Get folder ids from `listFolders`, document ids from `listDocuments`. To save a conversation attachment into the Drive, use `uploadToDrive`; to change what a document SAYS, use `manageDocument`.",
+      "Lists: one call per destination, never one per item. Check `failed`.",
+      "Ids: `listFolders`, `listDocuments`. Save an attachment: `uploadToDrive`; change what a document says: `manageDocument`.",
     ].join("\n"),
     inputSchema: manageDriveInputSchema,
     execute: async (input, options) => {

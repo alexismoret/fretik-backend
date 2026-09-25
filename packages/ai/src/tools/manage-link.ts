@@ -25,68 +25,44 @@ import { inProcessEvaluator } from "../services/decisions/in-process";
 export const MAX_LINKS_PER_CALL = 200;
 
 const linkEndsSchema = z.object({
-  fromRecordId: z.string().optional().describe("Source record."),
+  fromRecordId: z.string().optional().describe("Source record id."),
   fromDocumentId: z
     .string()
     .optional()
-    .describe("Source = this uploaded file's document record."),
-  toRecordId: z.string().optional().describe("Target record."),
+    .describe("Or: source file id (links its document record)."),
+  toRecordId: z.string().optional().describe("Target record id."),
   toDocumentId: z
     .string()
     .optional()
-    .describe("Target = this uploaded file's document record."),
+    .describe("Or: target file id (links its document record)."),
 });
 
-type LinkEnds = z.infer<typeof linkEndsSchema>;
-
 /**
- * `manageLink` input schema. Exported for its test. The single-edge fields
- * stay: every call in an older conversation's history carries them, and one
- * edge is still the common case.
+ * `manageLink` input schema. Exported for its test.
+ *
+ * Edges go in `links` only, one edge included: the single-edge top-level
+ * fields (and `linkId`) repeated the item schema in every activation of the
+ * tool. A call in the old shape, copied from an older conversation, has those
+ * keys stripped by the schema and gets a recoverable error naming the shape.
  */
-export const manageLinkInputSchema = linkEndsSchema.extend({
+export const manageLinkInputSchema = z.object({
   action: z.enum(["link", "unlink"]),
   relationKey: z
     .string()
     .max(60)
     .optional()
-    .describe("Relation slug, e.g. 'works_for'. Required for link."),
+    .describe("Relation slug, e.g. 'works_for'. For link."),
   links: z
     .array(linkEndsSchema)
     .max(MAX_LINKS_PER_CALL)
     .optional()
-    .describe(
-      `Several edges over the same relationKey, each with a from end and a to end. For link. Max ${MAX_LINKS_PER_CALL.toString()}.`,
-    ),
-  linkId: z.string().optional().describe("Edge id to remove. For unlink."),
+    .describe("For link: edges over relationKey, each a from end + a to end."),
   linkIds: z
     .array(z.string())
     .max(MAX_LINKS_PER_CALL)
     .optional()
-    .describe(
-      `Edge ids to remove, all at once. For unlink. Max ${MAX_LINKS_PER_CALL.toString()}.`,
-    ),
+    .describe("For unlink: edge ids from getRecord's links."),
 });
-
-type ManageLinkInput = z.infer<typeof manageLinkInputSchema>;
-
-const hasAnyEnd = (e: LinkEnds): boolean =>
-  Boolean(e.fromRecordId ?? e.fromDocumentId ?? e.toRecordId ?? e.toDocumentId);
-
-/**
- * The edges a `link` call asks for: the list, plus the top-level pair when
- * one is given (a single edge, or an older call's shape). Exported for its
- * test.
- */
-export const requestedEdges = (input: ManageLinkInput): LinkEnds[] => {
-  const top: LinkEnds = {
-    fromRecordId: input.fromRecordId,
-    fromDocumentId: input.fromDocumentId,
-    toRecordId: input.toRecordId,
-    toDocumentId: input.toDocumentId,
-  };
-  return [...(input.links ?? []), ...(hasAnyEnd(top) ? [top] : [])];
-};
 
 interface FailedEdge {
   index: number;
@@ -159,10 +135,10 @@ export const createManageLinkTool = () =>
     description: [
       "Connect or disconnect records over a relation.",
       "",
-      "- link: relationKey + a from end + a to end, or `links` for several edges over that relation. Resolves the relation by key (creates it if new) and adds the edges.",
-      "- unlink: linkIds (from getRecord's links).",
+      "- link: relationKey + links. Resolves the relation by key (creates it if new).",
+      "- unlink: linkIds.",
       "",
-      `Each end is a record id (fromRecordId / toRecordId) OR an uploaded file id (fromDocumentId / toDocumentId — links to the file's document record). Several edges → ONE call (max ${MAX_LINKS_PER_CALL.toString()}), never one call per edge; read \`failed\` before reporting.`,
+      "An end is a record id or an uploaded file id. All edges in ONE call, never one per edge. Check `failed`.",
     ].join("\n"),
     inputSchema: manageLinkInputSchema,
     execute: async (input, options) => {
@@ -177,12 +153,7 @@ export const createManageLinkTool = () =>
 
       try {
         if (input.action === "unlink") {
-          const ids = [
-            ...new Set([
-              ...(input.linkIds ?? []),
-              ...(input.linkId ? [input.linkId] : []),
-            ]),
-          ];
+          const ids = [...new Set(input.linkIds ?? [])];
           if (ids.length === 0) {
             return toolError(
               TOOL_ERROR_CODES.COLLECTION_QUERY_ERROR,
@@ -242,11 +213,11 @@ export const createManageLinkTool = () =>
         }
 
         // link
-        const edges = requestedEdges(input);
+        const edges = input.links ?? [];
         if (!input.relationKey || edges.length === 0) {
           return toolError(
             TOOL_ERROR_CODES.COLLECTION_QUERY_ERROR,
-            "link requires relationKey and at least one edge: a from end (fromRecordId or fromDocumentId) and a to end (toRecordId or toDocumentId), top-level or in `links`.",
+            'link requires relationKey and links: [{ "fromRecordId" | "fromDocumentId", "toRecordId" | "toDocumentId" }].',
           );
         }
         if (edges.length > MAX_LINKS_PER_CALL) {
@@ -396,7 +367,7 @@ export const createManageLinkTool = () =>
           // An edge that was already there is a no-op, not a failure.
           alreadyLinked: toWrite.length - created.length - errors.length,
           ...(created.length === 1 && onlyId ? { linkId: onlyId } : {}),
-          // `index` points into `links` (the top-level pair, if any, last).
+          // `index` points into `links`.
           failed: failed.sort((a, b) => a.index - b.index),
         };
       } catch (err) {

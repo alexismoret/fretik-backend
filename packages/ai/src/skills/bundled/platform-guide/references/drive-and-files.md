@@ -23,31 +23,23 @@ Users say "I sent you the file" without distinguishing a conversation attachment
 ## Drive features worth using proactively
 
 - **Filing** — `listFolders` / `manageDrive`: create, rename and move folders, and move or rename the documents inside them. When uploads pile up unfiled, propose a structure that mirrors how the team thinks (by client, by year, by process), then file them (§ Tidying a Drive).
-- **Search inside a folder** — `searchKnowledge` with `filters.folderId` reads only that folder and its sub-folders: "what do our supplier contracts say about termination" needs no id listing first.
+- **Search inside a folder** — `searchKnowledge` `filters.folderId` covers the folder and its sub-folders, no id listing needed.
 - **Document fields** — each document's extracted metadata lives on its mirror record; teams configure which fields via their document template. `listDocuments` filters on them.
 - **Document-triggered workflows** — an `event: document.uploaded` workflow (optionally filtered to one folder) processes every new arrival: the "drop it in this folder and everything happens" pattern users love.
 - **Entity linking** — documents auto-link to the records they mention, so "show me everything about client X" spans records AND paperwork.
 
 ## A folder's description files new documents
 
-The description is a filing rule, not a caption. A file saved to the Drive from a conversation or a workflow run with no folder named (`uploadToDrive` without `parentFolderId`, or the user's "save to Drive") is filed, once processed, into the folder whose description fits; when none clearly does, it stays at the root. The user sees the filing and can undo it.
-
-It does not touch:
-
-- files a person uploads straight into the Drive: they stay where they were dropped;
-- documents already in the Drive: describing a folder moves nothing that is there;
-- documents you write with `manageDocument`: pass their `folderId`.
-
-So never offer to "file every new document from now on" as if nothing did: files saved from conversations and workflows already follow the descriptions. What is left is direct uploads at the root, and there an `event: document.uploaded` workflow is the right proposal. Write each description to tell sibling folders apart ("Signed client contracts and their amendments", not "Contracts"): it is the only thing the filer reads besides the path.
+A file saved from a conversation or workflow with no folder (`uploadToDrive` without `parentFolderId`, or "save to Drive") is filed after processing into the folder whose description fits, else left at the root; the user can undo it. Never filed: direct uploads by a person, documents already in the Drive, `manageDocument` writes (pass `folderId`). So don't offer to "file new documents from now on": only direct uploads need an `event: document.uploaded` workflow. The filer reads only the path and the description, so write descriptions that tell sibling folders apart ("Signed client contracts and their amendments", not "Contracts").
 
 ## Tidying a Drive
 
-Do it in the conversation, however many documents there are: moves take lists.
+Do it in the conversation, whatever the volume:
 
-1. Map it: `listFolders` for the tree, `listDocuments { folderId: null }` for what sits unfiled at the root. Past a few hundred documents, one `querySql` over `documents` / `folders` gives ids and names without paging.
-2. Propose the structure, then create the folders WITH descriptions, so everything saved later keeps landing in them.
-3. Move: ONE `manageDrive moveDocument` per destination carrying all of its `documentIds` (200 per call). A thousand documents is a handful of calls.
-4. Report from the outputs: `moved`, and every `failed` id with its reason.
+1. Map: `listFolders`; `listDocuments { folderId: null }` for the unfiled root (past a few hundred documents, one `querySql` over `documents` / `folders`).
+2. Propose the structure, then create the folders WITH descriptions so later saves land in them.
+3. One `manageDrive moveDocument` per destination with all its `documentIds`.
+4. Report `moved` and every `failed` item.
 
 ## Traps
 

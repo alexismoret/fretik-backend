@@ -294,17 +294,27 @@ describe("manageLink — batch link and unlink", () => {
     expect(edges.map((e) => e.to).sort()).toEqual([t1, t2].sort());
   });
 
-  test("the single-edge shape still works", async () => {
+  test("one edge is a list of one", async () => {
     const from = await fx.createRecord("Single source");
     const to = await fx.createRecord("Single target");
     const out = await runLink({
       action: "link",
       relationKey,
-      fromRecordId: from,
-      toRecordId: to,
+      links: [{ fromRecordId: from, toRecordId: to }],
     });
     expect(out.linked).toBe(1);
     expect(typeof out.linkId).toBe("string");
+  });
+
+  test("the pre-batch single-edge shape gets a recoverable error naming `links`", async () => {
+    const out = await runLink({
+      action: "link",
+      relationKey,
+      fromRecordId: await fx.createRecord("Old shape"),
+      toRecordId: await fx.createRecord("Old target"),
+    });
+    expect(out.code).toBe("COLLECTION_QUERY_ERROR");
+    expect(String(out.error)).toContain("links");
   });
 
   test("unlinks a list, refuses another organization's edge, and a second pass is a no-op", async () => {

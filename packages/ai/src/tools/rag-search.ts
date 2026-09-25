@@ -108,8 +108,7 @@ export const createRagSearchTool = () =>
       "",
       "- `question` must be natural language. Put ids in `filters.sourceIds`, never in the question.",
       "- `filters.sourceTypes` (optional): defaults to all. `workflows` and `pages` answer whether something that already does this exists — search them before proposing to build one, since the user asks for the outcome, not for a workflow or a dashboard.",
-      "- `filters.sourceIds` (optional): narrow to specific row UUIDs (e.g. from `listDocuments`) — the way to search INSIDE one or a few known documents.",
-      "- `filters.folderId` (optional): search only the documents of this Drive folder and its sub-folders. Other structural filters (type, date, field values): pre-select ids with `listDocuments`.",
+      "- `filters.sourceIds` (optional): narrow to specific row UUIDs (e.g. from `listDocuments`) — the way to search INSIDE one or a few known documents. `filters.folderId`: one Drive folder and its sub-folders. Other structural filters (type, date): pre-select ids with `listDocuments` first.",
     ].join("\n"),
     inputSchema: z.object({
       question: z
@@ -134,12 +133,7 @@ export const createRagSearchTool = () =>
             .describe(
               "Narrow to specific row UUIDs pre-selected via listDocuments. Max 100 ids per call.",
             ),
-          folderId: z
-            .uuid()
-            .optional()
-            .describe(
-              "Drive folder id (from listFolders): only its documents and its sub-folders' are searched.",
-            ),
+          folderId: z.uuid().optional(),
         })
         .optional(),
     }),

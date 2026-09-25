@@ -9,6 +9,7 @@ import { readRecordData } from "../collection-schema/record-io";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
 import { labelFilingOnMove } from "../folders/label-filing-move";
 import { scheduleDocumentVectorRefresh } from "./vector-refresh-queue";
+import { touchesIndexedFields } from "./vectorisable";
 
 /**
  * A rename must not change the file's EXTENSION.
@@ -164,11 +165,14 @@ export const updateDocument = async (data: {
   // Through the queue, like the create and replace-content paths: a metadata
   // edit gets the same 30 s debounce and the same retry. Awaiting is safe —
   // scheduling is best-effort by contract and swallows its own Redis failure.
-  await scheduleDocumentVectorRefresh({
-    documentId: id,
-    teamId,
-    organizationId,
-  });
+  // Not for a pure move: see `touchesIndexedFields`.
+  if (touchesIndexedFields(updates)) {
+    await scheduleDocumentVectorRefresh({
+      documentId: id,
+      teamId,
+      organizationId,
+    });
+  }
 
   return updatedDoc;
 };

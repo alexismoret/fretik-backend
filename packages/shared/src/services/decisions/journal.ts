@@ -186,6 +186,37 @@ export const labelDecisions = async (params: {
   );
 
 /**
+ * `labelDecisions` for many subjects that all get the SAME label, in one
+ * statement per chunk: a person (or the agent) moving two hundred documents
+ * into one folder answers two hundred filing decisions at once. Same
+ * team scope and same overwrite rule as the single form. Returns the ids
+ * labelled.
+ */
+export const labelDecisionsForSubjects = async (params: {
+  teamId: string;
+  point: string;
+  subjectIds: readonly string[];
+  label: LabelValue;
+  source: LabelSource;
+  userId?: string;
+}): Promise<string[]> => {
+  const labelled: string[] = [];
+  for (const subjectIds of chunkForBulk([...params.subjectIds])) {
+    // eslint-disable-next-line no-await-in-loop
+    const ids = await writeLabel(
+      and(
+        eq(decisionLog.teamId, params.teamId),
+        eq(decisionLog.point, params.point),
+        inArray(decisionLog.subjectId, subjectIds),
+      ),
+      params,
+    );
+    labelled.push(...ids);
+  }
+  return labelled;
+};
+
+/**
  * The retention rule, applied by the nightly GC.
  *
  * An unlabelled row is worth keeping only while a label may still arrive —

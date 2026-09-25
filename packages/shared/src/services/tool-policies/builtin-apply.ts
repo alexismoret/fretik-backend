@@ -1,3 +1,4 @@
+import db from "../../db";
 import { recordSharingSchema } from "../../schemas/collection-sharing";
 import {
   fieldConfigSchema,
@@ -15,6 +16,7 @@ import { confirmFullResync } from "../collection-sync/confirm-full-resync";
 import { deleteCollection } from "../collections/delete";
 import { saveAuthoredContent } from "../documents/authored/content";
 import { createAuthoredDocument } from "../documents/authored/create";
+import { moveDocuments } from "../documents/move";
 import { updateDocument } from "../documents/update";
 import { restoreDocumentVersion } from "../documents/versions/restore";
 import type { EventActor } from "../domain-events/emit";
@@ -22,9 +24,10 @@ import { deleteFieldDefinition } from "../field-definitions/delete";
 import { updateFieldDefinition } from "../field-definitions/update";
 import { createFolder } from "../folders/create";
 import { deleteFolders } from "../folders/delete";
+import { moveFolders } from "../folders/move";
 import { updateFolder } from "../folders/update";
-import { createLink } from "../links/create";
-import { invalidateLink } from "../links/invalidate";
+import { bulkCreateLinks } from "../links/bulk-create";
+import { invalidateLinks } from "../links/invalidate";
 import { installSkillFromCatalog } from "../skills/install-from-catalog";
 
 /**
@@ -89,6 +92,33 @@ const recordArg = (
   return v;
 };
 
+/**
+ * Read a list-shaped arg that may still arrive in its pre-batch singular
+ * form.
+ *
+ * An approval row outlives the deploy that created it: a grant clicked after
+ * `uploadToDrive` (or `manageDrive`'s moves and deletes) became batch may
+ * carry `path` / `fileId` / `folderId` / `documentId` from before it, and
+ * applying that grant as "no items" would silently do nothing while
+ * reporting success.
+ *
+ * Exported for its test — this compatibility is invisible until a deploy
+ * lands on a queue of pending approvals, which is exactly when nobody is
+ * looking.
+ */
+export const strListOrSingle = (
+  args: Record<string, unknown>,
+  listKey: string,
+  singleKey: string,
+): string[] => {
+  const list = args[listKey];
+  if (Array.isArray(list)) {
+    return list.filter((value): value is string => typeof value === "string");
+  }
+  const single = strOrNull(args, singleKey);
+  return single === null ? [] : [single];
+};
+
 const agentActor = (ctx: ToolCallApplyContext): EventActor => ({
   actorType: "agent",
   actorUserId: ctx.userId,
@@ -97,22 +127,63 @@ const agentActor = (ctx: ToolCallApplyContext): EventActor => ({
 
 // ---- manageLink -----------------------------------------------------------
 
+/**
+ * The edges a `link` grant writes: the `links` list, or the single edge a
+ * grant proposed before the tool became batch. Entries that are not three
+ * strings are dropped rather than handed to the service.
+ */
+const linkArgs = (
+  args: Record<string, unknown>,
+): { linkTypeId: string; fromRecordId: string; toRecordId: string }[] => {
+  const list = args.links;
+  if (!Array.isArray(list)) {
+    return [
+      {
+        linkTypeId: str(args, "linkTypeId"),
+        fromRecordId: str(args, "fromRecordId"),
+        toRecordId: str(args, "toRecordId"),
+      },
+    ];
+  }
+  return list.filter(isRecord).flatMap((edge) => {
+    const { linkTypeId, fromRecordId, toRecordId } = edge;
+    return typeof linkTypeId === "string" &&
+      typeof fromRecordId === "string" &&
+      typeof toRecordId === "string"
+      ? [{ linkTypeId, fromRecordId, toRecordId }]
+      : [];
+  });
+};
+
 const applyManageLink: ToolCallApplyFn = async (ctx, args) => {
   const actor = agentActor(ctx);
   const action = str(args, "action");
   if (action === "unlink") {
-    const link = await invalidateLink({ id: str(args, "linkId"), actor });
-    return { ok: true, unlinked: link.id };
+    const unlinked = await invalidateLinks({
+      ids: strListOrSingle(args, "linkIds", "linkId"),
+      actor,
+    });
+    return { ok: true, unlinked: unlinked.length };
   }
-  const link = await createLink({
+  const edges = linkArgs(args);
+  const { ids, errors } = await bulkCreateLinks({
     organizationId: ctx.organizationId,
     teamId: ctx.teamId,
-    linkTypeId: str(args, "linkTypeId"),
-    fromRecordId: str(args, "fromRecordId"),
-    toRecordId: str(args, "toRecordId"),
+    links: edges,
     actor,
   });
-  return { ok: true, linkId: link.id };
+  // Nothing written and something refused: the grant did not do what the
+  // card promised. (All no-ops is fine: the edges already exist.)
+  if (errors.length === edges.length && edges.length > 0) {
+    throw new Error(
+      errors[0]?.error ?? "manageLink: no edge could be written.",
+    );
+  }
+  return {
+    ok: errors.length === 0,
+    linked: ids.filter((id) => id !== null).length,
+    failed: errors,
+  };
 };
 
 // ---- manageDrive ----------------------------------------------------------
@@ -162,19 +233,37 @@ const applyManageDrive: ToolCallApplyFn = async (ctx, args) => {
     });
     return { ok: true, folder: { id: folder.id, name: folder.name } };
   }
+  // The batch actions read a list, or the singular id a grant proposed
+  // before they became batch (see `strListOrSingle`).
   if (action === "moveFolder") {
-    const folder = await updateFolder({
-      id: str(args, "folderId"),
+    const { moved, failed } = await moveFolders({
+      ids: strListOrSingle(args, "folderIds", "folderId"),
       teamId: ctx.teamId,
-      updates: { parentFolderId: strOrNull(args, "parentFolderId") },
+      parentFolderId: strOrNull(args, "parentFolderId"),
       actor,
     });
-    return { ok: true, folder: { id: folder.id, name: folder.name } };
+    // Nothing moved: the grant did not do what the card promised.
+    if (moved.length === 0) {
+      throw new Error(failed[0]?.reason ?? "moveFolder: no folders to move.");
+    }
+    return { ok: failed.length === 0, folders: moved, failed };
   }
   if (action === "deleteFolder") {
-    const folderId = str(args, "folderId");
-    await deleteFolders({ ids: [folderId], teamId: ctx.teamId, actor });
-    return { ok: true, deleted: true, folderId };
+    // Only the folders that still exist: one deleted meanwhile must not turn
+    // the whole grant into a 404 (`deleteFolders` is all-or-nothing).
+    const requested = strListOrSingle(args, "folderIds", "folderId");
+    if (requested.length === 0) {
+      throw new Error("deleteFolder: no folders named.");
+    }
+    const existing = await db.query.folders.findMany({
+      columns: { id: true },
+      where: { id: { in: requested }, teamId: ctx.teamId },
+    });
+    const ids = existing.map((f) => f.id);
+    if (ids.length > 0) {
+      await deleteFolders({ ids, teamId: ctx.teamId, actor });
+    }
+    return { ok: true, deleted: true, deletedFolderIds: ids };
   }
   if (action === "renameDocument") {
     const documentId = str(args, "documentId");
@@ -192,18 +281,23 @@ const applyManageDrive: ToolCallApplyFn = async (ctx, args) => {
       },
     };
   }
-  // moveDocument — the fall-through, so every action ABOVE must be handled
-  // explicitly: an unmatched one would silently move the document to the root.
-  const documentId = str(args, "documentId");
-  const doc = await updateDocument({
-    id: documentId,
+  if (action !== "moveDocument") {
+    // Every action above returns; an unknown one must not fall into a move.
+    throw new Error(`manageDrive: unknown action "${action}"`);
+  }
+  const { moved, unchanged, failed } = await moveDocuments({
+    ids: strListOrSingle(args, "documentIds", "documentId"),
     teamId: ctx.teamId,
-    organizationId: ctx.organizationId,
-    updates: { folderId: strOrNull(args, "parentFolderId") },
+    folderId: strOrNull(args, "parentFolderId"),
   });
+  if (moved.length === 0 && unchanged.length === 0) {
+    throw new Error("moveDocument: none of these documents exists any more.");
+  }
   return {
-    ok: true,
-    document: { id: doc?.id ?? documentId },
+    ok: failed.length === 0,
+    moved: moved.length,
+    alreadyThere: unchanged.length,
+    failed,
   };
 };
 
@@ -277,32 +371,6 @@ const applyManageDocument: ToolCallApplyFn = async (ctx, args) => {
 };
 
 // ---- uploadToDrive --------------------------------------------------------
-
-/**
- * Read a list-shaped arg that may still arrive in its pre-batch singular
- * form.
- *
- * An approval row outlives the deploy that created it: a grant clicked after
- * `uploadToDrive` became batch may carry `path` / `fileId` from before it,
- * and applying that grant as "no files" would silently save nothing while
- * reporting success.
- *
- * Exported for its test — this compatibility is invisible until a deploy
- * lands on a queue of pending approvals, which is exactly when nobody is
- * looking.
- */
-export const strListOrSingle = (
-  args: Record<string, unknown>,
-  listKey: string,
-  singleKey: string,
-): string[] => {
-  const list = args[listKey];
-  if (Array.isArray(list)) {
-    return list.filter((value): value is string => typeof value === "string");
-  }
-  const single = strOrNull(args, singleKey);
-  return single === null ? [] : [single];
-};
 
 const applyUploadToDrive: ToolCallApplyFn = async (ctx, args) => {
   // Two sources, both able to appear in one grant: `paths` are files the agent

@@ -22,10 +22,24 @@ Users say "I sent you the file" without distinguishing a conversation attachment
 
 ## Drive features worth using proactively
 
-- **Filing** — `listFolders` / `manageDrive`: create, rename and move folders, and move or rename the documents inside them. When uploads pile up unfiled, propose a structure that mirrors how the team thinks (by client, by year, by process), then file them.
+- **Filing** — `listFolders` / `manageDrive`: create, rename and move folders, and move or rename the documents inside them. When uploads pile up unfiled, propose a structure that mirrors how the team thinks (by client, by year, by process), then file them (§ Tidying a Drive).
+- **Search inside a folder** — `searchKnowledge` `filters.folderId` covers the folder and its sub-folders, no id listing needed.
 - **Document fields** — each document's extracted metadata lives on its mirror record; teams configure which fields via their document template. `listDocuments` filters on them.
 - **Document-triggered workflows** — an `event: document.uploaded` workflow (optionally filtered to one folder) processes every new arrival: the "drop it in this folder and everything happens" pattern users love.
 - **Entity linking** — documents auto-link to the records they mention, so "show me everything about client X" spans records AND paperwork.
+
+## A folder's description files new documents
+
+A file saved from a conversation or workflow with no folder (`uploadToDrive` without `parentFolderId`, or "save to Drive") is filed after processing into the folder whose description fits, else left at the root; the user can undo it. Never filed: direct uploads by a person, documents already in the Drive, `manageDocument` writes (pass `folderId`). So don't offer to "file new documents from now on": only direct uploads need an `event: document.uploaded` workflow. The filer reads only the path and the description, so write descriptions that tell sibling folders apart ("Signed client contracts and their amendments", not "Contracts").
+
+## Tidying a Drive
+
+Do it in the conversation, whatever the volume:
+
+1. Map: `listFolders`; `listDocuments { folderId: null }` for the unfiled root (past a few hundred documents, one `querySql` over `documents` / `folders`).
+2. Propose the structure, then create the folders WITH descriptions so later saves land in them.
+3. One `manageDrive moveDocument` per destination with all its `documentIds`.
+4. Report `moved` and every `failed` item.
 
 ## Traps
 

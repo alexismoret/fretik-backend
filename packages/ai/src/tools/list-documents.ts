@@ -35,7 +35,7 @@ export const createListDocumentsTool = () =>
       "",
       "Filters:",
       "- search: substring match on the original filename (case-insensitive).",
-      "- folderId: restrict to a single folder.",
+      "- folderId: restrict to a single folder (null = Drive root only).",
       "- status: processing status ('ready' for usable docs).",
       "- entityIds: any-of match on linked organizations (record ids the document mentions).",
       "- customFilters: equality on the team's configured dynamic fields. Each entry is `{ fieldKey, value }`. Field keys (`document_type`, `category`, `invoice_number`, …) come from the team's field definitions and are visible on each returned document's `fieldValues` map. AND semantics across entries.",
@@ -52,8 +52,8 @@ export const createListDocumentsTool = () =>
       folderId: z
         .string()
         .uuid()
-        .optional()
-        .describe("Restrict results to a single folder id"),
+        .nullish()
+        .describe("Restrict results to a single folder id (null = root only)"),
       status: z
         .enum(documentStatusEnum.enumValues)
         .optional()

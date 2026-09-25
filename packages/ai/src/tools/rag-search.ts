@@ -2,6 +2,7 @@ import {
   AI_VECTOR_SOURCE_TYPES,
   type AiVectorSourceType,
 } from "@fretik/shared/db/schema";
+import { listFolderDocumentIds } from "@fretik/shared/services/folders/document-ids";
 import { tool } from "ai";
 import { z } from "zod";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
@@ -9,7 +10,7 @@ import {
   maybePersistLargeOutput,
   RAG_THRESHOLD_CHARS,
 } from "../lib/persisted-output";
-import { TOOL_ERROR_CODES } from "../lib/tool-error-codes";
+import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
 import { searchRAG } from "../services/search";
 
 /**
@@ -67,8 +68,36 @@ const MEMORY_ONLY_SOURCE_TYPES = new Set<AiVectorSourceType>([
   "episodes",
 ]);
 
+/**
+ * Documents a folder-scoped search may filter on. The ids go into the same
+ * `IN (…)` as `sourceIds`; past this a folder is a Drive section, not a
+ * scope, and the agent is steered to a sub-folder.
+ */
+const MAX_FOLDER_DOCUMENTS = 5_000;
+
 const isMemoryOnlySearch = (types: AiVectorSourceType[]): boolean =>
   types.length > 0 && types.every((t) => MEMORY_ONLY_SOURCE_TYPES.has(t));
+
+/**
+ * The filters `searchRAG` receives. A folder scope, once resolved to its
+ * document ids, REPLACES `sourceIds` (the caller already intersected them)
+ * and pins the search to documents, the only thing that lives in folders.
+ * Exported for its test.
+ */
+export const effectiveSearchFilters = (
+  filters: { sourceIds?: string[] } | undefined,
+  validTypes: AiVectorSourceType[],
+  folderIds: string[] | undefined,
+): { sourceTypes?: AiVectorSourceType[]; sourceIds?: string[] } | undefined => {
+  if (!filters) return undefined;
+  if (folderIds !== undefined) {
+    return { sourceIds: folderIds, sourceTypes: ["documents"] };
+  }
+  return {
+    sourceIds: filters.sourceIds,
+    sourceTypes: validTypes.length > 0 ? validTypes : undefined,
+  };
+};
 
 export const createRagSearchTool = () =>
   tool({
@@ -79,7 +108,7 @@ export const createRagSearchTool = () =>
       "",
       "- `question` must be natural language. Put ids in `filters.sourceIds`, never in the question.",
       "- `filters.sourceTypes` (optional): defaults to all. `workflows` and `pages` answer whether something that already does this exists — search them before proposing to build one, since the user asks for the outcome, not for a workflow or a dashboard.",
-      "- `filters.sourceIds` (optional): narrow to specific row UUIDs (e.g. from `listDocuments`) — the way to search INSIDE one or a few known documents. This tool takes no structural filters (type, date, folder) directly; pre-select ids with `listDocuments` first.",
+      "- `filters.sourceIds` (optional): narrow to specific row UUIDs (e.g. from `listDocuments`) — the way to search INSIDE one or a few known documents. `filters.folderId`: one Drive folder and its sub-folders. Other structural filters (type, date): pre-select ids with `listDocuments` first.",
     ].join("\n"),
     inputSchema: z.object({
       question: z
@@ -104,6 +133,7 @@ export const createRagSearchTool = () =>
             .describe(
               "Narrow to specific row UUIDs pre-selected via listDocuments. Max 100 ids per call.",
             ),
+          folderId: z.uuid().optional(),
         })
         .optional(),
     }),
@@ -121,14 +151,50 @@ export const createRagSearchTool = () =>
       const validTypes: AiVectorSourceType[] =
         requestedTypes.filter(isSourceType);
       const droppedTypes = requestedTypes.filter((t) => !isSourceType(t));
-      const effectiveFilters:
-        | { sourceTypes?: AiVectorSourceType[]; sourceIds?: string[] }
-        | undefined = filters
-        ? {
-            sourceIds: filters.sourceIds,
-            sourceTypes: validTypes.length > 0 ? validTypes : undefined,
-          }
-        : undefined;
+      // A folder scope becomes the documents under it, resolved now from
+      // `documents.folder_id` rather than stored on the vectors: a folder is
+      // where a document sits TODAY, and a copy on every chunk would be stale
+      // after the next move. Intersected with `sourceIds` when both are given.
+      let folderIds: string[] | undefined;
+      if (filters?.folderId) {
+        const scope = await listFolderDocumentIds({
+          teamId: ctx.teamId,
+          folderId: filters.folderId,
+          limit: MAX_FOLDER_DOCUMENTS,
+        });
+        if (!scope.found) {
+          return toolError(
+            TOOL_ERROR_CODES.NOT_FOUND,
+            `Folder ${filters.folderId} not found for this team.`,
+            "List folders with `listFolders` to get a valid id.",
+          );
+        }
+        if (scope.truncated) {
+          return toolError(
+            TOOL_ERROR_CODES.RAG_ERROR,
+            `This folder holds more than ${MAX_FOLDER_DOCUMENTS.toString()} documents.`,
+            "Search a sub-folder (`listFolders`), or drop folderId to search the whole Drive.",
+          );
+        }
+        const requested = filters.sourceIds;
+        folderIds = requested
+          ? scope.documentIds.filter((id) => requested.includes(id))
+          : scope.documentIds;
+        if (folderIds.length === 0) {
+          return {
+            results: [],
+            notice: requested
+              ? "None of these sourceIds is in this folder."
+              : "This folder and its sub-folders hold no documents.",
+          };
+        }
+      }
+
+      const effectiveFilters = effectiveSearchFilters(
+        filters,
+        validTypes,
+        folderIds,
+      );
       const sourceTypeNotice =
         droppedTypes.length > 0
           ? `Ignored unsupported sourceType(s): ${droppedTypes.join(", ")}. Supported: ${AI_VECTOR_SOURCE_TYPES.join(", ")}.`

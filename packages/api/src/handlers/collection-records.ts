@@ -57,7 +57,11 @@ import {
 } from "@fretik/shared/services/collection-records/retrieve";
 import { setRecordStatus } from "@fretik/shared/services/collection-records/set-status";
 import { setRecordData } from "@fretik/shared/services/collection-records/update";
-import { assertCanWriteRecord } from "@fretik/shared/services/collection-sharing/write-access";
+import { assertCanReadRecord } from "@fretik/shared/services/collection-sharing/read-access";
+import {
+  assertCanWriteRecord,
+  assertCanWriteType,
+} from "@fretik/shared/services/collection-sharing/write-access";
 import { getRecordHistory } from "@fretik/shared/services/domain-events/history";
 import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 import { z } from "zod";
@@ -480,7 +484,11 @@ collectionRecordRoutes.openapi(getRoute, async (c) => {
   const team = c.get("team");
   if (!team) return c.json(teamRequired(), 403);
   const { id } = c.req.valid("param");
-  const record = await getCollectionRecord({ id });
+  const record = await getCollectionRecord({
+    id,
+    teamId: team.id,
+    organizationId: team.organizationId,
+  });
   return c.json(record, 200);
 });
 
@@ -489,6 +497,13 @@ collectionRecordRoutes.openapi(historyRoute, async (c) => {
   if (!team) return c.json(teamRequired(), 403);
   const { id } = c.req.valid("param");
   const { cursor, limit } = c.req.valid("query");
+  // The journal service reads by record id alone (operators and the graph
+  // fold use it across teams), so the reading team is checked here.
+  await assertCanReadRecord({
+    recordId: id,
+    teamId: team.id,
+    organizationId: team.organizationId,
+  });
   const history = await getRecordHistory({
     recordId: id,
     ...(cursor ? { cursor } : {}),
@@ -502,6 +517,13 @@ collectionRecordRoutes.openapi(createRouteDef, async (c) => {
   if (!team) return c.json(teamRequired(), 403);
   const user = c.get("user");
   const body = c.req.valid("json");
+  // The collection comes from the body: it must be one this team may write
+  // records into (its own, an org-level one, or one granted with `write`).
+  await assertCanWriteType({
+    collectionId: body.collectionId,
+    teamId: team.id,
+    organizationId: team.organizationId,
+  });
   const created = await createCollectionRecord({
     organizationId: team.organizationId,
     teamId: team.id,
@@ -579,6 +601,11 @@ collectionRecordRoutes.openapi(bulkWriteRoute, async (c) => {
   const actor = { actorType: "user" as const, actorUserId: user.id };
 
   if (body.op === "create") {
+    await assertCanWriteType({
+      collectionId: body.collectionId,
+      teamId: team.id,
+      organizationId: team.organizationId,
+    });
     const result = await bulkCreateCollectionRecords({
       organizationId: team.organizationId,
       teamId: team.id,

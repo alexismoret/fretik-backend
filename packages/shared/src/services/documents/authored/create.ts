@@ -5,6 +5,7 @@ import { documentVersions, type Document } from "../../../db/schema/documents";
 import { buildDocumentOriginalKey } from "../../../lib/document-storage";
 import { uploadToS3 } from "../../../lib/s3";
 import type { EventActor } from "../../domain-events/emit";
+import { assertFolderInTeam } from "../../folders/assert-in-team";
 import { syncDocumentGraph } from "../sync-document-graph";
 import { createDocumentRecord } from "../upload";
 import { scheduleDocumentVectorRefresh } from "../vector-refresh-queue";
@@ -69,6 +70,10 @@ export const createAuthoredDocument = async (args: {
     folderId = null,
     actorContext,
   } = args;
+
+  // Refuse a foreign folder before the bytes are written, not only at the
+  // insert (`createDocumentRecord` checks again) — no orphan object on S3.
+  await assertFolderInTeam({ folderId, teamId });
 
   const documentId = randomUUIDv7();
   const originalFilename = titleToFilename(args.title);

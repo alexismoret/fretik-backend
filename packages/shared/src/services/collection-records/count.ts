@@ -28,11 +28,7 @@ export const countRecordsForType = async (input: {
     eq(collectionRecords.collectionId, input.collectionId),
     eq(collectionRecords.status, "confirmed"),
   ];
-  const visibility = recordVisibilityCondition({
-    teamId: input.teamId,
-    scope,
-  });
-  if (visibility) conditions.push(visibility);
+  conditions.push(recordVisibilityCondition({ teamId: input.teamId, scope }));
 
   const [row] = await db
     .select({ total: count() })

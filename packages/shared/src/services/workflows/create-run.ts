@@ -16,6 +16,7 @@ import { completeConversationTask } from "../conversation-tasks/complete";
 import { registerConversationTask } from "../conversation-tasks/register";
 import { attachRunFiles, type RunAttachment } from "./attach-run-files";
 import { finalizeRun } from "./finalize-run";
+import { assertWorkflowOwnerPresent } from "./owner-presence";
 import { sendRunCompletionEmailIfEnabled } from "./send-run-completion-email";
 import { serializeWorkflowRun } from "./serialize";
 
@@ -91,6 +92,9 @@ export const createWorkflowRun = async (params: {
       consume: true,
     });
   };
+
+  // A private workflow acts as its owner — who must still be in the team.
+  await assertWorkflowOwnerPresent(workflow);
 
   // Team workflows act as the team bot; user-scoped workflows act as their
   // owner. This identity feeds the sandbox JWT, journal attribution, and

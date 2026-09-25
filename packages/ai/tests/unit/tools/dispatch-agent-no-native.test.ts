@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { dispatchAgentInputSchema } from "../../../src/tools/dispatch-agent";
+import {
+  dispatchAgentInputSchema,
+  subAgentCallOptions,
+} from "../../../src/tools/dispatch-agent";
 
 /**
  * C5 guard — sub-agents receive only the `task` string, never the parent
@@ -34,5 +37,42 @@ describe("dispatchAgent excludes native media (C5)", () => {
     const task = "describe what the chart on page 2 shows";
     const messages = [{ role: "user" as const, content: task }];
     expect(typeof messages[0]?.content).toBe("string");
+  });
+});
+
+/**
+ * A sub-agent runs the parent's tools, so it must run them under the parent's
+ * RULES. The call options used to carry identity only: the team's tool
+ * policies stayed behind, a tool the team had blocked reappeared one level
+ * down, and an approval-gated write ran unasked.
+ */
+describe("dispatchAgent inherits the parent's rules", () => {
+  const parent: Parameters<typeof subAgentCallOptions>[0] = {
+    organizationId: "org-1",
+    teamId: "team-1",
+    userId: "user-1",
+    conversationId: "conv-1",
+    traceId: "trace-1",
+    workflowAutonomy: "approval_required",
+    toolPolicies: { manageRecord: "approval", webSearch: "blocked" },
+  };
+
+  test("the team's tool policies travel with the sub-agent", () => {
+    expect(subAgentCallOptions(parent, "sub").toolPolicies).toEqual({
+      manageRecord: "approval",
+      webSearch: "blocked",
+    });
+  });
+
+  test("identity, the run's write gate and the trace are carried too", () => {
+    const options = subAgentCallOptions(parent, "sub-cheap");
+    expect(options).toMatchObject({
+      organizationId: "org-1",
+      teamId: "team-1",
+      userId: "user-1",
+      conversationId: "conv-1",
+      workflowAutonomy: "approval_required",
+      traceId: "trace-1.sub-cheap",
+    });
   });
 });

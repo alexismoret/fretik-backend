@@ -33,6 +33,11 @@ export const deleteDocuments = async (data: {
     },
     where: { id: { in: ids }, teamId },
   });
+  // Every statement below works on THESE ids — the ones the team owns — and
+  // never on the caller's list. An id of another team is skipped, exactly as
+  // if it did not exist: the pre-read above is the authorization, so a write
+  // that went back to `ids` would delete whatever the caller named.
+  const ownedIds = existingDocuments.map((d) => d.id);
 
   // Prepare to decrement parent's documentCount
   const folderIdsCountMap: Record<string, number> = {};
@@ -51,7 +56,7 @@ export const deleteDocuments = async (data: {
   // version not pointing at its document's live original key — that one is
   // already accounted for by `documents.fileSize`.
   const versionRows =
-    ids.length > 0
+    ownedIds.length > 0
       ? await db.query.documentVersions.findMany({
           columns: {
             documentId: true,
@@ -59,7 +64,7 @@ export const deleteDocuments = async (data: {
             fileSize: true,
             fileHash: true,
           },
-          where: { documentId: { in: ids }, teamId },
+          where: { documentId: { in: ownedIds }, teamId },
         })
       : [];
   const originalKeyById = new Map(
@@ -87,7 +92,7 @@ export const deleteDocuments = async (data: {
     // fileless "Document" orphan. Same tx, so both commit or neither does.
     const mirrorIds = [
       ...(
-        await resolveDocumentRecordIds({ documentIds: ids, teamId, tx })
+        await resolveDocumentRecordIds({ documentIds: ownedIds, teamId, tx })
       ).values(),
     ];
     if (mirrorIds.length > 0) {
@@ -118,14 +123,16 @@ export const deleteDocuments = async (data: {
     // Delete documents
     const deleteRes = await tx
       .delete(documents)
-      .where(inArray(documents.id, ids));
+      .where(
+        and(inArray(documents.id, ownedIds), eq(documents.teamId, teamId)),
+      );
 
     // Delete vectors
     await tx
       .delete(aiVectors)
       .where(
         and(
-          inArray(aiVectors.sourceId, ids),
+          inArray(aiVectors.sourceId, ownedIds),
           eq(aiVectors.sourceType, "documents"),
           eq(aiVectors.teamId, teamId),
         ),

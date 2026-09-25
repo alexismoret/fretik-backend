@@ -7,6 +7,7 @@ import type { UpdateDocumentInput } from "../../schemas/documents";
 import { setRecordData } from "../collection-records/update";
 import { readRecordData } from "../collection-schema/record-io";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
+import { assertFolderInTeam } from "../folders/assert-in-team";
 import { labelFilingOnMove } from "../folders/label-filing-move";
 import { scheduleDocumentVectorRefresh } from "./vector-refresh-queue";
 
@@ -61,11 +62,14 @@ export const updateDocument = async (data: {
   }
 
   // `folderId` is optional: absent means "not a move". Compared bare, a
-  // rename read as a move to `undefined` and decremented the folder's
-  // `documentCount` for a document that never left it.
+  // rename read as a move to `undefined` and adjusted both folders' counts
+  // while the row itself stayed put.
   const folderHasChanged =
     updates.folderId !== undefined &&
     existingDocument.folderId !== updates.folderId;
+  if (folderHasChanged) {
+    await assertFolderInTeam({ folderId: updates.folderId, teamId });
+  }
   const originalFilename = keepFileExtension(
     existingDocument.originalFilename,
     updates.originalFilename,

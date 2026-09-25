@@ -38,9 +38,10 @@ export const MEMBER_ROLE_CACHE_TTL = 15 * 60;
  * for TS narrowing in handlers.
  *
  * Lookup is Redis-cached under `memberRoleCacheKey` so the typical
- * cost is a single Redis GET per request. Cache invalidation happens
- * on the Better Auth side when a member's role changes (organisation
- * write hooks call `deleteKeysByPrefix('organization:{orgId}:')`).
+ * cost is a single Redis GET per request. The Better Auth organization hooks
+ * drop the entry when a member's role changes or the member is removed
+ * (`invalidateMemberRoleCache`); the TTL is only the backstop for the paths
+ * that fire no hook.
  */
 export const assertOrgAdmin = async (data: {
   userId: string;
@@ -67,6 +68,18 @@ export const assertOrgAdmin = async (data: {
       forbidden(data.message ?? "This action requires admin or owner role"),
     );
   }
+};
+
+/**
+ * Drop one member's cached organization role. Call AFTER the change commits —
+ * a demoted admin must lose admin rights on their next request, not after the
+ * TTL (`assertOrgAdmin` reads this cache on every gated write).
+ */
+export const invalidateMemberRoleCache = async (
+  organizationId: string,
+  userId: string,
+): Promise<void> => {
+  await redis.del(memberRoleCacheKey(organizationId, userId));
 };
 
 /**

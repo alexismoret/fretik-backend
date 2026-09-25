@@ -3935,6 +3935,20 @@ chatbotInternalRoutes.post("/invoke", async (c) => {
    * evals, where nobody is watching a spinner and the cost shows up only on
    * the bill.
    */
+  // The context headers are trusted — this route sits behind the internal
+  // key — but a conversation named in the body is still checked against them:
+  // a caller that mixes up one id must fail, not replay another team's history
+  // under this team's identity.
+  if (conversationId) {
+    const conversation = await db.query.aiConversations.findFirst({
+      columns: { id: true },
+      where: { id: conversationId, teamId: context.teamId },
+    });
+    if (!conversation) {
+      return throwHttpError(404, notFound("Conversation not found"));
+    }
+  }
+
   const window = conversationId ? await loadAgentWindow(conversationId) : null;
   const history: UIMessage[] = window ? window.messages : messages;
   // Read rather than defaulted to `[]`: an empty cast is one the reader's

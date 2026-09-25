@@ -1,8 +1,9 @@
-import { and, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import db, { type Executor, type Transaction } from "../../db";
 import type { OntologySource, OntologyStatus } from "../../db/schema";
 import { collectionRecords, links, linkTypes } from "../../db/schema";
 import { chunkForBulk, DB_BULK_CHUNK_SIZE } from "../../lib/db-bulk";
+import { recordReadableCondition } from "../collection-sharing/access";
 import { type EventActor, SYSTEM_ACTOR } from "../domain-events/emit";
 import { emitDomainEventsBulk } from "../domain-events/emit-bulk";
 
@@ -71,6 +72,15 @@ export const bulkCreateLinks = async (input: {
   if (input.links.length === 0) return { ids, errors };
 
   // Two grouped reads — every referenced link type + every referenced record.
+  //
+  // Both are pinned to the caller's world. A link type must belong to the
+  // organization, and BOTH ends must be records `teamId` may read: an edge is
+  // shown in full from either end (label, neighbours, history), so an edge to
+  // a record the team cannot see would publish that record to it — and write
+  // into the history of a team that never touched it. Every system caller
+  // (the document fold, relation extraction, page operations) links records of
+  // its own team, so the rule costs them nothing; an end that fails it reads
+  // exactly like one that does not exist.
   const linkTypeIds = [...new Set(input.links.map((l) => l.linkTypeId))];
   const recordIds = [
     ...new Set(input.links.flatMap((l) => [l.fromRecordId, l.toRecordId])),
@@ -83,14 +93,24 @@ export const bulkCreateLinks = async (input: {
       isTemporal: linkTypes.isTemporal,
     })
     .from(linkTypes)
-    .where(inArray(linkTypes.id, linkTypeIds));
+    .where(
+      and(
+        inArray(linkTypes.id, linkTypeIds),
+        eq(linkTypes.organizationId, input.organizationId),
+      ),
+    );
   const recordRows = await reader
     .select({
       id: collectionRecords.id,
       collectionId: collectionRecords.collectionId,
     })
     .from(collectionRecords)
-    .where(inArray(collectionRecords.id, recordIds));
+    .where(
+      and(
+        inArray(collectionRecords.id, recordIds),
+        recordReadableCondition(input.teamId, input.organizationId),
+      ),
+    );
   const linkTypeById = new Map(linkTypeRows.map((r) => [r.id, r]));
   const typeByRecord = new Map(recordRows.map((r) => [r.id, r.collectionId]));
 

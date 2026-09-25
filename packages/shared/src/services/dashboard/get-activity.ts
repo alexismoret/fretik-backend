@@ -46,9 +46,15 @@ const asString = (value: unknown): string | null =>
  */
 export const getDashboardActivity = async (data: {
   teamId: string;
+  /**
+   * The reader. Run events of a workflow private to someone else are left
+   * out — same rule as the "needs attention" card — and so are run events of
+   * a workflow that no longer exists, whose privacy can no longer be known.
+   */
+  userId: string;
   limit?: number;
 }): Promise<{ items: DashboardActivityItem[] }> => {
-  const { teamId } = data;
+  const { teamId, userId } = data;
   const limit = data.limit ?? DEFAULT_LIMIT;
   const typeList = sql.join(
     DISPLAY_EVENT_TYPES.map((type) => sql`${type}`),
@@ -87,6 +93,10 @@ export const getDashboardActivity = async (data: {
         OR de.type LIKE 'connector.%'
         OR de.type LIKE 'workflow.%'
         OR de.type LIKE 'trigger.%'
+      )
+      AND (
+        de.payload->>'workflowId' IS NULL
+        OR (w.id IS NOT NULL AND (w.user_id IS NULL OR w.user_id = ${userId}))
       )
     ORDER BY de.id DESC
     LIMIT ${limit}

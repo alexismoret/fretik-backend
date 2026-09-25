@@ -435,8 +435,12 @@ const toRecordMetadata = (
  * row keeps that id and a re-save of the same id converges via upsert —
  * transcript ids are then identical on the wire, in DB, and after reload,
  * which is what lets the frontend rehydrate without remounting anything.
- * The conflict guard is scoped to the same conversation so a colliding id
- * from another conversation can never be overwritten.
+ *
+ * The id of a `user` message comes from the client, so the conflict guard is
+ * what stops an upsert from being an overwrite of SOMEONE ELSE's row. A re-save
+ * converges only onto a row of the same conversation, the same role and the
+ * same author: another participant's message, or an assistant reply, sent back
+ * under its id matches nothing and is dropped (the row comes back `undefined`).
  */
 export const saveMessage = async (data: {
   conversationId: string;
@@ -468,7 +472,9 @@ export const saveMessage = async (data: {
         metadata: sql`excluded.metadata`,
         turnId: sql`excluded.turn_id`,
       },
-      setWhere: sql`${aiMessages.conversationId} = excluded.conversation_id`,
+      setWhere: sql`${aiMessages.conversationId} = excluded.conversation_id
+        AND ${aiMessages.role} = excluded.role
+        AND ${aiMessages.authorId} IS NOT DISTINCT FROM excluded.author_id`,
     })
     .returning();
 

@@ -142,8 +142,15 @@ describe("after a complete walk", () => {
     // `markRecordsPending` stamps `synced_at = now()`, so a row queued BEFORE
     // the walk starts is older than its boundary and a row queued during it is
     // not. The first was evaluated by this walk; the second was not.
+    //
+    // The boundary is a `Date` — MILLISECONDS — while `now()` stamps
+    // microseconds. Read in the same millisecond as P1's stamp, it truncates
+    // to before it and P1 lands after the boundary (CI, 2026-09-24). So each
+    // step waits for the clock to leave the previous one's millisecond.
     await markRecordsPending(h.source.id, [p1]);
+    await Bun.sleep(2);
     const startedAt = await dbNow();
+    await Bun.sleep(2);
     await markRecordsPending(h.source.id, [p2]);
 
     await runColumnsWalk({

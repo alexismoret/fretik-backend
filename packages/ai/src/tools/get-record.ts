@@ -33,7 +33,11 @@ export const createGetRecordTool = () =>
 
       let record: Awaited<ReturnType<typeof getCollectionRecord>>;
       try {
-        record = await getCollectionRecord({ id });
+        record = await getCollectionRecord({
+          id,
+          teamId: ctx.teamId,
+          organizationId: ctx.organizationId,
+        });
       } catch {
         // getCollectionRecord throws 404 when absent — surface as a clean not-found.
         return toolError(

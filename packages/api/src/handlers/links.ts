@@ -14,7 +14,10 @@ import {
   linkResponseSchema,
   recordLinksResponseSchema,
 } from "@fretik/shared/schemas/ontology";
-import { assertCanWriteRecord } from "@fretik/shared/services/collection-sharing/write-access";
+import {
+  assertCanWriteLink,
+  assertCanWriteRecord,
+} from "@fretik/shared/services/collection-sharing/write-access";
 import { createLink } from "@fretik/shared/services/links/create";
 import { invalidateLink } from "@fretik/shared/services/links/invalidate";
 import { listLinksForRecord } from "@fretik/shared/services/links/retrieve";
@@ -88,7 +91,11 @@ linkRoutes.openapi(listRoute, async (c) => {
   const team = c.get("team");
   if (!team) return c.json(teamRequired(), 403);
   const { recordId } = c.req.valid("query");
-  const links = await listLinksForRecord({ recordId });
+  const links = await listLinksForRecord({
+    recordId,
+    teamId: team.id,
+    organizationId: team.organizationId,
+  });
   return c.json(links, 200);
 });
 
@@ -118,8 +125,19 @@ linkRoutes.openapi(createRouteDef, async (c) => {
 linkRoutes.openapi(deleteRouteDef, async (c) => {
   const team = c.get("team");
   if (!team) return c.json(teamRequired(), 403);
+  const user = c.get("user");
   const { id } = c.req.valid("param");
-  const invalidated = await invalidateLink({ id });
+  // `invalidateLink` works by id alone (the graph fold supersedes edges as a
+  // system caller); a person needs the right to write the edge's source.
+  await assertCanWriteLink({
+    linkId: id,
+    teamId: team.id,
+    organizationId: team.organizationId,
+  });
+  const invalidated = await invalidateLink({
+    id,
+    actor: { actorType: "user", actorUserId: user.id },
+  });
   return c.json(invalidated, 200);
 });
 

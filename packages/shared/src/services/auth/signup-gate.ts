@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, gt } from "drizzle-orm";
 
 import db from "../../db";
 import {
@@ -10,59 +10,70 @@ import {
 /**
  * Closed-beta sign-up gate. Self-serve registration is restricted while the
  * product is in beta: a user may only create an account if their email has a
- * pending organization invitation (handled by `hasPendingInvitation`) OR is
+ * pending organization invitation (`findSignupInvitation`) OR is
  * explicitly authorised — by email (`signup_allowlist`) or by domain
  * (`signup_allowed_domains`). Both are managed by super-admins from the admin
  * pages. Consumed by the `databaseHooks.user.create.before` hook in `auth.ts`.
  */
 
 /**
- * True when a pending invitation exists for this email. Used both to gate
- * sign-up and to auto-verify invited users (they proved email ownership by
- * clicking the emailed link).
+ * The header the invitation page sends on sign-up: the id of the invitation
+ * whose link the person followed. The id is the one secret the invitation
+ * email delivers, so presenting it is what proves the person reads that inbox.
  */
-export const hasPendingInvitation = async (email: string): Promise<boolean> => {
-  const normalized = email.trim().toLowerCase();
-  if (!normalized) return false;
+export const SIGNUP_INVITATION_HEADER = "x-fretik-invitation-id";
 
-  const rows = await db
-    .select({ id: invitation.id })
-    .from(invitation)
-    .where(
-      and(eq(invitation.email, normalized), eq(invitation.status, "pending")),
-    )
-    .limit(1);
-
-  return rows.length > 0;
+export type SignupInvitation = {
+  /** The team the invitation joins first — the new account's UI language. */
+  teamId: string | null;
+  /**
+   * Whether the sign-up presented THIS invitation's id. Only then may the
+   * account skip email verification: a pending invitation merely EXISTING for
+   * an address says nothing about who is typing it, and auto-verifying on that
+   * alone let anyone register an invited address before its owner did — and
+   * then accept the invitation as them.
+   */
+  ownershipProven: boolean;
 };
 
 /**
- * The team id of this email's pending invitation, if any. Used by the
- * `user.create.before` hook so an invited user inherits their team's UI
- * language at account creation. Returns null when there is no pending
- * invitation or it is an org-level invitation with no team.
+ * The pending, unexpired invitation behind a sign-up, if the address has one.
+ * An invited address may register during the closed beta even without the
+ * link; it then verifies its email like any other sign-up.
  */
-export const getPendingInvitationTeamId = async (
-  email: string,
-): Promise<string | null> => {
-  const normalized = email.trim().toLowerCase();
+export const findSignupInvitation = async (params: {
+  email: string;
+  /** The id presented with the sign-up (`SIGNUP_INVITATION_HEADER`), if any. */
+  invitationId: string | null;
+}): Promise<SignupInvitation | null> => {
+  const normalized = params.email.trim().toLowerCase();
   if (!normalized) return null;
 
   const rows = await db
-    .select({ teamId: invitation.teamId })
+    .select({ id: invitation.id, teamId: invitation.teamId })
     .from(invitation)
     .where(
-      and(eq(invitation.email, normalized), eq(invitation.status, "pending")),
-    )
-    .limit(1);
+      and(
+        eq(invitation.email, normalized),
+        eq(invitation.status, "pending"),
+        gt(invitation.expiresAt, new Date()),
+      ),
+    );
+  if (rows.length === 0) return null;
 
-  return rows[0]?.teamId ?? null;
+  const presented = rows.find((row) => row.id === params.invitationId);
+  const chosen = presented ?? rows[0];
+  return {
+    // Better Auth stores a multi-team invitation as a comma-joined list.
+    teamId: chosen?.teamId?.split(",")[0] ?? null,
+    ownershipProven: presented !== undefined,
+  };
 };
 
 /**
  * True when the email may create an account during the closed beta: it is on
  * the per-email allowlist OR its domain is on the allowed-domains list.
- * Invitation-based access is handled separately by `hasPendingInvitation`.
+ * Invitation-based access is handled separately by `findSignupInvitation`.
  */
 export const isEmailAllowlisted = async (email: string): Promise<boolean> => {
   const normalized = email.trim().toLowerCase();

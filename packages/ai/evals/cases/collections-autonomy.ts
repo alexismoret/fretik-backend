@@ -316,7 +316,11 @@ const partialUpdate: EvalCase = {
           );
         const id = rows[0]?.id;
         if (!id) return "contact record not found after run";
-        const rec = await getCollectionRecord({ id });
+        const rec = await getCollectionRecord({
+          id,
+          teamId: ctx.teamId,
+          organizationId: ctx.organizationId,
+        });
         if (rec.data.phone !== NEW_PHONE)
           return `phone not updated: ${JSON.stringify(rec.data)}`;
         if (rec.data.city !== "Paris")
@@ -439,7 +443,13 @@ const richCreate: EvalCase = {
           );
         const id = rows[0]?.id;
         if (!id) return "account record not found after run";
-        const d = (await getCollectionRecord({ id })).data;
+        const d = (
+          await getCollectionRecord({
+            id,
+            teamId: ctx.teamId,
+            organizationId: ctx.organizationId,
+          })
+        ).data;
         const fail = (m: string) => `${m} — got ${JSON.stringify(d)}`;
         // select: a human label ("Gold") must land on the option value.
         if (d.tier !== "gold") return fail("tier not coerced to 'gold'");
@@ -610,7 +620,13 @@ const bulkCsvImport: EvalCase = {
           );
         const id = ada[0]?.id;
         if (!id) return "Ada Lovelace not found";
-        const d = (await getCollectionRecord({ id })).data;
+        const d = (
+          await getCollectionRecord({
+            id,
+            teamId: ctx.teamId,
+            organizationId: ctx.organizationId,
+          })
+        ).data;
         if (d.plan !== "pro")
           return `plan not coerced to option value: ${JSON.stringify(d)}`;
         if (d.signup_date !== "2025-01-04")
@@ -805,7 +821,13 @@ const locationCreate: EvalCase = {
           );
         const id = rows[0]?.id;
         if (!id) return "place record not found after run";
-        const d = (await getCollectionRecord({ id })).data;
+        const d = (
+          await getCollectionRecord({
+            id,
+            teamId: ctx.teamId,
+            organizationId: ctx.organizationId,
+          })
+        ).data;
         const loc = d.location;
         const address =
           typeof loc === "object" && loc !== null
@@ -945,7 +967,13 @@ const formulaMargin: EvalCase = {
           );
         const id = rows[0]?.id;
         if (!id) return "alpha record not found after run";
-        const value = (await getCollectionRecord({ id })).data[margin.key];
+        const value = (
+          await getCollectionRecord({
+            id,
+            teamId: ctx.teamId,
+            organizationId: ctx.organizationId,
+          })
+        ).data[margin.key];
         if (value !== 600)
           return `margin computed as ${JSON.stringify(value)}, expected the number 600`;
         // What the user actually asked for: the SERVER orders on it. A column
@@ -1035,7 +1063,13 @@ const formulaReadOnly: EvalCase = {
           );
         const id = rows[0]?.id;
         if (!id) return "alpha record not found after run";
-        const d = (await getCollectionRecord({ id })).data;
+        const d = (
+          await getCollectionRecord({
+            id,
+            teamId: ctx.teamId,
+            organizationId: ctx.organizationId,
+          })
+        ).data;
         if (d.margin !== 600)
           return `margin is ${JSON.stringify(d.margin)} — the computed column was corrupted`;
         if (d.revenue !== 1000 || d.cost !== 400)
@@ -1370,7 +1404,13 @@ const syncColumnRefused: EvalCase = {
           );
         const id = rows[0]?.id;
         if (!id) return "EV-1001 not found after run";
-        const data = (await getCollectionRecord({ id })).data;
+        const data = (
+          await getCollectionRecord({
+            id,
+            teamId: ctx.teamId,
+            organizationId: ctx.organizationId,
+          })
+        ).data;
         if (data.amount !== 1200) {
           return `amount is ${JSON.stringify(data.amount)} — a synced column was overwritten`;
         }

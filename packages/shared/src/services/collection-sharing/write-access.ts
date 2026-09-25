@@ -1,6 +1,7 @@
 import { and, eq, isNull, or, sql } from "drizzle-orm";
 import db, { type Executor } from "../../db";
 import { collectionGrants, recordShares } from "../../db/schema";
+import { assertOrgAdmin } from "../../lib/auth-roles";
 import { forbidden, notFound, throwHttpError } from "../../lib/errors";
 
 /**
@@ -19,6 +20,13 @@ import { forbidden, notFound, throwHttpError } from "../../lib/errors";
  *     (team-scoped or org-wide) or, for a record, a `write`-permission SHARE on
  *     that record.
  * Anything cross-organization is `404` (never disclosed as existing).
+ *
+ * STRUCTURE is not data. A write grant opens a type's RECORDS, never its shape:
+ * renaming, disabling or deleting the type, and adding or changing its fields,
+ * stay with the team that owns it (`assertCanManageType`,
+ * `assertCanEditTypeFields`, `assertCanWriteField`). An org-level type holds
+ * every team's records, so changing the type itself is an org admin's call —
+ * deleting one cascades the records of teams that never agreed to it.
  */
 
 /** A `write` type grant to `teamId` (team-scoped or org-wide) exists. */
@@ -151,27 +159,146 @@ export const assertCanWriteRecord = async (input: {
   return throwHttpError(403, forbidden("No write access to this record"));
 };
 
+/** The type row the structural checks below all start from. */
+const findTypeInOrganization = async (input: {
+  collectionId: string;
+  organizationId: string;
+  exec: Executor;
+}): Promise<{ teamId: string | null }> => {
+  const type = await input.exec.query.collections.findFirst({
+    columns: { teamId: true, organizationId: true },
+    where: { id: input.collectionId },
+  });
+  if (!type || type.organizationId !== input.organizationId) {
+    return throwHttpError(404, notFound("Collection not found"));
+  }
+  return { teamId: type.teamId };
+};
+
 /**
- * Assert `teamId` may write the field definition `fieldDefinitionId` — resolves
- * the field to its owning type and delegates to `assertCanWriteType`. `404` if
- * the field is missing or cross-org.
+ * Assert the caller may change the TYPE itself — rename, disable, re-index,
+ * delete. The owning team may; an org-level type takes an org admin; another
+ * team's type is refused whatever grant it carries.
+ */
+export const assertCanManageType = async (input: {
+  collectionId: string;
+  teamId: string;
+  organizationId: string;
+  /** Undefined for a caller with no person behind it (a team workflow). */
+  userId: string | undefined;
+  tx?: Executor;
+}): Promise<void> => {
+  const type = await findTypeInOrganization({
+    collectionId: input.collectionId,
+    organizationId: input.organizationId,
+    exec: input.tx ?? db,
+  });
+  if (type.teamId === input.teamId) return;
+  if (type.teamId === null) {
+    if (input.userId === undefined) {
+      return throwHttpError(
+        403,
+        forbidden("Only an organization admin can change this collection"),
+      );
+    }
+    return assertOrgAdmin({
+      userId: input.userId,
+      organizationId: input.organizationId,
+      message: "Only an organization admin can change this collection",
+    });
+  }
+  return throwHttpError(
+    403,
+    forbidden("Only the team that owns this collection can change it"),
+  );
+};
+
+/**
+ * Assert `teamId` may add or edit ITS OWN field definitions on the type: its
+ * own type, or an org-level type (whose field rows are per team). Another
+ * team's type is refused even with a write grant — the field row would belong
+ * to the grantee, and the owner's reads would never show it.
+ */
+export const assertCanEditTypeFields = async (input: {
+  collectionId: string;
+  teamId: string;
+  organizationId: string;
+  tx?: Executor;
+}): Promise<void> => {
+  const type = await findTypeInOrganization({
+    collectionId: input.collectionId,
+    organizationId: input.organizationId,
+    exec: input.tx ?? db,
+  });
+  if (type.teamId === null || type.teamId === input.teamId) return;
+  return throwHttpError(
+    403,
+    forbidden("Only the team that owns this collection can change its fields"),
+  );
+};
+
+/**
+ * Assert the caller may change or delete the field definition
+ * `fieldDefinitionId`. A team's own row, on a type it may edit fields of; an
+ * org template (`team_id IS NULL`) for an org admin only — the same gate that
+ * creating one has. Another team's definition is refused: on an org-level type
+ * every team has its own rows, and deleting one with `cascade` drops that
+ * team's data. `404` if the field is missing or cross-org.
  */
 export const assertCanWriteField = async (input: {
   fieldDefinitionId: string;
   teamId: string;
   organizationId: string;
+  userId: string;
   tx?: Executor;
 }): Promise<void> => {
   const exec = input.tx ?? db;
   const field = await exec.query.fieldDefinitions.findFirst({
-    columns: { collectionId: true, organizationId: true },
+    columns: { collectionId: true, organizationId: true, teamId: true },
     where: { id: input.fieldDefinitionId },
   });
   if (!field || field.organizationId !== input.organizationId) {
     return throwHttpError(404, notFound("Field definition not found"));
   }
-  return assertCanWriteType({
+  if (field.teamId === null) {
+    return assertOrgAdmin({
+      userId: input.userId,
+      organizationId: input.organizationId,
+      message: "Only an organization admin can change an organization field",
+    });
+  }
+  if (field.teamId !== input.teamId) {
+    return throwHttpError(403, forbidden("This field belongs to another team"));
+  }
+  return assertCanEditTypeFields({
     collectionId: field.collectionId,
+    teamId: input.teamId,
+    organizationId: input.organizationId,
+    tx: exec,
+  });
+};
+
+/**
+ * Assert `teamId` may invalidate the edge `linkId`: the same right it needs to
+ * create one — write access to the record the edge starts from. `404` if the
+ * edge is missing or cross-org.
+ */
+export const assertCanWriteLink = async (input: {
+  linkId: string;
+  teamId: string;
+  organizationId: string;
+  tx?: Executor;
+}): Promise<void> => {
+  const exec = input.tx ?? db;
+  const link = await exec.query.links.findFirst({
+    columns: { fromRecordId: true, organizationId: true },
+    where: { id: input.linkId },
+  });
+  if (!link || link.organizationId !== input.organizationId) {
+    return throwHttpError(404, notFound("Link not found"));
+  }
+  return assertCanWriteRecord({
+    recordId: link.fromRecordId,
     teamId: input.teamId,
     organizationId: input.organizationId,
     tx: exec,

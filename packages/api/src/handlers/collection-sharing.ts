@@ -101,14 +101,24 @@ collectionSharingRoutes.openapi(listTypeGrantsRoute, async (c) => {
   const team = c.get("team");
   if (!team) return c.json(teamRequired(), 403);
   const { id } = c.req.valid("param");
-  return c.json(await listTypeGrants(id), 200);
+  const grants = await listTypeGrants({
+    collectionId: id,
+    ownerTeamId: team.id,
+    organizationId: team.organizationId,
+  });
+  return c.json(grants, 200);
 });
 
 collectionSharingRoutes.openapi(listRecordSharesRoute, async (c) => {
   const team = c.get("team");
   if (!team) return c.json(teamRequired(), 403);
   const { id } = c.req.valid("param");
-  return c.json(await listRecordShares(id), 200);
+  const shares = await listRecordShares({
+    recordId: id,
+    ownerTeamId: team.id,
+    organizationId: team.organizationId,
+  });
+  return c.json(shares, 200);
 });
 
 collectionSharingRoutes.openapi(sharedTypesRoute, async (c) => {

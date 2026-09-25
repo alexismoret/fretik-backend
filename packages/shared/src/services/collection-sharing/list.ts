@@ -21,10 +21,17 @@ export type GranteeEntry = {
   permission: CollectionPermission;
 };
 
-/** Grants on a type, with grantee team names (null = org-wide). Owner's view. */
-export const listTypeGrants = async (
-  collectionId: string,
-): Promise<GranteeEntry[]> =>
+/**
+ * Grants on a type, with grantee team names (null = org-wide). The OWNER's
+ * view: only grants `ownerTeamId` made are returned, so a caller naming
+ * another team's type — or another organization's — gets an empty list, never
+ * that team's audience.
+ */
+export const listTypeGrants = async (input: {
+  collectionId: string;
+  ownerTeamId: string;
+  organizationId: string;
+}): Promise<GranteeEntry[]> =>
   db
     .select({
       id: collectionGrants.id,
@@ -34,12 +41,23 @@ export const listTypeGrants = async (
     })
     .from(collectionGrants)
     .leftJoin(team, eq(team.id, collectionGrants.granteeTeamId))
-    .where(eq(collectionGrants.collectionId, collectionId));
+    .where(
+      and(
+        eq(collectionGrants.collectionId, input.collectionId),
+        eq(collectionGrants.ownerTeamId, input.ownerTeamId),
+        eq(collectionGrants.organizationId, input.organizationId),
+      ),
+    );
 
-/** Shares on a record, with grantee team names (null = org-wide). Owner's view. */
-export const listRecordShares = async (
-  recordId: string,
-): Promise<GranteeEntry[]> =>
+/**
+ * Shares on a record, with grantee team names (null = org-wide). The OWNER's
+ * view, scoped like `listTypeGrants`.
+ */
+export const listRecordShares = async (input: {
+  recordId: string;
+  ownerTeamId: string;
+  organizationId: string;
+}): Promise<GranteeEntry[]> =>
   db
     .select({
       id: recordShares.id,
@@ -49,7 +67,13 @@ export const listRecordShares = async (
     })
     .from(recordShares)
     .leftJoin(team, eq(team.id, recordShares.granteeTeamId))
-    .where(eq(recordShares.recordId, recordId));
+    .where(
+      and(
+        eq(recordShares.recordId, input.recordId),
+        eq(recordShares.ownerTeamId, input.ownerTeamId),
+        eq(recordShares.organizationId, input.organizationId),
+      ),
+    );
 
 /**
  * Sharing state of a team's collections, in two sets for the index page:

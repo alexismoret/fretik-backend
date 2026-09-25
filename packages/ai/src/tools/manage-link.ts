@@ -1,6 +1,9 @@
 import { resolveDocumentRecordId } from "@fretik/shared/services/collection-records/resolve-document-record";
 import { getCollectionRecord } from "@fretik/shared/services/collection-records/retrieve";
-import { assertCanWriteRecord } from "@fretik/shared/services/collection-sharing/write-access";
+import {
+  assertCanWriteLink,
+  assertCanWriteRecord,
+} from "@fretik/shared/services/collection-sharing/write-access";
 import type { EventActor } from "@fretik/shared/services/domain-events/emit";
 import { resolveLinkType } from "@fretik/shared/services/link-types/match";
 import { createLink } from "@fretik/shared/services/links/create";
@@ -69,6 +72,12 @@ export const createManageLinkTool = () =>
               "unlink requires linkId.",
             );
           }
+          // Same right as creating the edge: write access to its source.
+          await assertCanWriteLink({
+            linkId: input.linkId,
+            teamId: ctx.teamId,
+            organizationId: ctx.organizationId,
+          });
           const gate = await gateBuiltinWriteTool(ctx, {
             toolName: "manageLink",
             args: { action: "unlink", linkId: input.linkId },
@@ -102,7 +111,11 @@ export const createManageLinkTool = () =>
           organizationId: ctx.organizationId,
         });
 
-        const fromRecord = await getCollectionRecord({ id: fromRecordId });
+        const fromRecord = await getCollectionRecord({
+          id: fromRecordId,
+          teamId: ctx.teamId,
+          organizationId: ctx.organizationId,
+        });
         const { linkTypeId } = await resolveLinkType({
           organizationId: ctx.organizationId,
           teamId: ctx.teamId,

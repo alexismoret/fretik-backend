@@ -5,7 +5,7 @@ import {
   fieldConfigSchema,
   fieldDefinitionTypeSchema,
 } from "@fretik/shared/schemas/field-definitions";
-import { assertCanWriteType } from "@fretik/shared/services/collection-sharing/write-access";
+import { assertCanManageType } from "@fretik/shared/services/collection-sharing/write-access";
 import { COLLECTION_LIMITS } from "@fretik/shared/services/collections/constants";
 import { createCollection } from "@fretik/shared/services/collections/create";
 import { createCollectionWithFields } from "@fretik/shared/services/collections/create-with-fields";
@@ -224,11 +224,13 @@ export const createManageCollectionTool = () =>
           );
         }
 
-        // Owner team or a write grant — never mutate another team's type.
-        await assertCanWriteType({
+        // The type itself is its owner's to change — an org-level one takes an
+        // org admin — whatever write grant covers its records.
+        await assertCanManageType({
           collectionId,
           teamId: ctx.teamId,
           organizationId: ctx.organizationId,
+          userId: ctx.userId,
         });
 
         if (input.action === "delete") {

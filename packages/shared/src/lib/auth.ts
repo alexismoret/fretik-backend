@@ -40,6 +40,7 @@ import {
   onTeamCreated,
 } from "./auth-membership";
 import { passkeyOptions } from "./auth-passkey";
+import { openLastWorkspace, rememberSessionWorkspace } from "./auth-workspace";
 import { sendEmail } from "./email";
 import { redis } from "./redis";
 
@@ -253,12 +254,18 @@ const options = {
     },
     session: {
       create: {
+        // A new session opens where its person last worked.
+        before: (session) => openLastWorkspace(session),
         after: async (session) => {
           await recordAuthEvent("auth.sign_in", session.userId, {
             ip: session.ipAddress,
             userAgent: session.userAgent,
           });
         },
+      },
+      update: {
+        // ...which every move of a session remembers (`auth-workspace.ts`).
+        after: (session) => rememberSessionWorkspace(session),
       },
     },
   },

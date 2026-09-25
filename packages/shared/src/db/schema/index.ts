@@ -126,6 +126,9 @@ export * from "./pages";
 // Per-user sidebar pins (collections + pages kept one click away)
 export * from "./pins";
 
+// Where each person last worked, so a new session opens there
+export * from "./workspaces";
+
 // One-shot jobs that run once per deployed version, with their outcomes
 export * from "./release-tasks";
 

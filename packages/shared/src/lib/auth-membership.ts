@@ -10,6 +10,7 @@ import { bootstrapTeamWithBotUser } from "../services/auth/bot-user";
 import { duplicateOrgDefsToTeam } from "../services/field-definitions/duplicate-org-to-team";
 import { pauseWorkflowsOfDepartedMember } from "../services/workflows/owner-presence";
 import { scrubWorkflowNotificationRecipient } from "../services/workflows/scrub-notification-recipient";
+import { forgetWorkspace } from "../services/workspaces/last-workspace";
 import {
   invalidateOrgTeamMembershipCache,
   invalidateTeamMembershipCache,
@@ -94,6 +95,10 @@ export const onMemberLeftOrganization = async (input: {
   // Workflow notification recipients are jsonb userId lists (no FK).
   await bestEffort("notification recipients", () =>
     scrubWorkflowNotificationRecipient({ userId, organizationId }),
+  );
+  // Where they last worked, if it was here: nothing of it is theirs now.
+  await bestEffort("last workspace", () =>
+    forgetWorkspace({ userId, organizationId }),
   );
   // Their private workflows ran as them (`workflows/owner-presence.ts`).
   await bestEffort("departed owner workflows", async () => {

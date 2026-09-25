@@ -1,3 +1,5 @@
+import { requireCapability } from "@fretik/shared/authz/gates";
+import { access } from "@fretik/shared/authz/http";
 import {
   authMiddleware,
   type HonoLoggedAppType,
@@ -59,17 +61,30 @@ chatbotContextRoutes.use("*", authMiddleware);
  * ScopeKey shape the shared services expect. Team scope requires an
  * active team on the session — we fail fast instead of silently
  * routing to a null profile.
+ *
+ * Changing the TEAM's instructions or files is what the assistant reads for
+ * everyone in the team, so a `write` there takes `team.context.edit` (members
+ * by default, leads only when the organization says so). The user scope is
+ * the caller's own profile, which nobody else reads.
  */
-const buildScopeKey = (
+const buildScopeKey = async (
   c: Context<HonoLoggedAppType>,
   scope: "user" | "team",
-): ScopeKey => {
+  intent: "read" | "write",
+): Promise<ScopeKey> => {
   const user = c.get("user");
   const organization = c.get("organization");
   const team = c.get("team");
 
   if (scope === "team" && !team) {
     return throwHttpError(403, forbidden("No active team in session"));
+  }
+  if (scope === "team" && intent === "write") {
+    await requireCapability({
+      principal: c.get("principal"),
+      capability: "team.context.edit",
+      teamId: team?.id ?? null,
+    });
   }
 
   return {
@@ -87,6 +102,9 @@ const buildScopeKey = (
 const getProfileRoute = createRoute({
   method: "get",
   path: "/{scope}",
+  middleware: access.handler(
+    "User scope is the caller's own profile; team scope is the active team's, which its members read.",
+  ),
   summary: "Get the chatbot context profile for a scope",
   description:
     "Returns the current user or team context profile (instructions + files). The profile is lazily created on first write; an empty shell is returned when nothing has been saved yet.",
@@ -102,6 +120,9 @@ const getProfileRoute = createRoute({
 const updateInstructionsRoute = createRoute({
   method: "patch",
   path: "/{scope}",
+  middleware: access.handler(
+    "User scope is the caller's own profile; team scope takes team.context.edit (buildScopeKey).",
+  ),
   summary: "Upsert the context instructions for a scope",
   tags: ["ChatbotContext"],
   request: {
@@ -127,6 +148,9 @@ const updateInstructionsRoute = createRoute({
 const uploadFileRoute = createRoute({
   method: "post",
   path: "/{scope}/files",
+  middleware: access.handler(
+    "User scope is the caller's own profile; team scope takes team.context.edit (buildScopeKey).",
+  ),
   summary: "Upload a context file",
   description:
     "Uploads a single file into the scope's context profile. Max 15 MB. Supported types: PDF, DOCX, PPTX, XLSX, XLS, CSV, TXT, MD, JSON, PNG, JPEG, WebP.",
@@ -151,6 +175,9 @@ const uploadFileRoute = createRoute({
 const toggleEnabledRoute = createRoute({
   method: "patch",
   path: "/{scope}/files/{fileId}/enabled",
+  middleware: access.handler(
+    "User scope is the caller's own profile; team scope takes team.context.edit (buildScopeKey).",
+  ),
   summary: "Toggle the `enabled` flag on a context file",
   description:
     "At team scope any team member can flip this and the change applies to everybody. At user scope it is personal to the owner. Per-user overrides on team files live on `/mute`.",
@@ -175,6 +202,9 @@ const toggleEnabledRoute = createRoute({
 const muteFileRoute = createRoute({
   method: "patch",
   path: "/{scope}/files/{fileId}/mute",
+  middleware: access.session(
+    "A personal mute of a team file: it changes nothing for anyone else.",
+  ),
   summary: "Per-user mute override on a team-scope context file",
   description:
     "Lets a user disable a team-scope file for themselves only, without affecting other team members. Rejected for user-scope files.",
@@ -198,6 +228,9 @@ const muteFileRoute = createRoute({
 const muteProfileRoute = createRoute({
   method: "patch",
   path: "/{scope}/mute",
+  middleware: access.session(
+    "A personal mute of the team instructions: it changes nothing for anyone else.",
+  ),
   summary: "Per-user mute override on team instructions",
   description:
     "Lets a user opt out of the team's instructions for themselves only. Only valid on team scope.",
@@ -221,6 +254,9 @@ const muteProfileRoute = createRoute({
 const getFileContentRoute = createRoute({
   method: "get",
   path: "/{scope}/files/{fileId}/content",
+  middleware: access.handler(
+    "User scope is the caller's own profile; team scope is the active team's, which its members read.",
+  ),
   summary: "Preview the extracted content of a context file",
   tags: ["ChatbotContext"],
   request: { params: scopeAndFileIdParamSchema },
@@ -238,6 +274,9 @@ const getFileContentRoute = createRoute({
 const downloadFileRoute = createRoute({
   method: "get",
   path: "/{scope}/files/{fileId}/download",
+  middleware: access.handler(
+    "User scope is the caller's own profile; team scope is the active team's, which its members read.",
+  ),
   summary: "Get a presigned S3 URL to download the original file",
   tags: ["ChatbotContext"],
   request: { params: scopeAndFileIdParamSchema },
@@ -255,6 +294,9 @@ const downloadFileRoute = createRoute({
 const deleteFileRoute = createRoute({
   method: "delete",
   path: "/{scope}/files/{fileId}",
+  middleware: access.handler(
+    "User scope is the caller's own profile; team scope takes team.context.edit (buildScopeKey).",
+  ),
   summary: "Delete a context file",
   tags: ["ChatbotContext"],
   request: { params: scopeAndFileIdParamSchema },
@@ -272,7 +314,7 @@ const deleteFileRoute = createRoute({
 
 chatbotContextRoutes.openapi(getProfileRoute, async (c) => {
   const { scope } = c.req.valid("param");
-  const key = buildScopeKey(c, scope);
+  const key = await buildScopeKey(c, scope, "read");
   const response = await getContextProfile(key);
   return c.json(response, 200);
 });
@@ -280,7 +322,7 @@ chatbotContextRoutes.openapi(getProfileRoute, async (c) => {
 chatbotContextRoutes.openapi(updateInstructionsRoute, async (c) => {
   const { scope } = c.req.valid("param");
   const body = c.req.valid("json");
-  const key = buildScopeKey(c, scope);
+  const key = await buildScopeKey(c, scope, "write");
   const profile = await upsertContextInstructions({
     scope: key,
     instructions: body.instructions,
@@ -290,7 +332,7 @@ chatbotContextRoutes.openapi(updateInstructionsRoute, async (c) => {
 
 chatbotContextRoutes.openapi(uploadFileRoute, async (c) => {
   const { scope } = c.req.valid("param");
-  const key = buildScopeKey(c, scope);
+  const key = await buildScopeKey(c, scope, "write");
   const user = c.get("user");
   const body = c.req.valid("form");
   const uploaded = await uploadContextFile({
@@ -320,7 +362,7 @@ chatbotContextRoutes.openapi(uploadFileRoute, async (c) => {
 
 chatbotContextRoutes.openapi(toggleEnabledRoute, async (c) => {
   const { scope, fileId } = c.req.valid("param");
-  const key = buildScopeKey(c, scope);
+  const key = await buildScopeKey(c, scope, "write");
   const body = c.req.valid("json");
   await setContextFileEnabled({ fileId, scope: key, enabled: body.enabled });
   return c.json({ ok: true as const }, 200);
@@ -334,7 +376,7 @@ chatbotContextRoutes.openapi(muteFileRoute, async (c) => {
       message: "Personal mutes are only available on team scope.",
     });
   }
-  const key = buildScopeKey(c, scope);
+  const key = await buildScopeKey(c, scope, "read");
   const body = c.req.valid("json");
   // `scope === "team"` is enforced above, so `buildScopeKey` has filled the
   // team id in (it 403s when the session has no active team).
@@ -358,7 +400,7 @@ chatbotContextRoutes.openapi(muteProfileRoute, async (c) => {
       message: "Personal instruction mutes are only available on team scope.",
     });
   }
-  const key = buildScopeKey(c, scope);
+  const key = await buildScopeKey(c, scope, "read");
   const body = c.req.valid("json");
   const { profile } = await getContextProfile(key);
   if (!profile.id) {
@@ -375,7 +417,7 @@ chatbotContextRoutes.openapi(muteProfileRoute, async (c) => {
 
 chatbotContextRoutes.openapi(getFileContentRoute, async (c) => {
   const { scope, fileId } = c.req.valid("param");
-  const key = buildScopeKey(c, scope);
+  const key = await buildScopeKey(c, scope, "read");
   const { file, content } = await getContextFileContent({
     fileId,
     scope: key,
@@ -393,7 +435,7 @@ chatbotContextRoutes.openapi(getFileContentRoute, async (c) => {
 
 chatbotContextRoutes.openapi(downloadFileRoute, async (c) => {
   const { scope, fileId } = c.req.valid("param");
-  const key = buildScopeKey(c, scope);
+  const key = await buildScopeKey(c, scope, "read");
   const { file } = await getContextFileContent({ fileId, scope: key });
   // Signed as an attachment: the caller's only use for this URL is to save the
   // file, and the disposition is also what identifies it as a download to the
@@ -406,7 +448,7 @@ chatbotContextRoutes.openapi(downloadFileRoute, async (c) => {
 
 chatbotContextRoutes.openapi(deleteFileRoute, async (c) => {
   const { scope, fileId } = c.req.valid("param");
-  const key = buildScopeKey(c, scope);
+  const key = await buildScopeKey(c, scope, "write");
   await deleteContextFile({ fileId, scope: key });
   return c.json({ ok: true as const }, 200);
 });

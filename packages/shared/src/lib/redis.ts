@@ -33,9 +33,9 @@ redis.on("error", (err: unknown) => {
  *
  * NOT caching nullish is equally required, and it is why this is not simply
  * "cache everything". Every current caller returns nullish for "not found",
- * and in each one that absence is a decision with a lifetime: `assertOrgAdmin`
- * turns a missing member into a 403, `authMiddleware` turns a missing org or
- * team into a 404, and the registry clients return `null` after a failed HTTP
+ * and in each one that absence is a decision with a lifetime: `authMiddleware`
+ * turns a missing org or team into a 404 and a missing team membership into
+ * "no active team", and the registry clients return `null` after a failed HTTP
  * fetch. Storing those would pin a denial, a 404, or a registry outage for the
  * whole TTL — a user added to a team would stay locked out for 30 minutes.
  */

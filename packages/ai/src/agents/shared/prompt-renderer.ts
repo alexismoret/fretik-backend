@@ -12,15 +12,27 @@ import type { AgentRuntimeContext } from "./runtime-context";
 import type { RenderedAgentPrompt } from "./turn-context";
 
 /**
- * Dynamic-suffix note listing the tools the team disabled via tool-permission
- * settings — so the model can tell the user WHY it can't do something instead
- * of silently lacking the tool. Empty (byte-identical to today) when nothing is
- * blocked. Below the cache marker; the tools are already pruned from the menu.
+ * Dynamic-suffix note listing the tools withheld from this turn — so the model
+ * can tell the user WHY it can't do something instead of silently lacking the
+ * tool: the ones the team disabled via tool-permission settings, and the
+ * team's data for a writer outside the team. Empty (byte-identical to today)
+ * when nothing is withheld. Below the cache marker; the tools are already
+ * pruned from the menu.
  */
 const buildBlockedToolsNote = (ctx: AgentRuntimeContext): string => {
   const blocked = [...policyHiddenToolNames(ctx)];
-  if (blocked.length === 0) return "";
-  return `These tools are disabled by the team's permission settings and cannot be called: ${blocked.join(", ")}. If the user asks for one: ${TOOL_PERMISSIONS_REMEDIATION}`;
+  const lines: string[] = [];
+  if (blocked.length > 0) {
+    lines.push(
+      `These tools are disabled by the team's permission settings and cannot be called: ${blocked.join(", ")}. If the user asks for one: ${TOOL_PERMISSIONS_REMEDIATION}`,
+    );
+  }
+  if (ctx.outsideTeam === true) {
+    lines.push(
+      "The person writing is not one of this team's people: the team's collections, records and SQL, and its own instructions, files and notes, are not available in this chat. Work from the project and what was shared with them.",
+    );
+  }
+  return lines.join("\n");
 };
 
 /**
@@ -367,6 +379,31 @@ const formatDeferredToolList = (
  */
 
 /**
+ * The collaborative-conversation block: who takes part, and whether others
+ * read along. Empty for a chat nobody but its sender reads, so that prompt is
+ * byte-identical to the single-user case.
+ */
+const collaborationBlockFor = (ctx: AgentRuntimeContext): string => {
+  const hasParticipants =
+    ctx.participantsBlock !== undefined && ctx.participantsBlock.length > 0;
+  const lines: string[] = [];
+  if (hasParticipants) {
+    lines.push(
+      `This conversation is shared by several teammates:\n${ctx.participantsBlock}\n\nEach user message is prefixed with its sender in brackets — \`[Name]: …\`. Address people by name when it helps, and suggest @mentioning a teammate when their input is needed.`,
+    );
+  }
+  if (ctx.openToReaders === true) {
+    lines.push("People who do not take part can read this conversation too.");
+  }
+  if (hasParticipants || ctx.openToReaders === true) {
+    lines.push(
+      "Everyone here reads your answers: bring in a person's private material (their personal memory, files kept to them) only when they ask for it.",
+    );
+  }
+  return lines.join("\n\n");
+};
+
+/**
  * Build the chatbot system prompt for a given runtime context.
  *
  * `deferredTools` defaults to an empty set so callers can build the
@@ -443,13 +480,7 @@ export const buildChatbotSystemPrompt = async (
       ctx.externalAppsBlock && ctx.externalAppsBlock.length > 0
         ? ctx.externalAppsBlock
         : "_No external apps connected._",
-    // Collaborative-conversation block. Empty for solo conversations so the
-    // prompt is byte-identical to the single-user case; populated (roster +
-    // speaker-label instruction) once a second participant joins.
-    collaborationBlock:
-      ctx.participantsBlock && ctx.participantsBlock.length > 0
-        ? `This conversation is shared by several teammates:\n${ctx.participantsBlock}\n\nEach user message is prefixed with its sender in brackets — \`[Name]: …\`. Address people by name when it helps, and suggest @mentioning a teammate when their input is needed.`
-        : "",
+    collaborationBlock: collaborationBlockFor(ctx),
   };
   return {
     instructions: renderPrompt(prefix, variables),

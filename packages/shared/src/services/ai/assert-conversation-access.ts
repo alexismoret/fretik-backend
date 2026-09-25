@@ -1,58 +1,33 @@
-import db from "../../db";
-import { notFound, throwHttpError } from "../../lib/errors";
-import { isOrgAdmin } from "../organization/member-role";
-import { workflowVisibilityWhere } from "../workflows/visibility";
+import { type ResolvedResource, requireAccess } from "../../authz/access";
+import type { Principal } from "../../authz/principal";
+import type { AccessLevel } from "../../schemas/access";
 
 /**
- * Refuse (404) a conversation the caller may not open.
+ * Refuse a conversation the caller may not open at `level`.
  *
  * A conversation has one of two audiences, and being in its team is neither:
- *   - a CHAT belongs to its participants (`ai_conversation_members`). A solo
- *     chat is private to its author even from their teammates;
- *   - a WORKFLOW RUN has no participants. It belongs to whoever may see the
- *     workflow that produced it — the same rule as the run's own routes
- *     (`workflowVisibilityWhere`: team-shared, its owner, or an org admin).
+ *   - a CHAT belongs to its participants (`ai_conversation_members`: the
+ *     owner has full access, the others take part) — and, when it has been
+ *     opened to its team or project, can also be READ there;
+ *   - a WORKFLOW RUN has no participants. It is read by whoever may see the
+ *     workflow that produced it.
  *
- * The surfaces around a conversation — its attachments, the files its agent
- * produced — check this rather than the team alone. 404 in every refusal: a
- * conversation of another team, one the caller is not in, and one that does
- * not exist must read the same.
+ * Both are the access engine's rules (`authz/resources/conversation.ts`). The
+ * surfaces around a conversation — its attachments, the files its agent
+ * produced, its approvals — check this rather than the team alone. Reading
+ * takes `view`; adding to it (uploading, deleting a file) takes `use`. A
+ * conversation of another team, one the caller is not in and one that does not
+ * exist all answer 404; a reader who may not write gets a 403 that says why.
  */
-export const assertConversationAccess = async (params: {
+export const assertConversationAccess = (params: {
   conversationId: string;
-  teamId: string;
-  organizationId: string;
-  userId: string;
-}): Promise<void> => {
-  const { conversationId, teamId, userId } = params;
-  const refuse = (): never =>
-    throwHttpError(404, notFound("Conversation not found"));
-
-  const conversation = await db.query.aiConversations.findFirst({
-    columns: { agentType: true },
-    where: { id: conversationId, teamId },
+  principal: Principal;
+  level: AccessLevel;
+}): Promise<ResolvedResource> =>
+  requireAccess({
+    principal: params.principal,
+    type: "conversation",
+    id: params.conversationId,
+    required: params.level,
+    notFoundMessage: "Conversation not found",
   });
-  if (!conversation) return refuse();
-
-  if (conversation.agentType === "workflow") {
-    const run = await db.query.workflowRuns.findFirst({
-      columns: { id: true },
-      where: {
-        conversationId,
-        teamId,
-        workflow: workflowVisibilityWhere({
-          userId,
-          isAdmin: await isOrgAdmin(params.organizationId, userId),
-        }),
-      },
-    });
-    if (!run) return refuse();
-    return;
-  }
-
-  const membership = await db.query.aiConversationMembers.findFirst({
-    columns: { id: true },
-    where: { conversationId, userId },
-  });
-  if (!membership) return refuse();
-};

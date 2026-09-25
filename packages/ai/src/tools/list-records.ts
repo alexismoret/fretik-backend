@@ -3,6 +3,7 @@ import { listCollectionRecords } from "@fretik/shared/services/collection-record
 import { resolveCollectionId } from "@fretik/shared/services/collections/resolve";
 import { tool } from "ai";
 import { z } from "zod";
+import { actingDrive } from "../agents/shared/acting-principal";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
 import {
   DOMAIN_TOOL_THRESHOLD_CHARS,
@@ -82,11 +83,13 @@ export const createListRecordsTool = () =>
         );
       }
 
+      const drive = await actingDrive(ctx);
       let result: Awaited<ReturnType<typeof listCollectionRecords>>;
       try {
         result = await listCollectionRecords({
           teamId: ctx.teamId,
           collectionId,
+          drive,
           status,
           search,
           // The row offset, not a page number. `nextOffset` below advances by

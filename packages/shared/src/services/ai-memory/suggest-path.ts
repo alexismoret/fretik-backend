@@ -180,6 +180,14 @@ const ensureUnique = async (args: {
   return `${stem}-${Date.now().toString()}${ext}`;
 };
 
+/** One system prompt per namespace: what its notes are for. */
+const SUGGEST_PROMPTS: Record<AiMemoryScope, string> = {
+  team: "You are organising a TEAM-shared memory tree under /memories/team/. Suggest a SHORT relative path for a new note. Prefer existing folder conventions when relevant (e.g. vendors/<slug>.md, clients/<slug>.md, processes/<slug>.md, conventions.md). Use kebab-case slugs. Output ONLY the path (no leading slash, no /memories/team/ prefix), nothing else.",
+  project:
+    "You are organising a PROJECT-shared memory tree under /memories/project/. Suggest a SHORT relative path for a new note about this project. Prefer existing folder conventions when relevant (e.g. decisions.md, conventions.md, stakeholders/<slug>.md). Use kebab-case slugs. Output ONLY the path (no leading slash, no /memories/project/ prefix), nothing else.",
+  user: "You are organising a PRIVATE user memory tree under /memories/user/. Suggest a SHORT relative path for a new personal note (preferences, shortcuts, reminders). Use kebab-case slugs. Output ONLY the path (no leading slash, no /memories/user/ prefix), nothing else.",
+};
+
 /**
  * Call OpenRouter's chat-completions endpoint with a tight system
  * prompt that asks for a single path and nothing else. Returns the
@@ -203,10 +211,7 @@ const callOpenRouter = async (args: {
   // folder structure without bloating the prompt.
   const sample = args.existingPaths.slice(0, 30).join("\n  ") || "(none)";
 
-  const systemPrompt =
-    args.scope === "team"
-      ? "You are organising a TEAM-shared memory tree under /memories/team/. Suggest a SHORT relative path for a new note. Prefer existing folder conventions when relevant (e.g. vendors/<slug>.md, clients/<slug>.md, processes/<slug>.md, conventions.md). Use kebab-case slugs. Output ONLY the path (no leading slash, no /memories/team/ prefix), nothing else."
-      : "You are organising a PRIVATE user memory tree under /memories/user/. Suggest a SHORT relative path for a new personal note (preferences, shortcuts, reminders). Use kebab-case slugs. Output ONLY the path (no leading slash, no /memories/user/ prefix), nothing else.";
+  const systemPrompt = SUGGEST_PROMPTS[args.scope];
 
   const userPrompt = [
     "Existing paths in this namespace (for inspiration):",

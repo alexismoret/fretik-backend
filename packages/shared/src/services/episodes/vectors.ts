@@ -1,5 +1,5 @@
 import { and, eq, inArray } from "drizzle-orm";
-import db, { type Transaction } from "../../db";
+import db, { type Executor } from "../../db";
 import { aiVectors } from "../../db/schema";
 
 /**
@@ -21,7 +21,7 @@ import { aiVectors } from "../../db/schema";
  */
 export const deleteEpisodeVectors = async (
   episodeIds: string[],
-  tx?: Transaction,
+  tx?: Executor,
 ): Promise<void> => {
   if (episodeIds.length === 0) return;
   await (tx ?? db)

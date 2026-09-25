@@ -30,6 +30,7 @@
     "./db": "./src/db/index.ts",
     "./db/migrations": "./src/db/migrations.ts",
     "./db/schema": "./src/db/schema/index.ts",
+    "./authz/*": "./src/authz/*.ts",
     "./file-types": "./src/file-types/index.ts",
     "./file-types/*": "./src/file-types/*.ts",
     "./model-registry/*": "./src/model-registry/*.ts",

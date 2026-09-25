@@ -63,11 +63,13 @@ const parseArgs = (
 
 const main = async (): Promise<void> => {
   const [
+    { SYSTEM },
     { renderPage },
     { getPage },
     { evaluatePageDesign },
     { gatePageRender },
   ] = await Promise.all([
+    import("@fretik/shared/authz/system-principals"),
     import("@fretik/shared/services/pages/render/render-page"),
     import("@fretik/shared/services/pages/retrieve"),
     import("../src/services/page-review/evaluate"),
@@ -83,7 +85,11 @@ const main = async (): Promise<void> => {
   }
 
   for (const subject of subjects) {
-    const page = await getPage({ pageId: subject.pageId, teamId });
+    const page = await getPage({
+      pageId: subject.pageId,
+      teamId,
+      principal: SYSTEM.operatorScript,
+    });
     const compiled = page.definition.code.compiled;
     if (!compiled) {
       console.error(`\n### ${page.name} — no compiled code, skipped`);
@@ -94,6 +100,7 @@ const main = async (): Promise<void> => {
       definition: page.definition,
       teamId,
       userId: process.env.EVAL_USER_ID ?? null,
+      reader: SYSTEM.operatorScript,
       pageName: page.name,
     });
     if (render.degraded !== undefined || !render.mounted) {

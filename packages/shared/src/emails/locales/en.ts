@@ -49,6 +49,35 @@ export default {
     expiration: "This invitation expires on {{expiresAt}}.",
     ignore:
       "If you didn't expect this invitation, you can safely ignore this email.",
+    subjectItem: '{{inviterName}} shared "{{itemName}}" with you',
+    messageItem: {
+      view: '{{inviterName}} invited you to view "{{itemName}}" in {{organizationName}} on Fretik.',
+      use: '{{inviterName}} invited you to use "{{itemName}}" in {{organizationName}} on Fretik.',
+      takePart:
+        '{{inviterName}} invited you to take part in "{{itemName}}" in {{organizationName}} on Fretik.',
+      edit: '{{inviterName}} invited you to edit "{{itemName}}" in {{organizationName}} on Fretik.',
+      full: '{{inviterName}} gave you full access to "{{itemName}}" in {{organizationName}} on Fretik.',
+    },
+    itemLabel: "Shared with you: {{itemName}}",
+    guestLabel: "As a guest, you only see what is shared with you.",
+    ctaItem: "Accept and open",
+    existingAccount:
+      "You already have a Fretik account with this address: sign in to accept. {{organizationName}} will then appear in your workspace switcher, next to the workspaces you already have.",
+  },
+
+  sharedWithGuest: {
+    subject: '{{sharerName}} shared "{{resourceName}}" with you',
+    greeting: "Hello {{name}},",
+    intro: {
+      view: '{{sharerName}} shared "{{resourceName}}" with you in {{organizationName}}: you can view it.',
+      use: '{{sharerName}} shared "{{resourceName}}" with you in {{organizationName}}: you can use it.',
+      takePart:
+        '{{sharerName}} shared "{{resourceName}}" with you in {{organizationName}}: you can take part in it.',
+      edit: '{{sharerName}} shared "{{resourceName}}" with you in {{organizationName}}: you can edit it.',
+      full: '{{sharerName}} gave you full access to "{{resourceName}}" in {{organizationName}}.',
+    },
+    until: "Your access lasts until {{date}}.",
+    cta: "Open it",
   },
 
   chatbotFinished: {
@@ -155,5 +184,39 @@ export default {
     cta: "Review your security settings",
     notYou:
       "If this wasn't you, change your password right away and remove any passkey you don't recognize.",
+  },
+
+  accessRequest: {
+    subject: "{{requesterName}} asked for access to {{resourceName}}",
+    greeting: "Hello {{name}},",
+    intro: {
+      view: '{{requesterName}} asked to view "{{resourceName}}".',
+      use: '{{requesterName}} asked to use "{{resourceName}}".',
+      edit: '{{requesterName}} asked to edit "{{resourceName}}".',
+      full: '{{requesterName}} asked for full access to "{{resourceName}}".',
+    },
+    messageLabel: "Their note",
+    cta: "Review the request",
+    footnote:
+      "You receive this because you have full access to it: only people with full access can answer.",
+  },
+
+  accessRequestDecided: {
+    greeting: "Hello {{name}},",
+    approved: {
+      subject: "You now have access to {{resourceName}}",
+      intro: {
+        view: '{{deciderName}} gave you access to view "{{resourceName}}".',
+        use: '{{deciderName}} gave you access to use "{{resourceName}}".',
+        edit: '{{deciderName}} gave you access to edit "{{resourceName}}".',
+        full: '{{deciderName}} gave you full access to "{{resourceName}}".',
+      },
+      cta: "Open it",
+    },
+    denied: {
+      subject: "Your request for {{resourceName}} was declined",
+      intro:
+        '{{deciderName}} declined your request for more access to "{{resourceName}}".',
+    },
   },
 };

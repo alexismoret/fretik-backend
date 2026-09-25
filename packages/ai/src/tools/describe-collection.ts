@@ -7,6 +7,7 @@ import { appNameOf } from "@fretik/shared/services/collections/sync-provenance";
 import { getFieldDefinitionsForTeam } from "@fretik/shared/services/field-definitions/get-for-team";
 import { tool } from "ai";
 import { z } from "zod";
+import { actingDrive } from "../agents/shared/acting-principal";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
 import {
   maybePersistLargeOutput,
@@ -90,6 +91,7 @@ export const createDescribeCollectionTool = () =>
         recordCount = await countRecordsForType({
           collectionId: type.id,
           teamId: ctx.teamId,
+          drive: await actingDrive(ctx),
         });
       } catch {
         // Non-essential next to the schema — a failed count must not cost the

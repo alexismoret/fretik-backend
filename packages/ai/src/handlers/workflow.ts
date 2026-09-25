@@ -1,3 +1,5 @@
+import { access } from "@fretik/shared/authz/http";
+import { SYSTEM } from "@fretik/shared/authz/system-principals";
 import db from "@fretik/shared/db";
 import type { Workflow, WorkflowRun } from "@fretik/shared/db/schema";
 import {
@@ -25,6 +27,7 @@ import {
   forceSetConversationActiveStream,
 } from "@fretik/shared/services/ai/active-stream";
 import { approvalPendingId } from "@fretik/shared/services/ai/approval-pending";
+import { userWorksInTeam } from "@fretik/shared/services/ai/audience";
 import { saveMessage, saveMessages } from "@fretik/shared/services/ai/messages";
 import {
   endTurnLog,
@@ -380,6 +383,17 @@ const executeTurn = async (params: {
     throw new Error(`run ${run.id} has no conversation`);
   }
   const actingUserId = run.actingUserId ?? undefined;
+  // A restricted workflow runs as its owner, who may take part in a project
+  // of this team without being one of its people: the run then reads none of
+  // the team's own context, as their chats would not. The team's agent is
+  // always one of them.
+  const outsideTeam =
+    actingUserId !== undefined &&
+    !(await userWorksInTeam({
+      organizationId: run.organizationId,
+      teamId: run.teamId,
+      userId: actingUserId,
+    }));
   const traceId = randomUUIDv7();
 
   // Which model serves this run: the workflow's own pin → the team's flagship
@@ -470,6 +484,8 @@ const executeTurn = async (params: {
         organizationId: run.organizationId,
         teamId: run.teamId,
         userId: actingUserId,
+        ...(workflow.projectId ? { projectId: workflow.projectId } : {}),
+        outsideTeam,
         logPrefix,
       },
       // The memory surfaces ride turn 1's steering message and then replay
@@ -495,6 +511,8 @@ const executeTurn = async (params: {
           teamId: run.teamId,
           conversationId,
           actingUserId,
+          ...(workflow.projectId ? { projectId: workflow.projectId } : {}),
+          outsideTeam,
           workflowName: workflow.name,
           playbookGoal: workflow.playbook.goal,
           triggerPayload: run.triggerPayload,
@@ -535,6 +553,10 @@ const executeTurn = async (params: {
     teamId: run.teamId,
     userId: actingUserId,
     conversationId,
+    // A workflow of a project works in it: what it reads is the project's,
+    // and what it creates lands there (`actingPrincipal`).
+    ...(workflow.projectId ? { projectId: workflow.projectId } : {}),
+    outsideTeam,
     traceId,
     workflowRunId: run.id,
     workflowAutonomy: workflow.autonomy,
@@ -799,7 +821,10 @@ const executeTurn = async (params: {
   }
 
   // ---- Turn outcome ----
-  const fresh = await getWorkflowRunRow({ id: run.id });
+  const fresh = await getWorkflowRunRow({
+    id: run.id,
+    principal: SYSTEM.workflowEngine,
+  });
   const freshTasks = fresh?.taskStates ?? taskStates;
   const usage = addUsage(
     run.usage,
@@ -1028,12 +1053,20 @@ export const workflowTriggerRoutes = new OpenAPIHono();
 workflowTriggerRoutes.use("*", triggerCallbackMiddleware);
 
 /**
+ * Every route here is the workflow engine calling back (Trigger.dev, signed by
+ * `TRIGGER_CALLBACK_KEY`) about a run or a workflow it already holds.
+ */
+const ENGINE_CALLBACK = access.internal(
+  "Trigger.dev drives a run or a schedule it holds, signed with the callback key.",
+);
+
+/**
  * POST /internal/trigger/runs/:runId/turn — execute one turn. SSE response:
  * `heartbeat` every 10 s while the model loop runs, best-effort
  * `task-update` events on live transitions, then exactly one terminal
  * `result` event carrying the `WorkflowTurnResult`.
  */
-workflowTriggerRoutes.post("/runs/:runId/turn", async (c) => {
+workflowTriggerRoutes.post("/runs/:runId/turn", ENGINE_CALLBACK, async (c) => {
   const runId = c.req.param("runId");
   const parsed = WorkflowTurnRequestSchema.safeParse(await c.req.json());
   if (!parsed.success) {
@@ -1041,13 +1074,20 @@ workflowTriggerRoutes.post("/runs/:runId/turn", async (c) => {
   }
   const { turnIndex, wrapUp } = parsed.data;
 
-  const run = await getWorkflowRunRow({ id: runId });
+  // The engine's own call (`internalMiddleware`): it resolved the run from the
+  // trigger, and acts for nobody in particular — the turn itself then acts
+  // as the run's identity (`actingUserId`).
+  const run = await getWorkflowRunRow({
+    id: runId,
+    principal: SYSTEM.workflowEngine,
+  });
   if (!run) {
     return c.json({ code: "NOT_FOUND", message: "Run not found" }, 404);
   }
   const workflow = await getWorkflowRow({
     id: run.workflowId,
     teamId: run.teamId,
+    principal: SYSTEM.workflowEngine,
   });
   if (!workflow) {
     return c.json({ code: "NOT_FOUND", message: "Workflow not found" }, 404);
@@ -1249,7 +1289,7 @@ workflowTriggerRoutes.post("/runs/:runId/turn", async (c) => {
  * human wait and hands over where to pick up. It does NOT stay alive: on
  * self-hosted Trigger.dev a parked run would hold its workflow's concurrency
  * slot for the whole wait. */
-workflowTriggerRoutes.post("/runs/:runId/park", async (c) => {
+workflowTriggerRoutes.post("/runs/:runId/park", ENGINE_CALLBACK, async (c) => {
   const runId = c.req.param("runId");
   const parsed = WorkflowParkRequestSchema.safeParse(await c.req.json());
   if (!parsed.success) {
@@ -1275,33 +1315,37 @@ workflowTriggerRoutes.post("/runs/:runId/park", async (c) => {
 
 /** POST /internal/trigger/runs/:runId/finalize — terminal close from the
  * orchestrator (`onFailure`, deadline, approval timeout). Idempotent. */
-workflowTriggerRoutes.post("/runs/:runId/finalize", async (c) => {
-  const runId = c.req.param("runId");
-  const parsed = WorkflowFinalizeRequestSchema.safeParse(await c.req.json());
-  if (!parsed.success) {
-    return c.json({ code: "VALIDATION_ERROR", message: "Invalid body" }, 400);
-  }
-  const { transitioned } = await finalizeRun({
-    runId,
-    status: parsed.data.status,
-    error: parsed.data.error ?? null,
-  });
-  // Tell the launching chat for orchestrator-side terminal closes too
-  // (deadline, approval timeout, onFailure) — idempotent with the turn-close
-  // path.
-  void onWorkflowRunTerminal({ runId }).catch(() => undefined);
-  // Notification email (the service itself drops `canceled`) — only from the
-  // finalize that performed the transition. Fire-and-forget.
-  if (transitioned) {
-    void sendRunCompletionEmailIfEnabled({ runId }).catch(() => undefined);
-  }
-  // Orchestrator-side terminal failures (onFailure, deadline, approval timeout)
-  // feed the circuit breaker too.
-  if (parsed.data.status === "failed") {
-    void evaluateCircuitBreaker({ runId }).catch(() => undefined);
-  }
-  return c.json({ ok: true }, 200);
-});
+workflowTriggerRoutes.post(
+  "/runs/:runId/finalize",
+  ENGINE_CALLBACK,
+  async (c) => {
+    const runId = c.req.param("runId");
+    const parsed = WorkflowFinalizeRequestSchema.safeParse(await c.req.json());
+    if (!parsed.success) {
+      return c.json({ code: "VALIDATION_ERROR", message: "Invalid body" }, 400);
+    }
+    const { transitioned } = await finalizeRun({
+      runId,
+      status: parsed.data.status,
+      error: parsed.data.error ?? null,
+    });
+    // Tell the launching chat for orchestrator-side terminal closes too
+    // (deadline, approval timeout, onFailure) — idempotent with the turn-close
+    // path.
+    void onWorkflowRunTerminal({ runId }).catch(() => undefined);
+    // Notification email (the service itself drops `canceled`) — only from the
+    // finalize that performed the transition. Fire-and-forget.
+    if (transitioned) {
+      void sendRunCompletionEmailIfEnabled({ runId }).catch(() => undefined);
+    }
+    // Orchestrator-side terminal failures (onFailure, deadline, approval timeout)
+    // feed the circuit breaker too.
+    if (parsed.data.status === "failed") {
+      void evaluateCircuitBreaker({ runId }).catch(() => undefined);
+    }
+    return c.json({ ok: true }, 200);
+  },
+);
 
 /**
  * POST /internal/trigger/workflows/:workflowId/cron-fire — the shared
@@ -1310,30 +1354,34 @@ workflowTriggerRoutes.post("/runs/:runId/finalize", async (c) => {
  * ACTIVE with a cron trigger, and a run already queued/running for it skips
  * (an hour-long run must not stack hourly duplicates).
  */
-workflowTriggerRoutes.post("/workflows/:workflowId/cron-fire", async (c) => {
-  const workflowId = c.req.param("workflowId");
-  const workflow = await db.query.workflows.findFirst({
-    where: { id: workflowId },
-  });
-  if (!workflow) {
-    return c.json({ code: "NOT_FOUND", message: "Workflow not found" }, 404);
-  }
-  if (workflow.status !== "active" || workflow.triggerType !== "cron") {
-    return c.json({ fired: false, reason: "not-active-cron" }, 200);
-  }
-  const inFlight = await db.query.workflowRuns.findFirst({
-    where: {
-      workflowId,
-      status: { in: ["queued", "running", "needs_approval"] },
-    },
-    columns: { id: true },
-  });
-  if (inFlight) {
-    return c.json({ fired: false, reason: "run-in-flight" }, 200);
-  }
-  const run = await createWorkflowRun({
-    workflow,
-    triggerType: "cron",
-  });
-  return c.json({ fired: true, runId: run.id }, 200);
-});
+workflowTriggerRoutes.post(
+  "/workflows/:workflowId/cron-fire",
+  ENGINE_CALLBACK,
+  async (c) => {
+    const workflowId = c.req.param("workflowId");
+    const workflow = await db.query.workflows.findFirst({
+      where: { id: workflowId },
+    });
+    if (!workflow) {
+      return c.json({ code: "NOT_FOUND", message: "Workflow not found" }, 404);
+    }
+    if (workflow.status !== "active" || workflow.triggerType !== "cron") {
+      return c.json({ fired: false, reason: "not-active-cron" }, 200);
+    }
+    const inFlight = await db.query.workflowRuns.findFirst({
+      where: {
+        workflowId,
+        status: { in: ["queued", "running", "needs_approval"] },
+      },
+      columns: { id: true },
+    });
+    if (inFlight) {
+      return c.json({ fired: false, reason: "run-in-flight" }, 200);
+    }
+    const run = await createWorkflowRun({
+      workflow,
+      triggerType: "cron",
+    });
+    return c.json({ fired: true, runId: run.id }, 200);
+  },
+);

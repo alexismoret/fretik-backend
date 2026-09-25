@@ -1,3 +1,4 @@
+import { access } from "@fretik/shared/authz/http";
 import db from "@fretik/shared/db";
 import { modelAdminActions } from "@fretik/shared/db/schema";
 import {
@@ -510,6 +511,7 @@ const toFleetRow = (
 const listModelsRoute = createRoute({
   method: "get",
   path: "/models",
+  middleware: access.operator(),
   summary: "The whole model fleet, as the engine sees it (super-admin)",
   tags: ["Model admin"],
   request: {
@@ -572,6 +574,7 @@ modelAdminRoutes.openapi(listModelsRoute, async (c) => {
 const showModelRoute = createRoute({
   method: "get",
   path: "/models/{profileKey}",
+  middleware: access.operator(),
   summary: "One model: routing, policy, endpoints, quarantines (super-admin)",
   tags: ["Model admin"],
   request: { params: z.object({ profileKey: z.string() }) },
@@ -662,6 +665,7 @@ modelAdminRoutes.openapi(showModelRoute, async (c) => {
 const scorecardRoute = createRoute({
   method: "get",
   path: "/models/{profileKey}/scorecard",
+  middleware: access.operator(),
   summary: "The promotion aid for one model (super-admin)",
   tags: ["Model admin"],
   request: { params: z.object({ profileKey: z.string() }) },
@@ -787,6 +791,7 @@ modelAdminRoutes.openapi(scorecardRoute, async (c) => {
 const listAlertsRoute = createRoute({
   method: "get",
   path: "/alerts",
+  middleware: access.operator(),
   summary: "What the engine decided on its own (super-admin)",
   tags: ["Model admin"],
   request: {
@@ -857,6 +862,7 @@ modelAdminRoutes.openapi(listAlertsRoute, async (c) => {
 const auditRoute = createRoute({
   method: "get",
   path: "/audit",
+  middleware: access.operator(),
   summary: "Everything the engine can contradict itself about (super-admin)",
   tags: ["Model admin"],
   responses: {
@@ -971,6 +977,7 @@ const fetchMergedCatalogue = async (): Promise<CachedCatalogueEntry[]> => {
 const catalogueSearchRoute = createRoute({
   method: "get",
   path: "/catalogue/search",
+  middleware: access.operator(),
   summary: "Search the gateway catalogue for a model to add (super-admin)",
   tags: ["Model admin"],
   request: { query: z.object({ q: z.string().min(1).max(120) }) },
@@ -1055,6 +1062,7 @@ modelAdminRoutes.openapi(catalogueSearchRoute, async (c) => {
 const discoveryRoute = createRoute({
   method: "get",
   path: "/discovery",
+  middleware: access.operator(),
   summary: "What the nightly sweep looked at, and why it said no (super-admin)",
   tags: ["Model admin"],
   request: {
@@ -1119,6 +1127,7 @@ modelAdminRoutes.openapi(discoveryRoute, async (c) => {
 const listActionsRoute = createRoute({
   method: "get",
   path: "/actions",
+  middleware: access.operator(),
   summary: "Who did what to the registry (super-admin)",
   tags: ["Model admin"],
   request: {
@@ -1361,6 +1370,7 @@ const addOutcomeSchema = z.discriminatedUnion("kind", [
 const addModelRoute = createRoute({
   method: "post",
   path: "/models",
+  middleware: access.operator(),
   summary: "Add a catalogue model as a CANDIDATE (super-admin)",
   tags: ["Model admin"],
   request: {
@@ -1460,6 +1470,7 @@ const promoteOutcomeSchema = z.discriminatedUnion("kind", [
 const promoteRoute = createRoute({
   method: "post",
   path: "/models/promote",
+  middleware: access.operator(),
   summary: "Publish one or more candidates (super-admin)",
   tags: ["Model admin"],
   request: {
@@ -1517,6 +1528,7 @@ modelAdminRoutes.openapi(promoteRoute, async (c) => {
 const promotePreflightRoute = createRoute({
   method: "post",
   path: "/models/promote/preflight",
+  middleware: access.operator(),
   summary: "What promoting these keys WOULD do (super-admin)",
   tags: ["Model admin"],
   request: {
@@ -1599,6 +1611,7 @@ const setEnabledOutcomeSchema = z.discriminatedUnion("kind", [
 const setEnabledRoute = createRoute({
   method: "post",
   path: "/models/enabled",
+  middleware: access.operator(),
   summary: "Make one or more models selectable, or not (super-admin)",
   tags: ["Model admin"],
   request: {
@@ -1664,6 +1677,7 @@ modelAdminRoutes.openapi(setEnabledRoute, async (c) => {
 const setEnabledPreflightRoute = createRoute({
   method: "post",
   path: "/models/enabled/preflight",
+  middleware: access.operator(),
   summary: "What enabling or disabling these keys WOULD do (super-admin)",
   tags: ["Model admin"],
   request: {
@@ -1736,6 +1750,7 @@ const retireOutcomeSchema = z.discriminatedUnion("kind", [
 const retireRoute = createRoute({
   method: "post",
   path: "/models/{profileKey}/retire",
+  middleware: access.operator(),
   summary: "Take a model out of every picker, history kept (super-admin)",
   tags: ["Model admin"],
   request: { params: profileKeyParam },
@@ -1783,6 +1798,7 @@ const setTransportOutcomeSchema = z.discriminatedUnion("kind", [
 const setTransportRoute = createRoute({
   method: "post",
   path: "/models/{profileKey}/transport",
+  middleware: access.operator(),
   summary: "Move a model to another transport (super-admin)",
   tags: ["Model admin"],
   request: {
@@ -1858,6 +1874,7 @@ const toWireQuarantineOutcome = (
 const quarantineRoute = createRoute({
   method: "post",
   path: "/models/{profileKey}/quarantine",
+  middleware: access.operator(),
   summary: "Take an upstream out of a model's pool (super-admin)",
   tags: ["Model admin"],
   request: {
@@ -1945,6 +1962,7 @@ const toWireReleaseOutcome = (
 const releaseRoute = createRoute({
   method: "post",
   path: "/models/{profileKey}/release",
+  middleware: access.operator(),
   summary: "Put a quarantined upstream back in the pool (super-admin)",
   tags: ["Model admin"],
   request: {
@@ -2035,6 +2053,7 @@ const includeOutcomeSchema = z.discriminatedUnion("kind", [
 const excludeRoute = createRoute({
   method: "post",
   path: "/models/{profileKey}/exclude",
+  middleware: access.operator(),
   summary: "Take an upstream out of a pool for good (super-admin)",
   tags: ["Model admin"],
   request: {
@@ -2084,6 +2103,7 @@ modelAdminRoutes.openapi(excludeRoute, async (c) => {
 const includeRoute = createRoute({
   method: "post",
   path: "/models/{profileKey}/include",
+  middleware: access.operator(),
   summary: "Undo a durable exclusion (super-admin)",
   tags: ["Model admin"],
   request: {
@@ -2153,6 +2173,7 @@ const setLimitsOutcomeSchema = z.discriminatedUnion("kind", [
 const limitsPreflightRoute = createRoute({
   method: "post",
   path: "/models/{profileKey}/limits/preflight",
+  middleware: access.operator(),
   summary: "What these limits would drop, without setting them (super-admin)",
   tags: ["Model admin"],
   request: {
@@ -2212,6 +2233,7 @@ modelAdminRoutes.openapi(limitsPreflightRoute, async (c) => {
 const setLimitsRoute = createRoute({
   method: "post",
   path: "/models/{profileKey}/limits",
+  middleware: access.operator(),
   summary:
     "Cap what a model's hosts may charge, or demand a proven cache (super-admin)",
   tags: ["Model admin"],
@@ -2257,6 +2279,7 @@ modelAdminRoutes.openapi(setLimitsRoute, async (c) => {
 const ackRoute = createRoute({
   method: "post",
   path: "/alerts/ack",
+  middleware: access.operator(),
   summary: "Stop the digest carrying these alerts (super-admin)",
   tags: ["Model admin"],
   request: {

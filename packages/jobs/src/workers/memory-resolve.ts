@@ -1,3 +1,5 @@
+import { driveVisibility } from "@fretik/shared/authz/drive-sql";
+import { SYSTEM } from "@fretik/shared/authz/system-principals";
 import db from "@fretik/shared/db";
 import type { DomainEvent } from "@fretik/shared/db/schema";
 import { callAiService } from "@fretik/shared/lib/ai-service";
@@ -92,6 +94,9 @@ const buildEventText = (
       .join("\n");
   }
   if (type.startsWith("memory.")) {
+    // A project's note is its people's: linked to a record, its path would
+    // show in the history of whoever reads the record.
+    if (stringField(payload, "scope") === "project") return "";
     return [stringField(payload, "path"), stringField(payload, "scope")]
       .filter((part) => part.length > 0)
       .join("\n");
@@ -180,9 +185,14 @@ const resolveEvent = async (data: MemoryResolveJobData): Promise<void> => {
     }
   };
 
+  // Links what the entry's text names; who may read an edge is decided when
+  // it is read (`authz/system-principals.ts`).
+  const drive = await driveVisibility(SYSTEM.memoryPipeline, event.teamId);
+
   // Pass 1 — free n-gram dictionary matching.
   const dictionaryAnchors = await anchorTextToRecords({
     teamId: event.teamId,
+    drive,
     text,
     maxAnchors: MAX_ANCHORS,
   });
@@ -210,6 +220,7 @@ const resolveEvent = async (data: MemoryResolveJobData): Promise<void> => {
         }
         const matches = await matchSpansToRecords({
           teamId: event.teamId,
+          drive,
           spans: [...confidenceBySpan.keys()],
           maxAnchors: MAX_ANCHORS,
         });

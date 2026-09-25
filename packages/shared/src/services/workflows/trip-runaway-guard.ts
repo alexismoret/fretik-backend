@@ -1,3 +1,4 @@
+import { SYSTEM } from "../../authz/system-principals";
 import db from "../../db";
 import { pauseWorkflow } from "./pause";
 
@@ -34,6 +35,7 @@ export const tripRunawayGuard = async (params: {
   await pauseWorkflow({
     id: params.workflowId,
     teamId: params.teamId,
+    principal: SYSTEM.workflowEngine,
     reason: `${RUNAWAY_REASON_PREFIX}:${String(params.cap)}`,
   });
   console.warn(

@@ -67,7 +67,7 @@ describe("the activity feed respects workflow privacy", () => {
 
     const { items } = await getDashboardActivity({
       teamId: fx.teamId,
-      userId: reader,
+      principal: await fx.principalOf(reader),
     });
 
     expect(items.map((item) => item.title).sort()).toEqual([

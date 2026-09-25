@@ -2,10 +2,11 @@
 
 The save rules — what to save, what never to save, when to propose — live in `<memory_protocol>` in your instructions and are not repeated here. This reference covers the choices the protocol leaves open.
 
-## Scope: user vs team
+## Scope: user, team, project
 
 - `/memories/team/` — conventions that bind everyone: processes, validation rules, formats, vendor policies. Default for anything about HOW THE TEAM WORKS.
-- `/memories/user/` — one person's preferences and working style: "prefers tables", "sends reports in English", subjective notes the protocol won't allow at team scope. Default when in doubt — a private memory can be promoted later; a wrong team memory biases everyone.
+- `/memories/project/` — in a project's chats and runs only: what holds for that project — its decisions, its conventions, its stakeholders' preferences. Read by the people of the project, who may come from other teams. Default for anything learned about the project in one of its chats.
+- `/memories/user/` — one person's preferences and working style: "prefers tables", "sends reports in English", subjective notes the protocol won't allow at team or project scope. Default when in doubt — a private memory can be promoted later; a wrong team memory biases everyone.
 
 ## How memory reaches you
 

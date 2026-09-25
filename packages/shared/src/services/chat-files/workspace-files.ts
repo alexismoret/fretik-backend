@@ -1,4 +1,6 @@
 import { and, desc, eq, ne } from "drizzle-orm";
+import { driveVisibility, visibleDocumentsWhere } from "../../authz/drive-sql";
+import type { Principal } from "../../authz/principal";
 import db from "../../db";
 import { aiChatFiles, documents, documentVersions } from "../../db/schema";
 import { mimeFromFilename } from "../../file-types";
@@ -284,14 +286,21 @@ export const resolveDriveState = async (args: {
   conversationId: string;
   teamId: string;
   path: string;
+  /** Who asks: only the files they can open are "already there". */
+  principal: Principal;
 }): Promise<DriveState> => {
   const bytes = await readSessionFile(args.conversationId, args.path);
   if (!bytes || bytes.length === 0) return { state: "absent" };
 
+  // A restricted file the person was never given is not "already filed" for
+  // them: answering with its id and name would tell them it exists.
+  const visible = visibleDocumentsWhere(
+    await driveVisibility(args.principal, args.teamId),
+  );
   const fileHash = Bun.SHA256.hash(bytes, "hex");
   const identical = await db.query.documents.findFirst({
     columns: { id: true, originalFilename: true },
-    where: { teamId: args.teamId, fileHash },
+    where: { teamId: args.teamId, fileHash, ...visible },
   });
   if (identical) {
     return {
@@ -320,6 +329,7 @@ export const resolveDriveState = async (args: {
     columns: { id: true, originalFilename: true },
     where: {
       teamId: args.teamId,
+      ...visible,
       originalFilename: filename,
       id: {
         in: producedHere

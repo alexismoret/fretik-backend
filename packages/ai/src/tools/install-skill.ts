@@ -1,7 +1,8 @@
-import { assertOrgAdmin } from "@fretik/shared/lib/auth-roles";
+import { hasCapability } from "@fretik/shared/authz/gates";
 import { installSkillFromCatalog } from "@fretik/shared/services/skills/install-from-catalog";
 import { tool } from "ai";
 import { z } from "zod";
+import { actingPrincipal } from "../agents/shared/acting-principal";
 import { gateBuiltinWriteTool } from "../agents/shared/policy-tool-gate";
 import {
   agentEventActor,
@@ -11,7 +12,7 @@ import {
 /**
  * Install a skill from the catalog to the team, behind the write-approval gate.
  *
- * Admin/owner only. When the team's policy is `approval` (the default), the
+ * Team leads and organization admins only. When the team's policy is `approval` (the default), the
  * change surfaces as an approval card and only lands once the user confirms —
  * the API process applies it via `TOOL_CALL_APPLY.installSkill`. Idempotent:
  * re-installing the same skill returns the existing one.
@@ -21,7 +22,7 @@ export const createInstallSkillTool = () =>
     description: [
       "Install a skill from the catalog (found via `searchSkills`) to the team, so the assistant can load and follow it in future conversations.",
       "Use right after `searchSkills` returns a candidate the user wants. Pass the candidate's exact `id`.",
-      "Admin/owner only; the change goes through the user's approval before it is saved.",
+      "Team leads and organization admins only; the change goes through the user's approval before it is saved.",
     ].join("\n"),
     inputSchema: z.object({
       id: z
@@ -52,17 +53,18 @@ export const createInstallSkillTool = () =>
         };
       }
 
-      try {
-        await assertOrgAdmin({
-          userId: ctx.userId,
-          organizationId: ctx.organizationId,
-          message: "Installing a skill requires admin or owner role",
-        });
-      } catch {
+      // The team's skills are its settings: its leads decide them, and the
+      // organization's admins, who lead every team (`team.settings.manage`).
+      const allowed = await hasCapability({
+        principal: await actingPrincipal(ctx),
+        capability: "team.settings.manage",
+        teamId: ctx.teamId,
+      });
+      if (!allowed) {
         return {
           error: "not_authorized",
           message:
-            "Only team admins and owners can install skills. Ask an admin in this conversation to confirm.",
+            "Only the team's leads and the organization's admins can install skills. Add one of them to this conversation to confirm.",
         };
       }
 

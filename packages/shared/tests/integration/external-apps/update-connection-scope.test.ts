@@ -14,7 +14,10 @@ import { rejection } from "../../lib/expect-rejection";
  * YOUR OWN connection needs no permission (nobody else can even see it, so
  * only its owner can reach the call), while taking a SHARED one private takes
  * it away from every other member — so that direction is gated on being the
- * member who connected it, or an org admin.
+ * member who connected it, or governing the team's apps (its leads, and the
+ * organization's admins, who lead every team).
+ *
+ * The fixture's first user owns the organization; the second is a member.
  *
  * Integration rather than unit because the decision reads two columns of the
  * row as it actually exists (`user_id`, `created_by_user_id`) through
@@ -50,7 +53,7 @@ afterAll(async () => {
 });
 
 describe("sharing a personal connection", () => {
-  test("its owner shares it without needing admin", async () => {
+  test("its owner shares it without needing any role", async () => {
     const conn = await fx.createConnection({
       userId: owner,
       createdByUserId: owner,
@@ -58,8 +61,7 @@ describe("sharing a personal connection", () => {
     const row = await updateConnection({
       id: conn.id,
       teamId: fx.teamId,
-      userId: owner,
-      isOrgAdmin: false,
+      principal: await fx.principalOf(owner),
       scope: "team",
     });
     expect(row.userId).toBeNull();
@@ -74,8 +76,7 @@ describe("sharing a personal connection", () => {
       updateConnection({
         id: conn.id,
         teamId: fx.teamId,
-        userId: teammate,
-        isOrgAdmin: true,
+        principal: await fx.principalOf(teammate),
         scope: "team",
       }),
     );
@@ -89,23 +90,21 @@ describe("taking a shared connection private", () => {
     const row = await updateConnection({
       id: conn.id,
       teamId: fx.teamId,
-      userId: owner,
-      isOrgAdmin: false,
+      principal: await fx.principalOf(owner),
       scope: "user",
     });
     expect(row.userId).toBe(owner);
   });
 
-  test("an org admin may, even without having connected it", async () => {
-    const conn = await fx.createConnection({ createdByUserId: owner });
+  test("an admin may, even without having connected it", async () => {
+    const conn = await fx.createConnection({ createdByUserId: teammate });
     const row = await updateConnection({
       id: conn.id,
       teamId: fx.teamId,
-      userId: teammate,
-      isOrgAdmin: true,
+      principal: await fx.principalOf(owner),
       scope: "user",
     });
-    expect(row.userId).toBe(teammate);
+    expect(row.userId).toBe(owner);
   });
 
   test("any other member is refused", async () => {
@@ -114,12 +113,11 @@ describe("taking a shared connection private", () => {
       updateConnection({
         id: conn.id,
         teamId: fx.teamId,
-        userId: teammate,
-        isOrgAdmin: false,
+        principal: await fx.principalOf(teammate),
         scope: "user",
       }),
     );
-    expect(codeOf(err)).toBe("FORBIDDEN");
+    expect(codeOf(err)).toBe("ACCESS_DENIED");
   });
 });
 
@@ -132,8 +130,7 @@ describe("re-sending the scope it already has", () => {
     const row = await updateConnection({
       id: conn.id,
       teamId: fx.teamId,
-      userId: teammate,
-      isOrgAdmin: false,
+      principal: await fx.principalOf(teammate),
       scope: "team",
       displayName: "Renamed by a teammate",
     });

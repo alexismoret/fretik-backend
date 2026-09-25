@@ -1,5 +1,10 @@
 import { and, eq, isNull, like } from "drizzle-orm";
 
+import {
+  DOCUMENT_ACCESS_COLUMNS,
+  type DriveVisibility,
+  visibleDocumentsWhere,
+} from "../../authz/drive-sql";
 import db from "../../db";
 import { documents } from "../../db/schema/documents";
 
@@ -15,6 +20,10 @@ import { documents } from "../../db/schema/documents";
  * The one case worth short-circuiting is identical BYTES: there is nothing to
  * decide, the file is already there, and asking would be a question with one
  * sensible answer.
+ *
+ * Only the files the uploader can open collide. A restricted file they were
+ * never given is not theirs to replace, to be told about, or to learn the id
+ * of: the new file simply sits beside it, as two files of the same name may.
  */
 
 export type NameCollision =
@@ -27,27 +36,44 @@ export type NameCollision =
 /**
  * Folder scoping is by EQUALITY, and the root is `NULL` — which `=` never
  * matches in SQL. Two files named the same in two folders are not a collision;
- * two at the root are.
+ * two at the same root are. A team's root and each of its projects' roots are
+ * different places: the project tells them apart.
  */
-const inSameFolder = (folderId: string | null) =>
+const inSameFolder = (folderId: string | null, projectId: string | null) =>
   folderId === null
-    ? isNull(documents.folderId)
+    ? and(
+        isNull(documents.folderId),
+        projectId === null
+          ? isNull(documents.projectId)
+          : eq(documents.projectId, projectId),
+      )
     : eq(documents.folderId, folderId);
 
 export const findNameCollision = async (args: {
   teamId: string;
   folderId: string | null;
+  /** The project whose root is meant when `folderId` is null. */
+  projectId: string | null;
   filename: string;
   fileHash: string;
+  visibility: DriveVisibility;
 }): Promise<NameCollision> => {
   const existing = await db.query.documents.findFirst({
     where: {
       teamId: args.teamId,
       // The root is NULL, and `= NULL` matches nothing — the relational filter
       // needs `isNull` rather than the value.
-      folderId:
-        args.folderId === null ? { isNull: true } : { eq: args.folderId },
+      ...(args.folderId === null
+        ? {
+            folderId: { isNull: true },
+            projectId:
+              args.projectId === null
+                ? { isNull: true }
+                : { eq: args.projectId },
+          }
+        : { folderId: { eq: args.folderId } }),
       originalFilename: args.filename,
+      ...visibleDocumentsWhere(args.visibility),
     },
     columns: { id: true, fileHash: true },
   });
@@ -101,7 +127,11 @@ export const withNameSuffix = (filename: string, n: number): string => {
 export const nextAvailableFilename = async (args: {
   teamId: string;
   folderId: string | null;
+  /** The project whose root is meant when `folderId` is null. */
+  projectId: string | null;
   filename: string;
+  /** Only names the uploader can see are taken: see the header. */
+  visibility: DriveVisibility;
 }): Promise<string> => {
   const [stem] = splitExtension(args.filename);
 
@@ -111,7 +141,8 @@ export const nextAvailableFilename = async (args: {
     .where(
       and(
         eq(documents.teamId, args.teamId),
-        inSameFolder(args.folderId),
+        inSameFolder(args.folderId, args.projectId),
+        args.visibility.document(DOCUMENT_ACCESS_COLUMNS),
         // `%` and `_` are LIKE wildcards; a stem containing either would match
         // more than it should. Over-matching is harmless here — the set is only
         // used to test membership — but the escape keeps the query honest.

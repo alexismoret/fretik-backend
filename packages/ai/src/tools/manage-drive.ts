@@ -1,3 +1,4 @@
+import type { DriveAction } from "@fretik/shared/authz/drive";
 import db from "@fretik/shared/db";
 import type { ToolApprovalSummaryField } from "@fretik/shared/db/schema";
 import { FOLDER_DESCRIPTION_MAX_CHARS } from "@fretik/shared/schemas/folders";
@@ -15,7 +16,12 @@ import {
   agentEventActor,
   getRuntimeContext,
 } from "../agents/shared/runtime-context";
+import {
+  requireTurnDriveAction,
+  turnRootProject,
+} from "../agents/shared/turn-access";
 import { workflowWriteBackstop } from "../agents/shared/workflow-write-backstop";
+import { liftAccessRefusal } from "../lib/access-refusal";
 import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
 
 /**
@@ -69,6 +75,54 @@ export const manageDriveInputSchema = z.object({
       "What belongs in the folder, one sentence naming the KIND of document ('Signed client contracts and their amendments'). For createFolder / describeFolder; \"\" on describeFolder clears it.",
     ),
 });
+
+/**
+ * What an action takes, in the engine's terms — null when a field it needs is
+ * missing, which its own branch refuses below before anything is written.
+ */
+const driveActionOf = (
+  input: z.infer<typeof manageDriveInputSchema>,
+  place: { teamId: string; rootProjectId: string | null },
+): DriveAction | null => {
+  const parentFolderId = input.parentFolderId ?? null;
+  switch (input.action) {
+    case "createFolder":
+      return {
+        kind: "createFolder",
+        teamId: place.teamId,
+        parentFolderId,
+        projectId: place.rootProjectId,
+      };
+    case "renameFolder":
+      return input.folderId
+        ? { kind: "renameFolder", folderId: input.folderId }
+        : null;
+    case "describeFolder":
+      return input.folderId
+        ? { kind: "describeFolder", folderId: input.folderId }
+        : null;
+    case "moveFolder":
+      return input.folderId
+        ? { kind: "moveFolder", folderId: input.folderId, parentFolderId }
+        : null;
+    case "deleteFolder":
+      return input.folderId
+        ? { kind: "deleteFolder", folderId: input.folderId }
+        : null;
+    case "renameDocument":
+      return input.documentId
+        ? { kind: "renameDocument", documentId: input.documentId }
+        : null;
+    case "moveDocument":
+      return input.documentId
+        ? {
+            kind: "moveDocument",
+            documentId: input.documentId,
+            folderId: parentFolderId,
+          }
+        : null;
+  }
+};
 
 type ResolvedFolder = { id: string; name: string } | null;
 
@@ -135,7 +189,7 @@ export const createManageDriveTool = () =>
     description: [
       "Organise the Drive: folders and where documents live. Journaled and team-scoped.",
       "",
-      "- createFolder: name (+ optional parentFolderId, description). Creates a folder; omit parentFolderId for the root.",
+      "- createFolder: name (+ optional parentFolderId, description). Creates a folder; omit parentFolderId for the root (in a project's chat, the project's root).",
       "- renameFolder: folderId + name.",
       "- describeFolder: folderId + description. Documents added with no destination are filed automatically into the folder whose description fits.",
       "- moveFolder: folderId + parentFolderId (new parent; null = root).",
@@ -168,6 +222,18 @@ export const createManageDriveTool = () =>
               "List folders with `listFolders` to get a valid id.",
             );
           }
+        }
+
+        // The person the turn acts for may do this — the rules of the Drive's
+        // own routes — before a card could ask anyone to approve it. A folder
+        // made at the root lands at the root of the chat's project, if any.
+        const rootProjectId = turnRootProject(ctx, input.parentFolderId);
+        const driveAction = driveActionOf(input, {
+          teamId: ctx.teamId,
+          rootProjectId,
+        });
+        if (driveAction !== null) {
+          await requireTurnDriveAction(ctx, driveAction);
         }
 
         // Tool-permission gate: `blocked` → error, `approval` → pause with the
@@ -209,6 +275,7 @@ export const createManageDriveTool = () =>
           const folder = await createFolder({
             name: input.name,
             parentFolderId: input.parentFolderId ?? null,
+            projectId: rootProjectId,
             teamId: ctx.teamId,
             userId: ctx.userId,
             actor,
@@ -379,9 +446,12 @@ export const createManageDriveTool = () =>
           ),
         };
       } catch (err) {
-        return toolError(
-          TOOL_ERROR_CODES.DRIVE_ERROR,
-          `manageDrive ${input.action} failed: ${err instanceof Error ? err.message : String(err)}`,
+        return (
+          liftAccessRefusal(err) ??
+          toolError(
+            TOOL_ERROR_CODES.DRIVE_ERROR,
+            `manageDrive ${input.action} failed: ${err instanceof Error ? err.message : String(err)}`,
+          )
         );
       }
     },

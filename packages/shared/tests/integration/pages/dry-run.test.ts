@@ -50,7 +50,7 @@ const withDatasets = (
   code: { source },
 });
 
-const run = (
+const run = async (
   definition: PageDefinition,
   extra: { assumeSanitized?: true } = {},
 ) =>
@@ -58,6 +58,8 @@ const run = (
     definition,
     teamId: fx.teamId,
     userId: null,
+    // A member of the team: what the agent reads for the person it acts for.
+    reader: await fx.principalOf(fx.userIds[0]),
     assumeCompiled: true,
     ...extra,
   });

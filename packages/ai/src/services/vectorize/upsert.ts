@@ -4,6 +4,7 @@ import type {
   AiVectorSourceType,
 } from "@fretik/shared/db/schema";
 import { aiVectors } from "@fretik/shared/db/schema";
+import { refreshSourceVectorAcl } from "@fretik/shared/services/ai-vectors/acl";
 import { and, eq } from "drizzle-orm";
 import { EMBEDDING_DIMENSIONS } from "../../lib/embeddings";
 import type { EnrichedChunk } from "./contextual-enrichment";
@@ -142,6 +143,9 @@ export const upsertVectors = async ({
         ),
       );
     await tx.insert(aiVectors).values(rows);
+    // A restricted or shared source is found only by its audience, from the
+    // moment its rows exist: in this transaction, not after it.
+    await refreshSourceVectorAcl({ executor: tx, sourceType, sourceId });
   });
 
   return { rowsInserted: rows.length, rowsDropped };

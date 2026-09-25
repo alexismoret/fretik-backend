@@ -1,3 +1,6 @@
+import { hasCapability, requireCapability } from "@fretik/shared/authz/gates";
+import { access } from "@fretik/shared/authz/http";
+import type { AiMemoryScope } from "@fretik/shared/db/schema";
 import {
   authMiddleware,
   type HonoLoggedAppType,
@@ -54,7 +57,6 @@ import {
   getEpisode,
   listEpisodes,
 } from "@fretik/shared/services/episodes/list";
-import { isOrgAdmin } from "@fretik/shared/services/organization/member-role";
 import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 
 // ==================== //
@@ -96,6 +98,37 @@ const requireSession = (
   };
 };
 
+/**
+ * Team notes are what the assistant reads for everyone in the team, so
+ * writing one takes `team.context.edit` (members by default). A personal note
+ * is the caller's alone and needs nothing more than the session. A project's
+ * notes are never reached here (`/projects/{id}/memories`).
+ */
+const assertCanWriteScope = async (
+  c: Parameters<Parameters<typeof aiMemoryRoutes.openapi>[1]>[0],
+  scope: AiMemoryScope,
+): Promise<void> => {
+  if (scope === "project") {
+    return throwHttpError(404, notFound("Memory file not found"));
+  }
+  if (scope !== "team") return;
+  await requireCapability({
+    principal: c.get("principal"),
+    capability: "team.context.edit",
+    teamId: c.get("team")?.id ?? null,
+  });
+};
+
+/** Clearing the team's shared memory in bulk is its leads' call. */
+const canManageTeamMemory = (
+  c: Parameters<Parameters<typeof aiMemoryRoutes.openapi>[1]>[0],
+): Promise<boolean> =>
+  hasCapability({
+    principal: c.get("principal"),
+    capability: "team.memory.manage",
+    teamId: c.get("team")?.id ?? null,
+  });
+
 // ==================== //
 // ROUTE DEFINITIONS    //
 // ==================== //
@@ -103,6 +136,9 @@ const requireSession = (
 const listRoute = createRoute({
   method: "get",
   path: "/",
+  middleware: access.session(
+    "Team notes and the caller's own; never another member's personal notes.",
+  ),
   summary: "List the agent memories visible to the active session",
   description:
     "Returns memories visible to the caller, paginated. Filter by `?scope=user|team` to drive the settings tabs (omitted scope merges both). Sorted by `updatedAt DESC`. The `content` field is omitted to keep the payload lean — fetch it via `/ai-memory/{id}/content` for the editor modal.",
@@ -118,6 +154,9 @@ const listRoute = createRoute({
 const getContentRoute = createRoute({
   method: "get",
   path: "/{id}/content",
+  middleware: access.session(
+    "Read within the active team: team notes and the caller's own only.",
+  ),
   summary: "Read the full content of a memory file",
   tags: ["AiMemory"],
   request: { params: memoryIdParamSchema },
@@ -132,6 +171,9 @@ const getContentRoute = createRoute({
 const createRouteDefinition = createRoute({
   method: "post",
   path: "/",
+  middleware: access.handler(
+    "Personal notes are the caller's; a team note takes team.context.edit.",
+  ),
   summary: "Create a new memory file (manual write from the settings UI)",
   description:
     "Mirrors the agent's `create` command but tags the audit trail as `actor='human'`. Fails with 409 if the path already exists in the same scope; use `PUT /ai-memory/{id}` to update existing entries.",
@@ -153,6 +195,9 @@ const createRouteDefinition = createRoute({
 const updateContentRoute = createRoute({
   method: "patch",
   path: "/{id}",
+  middleware: access.handler(
+    "Personal notes are the caller's; a team note takes team.context.edit.",
+  ),
   summary: "Replace the content of an existing memory file",
   tags: ["AiMemory"],
   request: {
@@ -174,6 +219,9 @@ const updateContentRoute = createRoute({
 const deleteRoute = createRoute({
   method: "delete",
   path: "/{id}",
+  middleware: access.handler(
+    "Personal notes are the caller's; a team note takes team.context.edit.",
+  ),
   summary: "Delete a memory file (with optional reason for the audit log)",
   tags: ["AiMemory"],
   request: {
@@ -191,6 +239,9 @@ const deleteRoute = createRoute({
 const getHistoryRoute = createRoute({
   method: "get",
   path: "/{id}/history",
+  middleware: access.session(
+    "Read within the active team: team notes and the caller's own only.",
+  ),
   summary: "Per-file audit timeline (latest 20 versions retained)",
   tags: ["AiMemory"],
   request: { params: memoryIdParamSchema },
@@ -205,6 +256,9 @@ const getHistoryRoute = createRoute({
 const listEpisodesRoute = createRoute({
   method: "get",
   path: "/episodes",
+  middleware: access.session(
+    "Episodes the whole team sees, and the caller's private ones.",
+  ),
   summary: "List distilled episodic memories visible to the session",
   description:
     "Read-only window onto `ai_episodes` (conversation / record-activity / consolidated). Team episodes plus the caller's own private ones, newest first. Filter by `?kind=` / `?state=` (default state omitted = all). `summary` is omitted here — fetch it via `/ai-memory/episodes/{id}`.",
@@ -220,6 +274,9 @@ const listEpisodesRoute = createRoute({
 const getEpisodeRoute = createRoute({
   method: "get",
   path: "/episodes/{id}",
+  middleware: access.session(
+    "Episodes the whole team sees, and the caller's private ones.",
+  ),
   summary: "One episode with its distilled body + anchored records",
   tags: ["AiMemory"],
   request: { params: episodeIdParamSchema },
@@ -234,6 +291,9 @@ const getEpisodeRoute = createRoute({
 const deleteEpisodeRoute = createRoute({
   method: "delete",
   path: "/episodes/{id}",
+  middleware: access.handler(
+    "The caller's private episode, or a shared one with team.memory.manage.",
+  ),
   summary: "Delete (hide) a distilled episode",
   description:
     "Soft-delete: flips the episode to `demoted` and drops its recall vectors, so it leaves recall + the default UI immediately. A nightly job hard-deletes it after 30 days. A member may delete their own private episode; a team-visible one requires an org admin.",
@@ -250,6 +310,9 @@ const deleteEpisodeRoute = createRoute({
 const deleteAllEpisodesRoute = createRoute({
   method: "post",
   path: "/episodes/delete-all",
+  middleware: access.handler(
+    "The caller's own episodes, or the team's shared ones with team.memory.manage.",
+  ),
   summary: "Bulk-delete (hide) episodes in scope",
   description:
     "`scope='user'` hides the caller's own private episodes; `scope='team'` hides every episode in the team and requires an org admin (403 otherwise).",
@@ -274,6 +337,9 @@ const deleteAllEpisodesRoute = createRoute({
 const deleteAllMemoriesRoute = createRoute({
   method: "post",
   path: "/delete-all",
+  middleware: access.handler(
+    "The caller's own notes, or the team's shared ones with team.memory.manage.",
+  ),
   summary: "Bulk-delete memory notes in scope",
   description:
     "`scope='user'` deletes the caller's own user-scope notes; `scope='team'` deletes every note in the team and requires an org admin (403 otherwise).",
@@ -298,6 +364,9 @@ const deleteAllMemoriesRoute = createRoute({
 const getFeedbackRoute = createRoute({
   method: "get",
   path: "/feedback",
+  middleware: access.session(
+    "The team's memory activity: shared notes only, never a member's personal ones.",
+  ),
   summary: "Cross-memory team activity feed for agent writes",
   description:
     "Returns the latest agent-driven writes against team-scope memories. The `triggeringUserMessage` field is filled only when the audit row's `byUserId` matches the calling user — never another teammate's prompt content.",
@@ -411,7 +480,7 @@ aiMemoryRoutes.openapi(deleteEpisodeRoute, async (c) => {
     episodeId: id,
     teamId: ctx.teamId,
     userId: ctx.userId,
-    isAdmin: await isOrgAdmin(ctx.organizationId, ctx.userId),
+    canManageTeamMemory: await canManageTeamMemory(c),
   });
   return c.json({ ok: true as const }, 200);
 });
@@ -423,7 +492,7 @@ aiMemoryRoutes.openapi(deleteAllEpisodesRoute, async (c) => {
     teamId: ctx.teamId,
     userId: ctx.userId,
     scope,
-    isAdmin: await isOrgAdmin(ctx.organizationId, ctx.userId),
+    canManageTeamMemory: await canManageTeamMemory(c),
   });
   return c.json({ hidden }, 200);
 });
@@ -434,7 +503,7 @@ aiMemoryRoutes.openapi(deleteAllMemoriesRoute, async (c) => {
   const { deleted } = await deleteAllMemories({
     scopeKey: ctx,
     scope,
-    isAdmin: await isOrgAdmin(ctx.organizationId, ctx.userId),
+    canManageTeamMemory: await canManageTeamMemory(c),
   });
   return c.json({ deleted }, 200);
 });
@@ -487,6 +556,7 @@ aiMemoryRoutes.openapi(getContentRoute, async (c) => {
 aiMemoryRoutes.openapi(createRouteDefinition, async (c) => {
   const ctx = requireSession(c);
   const body = c.req.valid("json");
+  await assertCanWriteScope(c, body.scope);
 
   // Resolve the path: when the UI omits it, ask the LLM to suggest
   // one based on the content + the existing paths in the same scope.
@@ -531,6 +601,7 @@ aiMemoryRoutes.openapi(updateContentRoute, async (c) => {
     teamId: ctx.teamId,
     currentUserId: ctx.userId,
   });
+  await assertCanWriteScope(c, existing.scope);
   const result = await overwriteMemory({
     rawPath: formatMemoryPath({
       scope: existing.scope,
@@ -553,6 +624,7 @@ aiMemoryRoutes.openapi(deleteRoute, async (c) => {
     teamId: ctx.teamId,
     currentUserId: ctx.userId,
   });
+  await assertCanWriteScope(c, existing.scope);
   await deleteMemory({
     rawPath: formatMemoryPath({
       scope: existing.scope,

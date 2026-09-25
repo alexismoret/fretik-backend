@@ -1,3 +1,4 @@
+import { access } from "@fretik/shared/authz/http";
 import {
   authMiddleware,
   type HonoLoggedAppType,
@@ -31,6 +32,9 @@ const fileSchema = z.custom<File>(
 const uploadAvatarRoute = createRoute({
   method: "post",
   path: "/avatar",
+  middleware: access.session(
+    "The caller changes their own avatar, and only theirs.",
+  ),
   summary: "Upload the current user's avatar",
   tags: ["Account"],
   request: {
@@ -65,6 +69,9 @@ const uploadAvatarRoute = createRoute({
 const deleteAvatarRoute = createRoute({
   method: "delete",
   path: "/avatar",
+  middleware: access.session(
+    "The caller removes their own avatar, and only theirs.",
+  ),
   summary: "Remove the current user's avatar files",
   tags: ["Account"],
   responses: {

@@ -1,3 +1,6 @@
+import { resolveAccess } from "../../authz/access";
+import { atLeast } from "../../authz/levels";
+import type { UserPrincipal } from "../../authz/principal";
 import db from "../../db";
 import type { ToolApprovalRequest } from "../../db/schema";
 import { forbidden, throwHttpError } from "../../lib/errors";
@@ -11,57 +14,64 @@ import { assertConversationAccess } from "../ai/assert-conversation-access";
  *
  *   - An approval is raised INSIDE a conversation — a chat or a workflow run —
  *     and shows what the agent is about to do there (recipients, message
- *     bodies, record values). Seeing it takes the right to open that
- *     conversation: its participants, or whoever may see the workflow.
+ *     bodies, record values). Seeing it takes the right to read that
+ *     conversation (`assertConversationAccess`).
  *
  *   - A granted approval EXECUTES AS its requester (`approval.userId`): the
  *     plan resolves that person's connections, personal ones included. So when
  *     the requester is a person, deciding is theirs alone — a teammate granting
  *     it would be acting through someone else's mailbox. When the requester is
- *     the team's own identity (the bot a team-shared workflow runs as), the
- *     action runs with team resources only and any member who can see the run
- *     may decide, which is what monitoring a team workflow requires.
+ *     the team's own identity (the agent a team workflow runs as), the action
+ *     runs with team resources only, and whoever may RUN that workflow (`use`)
+ *     may decide it — monitoring a team workflow requires it, and a reader who
+ *     may only look at the workflow may not act through it.
  */
-
-type Caller = { userId: string; organizationId: string };
 
 /** Refuse (404) an approval the caller may not see. */
 export const assertCanViewApproval = async (
   approval: ToolApprovalRequest,
-  caller: Caller,
+  caller: UserPrincipal,
 ): Promise<void> => {
   await assertConversationAccess({
     conversationId: approval.conversationId,
-    teamId: approval.teamId,
-    organizationId: caller.organizationId,
-    userId: caller.userId,
+    principal: caller,
+    level: "view",
   });
 };
 
 /**
- * Whether `userId` may decide an approval they can see: they requested it, or
- * it runs as the team's own identity. Does not check visibility — pair it with
- * `assertCanViewApproval`, or use `assertCanDecideApproval`.
+ * Whether the caller may decide an approval they can see: they requested it,
+ * or it runs as the team's agent and they may run the workflow that raised it.
+ * Does not check visibility — pair it with `assertCanViewApproval`, or use
+ * `assertCanDecideApproval`.
  */
 export const isApprovalDecidableBy = async (
   approval: ToolApprovalRequest,
-  userId: string,
+  caller: UserPrincipal,
 ): Promise<boolean> => {
-  if (approval.userId === userId) return true;
+  if (approval.userId === caller.userId) return true;
   const settings = await db.query.teamSettings.findFirst({
     columns: { botUserId: true },
     where: { teamId: approval.teamId },
   });
-  return settings?.botUserId === approval.userId;
+  if (settings?.botUserId !== approval.userId) return false;
+
+  const run = await db.query.workflowRuns.findFirst({
+    columns: { workflowId: true },
+    where: { conversationId: approval.conversationId },
+  });
+  if (!run) return false;
+  const workflow = await resolveAccess(caller, "workflow", run.workflowId);
+  return workflow !== null && atLeast(workflow.level, "use");
 };
 
 /** Refuse an approval the caller may not decide (404 unseen, 403 not theirs). */
 export const assertCanDecideApproval = async (
   approval: ToolApprovalRequest,
-  caller: Caller,
+  caller: UserPrincipal,
 ): Promise<void> => {
   await assertCanViewApproval(approval, caller);
-  if (await isApprovalDecidableBy(approval, caller.userId)) return;
+  if (await isApprovalDecidableBy(approval, caller)) return;
   return throwHttpError(
     403,
     forbidden(

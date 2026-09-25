@@ -1,3 +1,4 @@
+import { resolveAccessMany } from "@fretik/shared/authz/access";
 import db from "@fretik/shared/db";
 import {
   buildDocumentOriginalKey,
@@ -7,6 +8,7 @@ import { getObjectBytes } from "@fretik/shared/lib/s3";
 import { tool } from "ai";
 import { extname } from "path";
 import { z } from "zod";
+import { actingPrincipal } from "../agents/shared/acting-principal";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
 import {
   fileExists,
@@ -162,11 +164,19 @@ export const createDownloadDriveDocumentTool = () =>
       const files: Record<string, unknown>[] = [];
       const failed: Record<string, unknown>[] = [];
 
+      // What the person the turn acts for can open — restricted files and
+      // folders included, and files shared with them from another team.
+      const visible = await resolveAccessMany(
+        await actingPrincipal(ctx),
+        "document",
+        requested,
+      );
+
       for (const documentId of requested) {
         const outcome = await downloadOne({
           documentId,
           conversationId,
-          teamId: ctx.teamId,
+          visible: visible.has(documentId),
           usedBytes,
           quotaBytes: DRIVE_QUOTA_BYTES,
         });
@@ -193,7 +203,8 @@ export const createDownloadDriveDocumentTool = () =>
 const downloadOne = async (params: {
   documentId: string;
   conversationId: string;
-  teamId: string;
+  /** Whether the person the turn acts for can open it (the engine's answer). */
+  visible: boolean;
   usedBytes: number;
   quotaBytes: number;
 }): Promise<
@@ -207,24 +218,17 @@ const downloadOne = async (params: {
     where: { id: documentId },
     columns: {
       id: true,
-      teamId: true,
       status: true,
       originalFilename: true,
       fileSize: true,
       mimeType: true,
     },
   });
-  if (!document) {
+  // One the person cannot open is answered like one that does not exist.
+  if (!document || !params.visible) {
     return {
       error: `Document not found: ${documentId}`,
       code: TOOL_ERROR_CODES.NOT_FOUND,
-    };
-  }
-  if (document.teamId !== params.teamId) {
-    return {
-      error:
-        "This document belongs to a different team. You don't have access to it.",
-      code: TOOL_ERROR_CODES.FORBIDDEN,
     };
   }
   if (document.status !== "ready") {

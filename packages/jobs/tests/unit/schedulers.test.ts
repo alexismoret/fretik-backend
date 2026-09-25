@@ -4,7 +4,7 @@ import { mockModule } from "../lib/mock-module";
 /**
  * The nightly timetable, pinned as data.
  *
- * `registerSchedulers` is imperative — fourteen `upsertJobScheduler` calls in a
+ * `registerSchedulers` is imperative — fifteen `upsertJobScheduler` calls in a
  * row — and nothing until now read it back. That matters because every claim it
  * makes is a claim about things NOT colliding, and a collision is silent:
  *
@@ -90,10 +90,10 @@ describe("scheduler identities", () => {
     for (const r of registrations) expect(r.template.name).toBe(r.id);
   });
 
-  test("the whole timetable is sixteen entries", () => {
+  test("the whole timetable is seventeen entries", () => {
     // A count, so that adding or removing a scheduled pass has to be a
     // deliberate edit to this file rather than a diff nobody reads.
-    expect(registrations).toHaveLength(16);
+    expect(registrations).toHaveLength(17);
   });
 });
 
@@ -116,6 +116,9 @@ describe("what may share the 15-second maintenance queue", () => {
         // model calls it causes all land on `folder-describe`.
         "folder-describe-sweep",
         "gc-demote",
+        // One indexed read, empty on almost every pass; the removals it makes
+        // are a few writes each.
+        "guest-expiry-sweep",
         "journal-sweep",
         "model-alert-sweep",
         "model-telemetry-rollup",

@@ -1,6 +1,9 @@
+import { assertProjectNotArchived } from "@fretik/shared/authz/placement";
+import type { AiMemoryScope } from "@fretik/shared/db/schema";
 import { parseApiError } from "@fretik/shared/schemas/errors";
 import { createMemory } from "@fretik/shared/services/ai-memory/create";
 import { deleteMemory } from "@fretik/shared/services/ai-memory/delete";
+import { memoryNamespacesFor } from "@fretik/shared/services/ai-memory/namespaces";
 import { overwriteMemory } from "@fretik/shared/services/ai-memory/overwrite";
 import {
   formatMemoryPath,
@@ -19,6 +22,11 @@ import {
   getRuntimeContext,
   type AgentRuntimeContext,
 } from "../agents/shared/runtime-context";
+import {
+  requireTurnCapability,
+  requireTurnProjectLevel,
+} from "../agents/shared/turn-access";
+import { liftAccessRefusal } from "../lib/access-refusal";
 import { TOOL_ERROR_CODES } from "../lib/tool-error-codes";
 
 /**
@@ -30,13 +38,16 @@ import { TOOL_ERROR_CODES } from "../lib/tool-error-codes";
  *  - **5 commands** (`view`, `create`, `overwrite`, `delete`,
  *    `rename`). No `str_replace` / `insert` — the model updates
  *    a file via `view → overwrite` (atomic upsert in SQL).
- *  - **2 namespaces**: `/memories/user/` (private to the current
- *    user) and `/memories/team/` (shared across the team, every
- *    write audited).
+ *  - **3 namespaces**: `/memories/user/` (private to the current
+ *    user), `/memories/team/` (shared across the team, every write
+ *    audited) and, in a project's chats and runs, `/memories/project/`
+ *    (shared with the people of the project, every write audited). A
+ *    turn uses only the namespaces its place gives it
+ *    (`memoryNamespacesFor`): the team's are for its people.
  *  - **Discovery via RAG**: writes are vectorised into `ai_vectors`
- *    with `[TEAM_MEMORY]` / `[USER_MEMORY]` contextual prefixes —
- *    `searchKnowledge` is the canonical way to find existing entries
- *    before creating a new file.
+ *    with `[TEAM_MEMORY]` / `[USER_MEMORY]` / `[PROJECT_MEMORY]`
+ *    contextual prefixes — `searchKnowledge` is the canonical way to
+ *    find existing entries before creating a new file.
  */
 const MEMORY_TOOL_DESCRIPTION = [
   "Persistent file store at `/memories/` shared across conversations. Use for generic, repeatable business knowledge — processes, conventions, durable preferences. NEVER for file-specific facts (invoice/BL/PO numbers, totals, dates, line items, single-doc party names).",
@@ -44,7 +55,7 @@ const MEMORY_TOOL_DESCRIPTION = [
   "Usage:",
   "- For the WHEN to save (explicit signal vs recurring pattern vs propose via `askUserQuestion`) see the `<memory_protocol>` section of the system prompt — load-bearing.",
   "- When you already know the exact path → `command: 'view'`. To find a memory by topic without a path → use `searchKnowledge({ filters: { sourceTypes: ['memories'] } })` instead.",
-  "- Two namespaces: `/memories/user/...` (private to the current user) + `/memories/team/...` (shared across the team, audited).",
+  "- Namespaces: `/memories/user/...` (private to the current user), `/memories/team/...` (shared across the team, audited), and in a project's chats `/memories/project/...` (shared with the project's people, audited). `<memory_index>` lists the ones this chat can use.",
   "- Five commands routed via `command`:",
   "  - `view` — read a file (line-numbered) or list a directory (depth-2 + size). Optional `view_range:[start,end]` (1-indexed inclusive).",
   "  - `create` — create a new file with `file_text`. FAILS if it already exists — retry with `overwrite` and merge.",
@@ -52,9 +63,9 @@ const MEMORY_TOOL_DESCRIPTION = [
   "  - `delete` — remove a file. Logged in audit history.",
   "  - `rename` — move within the SAME namespace via `old_path` / `new_path`. Cross-namespace renames rejected.",
   "- Body format for `create` / `overwrite`: lead with the rule in plain language, then `**When to apply:**` (the trigger / context) and `**What to do:**` (the steps or rule).",
-  "- Path conventions (suggestions, adapt to existing paths): `team/processes/<slug>.md`, `team/conventions/<slug>.md`, `team/clients/<slug>.md`, `team/vendors/<slug>.md`, `user/preferences.md`.",
+  "- Path conventions (suggestions, adapt to existing paths): `team/processes/<slug>.md`, `team/conventions/<slug>.md`, `team/clients/<slug>.md`, `team/vendors/<slug>.md`, `project/decisions.md`, `user/preferences.md`.",
   "",
-  "Discovery: every write is auto-indexed in `searchKnowledge` with `[TEAM_MEMORY]` / `[USER_MEMORY]` prefix. Errors return `{error, code}`.",
+  "Discovery: every write is auto-indexed in `searchKnowledge` with `[TEAM_MEMORY]` / `[USER_MEMORY]` / `[PROJECT_MEMORY]` prefix. Errors return `{error, code}`.",
 ].join("\n");
 
 /**
@@ -110,7 +121,7 @@ const MemoryInputSchema = z.object({
     .min(1)
     .optional()
     .describe(
-      "rename only — new absolute path. Must be in the same namespace (user ↔ team renames are rejected).",
+      "rename only — new absolute path. Must be in the same namespace (renames across namespaces are rejected).",
     ),
 });
 
@@ -144,6 +155,40 @@ const requireFieldsForCommand = (
       if (!input.new_path) return missing("new_path");
       return { ok: true };
   }
+};
+
+/** The namespaces a call touches: its path's, or a rename's two. */
+const namespacesOf = (input: MemoryInput): AiMemoryScope[] => {
+  const paths =
+    input.command === "rename"
+      ? [input.old_path, input.new_path]
+      : [input.path];
+  return [
+    ...new Set(
+      paths.flatMap((path) =>
+        path === undefined
+          ? []
+          : [parseMemoryPath(path, { allowEmptyRelative: true }).scope],
+      ),
+    ),
+  ];
+};
+
+/** Why a namespace is not this turn's, and which ones are. */
+const namespaceUnavailable = (
+  scope: AiMemoryScope,
+  available: readonly AiMemoryScope[],
+): { error: string; code: string } => {
+  const why =
+    scope === "team"
+      ? "/memories/team/ holds the team's notes, for its people only, and the person writing in this chat is not one of them."
+      : scope === "project"
+        ? "/memories/project/ holds a project's notes, and this chat is not in a project."
+        : "/memories/user/ is not available in this chat.";
+  return {
+    error: `${why} Use ${available.map((s) => `/memories/${s}/`).join(" or ")}.`,
+    code: TOOL_ERROR_CODES.MEMORY_NAMESPACE_UNAVAILABLE,
+  };
 };
 
 /**
@@ -195,6 +240,7 @@ const buildContexts = (
       organizationId: ctx.organizationId,
       teamId: ctx.teamId,
       userId: ctx.userId,
+      projectId: ctx.projectId ?? null,
     },
     actor: {
       userId: ctx.userId,
@@ -222,6 +268,32 @@ export const createMemoryTool = () =>
       }
 
       try {
+        // Each namespace is someone's, and a turn uses only those its place
+        // gives it: the team's are for its people, a project's for its chats.
+        const available = memoryNamespacesFor(ctx);
+        const touched = namespacesOf(input);
+        const unavailable = touched.find((scope) => !available.includes(scope));
+        if (unavailable !== undefined) {
+          return namespaceUnavailable(unavailable, available);
+        }
+
+        // A team note is the team's context for the assistant: writing one
+        // takes `team.context.edit`, as it does from the settings. A project's
+        // note is the project's: reading one takes `view` on it, writing one
+        // `edit`, as for its instructions, and an archived project takes no
+        // new ones. A personal note is the user's own.
+        const writes = input.command !== "view";
+        if (writes && touched.includes("team")) {
+          await requireTurnCapability(ctx, "team.context.edit");
+        }
+        if (touched.includes("project") && ctx.projectId !== undefined) {
+          await requireTurnProjectLevel(
+            { ...ctx, projectId: ctx.projectId },
+            writes ? "edit" : "view",
+          );
+          if (writes) await assertProjectNotArchived(ctx.projectId);
+        }
+
         switch (input.command) {
           case "view": {
             // Schema is `z.array(...).length(2)` (see view_range note),
@@ -308,7 +380,7 @@ export const createMemoryTool = () =>
           }
         }
       } catch (err) {
-        return liftError(err);
+        return liftAccessRefusal(err) ?? liftError(err);
       }
     },
   });

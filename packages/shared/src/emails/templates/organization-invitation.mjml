@@ -58,6 +58,10 @@
     </table>
   </mj-text>
 
+  {{#if accountNote}}
+  <mj-text padding-top="16px">{{ accountNote }}</mj-text>
+  {{/if}}
+
   <mj-button href="{{acceptUrl}}" padding-top="28px" padding-bottom="28px">
     {{ cta }}
   </mj-button>

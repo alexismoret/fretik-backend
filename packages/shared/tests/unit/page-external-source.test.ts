@@ -35,6 +35,8 @@ const dataset = (extra: Partial<PageDataset>): PageDataset => ({
 const context = {
   teamId: "team-1",
   userId: "user-1",
+  // An external dataset reads no records: asking for the Drive is a bug.
+  drive: () => Promise.reject(new Error("an external dataset read the Drive")),
   state: {},
   data: {},
 } as const;

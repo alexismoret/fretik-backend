@@ -1,8 +1,8 @@
+import { access } from "@fretik/shared/authz/http";
 import {
   authMiddleware,
   type HonoLoggedAppType,
 } from "@fretik/shared/lib/auth-middleware";
-import { forbidden } from "@fretik/shared/lib/errors";
 import {
   responseBadRequestSchema,
   responseForbiddenSchema,
@@ -20,7 +20,6 @@ import {
   detectBackendHost,
   SANDBOX_EGRESS_TIERS,
 } from "@fretik/shared/services/e2b/egress-tiers";
-import { isOrgAdmin } from "@fretik/shared/services/organization/member-role";
 import {
   getOrganizationSandboxPolicy,
   setOrganizationSandboxPolicy,
@@ -36,7 +35,7 @@ import { z } from "zod";
  * Organization endpoints. Logo bytes are uploaded here (normalised + stored on
  * S3, public) and the URL is returned; the frontend persists it on the org
  * record via Better Auth `organization.update({ data: { logo } })`. Both logo
- * routes require the caller to be an owner/admin of the active organization.
+ * routes take the `organization.manage` capability (owners and admins).
  *
  * `/sandbox-policy` is the org's code-sandbox egress setting. Reading it is
  * open to any member — the page says what the sandbox may reach, which is
@@ -54,6 +53,7 @@ const fileSchema = z.custom<File>(
 const uploadLogoRoute = createRoute({
   method: "post",
   path: "/logo",
+  middleware: access.capability("organization.manage"),
   summary: "Upload the organization logo",
   tags: ["Organization"],
   request: {
@@ -88,6 +88,7 @@ const uploadLogoRoute = createRoute({
 const deleteLogoRoute = createRoute({
   method: "delete",
   path: "/logo",
+  middleware: access.capability("organization.manage"),
   summary: "Remove the organization logo files",
   tags: ["Organization"],
   responses: {
@@ -105,6 +106,9 @@ const deleteLogoRoute = createRoute({
 const getSandboxPolicyRoute = createRoute({
   method: "get",
   path: "/sandbox-policy",
+  middleware: access.session(
+    "Any member reads what the code sandbox may reach: it explains a failed call.",
+  ),
   summary: "Read the organization's sandbox egress policy",
   tags: ["Organization"],
   responses: {
@@ -124,6 +128,7 @@ const getSandboxPolicyRoute = createRoute({
 const patchSandboxPolicyRoute = createRoute({
   method: "patch",
   path: "/sandbox-policy",
+  middleware: access.capability("organization.manage"),
   summary: "Update the organization's sandbox egress policy",
   tags: ["Organization"],
   request: {
@@ -177,10 +182,7 @@ organizationRoutes.openapi(getSandboxPolicyRoute, async (c) => {
 });
 
 organizationRoutes.openapi(patchSandboxPolicyRoute, async (c) => {
-  const user = c.get("user");
   const org = c.get("organization");
-  if (!(await isOrgAdmin(org.id, user.id))) return c.json(forbidden(), 403);
-
   const merged = await setOrganizationSandboxPolicy({
     organizationId: org.id,
     patch: c.req.valid("json"),
@@ -189,20 +191,14 @@ organizationRoutes.openapi(patchSandboxPolicyRoute, async (c) => {
 });
 
 organizationRoutes.openapi(uploadLogoRoute, async (c) => {
-  const user = c.get("user");
   const org = c.get("organization");
-  if (!(await isOrgAdmin(org.id, user.id))) return c.json(forbidden(), 403);
-
   const { file } = c.req.valid("form");
   const url = await uploadImage({ prefix: "org-logos", id: org.id, file });
   return c.json({ url }, 200);
 });
 
 organizationRoutes.openapi(deleteLogoRoute, async (c) => {
-  const user = c.get("user");
   const org = c.get("organization");
-  if (!(await isOrgAdmin(org.id, user.id))) return c.json(forbidden(), 403);
-
   await deleteImages("org-logos", org.id);
   return c.json({ ok: true }, 200);
 });

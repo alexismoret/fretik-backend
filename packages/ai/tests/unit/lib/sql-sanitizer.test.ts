@@ -25,7 +25,11 @@ import {
 
 const expectRejection = (
   sql: string,
-  code: "SQL_PARSE_FAILED" | "SQL_NOT_READ_ONLY" | "SQL_TABLE_NOT_ALLOWED",
+  code:
+    | "SQL_PARSE_FAILED"
+    | "SQL_NOT_READ_ONLY"
+    | "SQL_TABLE_NOT_ALLOWED"
+    | "SQL_FUNCTION_NOT_ALLOWED",
 ) => {
   try {
     sanitizeSelect(sql);
@@ -225,5 +229,68 @@ describe("sanitizeSelect — collection graph surface (typed tables)", () => {
 
   test("REJECTS a non-coll_ table in the data schema", () => {
     expectRejection("SELECT * FROM data.secrets", "SQL_TABLE_NOT_ALLOWED");
+  });
+});
+
+/**
+ * The scope the RLS policies read is a set of session settings, and a SELECT
+ * can rewrite a setting by calling a function. A query that could reach one
+ * would read another team's rows, or files kept from its reader.
+ */
+describe("sanitizeSelect — functions that could change the query's own scope", () => {
+  test("rejects set_config, in any case and any schema", () => {
+    expectRejection(
+      "SELECT set_config('fretik.team_id', '00000000-0000-0000-0000-000000000000', true), * FROM documents",
+      "SQL_FUNCTION_NOT_ALLOWED",
+    );
+    expectRejection(
+      "SELECT pg_catalog.\"SET_CONFIG\"('fretik.hidden_folders', '{}', true)",
+      "SQL_FUNCTION_NOT_ALLOWED",
+    );
+    expectRejection(
+      "WITH s AS (SELECT SET_CONFIG('fretik.user_id', 'x', true)) SELECT * FROM documents, s",
+      "SQL_FUNCTION_NOT_ALLOWED",
+    );
+  });
+
+  test("rejects the functions that run a query written as a string", () => {
+    expectRejection(
+      "SELECT query_to_xml('select 1', true, false, '')",
+      "SQL_FUNCTION_NOT_ALLOWED",
+    );
+    expectRejection(
+      "SELECT * FROM ts_stat('select to_tsvector(label) from collection_records')",
+      "SQL_FUNCTION_NOT_ALLOWED",
+    );
+    expectRejection(
+      "SELECT ts_rewrite('a'::tsquery, 'select ''a''::tsquery, ''b''::tsquery')",
+      "SQL_FUNCTION_NOT_ALLOWED",
+    );
+  });
+
+  test("rejects pg_* administration, even with a comment before the call", () => {
+    expectRejection(
+      "SELECT pg_advisory_lock(1) FROM documents",
+      "SQL_FUNCTION_NOT_ALLOWED",
+    );
+    expectRejection("SELECT pg_sleep/**/(10)", "SQL_FUNCTION_NOT_ALLOWED");
+  });
+
+  test("rejects Unicode-escaped names, which spell anything", () => {
+    // Today the parser refuses the syntax first; the name rule stands behind
+    // it for the day a parser accepts it.
+    expect(() =>
+      sanitizeSelect(
+        "SELECT U&\"set\\005fconfig\"('fretik.team_id', 'x', true)",
+      ),
+    ).toThrow(SqlValidationException);
+  });
+
+  test("still accepts ordinary functions", () => {
+    expect(
+      sanitizeSelect(
+        "SELECT date_trunc('month', created_at) AS m, count(*) FROM documents GROUP BY 1",
+      ),
+    ).toContain("date_trunc");
   });
 });

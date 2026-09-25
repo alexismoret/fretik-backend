@@ -1,3 +1,4 @@
+import { access } from "@fretik/shared/authz/http";
 import {
   authMiddleware,
   type HonoLoggedAppType,
@@ -34,78 +35,96 @@ chatSuggestionsRoutes.use("*", registryWarmMiddleware);
 /** A person mashing Refresh must not become a per-click LLM bill. */
 const MANUAL_REFRESH_COOLDOWN_SECONDS = 300;
 
-chatSuggestionsRoutes.get("/", async (c) => {
-  const user = c.get("user");
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
+chatSuggestionsRoutes.get(
+  "/",
+  access.session(
+    "The caller's own starter prompts in the active team, drawn from what they can read.",
+  ),
+  async (c) => {
+    const user = c.get("user");
+    const team = c.get("team");
+    if (!team) return throwHttpError(403, teamRequired());
 
-  const suggestions = await getOrRefreshSuggestions({
-    organizationId: team.organizationId,
-    teamId: team.id,
-    userId: user.id,
-    language: user.language,
-  });
+    const suggestions = await getOrRefreshSuggestions({
+      organizationId: team.organizationId,
+      teamId: team.id,
+      userId: user.id,
+      language: user.language,
+    });
 
-  return c.json(suggestions, 200);
-});
+    return c.json(suggestions, 200);
+  },
+);
 
-chatSuggestionsRoutes.post("/refresh", async (c) => {
-  const user = c.get("user");
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
+chatSuggestionsRoutes.post(
+  "/refresh",
+  access.session(
+    "Regenerates the caller's own starter prompts from what they can read.",
+  ),
+  async (c) => {
+    const user = c.get("user");
+    const team = c.get("team");
+    if (!team) return throwHttpError(403, teamRequired());
 
-  // The cooldown is the rate limit itself, not a guard in front of one: the
-  // key's own TTL is what expires it, so there is no counter to reset.
-  const acquired = await redis.set(
-    `chat-suggestions:refresh:${team.id}:${user.id}`,
-    "1",
-    "EX",
-    MANUAL_REFRESH_COOLDOWN_SECONDS,
-    "NX",
-  );
-  if (acquired === null) {
-    return throwHttpError(
-      429,
-      createApiError(
-        "RATE_LIMITED",
-        "Suggestions were refreshed a moment ago. Try again in a few minutes.",
-      ),
+    // The cooldown is the rate limit itself, not a guard in front of one: the
+    // key's own TTL is what expires it, so there is no counter to reset.
+    const acquired = await redis.set(
+      `chat-suggestions:refresh:${team.id}:${user.id}`,
+      "1",
+      "EX",
+      MANUAL_REFRESH_COOLDOWN_SECONDS,
+      "NX",
     );
-  }
+    if (acquired === null) {
+      return throwHttpError(
+        429,
+        createApiError(
+          "RATE_LIMITED",
+          "Suggestions were refreshed a moment ago. Try again in a few minutes.",
+        ),
+      );
+    }
 
-  const suggestions = await getOrRefreshSuggestions({
-    organizationId: team.organizationId,
-    teamId: team.id,
-    userId: user.id,
-    language: user.language,
-    force: true,
-  });
+    const suggestions = await getOrRefreshSuggestions({
+      organizationId: team.organizationId,
+      teamId: team.id,
+      userId: user.id,
+      language: user.language,
+      force: true,
+    });
 
-  return c.json(suggestions, 200);
-});
+    return c.json(suggestions, 200);
+  },
+);
 
-chatSuggestionsRoutes.post("/:id/feedback", async (c) => {
-  const user = c.get("user");
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
+chatSuggestionsRoutes.post(
+  "/:id/feedback",
+  access.handler(
+    "Marks one of the caller's own suggestions; the service scopes it to them.",
+  ),
+  async (c) => {
+    const user = c.get("user");
+    const team = c.get("team");
+    if (!team) return throwHttpError(403, teamRequired());
 
-  const body: unknown = await c.req.json().catch(() => null);
-  const parsed = chatSuggestionFeedbackSchema.safeParse(body);
-  if (!parsed.success) {
-    return throwHttpError(
-      400,
-      validationError("Expected { status: 'used' | 'dismissed' }"),
-    );
-  }
+    const body: unknown = await c.req.json().catch(() => null);
+    const parsed = chatSuggestionFeedbackSchema.safeParse(body);
+    if (!parsed.success) {
+      return throwHttpError(
+        400,
+        validationError("Expected { status: 'used' | 'dismissed' }"),
+      );
+    }
 
-  await markChatSuggestion({
-    id: c.req.param("id"),
-    userId: user.id,
-    teamId: team.id,
-    status: parsed.data.status,
-  });
+    await markChatSuggestion({
+      id: c.req.param("id"),
+      userId: user.id,
+      teamId: team.id,
+      status: parsed.data.status,
+    });
 
-  return c.json({ ok: true }, 200);
-});
+    return c.json({ ok: true }, 200);
+  },
+);
 
 export { chatSuggestionsRoutes };

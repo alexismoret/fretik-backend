@@ -1,7 +1,17 @@
+import { and, asc, eq, isNull, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
+import {
+  documentAccessColumnsOf,
+  driveVisibility,
+} from "../../authz/drive-sql";
+import type { Principal } from "../../authz/principal";
 import db from "../../db";
+import { documents, folders } from "../../db/schema";
 
 /**
- * Lean listing of a folder's direct sub-folders, scoped to a team.
+ * Lean listing of a folder's direct sub-folders the person can open, scoped
+ * to a team, each with what it holds that they can open too — the folders'
+ * stored counters count what the person may not see.
  *
  * `parentFolderId = null` (or omitted) lists the drive root. Returns only
  * what a caller needs to navigate the tree or pick a folder id — no
@@ -11,24 +21,42 @@ import db from "../../db";
  * through `searchDocuments`.
  */
 export const listFolders = async (data: {
+  principal: Principal;
   teamId: string;
   parentFolderId?: string | null;
 }) => {
-  const { teamId, parentFolderId } = data;
+  const { principal, teamId, parentFolderId } = data;
+  const visibility = await driveVisibility(principal, teamId);
+  const child = alias(folders, "child");
+  const doc = alias(documents, "doc");
 
-  return db.query.folders.findMany({
-    columns: {
-      id: true,
-      name: true,
-      parentFolderId: true,
-      subFolderCount: true,
-      documentCount: true,
-      description: true,
-    },
-    where: {
-      teamId,
-      parentFolderId: parentFolderId ? parentFolderId : { isNull: true },
-    },
-    orderBy: { name: "asc" },
-  });
+  return db
+    .select({
+      id: folders.id,
+      name: folders.name,
+      parentFolderId: folders.parentFolderId,
+      subFolderCount: sql<number>`(
+        SELECT count(*) FROM ${child}
+        WHERE ${child.parentFolderId} = ${folders.id}
+          AND ${visibility.folder(child.id)}
+      )`.mapWith(Number),
+      documentCount: sql<number>`(
+        SELECT count(*) FROM ${doc}
+        WHERE ${doc.folderId} = ${folders.id}
+          AND ${doc.status} <> 'error'
+          AND ${visibility.document(documentAccessColumnsOf(doc))}
+      )`.mapWith(Number),
+      description: folders.description,
+    })
+    .from(folders)
+    .where(
+      and(
+        eq(folders.teamId, teamId),
+        parentFolderId
+          ? eq(folders.parentFolderId, parentFolderId)
+          : isNull(folders.parentFolderId),
+        visibility.folder(folders.id),
+      ),
+    )
+    .orderBy(asc(folders.name));
 };

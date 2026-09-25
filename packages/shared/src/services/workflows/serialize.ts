@@ -28,6 +28,7 @@ export const serializeWorkflow = (row: Workflow): WorkflowResponse => ({
   teamId: row.teamId,
   organizationId: row.organizationId,
   userId: row.userId,
+  projectId: row.projectId,
   name: row.name,
   description: row.description,
   icon: row.icon,

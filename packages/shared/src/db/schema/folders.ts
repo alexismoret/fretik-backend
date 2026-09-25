@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  boolean,
   foreignKey,
   index,
   integer,
@@ -9,6 +10,7 @@ import {
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
+import { projects } from "./access";
 import { team, user } from "./auth-schema";
 
 /** Who wrote a folder's description: the nightly generator (`auto`), a person
@@ -78,6 +80,16 @@ export const folders = pgTable(
       onDelete: "set null",
     }),
 
+    // Access (see `db/schema/access.ts`). A folder's grants reach everything
+    // below it; a restricted folder stops inheriting from its parent and its
+    // container, and so hides its whole subtree from anyone it is not shared
+    // with.
+    ownerUserId: uuid("owner_user_id").references(() => user.id, {
+      onDelete: "set null",
+    }),
+    projectId: uuid("project_id").references(() => projects.id),
+    accessRestricted: boolean("access_restricted").notNull().default(false),
+
     // Stats
     subFolderCount: integer("sub_folder_count").default(0).notNull(),
     documentCount: integer("document_count").default(0).notNull(),
@@ -99,6 +111,15 @@ export const folders = pgTable(
     index("folders_team_idx").on(table.teamId),
     index("folders_parent_idx").on(table.parentFolderId),
     index("folders_full_path_idx").on(table.fullPath),
+    index("folders_project_idx")
+      .on(table.projectId)
+      .where(sql`project_id IS NOT NULL`),
+    // Restricted folders are rare, and every read of records looks for them
+    // (`authz/drive-sql.ts`, `teamPrivateFolderIds`): the index holds only
+    // those rows.
+    index("folders_restricted_idx")
+      .on(table.teamId)
+      .where(sql`access_restricted`),
   ],
 );
 

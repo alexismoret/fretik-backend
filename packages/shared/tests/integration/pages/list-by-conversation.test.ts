@@ -27,6 +27,9 @@ afterAll(async () => {
   await fx.cleanup();
 });
 
+/** A member of the team: the fixture's pages are open to it. */
+const reader = () => fx.principalOf(fx.userIds[1]);
+
 describe("listPages by conversation", () => {
   test("keeps only the pages the conversation built", async () => {
     const here = await fx.createConversation();
@@ -41,6 +44,7 @@ describe("listPages by conversation", () => {
 
     const pages = await listPages({
       teamId: fx.teamId,
+      principal: await reader(),
       sourceConversationId: here.id,
     });
 
@@ -54,6 +58,7 @@ describe("listPages by conversation", () => {
 
     const pages = await listPages({
       teamId: fx.teamId,
+      principal: await reader(),
       sourceConversationId: quiet.id,
     });
 
@@ -67,7 +72,9 @@ describe("listPages by conversation", () => {
     });
     const standalone = await fx.createPage();
 
-    const ids = (await listPages({ teamId: fx.teamId })).map((p) => p.id);
+    const ids = (
+      await listPages({ teamId: fx.teamId, principal: await reader() })
+    ).map((p) => p.id);
 
     expect(ids).toContain(fromChat.id);
     expect(ids).toContain(standalone.id);

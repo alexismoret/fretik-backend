@@ -1,4 +1,8 @@
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import {
+  type DriveVisibility,
+  mirrorRecordVisible,
+} from "../../authz/drive-sql";
 import db, { type Executor, type Transaction } from "../../db";
 import type { OntologySource, OntologyStatus } from "../../db/schema";
 import { collectionRecords, links, linkTypes } from "../../db/schema";
@@ -58,6 +62,12 @@ const edgeKey = (
 export const bulkCreateLinks = async (input: {
   organizationId: string;
   teamId: string;
+  /**
+   * What the person creating the links can open in the Drive: a hidden
+   * file's mirror is not a record they can link to. A system caller (the
+   * document pipeline) passes a system principal's, which hides nothing.
+   */
+  drive: DriveVisibility;
   links: LinkInput[];
   source?: OntologySource;
   actor?: EventActor;
@@ -109,6 +119,7 @@ export const bulkCreateLinks = async (input: {
       and(
         inArray(collectionRecords.id, recordIds),
         recordReadableCondition(input.teamId, input.organizationId),
+        mirrorRecordVisible(input.drive, collectionRecords.documentId),
       ),
     );
   const linkTypeById = new Map(linkTypeRows.map((r) => [r.id, r]));

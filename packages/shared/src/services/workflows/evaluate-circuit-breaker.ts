@@ -1,3 +1,4 @@
+import { SYSTEM } from "../../authz/system-principals";
 import db from "../../db";
 import type { WorkflowRunError } from "../../schemas/workflows";
 import { pauseWorkflow } from "./pause";
@@ -104,6 +105,7 @@ export const evaluateCircuitBreaker = async (params: {
   await pauseWorkflow({
     id: run.workflowId,
     teamId: run.teamId,
+    principal: SYSTEM.workflowEngine,
     reason: `${CIRCUIT_BREAKER_REASON_PREFIX}:${String(threshold)}`,
   });
   console.warn(

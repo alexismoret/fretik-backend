@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+import type { DriveVisibility } from "../../authz/drive-sql";
 import db from "../../db";
 import type { LocationBbox } from "../../db/schema/field-types";
 import { badRequest, throwHttpError } from "../../lib/errors";
@@ -70,6 +71,9 @@ const asBbox = (v: unknown): LocationBbox | null => {
 export const getMapPoints = async (input: {
   teamId: string;
   collectionId: string;
+  /** What the person can open in the Drive: a hidden file's mirror is out. */
+  drive: DriveVisibility;
+
   fieldKey: string;
   // Omitted = the whole dataset (the client's first call). Present = viewport.
   bbox?: MapBbox;
@@ -93,7 +97,11 @@ export const getMapPoints = async (input: {
     collectionId: input.collectionId,
     teamId: input.teamId,
   });
-  const visibility = recordVisibilityCondition({ teamId: input.teamId, scope });
+  const visibility = recordVisibilityCondition({
+    teamId: input.teamId,
+    scope,
+    drive: input.drive,
+  });
 
   const table = sql.raw(qualifiedCollectionTable(input.collectionId));
   const fkCol = sql.raw(`o."${input.fieldKey}"`);

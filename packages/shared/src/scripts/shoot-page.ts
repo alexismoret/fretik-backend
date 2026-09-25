@@ -19,6 +19,7 @@
  * so and writes nothing rather than pretending.
  */
 
+import { SYSTEM } from "../authz/system-principals";
 import db from "../db";
 import { renderPage } from "../services/pages/render/render-page";
 import { closeRenderViews } from "../services/pages/render/webview";
@@ -42,6 +43,7 @@ const result = await renderPage({
   definition: row.definition,
   teamId: row.teamId,
   userId: null,
+  reader: SYSTEM.operatorScript,
   pageName: row.name,
 });
 

@@ -1,5 +1,10 @@
-import { generateOrganizationInvitation } from "../../emails/generators";
+import db from "../../db";
+import {
+  generateOrganizationInvitation,
+  type InvitationItem,
+} from "../../emails/generators";
 import { sendEmail } from "../../lib/email";
+import { normalizeLocale } from "../../lib/locales";
 import { getTeamLocale } from "../field-definitions/get-locale";
 
 export interface OrganizationInvitationEmailParams {
@@ -18,24 +23,46 @@ export interface OrganizationInvitationEmailParams {
    * different paragraph and subject line.
    */
   existingMember?: boolean;
+  /**
+   * The item shared with them by email (`services/access/guests/`), with the
+   * team that holds it: the email names the item, and is written in that
+   * team's language when the invitation joins no team of its own.
+   */
+  item?: (InvitationItem & { teamId: string | null }) | null;
 }
 
 /**
  * Render and send an organization invitation email.
  *
- * Extracted from the Better Auth `sendInvitationEmail` callback because the
- * team-invitation path (`invite-member-to-team.ts`) writes its own `invitation`
- * row and therefore has to send its own email: two copies of "which locale,
- * which template, which subject" would drift the moment either is touched.
+ * The one place an invitation email is made. Every invitation path
+ * (`invite-to-team.ts`, a guest invited from the share dialog) writes its own
+ * `invitation` row through Better Auth's adapter, below the endpoint that
+ * would have sent it (closed, `lib/auth-replaced-endpoints.ts`), and so sends
+ * its own email: two copies of "which locale, which template, which subject"
+ * would drift the moment either is touched.
  *
- * Localized to the inviting TEAM's language — the invitee usually has no
- * account yet, so a per-user language isn't available (falls back to `en` for
- * organization-level invitations with no team).
+ * Someone who already has a Fretik account, in another organization, reads
+ * it in their own language and is told to sign in with that account: the
+ * invitation page opens on signing in, never on a sign-up. The inviter learns
+ * nothing of it; only the email, which goes to that address alone, differs.
+ *
+ * Anyone else reads it in the inviting TEAM's language. A guest joins no
+ * team: theirs is the language of the team whose item they were invited onto
+ * (falls back to `en` for organization-level invitations with neither).
  */
 export const sendOrganizationInvitationEmail = async (
   params: OrganizationInvitationEmailParams,
 ): Promise<void> => {
-  const lang = params.teamId ? await getTeamLocale(params.teamId) : "en";
+  const account = await db.query.user.findFirst({
+    columns: { language: true },
+    where: { email: params.email.trim().toLowerCase() },
+  });
+  const localeTeamId = params.teamId ?? params.item?.teamId ?? null;
+  const lang = account
+    ? normalizeLocale(account.language)
+    : localeTeamId
+      ? await getTeamLocale(localeTeamId)
+      : "en";
 
   const { subject, html } = await generateOrganizationInvitation(
     {
@@ -46,6 +73,8 @@ export const sendOrganizationInvitationEmail = async (
       teamId: params.teamId,
       expiresAt: params.expiresAt,
       existingMember: params.existingMember ?? false,
+      existingAccount: account !== undefined,
+      item: params.item ?? null,
     },
     lang,
   );

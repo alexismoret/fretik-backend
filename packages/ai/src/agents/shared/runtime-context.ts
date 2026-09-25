@@ -82,6 +82,18 @@ export type AgentRuntimeContext = {
    */
   conversationId?: string;
   /**
+   * The project the turn works in: the chat's, or the workflow's. What the
+   * tools create lands there, and the team's agent reaches nothing else of
+   * its team (`actingPrincipal`). Undefined for a team's chat or workflow.
+   */
+  projectId?: string;
+  /**
+   * The person the turn acts for takes part in the chat's project without
+   * being one of its team's people. Tools keep the team's own context (its
+   * notes, its collections, its shared connections) away from them.
+   */
+  outsideTeam?: boolean;
+  /**
    * Per-turn trace identifier. Generated once per `runChatbotTurn`
    * (typically the resumable `streamId` when present, otherwise a
    * fresh UUIDv7) and prefixed onto every step / fallback / tool log
@@ -174,7 +186,7 @@ export type AgentRuntimeContext = {
   activeMemoryBlock?: string;
   /**
    * Rendered `{{memoryIndex}}` fragment — the paths and sizes of everything
-   * under `/memories/{user,team}/`, no content. Built by
+   * in the namespaces the turn uses (`memoryNamespacesFor`), no content. Built by
    * `assembleContextFragments` from one indexed SELECT, so it is present on
    * every turn regardless of what the message asks, which is the point:
    * `activeMemoryBlock` is query-shaped and only surfaces a memory the
@@ -241,6 +253,12 @@ export type AgentRuntimeContext = {
    * prompt stays byte-identical to the single-user case.
    */
   participantsBlock?: string;
+  /**
+   * Someone who does not take part can read the conversation too: it is open
+   * to its team, or was given to people or groups to read. With the roster,
+   * it renders the `{{collaborationBlock}}` section.
+   */
+  openToReaders?: boolean;
   /**
    * Active external-app connections (Outlook, Gmail, …) visible to this
    * turn — team-scoped rows + the caller's user-scoped rows, filtered

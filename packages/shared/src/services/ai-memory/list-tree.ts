@@ -1,14 +1,16 @@
-import { and, asc, eq, isNull, or } from "drizzle-orm";
+import { and, asc, or } from "drizzle-orm";
 import db from "../../db";
 import { aiMemories, type AiMemoryScope } from "../../db/schema/ai-memory";
+import { memoryNamespaceConditions } from "./lookup";
 import type { MemoryScopeKey } from "./types";
 
 /**
  * The memory tree as files, for the sandbox projection.
  *
- * Same visibility rule as `buildMemoryIndexManifest` — the user's own private
- * memories plus the team's shared ones — kept side by side with it so the two
- * views of one store can never disagree about what a person may see.
+ * Same visibility rule as `buildMemoryIndexManifest` — the namespaces the
+ * turn reads (`memoryNamespacesFor`), each with its owner's rows — kept side
+ * by side with it so the two views of one store can never disagree about what
+ * a person may see.
  */
 
 export interface MemoryTreeEntry {
@@ -18,13 +20,14 @@ export interface MemoryTreeEntry {
   updatedAt: Date;
 }
 
-const visibleTo = (scopeKey: MemoryScopeKey) =>
-  and(
-    eq(aiMemories.organizationId, scopeKey.organizationId),
-    eq(aiMemories.teamId, scopeKey.teamId),
-    or(
-      and(eq(aiMemories.scope, "user"), eq(aiMemories.userId, scopeKey.userId)),
-      and(eq(aiMemories.scope, "team"), isNull(aiMemories.userId)),
+/** The rows of these namespaces (never empty: the callers answer `[]` first). */
+const visibleIn = (
+  scopeKey: MemoryScopeKey,
+  namespaces: readonly AiMemoryScope[],
+) =>
+  or(
+    ...namespaces.map((scope) =>
+      and(...memoryNamespaceConditions(scope, scopeKey)),
     ),
   );
 
@@ -40,30 +43,36 @@ const visibleTo = (scopeKey: MemoryScopeKey) =>
  */
 export const listMemoryFingerprint = async (
   scopeKey: MemoryScopeKey,
+  namespaces: readonly AiMemoryScope[],
 ): Promise<MemoryTreeEntry[]> =>
-  db
-    .select({
-      scope: aiMemories.scope,
-      path: aiMemories.path,
-      sizeBytes: aiMemories.sizeBytes,
-      updatedAt: aiMemories.updatedAt,
-    })
-    .from(aiMemories)
-    .where(visibleTo(scopeKey))
-    .orderBy(asc(aiMemories.scope), asc(aiMemories.path));
+  namespaces.length === 0
+    ? []
+    : db
+        .select({
+          scope: aiMemories.scope,
+          path: aiMemories.path,
+          sizeBytes: aiMemories.sizeBytes,
+          updatedAt: aiMemories.updatedAt,
+        })
+        .from(aiMemories)
+        .where(visibleIn(scopeKey, namespaces))
+        .orderBy(asc(aiMemories.scope), asc(aiMemories.path));
 
 /** The same rows WITH their bodies — read only when the fingerprint moved. */
 export const listMemoryTreeWithContent = async (
   scopeKey: MemoryScopeKey,
+  namespaces: readonly AiMemoryScope[],
 ): Promise<(MemoryTreeEntry & { content: string })[]> =>
-  db
-    .select({
-      scope: aiMemories.scope,
-      path: aiMemories.path,
-      sizeBytes: aiMemories.sizeBytes,
-      updatedAt: aiMemories.updatedAt,
-      content: aiMemories.content,
-    })
-    .from(aiMemories)
-    .where(visibleTo(scopeKey))
-    .orderBy(asc(aiMemories.scope), asc(aiMemories.path));
+  namespaces.length === 0
+    ? []
+    : db
+        .select({
+          scope: aiMemories.scope,
+          path: aiMemories.path,
+          sizeBytes: aiMemories.sizeBytes,
+          updatedAt: aiMemories.updatedAt,
+          content: aiMemories.content,
+        })
+        .from(aiMemories)
+        .where(visibleIn(scopeKey, namespaces))
+        .orderBy(asc(aiMemories.scope), asc(aiMemories.path));

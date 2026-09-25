@@ -57,9 +57,39 @@ const COLLECTION_TABLE_PREFIX = "coll_";
  */
 const ALLOWED_STATEMENTS = new Set(["select", "with"]);
 
+/**
+ * Names a query may not contain, matched on the RAW text (any case, quoted or
+ * not, in a string or a comment — a false positive costs a rephrase, a miss
+ * costs the scope). A name cannot be split by a comment, so matching the name
+ * alone is enough.
+ *
+ * The tool's whole scope lives in session settings (`fretik.*`, set by
+ * `runReadonlyQuery`) that its RLS policies read row by row, and a SELECT can
+ * change a setting: `set_config()` is a function, not a statement. So is
+ * running a query built from a string — `query_to_xml` and its siblings,
+ * `ts_stat`, `ts_rewrite` — which would put `set_config` out of sight of any
+ * text check. `pg_*` functions are administration (advisory locks that outlive
+ * the pooled session, sleeps, signals) and large objects are files, never a
+ * business question. Unicode-escaped names (`U&"…"`) are refused too: they
+ * spell any name without writing it.
+ */
+const FORBIDDEN_NAMES: readonly RegExp[] = [
+  /\bset_config\b/i,
+  /\b(?:query|cursor|table|schema|database)_to_xml/i,
+  /\bts_(?:stat|rewrite)\b/i,
+  /\bdblink/i,
+  /\blo_(?:import|export|get|put|open|creat|create|unlink|from_bytea|lseek|read|write|truncate|close|tell)/i,
+  /\bpg_\w+/i,
+  /\bu&["']/i,
+];
+
 /** Shape of a validation error bubbled back up to the agent. */
 export interface SqlValidationError {
-  code: "SQL_PARSE_FAILED" | "SQL_NOT_READ_ONLY" | "SQL_TABLE_NOT_ALLOWED";
+  code:
+    | "SQL_PARSE_FAILED"
+    | "SQL_NOT_READ_ONLY"
+    | "SQL_TABLE_NOT_ALLOWED"
+    | "SQL_FUNCTION_NOT_ALLOWED";
   message: string;
 }
 
@@ -96,6 +126,8 @@ const collectCteNames = (statements: unknown[]): Set<string> => {
  *  2. Reject anything that isn't SELECT / WITH.
  *  3. Reject any relation outside the product allowlist (catches system
  *     catalogs, auth tables, and schema-qualified access).
+ *  4. Reject a call that could change the query's own scope
+ *     (`FORBIDDEN_NAMES`).
  *
  * Team/org scoping is enforced by the database (RLS + the curated view via the
  * `fretik.team_id` / `fretik.organization_id` session variables set per query),
@@ -179,6 +211,16 @@ export const sanitizeSelect = (rawSql: string): string => {
     throw new SqlValidationException({
       code: "SQL_TABLE_NOT_ALLOWED",
       message: `Table "${table}" is not accessible. Query the per-type tables data.coll_<collectionId> (from <team_collections>), the registry collection_records ⋈ collections, and the graph relations (links, link_types, domain_events) listed in the system prompt.`,
+    });
+  }
+
+  // 4. Calls that could change the query's own scope. Last, so a forbidden
+  //    TABLE is named as one (`pg_tables` is a catalog before it is a name).
+  if (FORBIDDEN_NAMES.some((pattern) => pattern.test(sql))) {
+    throw new SqlValidationException({
+      code: "SQL_FUNCTION_NOT_ALLOWED",
+      message:
+        "This query calls a function the SQL tool does not allow (session settings, dynamic SQL, pg_* administration). Answer the question with plain SELECTs over the product tables.",
     });
   }
 

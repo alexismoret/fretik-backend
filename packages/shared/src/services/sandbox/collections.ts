@@ -1,4 +1,8 @@
 import { z } from "zod";
+import { driveVisibilityOfUser } from "../../authz/drive-sql";
+import { userHasCapability } from "../../authz/gates";
+import { loadPrincipal } from "../../authz/load-principal";
+import { partitionMirrorWrites } from "../../authz/mirror-writes";
 import type { BulkOperation, BulkOperationParams } from "../../db/schema";
 import { MAX_BULK_ITEMS } from "../../lib/db-bulk";
 import { audienceSchema } from "../../schemas/collection-sharing";
@@ -49,6 +53,12 @@ import {
 } from "../collection-records/bulk-update";
 import { queryCollectionRecords } from "../collection-records/query";
 import { getRecordSnapshots } from "../collection-records/snapshot-batch";
+import { requireCollectionAudienceAllowed } from "../collection-sharing/audience-policy";
+import {
+  assertCanManageType,
+  RECORD_DELETION_REFUSAL,
+  recordsShortOfFull,
+} from "../collection-sharing/write-access";
 import { confirmFullResync } from "../collection-sync/confirm-full-resync";
 import { createSyncSource } from "../collection-sync/create-source";
 import { deleteSyncSource } from "../collection-sync/delete-source";
@@ -93,6 +103,9 @@ import type { ExecContext, SandboxExecResponse } from "./types";
  * generic approval gate (a pending `record_write` the user reviews); schema
  * changes are blocked for any run. Plain chat + `autonomous` write directly.
  */
+/** The ops that change nothing. */
+const READ_OPS = new Set(["records.query", "sync.list", "sync.preview"]);
+
 // Ops executed through the sandbox exec seam attribute as `connector`, keeping
 // the driving user + conversation for provenance.
 const execActor = (ctx: ExecContext): EventActor => ({
@@ -107,6 +120,24 @@ export const dispatchCollections = async (
   rawArgs: Record<string, unknown>,
 ): Promise<SandboxExecResponse> => {
   const actor = execActor(ctx);
+  // A viewer reads. Every op but the reads changes the team's records, its
+  // schema or what feeds it, which takes contributing to the team — the same
+  // rule the domain tools and the API apply (`team.content.create`).
+  if (
+    !READ_OPS.has(op) &&
+    !(await userHasCapability({
+      userId: ctx.userId,
+      organizationId: ctx.organizationId,
+      capability: "team.content.create",
+      teamId: ctx.teamId,
+    }))
+  ) {
+    return {
+      status: "error",
+      message:
+        "ACCESS_DENIED: the person this runs for can read this team's collections but not change them. Tell the user; do not retry.",
+    };
+  }
   // Resolve the run's write-autonomy once: `null` = plain chat (direct writes),
   // else a workflow run whose mode gates record writes + schema changes.
   const autonomy =
@@ -315,6 +346,68 @@ const bulkUpdateArgs = z.object({
   merge: z.boolean().optional(),
 });
 
+/**
+ * A batch naming a record that mirrors a file kept from the person this runs
+ * for (`authz/mirror-writes.ts`) is refused whole, before any card is drawn:
+ * the card would show the file's name and fields to someone who cannot open
+ * it. The agent retries without the ids named.
+ */
+const refuseKeptMirrors = async (
+  ctx: ExecContext,
+  recordIds: readonly string[],
+): Promise<SandboxExecResponse | null> => {
+  const principal = await loadPrincipal({
+    organizationId: ctx.organizationId,
+    userId: ctx.userId,
+  });
+  if (principal === null) {
+    return {
+      status: "error",
+      message:
+        "ACCESS_DENIED: the person this runs for is no longer in the organization. Tell the user; do not retry.",
+    };
+  }
+  const { refused } = await partitionMirrorWrites({ principal, recordIds });
+  if (refused.length === 0) return null;
+  return {
+    status: "error",
+    message: `RECORDS_REFUSED: ${refused
+      .map((r) => `${r.id} (${r.error})`)
+      .join("; ")}. Nothing was written. Retry without these records.`,
+  };
+};
+
+/**
+ * Records someone else created, while the person's level on the team's
+ * content stops short of deleting them (the team's policy): refused whole,
+ * before any approval card opens.
+ */
+const refuseHeldDeletions = async (
+  ctx: ExecContext,
+  recordIds: readonly string[],
+): Promise<SandboxExecResponse | null> => {
+  const principal = await loadPrincipal({
+    organizationId: ctx.organizationId,
+    userId: ctx.userId,
+  });
+  // No principal is answered by `refuseKeptMirrors`, which runs first.
+  if (principal === null) return null;
+  const held = await recordsShortOfFull({
+    principal,
+    teamId: ctx.teamId,
+    recordIds,
+  });
+  if (held.length === 0) return null;
+  return {
+    status: "error",
+    message: `ACCESS_DENIED: ${RECORD_DELETION_REFUSAL} Held back: ${held
+      .map((record) => record.id)
+      .join(
+        ", ",
+      )}. Nothing was deleted. Tell the user a team lead can delete them; do not retry.`,
+  };
+};
+
 const bulkUpdate = async (
   ctx: ExecContext,
   actor: EventActor,
@@ -323,6 +416,11 @@ const bulkUpdate = async (
   rawArgs: Record<string, unknown>,
 ): Promise<SandboxExecResponse> => {
   const { updates, merge } = bulkUpdateArgs.parse(rawArgs);
+  const kept = await refuseKeptMirrors(
+    ctx,
+    updates.map((u) => u.id),
+  );
+  if (kept !== null) return kept;
 
   return gateRecordWriteApproval({
     ctx,
@@ -397,6 +495,10 @@ const bulkDelete = async (
   rawArgs: Record<string, unknown>,
 ): Promise<SandboxExecResponse> => {
   const { recordIds } = bulkDeleteArgs.parse(rawArgs);
+  const kept = await refuseKeptMirrors(ctx, recordIds);
+  if (kept !== null) return kept;
+  const held = await refuseHeldDeletions(ctx, recordIds);
+  if (held !== null) return held;
 
   return gateRecordWriteApproval({
     ctx,
@@ -766,6 +868,8 @@ const queryRecords = async (
   const records = await queryCollectionRecords({
     teamId: ctx.teamId,
     collectionId,
+    // The script reads what the person it runs for can open.
+    drive: await driveVisibilityOfUser(ctx),
     filters,
     page,
     limit: limit ?? 200,
@@ -827,6 +931,12 @@ const createType = async (
   rawArgs: Record<string, unknown>,
 ): Promise<SandboxExecResponse> => {
   const args = createTypeArgs.parse(rawArgs);
+  await requireCollectionAudienceAllowed({
+    userId: ctx.userId,
+    organizationId: ctx.organizationId,
+    teamId: ctx.teamId,
+    sharing: args.sharing,
+  });
   if (args.fields && args.fields.length > 0) {
     const created = await createCollectionWithFields({
       organizationId: ctx.organizationId,
@@ -903,6 +1013,23 @@ const updateType = async (
   const args = updateTypeArgs.parse(rawArgs);
   const collectionId = await resolveTeamType(ctx, args.collectionKey);
   if (collectionId === null) return unknownType(args.collectionKey);
+  if (args.sharing !== undefined) {
+    // Who may see a collection is its leads' to change when the team's
+    // policy keeps that from members, and never beyond the organization's.
+    await assertCanManageType({
+      collectionId,
+      teamId: ctx.teamId,
+      organizationId: ctx.organizationId,
+      userId: ctx.userId,
+      change: "sharing",
+    });
+    await requireCollectionAudienceAllowed({
+      userId: ctx.userId,
+      organizationId: ctx.organizationId,
+      teamId: ctx.teamId,
+      sharing: args.sharing,
+    });
+  }
 
   const hasMetadata =
     args.label !== undefined ||
@@ -1065,6 +1192,13 @@ const deleteType = async (
   const { collectionKey } = deleteTypeArgs.parse(rawArgs);
   const collectionId = await resolveTeamType(ctx, collectionKey);
   if (collectionId === null) return unknownType(collectionKey);
+  await assertCanManageType({
+    collectionId,
+    teamId: ctx.teamId,
+    organizationId: ctx.organizationId,
+    userId: ctx.userId,
+    change: "delete",
+  });
 
   const result = await deleteCollection({
     id: collectionId,

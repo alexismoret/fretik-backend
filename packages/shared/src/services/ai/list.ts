@@ -1,4 +1,13 @@
-import { and, count, eq, ilike, isNull, sql, type SQL } from "drizzle-orm";
+import {
+  and,
+  count,
+  eq,
+  ilike,
+  inArray,
+  isNull,
+  sql,
+  type SQL,
+} from "drizzle-orm";
 import db from "../../db";
 import { aiConversationMembers, aiConversations } from "../../db/schema";
 import { idCursor } from "../../lib/cursor";
@@ -17,6 +26,35 @@ import {
  * route that documents `limit` and then ignores it is a silent divergence.
  */
 const PINNED_MAX = 50;
+
+/**
+ * Where a list reads: the team the caller has open — or, with no team open (a
+ * guest, a member not in a team yet), the projects they take part in,
+ * whichever team holds them. A chat of a project is theirs to take part in
+ * while they take part in the project, which is also when a guest may open it
+ * (`authz/rules.ts`).
+ */
+export type ConversationScope =
+  | { readonly teamId: string }
+  | {
+      readonly organizationId: string;
+      readonly projectIds: readonly string[];
+    };
+
+/** The scope as a relational `where` fragment on `ai_conversations`. */
+const whereScope = (scope: ConversationScope) =>
+  "teamId" in scope
+    ? { teamId: scope.teamId }
+    : {
+        organizationId: scope.organizationId,
+        projectId: { in: [...scope.projectIds] },
+      };
+
+/** The scope as a SQL condition on `ai_conversations`. */
+const scopeCondition = (scope: ConversationScope): SQL =>
+  "teamId" in scope
+    ? eq(aiConversations.teamId, scope.teamId)
+    : sql`${eq(aiConversations.organizationId, scope.organizationId)} and ${inArray(aiConversations.projectId, [...scope.projectIds])}`;
 
 /**
  * List the conversations the current user participates in for a given agent
@@ -52,7 +90,7 @@ const PINNED_MAX = 50;
  * entries), where the offset path grows with every page the reader passes.
  */
 export const listConversations = async (data: {
-  teamId: string;
+  scope: ConversationScope;
   userId: string;
   agentType: AiAgentType;
   params: ParamsList;
@@ -73,10 +111,19 @@ export const listConversations = async (data: {
   /** Present only on the walk; null once the last row has been served. */
   nextCursor?: string | null;
 }> => {
-  const { teamId, userId, agentType, params, pinned } = data;
+  const { scope, userId, agentType, params, pinned } = data;
+
+  // No team open and no project taken part in: nothing of theirs to list.
+  if ("projectIds" in scope && scope.projectIds.length === 0) {
+    return {
+      count: 0,
+      data: [],
+      ...(data.paginate === "cursor" ? { nextCursor: null } : {}),
+    };
+  }
 
   if (pinned === true) {
-    return await listPinnedConversations({ teamId, userId, agentType, params });
+    return await listPinnedConversations({ scope, userId, agentType, params });
   }
 
   // The walk's ORDER BY carries no pin term, so it is only a faithful walk of
@@ -84,7 +131,7 @@ export const listConversations = async (data: {
   // rather than skipping rows — same contract as `listCollectionRecords`.
   if (data.paginate === "cursor" && pinned === false) {
     return await walkConversations({
-      teamId,
+      scope,
       userId,
       agentType,
       params,
@@ -93,7 +140,7 @@ export const listConversations = async (data: {
   }
 
   return await pageConversations({
-    teamId,
+    scope,
     userId,
     agentType,
     params,
@@ -116,12 +163,12 @@ export const listConversations = async (data: {
  * `PINNED_MAX` and has no second page for a total to be about.
  */
 const listPinnedConversations = async (data: {
-  teamId: string;
+  scope: ConversationScope;
   userId: string;
   agentType: AiAgentType;
   params: ParamsList;
 }): Promise<{ count: number; data: SerializedConversation[] }> => {
-  const { teamId, userId, agentType, params } = data;
+  const { scope, userId, agentType, params } = data;
   const { limit, search } = params;
 
   const pins = await db.query.aiConversationMembers.findMany({
@@ -132,7 +179,7 @@ const listPinnedConversations = async (data: {
       // falsy `isNull`, which would silently return every membership row.
       pinnedAt: { isNotNull: true },
       conversation: {
-        teamId,
+        ...whereScope(scope),
         agentType,
         ...(search ? { title: { ilike: `%${search}%` } } : {}),
       },
@@ -192,7 +239,7 @@ const listPinnedConversations = async (data: {
  * the seek back.
  */
 const walkConversations = async (data: {
-  teamId: string;
+  scope: ConversationScope;
   userId: string;
   agentType: AiAgentType;
   params: ParamsList;
@@ -202,14 +249,14 @@ const walkConversations = async (data: {
   data: SerializedConversation[];
   nextCursor: string | null;
 }> => {
-  const { teamId, userId, agentType, params } = data;
+  const { scope, userId, agentType, params } = data;
   const { limit, search } = params;
   const from = idCursor(data.cursor);
   const anchor = from ? await anchorUpdatedAt(from) : null;
 
   const rows = await db.query.aiConversations.findMany({
     where: {
-      teamId,
+      ...whereScope(scope),
       agentType,
       members: { userId, pinnedAt: { isNull: true } },
       ...(search ? { title: { ilike: `%${search}%` } } : {}),
@@ -278,7 +325,7 @@ const anchorUpdatedAt = async (
  * on the page it already holds.
  */
 const pageConversations = async (data: {
-  teamId: string;
+  scope: ConversationScope;
   userId: string;
   agentType: AiAgentType;
   params: ParamsList;
@@ -287,13 +334,13 @@ const pageConversations = async (data: {
    *  wider, it would silently return the whole list instead. */
   pinned?: false;
 }): Promise<{ count: number; data: SerializedConversation[] }> => {
-  const { teamId, userId, agentType, params, pinned } = data;
+  const { scope, userId, agentType, params, pinned } = data;
   const { limit, page, search } = params;
 
   const [rows, totalRows] = await Promise.all([
     db.query.aiConversations.findMany({
       where: {
-        teamId,
+        ...whereScope(scope),
         agentType,
         members: {
           userId,
@@ -318,7 +365,7 @@ const pageConversations = async (data: {
       limit,
       offset: page * limit,
     }),
-    countUserConversations({ teamId, userId, agentType, search, pinned }),
+    countUserConversations({ scope, userId, agentType, search, pinned }),
   ]);
 
   return {
@@ -332,17 +379,17 @@ const pageConversations = async (data: {
  * relational query above can't return a total alongside a paginated page.
  */
 const countUserConversations = async (data: {
-  teamId: string;
+  scope: ConversationScope;
   userId: string;
   agentType: AiAgentType;
   search?: string;
   /** Mirrors `pageConversations`' own narrowing — see the note there. */
   pinned?: false;
 }): Promise<number> => {
-  const { teamId, userId, agentType, search, pinned } = data;
+  const { scope, userId, agentType, search, pinned } = data;
 
   const conditions: SQL[] = [
-    eq(aiConversations.teamId, teamId),
+    scopeCondition(scope),
     eq(aiConversations.agentType, agentType),
     eq(aiConversationMembers.userId, userId),
   ];

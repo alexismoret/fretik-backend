@@ -1,3 +1,4 @@
+import { access } from "@fretik/shared/authz/http";
 import {
   authMiddleware,
   type HonoLoggedAppType,
@@ -38,31 +39,37 @@ linkPreviewRoutes.use("*", authMiddleware);
  * an error, and reporting it as a 4xx/5xx would put a red console line under
  * every such card. The only 400 is a URL that is not one.
  */
-linkPreviewRoutes.get("/", async (c) => {
-  const parsed = querySchema.safeParse({ url: c.req.query("url") });
-  if (!parsed.success) {
-    return throwHttpError(
-      400,
-      badRequest("A `url` query parameter is required"),
-    );
-  }
+linkPreviewRoutes.get(
+  "/",
+  access.session(
+    "Looks up a public web page's cover image; nothing of the team is read.",
+  ),
+  async (c) => {
+    const parsed = querySchema.safeParse({ url: c.req.query("url") });
+    if (!parsed.success) {
+      return throwHttpError(
+        400,
+        badRequest("A `url` query parameter is required"),
+      );
+    }
 
-  // Parsed here rather than left to the egress guard so a typo answers 400
-  // instead of spending a DNS resolution to answer 200-with-nothing. The guard
-  // still runs inside the read — it is the one that matters, and it re-checks
-  // every redirect hop this one cannot see.
-  let target: URL;
-  try {
-    target = new URL(parsed.data.url);
-  } catch {
-    return throwHttpError(400, badRequest("`url` is not a valid URL"));
-  }
-  if (target.protocol !== "http:" && target.protocol !== "https:") {
-    return throwHttpError(400, badRequest("`url` must be http(s)"));
-  }
+    // Parsed here rather than left to the egress guard so a typo answers 400
+    // instead of spending a DNS resolution to answer 200-with-nothing. The guard
+    // still runs inside the read — it is the one that matters, and it re-checks
+    // every redirect hop this one cannot see.
+    let target: URL;
+    try {
+      target = new URL(parsed.data.url);
+    } catch {
+      return throwHttpError(400, badRequest("`url` is not a valid URL"));
+    }
+    if (target.protocol !== "http:" && target.protocol !== "https:") {
+      return throwHttpError(400, badRequest("`url` must be http(s)"));
+    }
 
-  const preview = await readLinkPreview(target.toString());
-  return c.json(preview, 200);
-});
+    const preview = await readLinkPreview(target.toString());
+    return c.json(preview, 200);
+  },
+);
 
 export { linkPreviewRoutes };

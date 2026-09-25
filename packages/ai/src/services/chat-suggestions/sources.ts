@@ -1,8 +1,12 @@
+import { loadPrincipal } from "@fretik/shared/authz/load-principal";
+import type { UserPrincipal } from "@fretik/shared/authz/principal";
 import type {
   DashboardActivityItem,
   DashboardAttentionItem,
 } from "@fretik/shared/schemas/dashboard";
 import { listMemoryTreeWithContent } from "@fretik/shared/services/ai-memory/list-tree";
+import { memoryNamespacesFor } from "@fretik/shared/services/ai-memory/namespaces";
+import { worksInTeam } from "@fretik/shared/services/ai/audience";
 import type { SerializedConversation } from "@fretik/shared/services/ai/conversation-serializer";
 import { listConversations } from "@fretik/shared/services/ai/list";
 import {
@@ -28,9 +32,12 @@ import { withSoftTimeout } from "../../lib/stream-errors";
  * "what happened lately" would drift from the first one within a month.
  *
  * PER READER. `listStandingEpisodes` and `listMemoryTreeWithContent` both
- * filter `user_id IS NULL OR user_id = :caller`, so a colleague's private
- * episodes and private memories cannot reach this pack — which is also why the
- * generated rows are stored per user and never shared.
+ * filter `user_id IS NULL OR user_id = :caller` (the team's notes for its
+ * people only), and the workflows, pages and
+ * runs are read with the reader's own access (`authz/`), so a colleague's
+ * private episodes, memories and restricted work cannot reach this pack —
+ * which is also why the generated rows are stored per user and never shared.
+ * Someone no longer in the organization reads none of it.
  *
  * Every source soft-fails to empty on its own timer, like
  * `assembleContextFragments`: this runs while somebody watches a skeleton, and
@@ -86,10 +93,21 @@ const soft = async <T>(
     `chat-suggestions:${label}`,
   );
 
+/** What a reader's access lets through, or nothing for someone who left. */
+const readable = <T>(
+  principal: UserPrincipal | null,
+  read: (principal: UserPrincipal) => Promise<T>,
+  nothing: T,
+): Promise<T> =>
+  principal === null ? Promise.resolve(nothing) : read(principal);
+
 export const loadSuggestionSources = async (
   scope: SuggestionScope,
 ): Promise<SuggestionSources> => {
-  const requester = { userId: scope.userId, isAdmin: false };
+  const principal = await loadPrincipal({
+    organizationId: scope.organizationId,
+    userId: scope.userId,
+  });
 
   const [
     episodes,
@@ -108,7 +126,7 @@ export const loadSuggestionSources = async (
     ),
     soft(
       listConversations({
-        teamId: scope.teamId,
+        scope: { teamId: scope.teamId },
         userId: scope.userId,
         agentType: "chatbot",
         params: { limit: RECENT_CONVERSATIONS, page: 0 },
@@ -116,24 +134,65 @@ export const loadSuggestionSources = async (
       { count: 0, data: [] },
       "conversations",
     ),
-    soft(listMemoryTreeWithContent(scope), [], "memories"),
     soft(
-      getDashboardAttention({ teamId: scope.teamId, userId: scope.userId }),
+      readable(
+        principal,
+        (reader) =>
+          listMemoryTreeWithContent(
+            scope,
+            memoryNamespacesFor({
+              outsideTeam: !worksInTeam(reader, scope.teamId),
+            }),
+          ),
+        [],
+      ),
+      [],
+      "memories",
+    ),
+    soft(
+      readable(
+        principal,
+        (reader) =>
+          getDashboardAttention({ teamId: scope.teamId, principal: reader }),
+        { count: 0, items: [] },
+      ),
       { count: 0, items: [] },
       "attention",
     ),
     soft(
-      getDashboardActivity({
-        teamId: scope.teamId,
-        userId: scope.userId,
-        limit: RECENT_ACTIVITY,
-      }),
+      readable(
+        principal,
+        (reader) =>
+          getDashboardActivity({
+            teamId: scope.teamId,
+            principal: reader,
+            limit: RECENT_ACTIVITY,
+          }),
+        { items: [] },
+      ),
       { items: [] },
       "activity",
     ),
-    soft(listWorkflows({ teamId: scope.teamId, requester }), [], "workflows"),
     soft(
-      listPages({ teamId: scope.teamId, requester, limit: MAX_CAPABILITIES }),
+      readable(
+        principal,
+        (reader) => listWorkflows({ teamId: scope.teamId, principal: reader }),
+        [],
+      ),
+      [],
+      "workflows",
+    ),
+    soft(
+      readable(
+        principal,
+        (reader) =>
+          listPages({
+            teamId: scope.teamId,
+            principal: reader,
+            limit: MAX_CAPABILITIES,
+          }),
+        [],
+      ),
       [],
       "pages",
     ),

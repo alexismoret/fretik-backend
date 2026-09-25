@@ -4,6 +4,7 @@
 // oxlint-disable-next-line import/no-duplicates
 import "@hono/zod-openapi";
 
+import { SYSTEM } from "@fretik/shared/authz/system-principals";
 import db from "@fretik/shared/db";
 import { pages } from "@fretik/shared/db/schema";
 import { parseLlmJsonObject } from "@fretik/shared/lib/llm-json";
@@ -139,6 +140,7 @@ const renderRecent = async (params: {
       definition: parsed.data,
       teamId: params.teamId,
       userId: params.userId,
+      reader: SYSTEM.operatorScript,
       pageName: row.name,
     });
     // The arrival shot only. A ranking is about first impression and

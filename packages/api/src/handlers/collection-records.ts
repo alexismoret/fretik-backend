@@ -1,3 +1,6 @@
+import { driveVisibility } from "@fretik/shared/authz/drive-sql";
+import { access } from "@fretik/shared/authz/http";
+import { partitionMirrorWrites } from "@fretik/shared/authz/mirror-writes";
 import {
   authMiddleware,
   type HonoLoggedAppType,
@@ -57,8 +60,11 @@ import {
 } from "@fretik/shared/services/collection-records/retrieve";
 import { setRecordStatus } from "@fretik/shared/services/collection-records/set-status";
 import { setRecordData } from "@fretik/shared/services/collection-records/update";
+import { requireRecordAudienceAllowed } from "@fretik/shared/services/collection-sharing/audience-policy";
 import { assertCanReadRecord } from "@fretik/shared/services/collection-sharing/read-access";
 import {
+  assertCanDeleteRecords,
+  assertCanShareRecord,
   assertCanWriteRecord,
   assertCanWriteType,
 } from "@fretik/shared/services/collection-sharing/write-access";
@@ -77,6 +83,9 @@ collectionRecordRoutes.use("*", authMiddleware);
 const listRoute = createRoute({
   method: "get",
   path: "",
+  middleware: access.session(
+    "Rows of the collection the team may see: its own, granted, or shared one by one.",
+  ),
   summary: "List records of a type",
   tags: ["CollectionRecords"],
   request: { query: recordListQuerySchema },
@@ -100,6 +109,9 @@ const listRoute = createRoute({
 const aggregateRoute = createRoute({
   method: "get",
   path: "/aggregate",
+  middleware: access.session(
+    "Aggregates over the rows the team may see, by the same scope as the list.",
+  ),
   summary: "Count (and optionally sum) records grouped by a field",
   tags: ["CollectionRecords"],
   request: { query: recordAggregateQuerySchema },
@@ -120,6 +132,9 @@ const aggregateRoute = createRoute({
 const mapRoute = createRoute({
   method: "get",
   path: "/map",
+  middleware: access.session(
+    "Map points of the rows the team may see, by the same scope as the list.",
+  ),
   summary: "Records placed on a map by a location field, scoped to a bbox",
   tags: ["CollectionRecords"],
   request: { query: recordMapQuerySchema },
@@ -137,6 +152,9 @@ const mapRoute = createRoute({
 const getRoute = createRoute({
   method: "get",
   path: "/{id}",
+  middleware: access.handler(
+    "The record must be readable by the team (getCollectionRecord); far ends are filtered.",
+  ),
   summary: "Get a record with its links",
   tags: ["CollectionRecords"],
   request: { params: paramsIdSchema },
@@ -156,6 +174,9 @@ const getRoute = createRoute({
 const historyRoute = createRoute({
   method: "get",
   path: "/{id}/history",
+  middleware: access.handler(
+    "The record must be readable by the team (assertCanReadRecord).",
+  ),
   summary: "Get a record's activity timeline",
   description:
     "Folds the durable journal into the record's field history + event list. Newest first, one page at a time — walk older with `cursor`.",
@@ -177,6 +198,9 @@ const historyRoute = createRoute({
 const createRouteDef = createRoute({
   method: "post",
   path: "",
+  middleware: access.handler(
+    "A collection the team may write records into (assertCanWriteType); sharing policies.",
+  ),
   summary: "Create a record",
   tags: ["CollectionRecords"],
   request: {
@@ -202,6 +226,9 @@ const createRouteDef = createRoute({
 const updateRouteDef = createRoute({
   method: "patch",
   path: "/{id}",
+  middleware: access.handler(
+    "Write access to the record (assertCanWriteRecord); its sharing is the owner team's.",
+  ),
   summary: "Replace a record's data",
   tags: ["CollectionRecords"],
   request: {
@@ -229,6 +256,9 @@ const updateRouteDef = createRoute({
 const statusRoute = createRoute({
   method: "post",
   path: "/{id}/status",
+  middleware: access.handler(
+    "Write access to the record (assertCanWriteRecord).",
+  ),
   summary: "Confirm or reject a record",
   tags: ["CollectionRecords"],
   request: {
@@ -256,6 +286,9 @@ const statusRoute = createRoute({
 const deleteRouteDef = createRoute({
   method: "delete",
   path: "/{id}",
+  middleware: access.handler(
+    "Write access to the record (assertCanWriteRecord), and full access to the team's content unless one created it (assertCanDeleteRecords).",
+  ),
   summary: "Delete a record",
   tags: ["CollectionRecords"],
   request: { params: paramsIdSchema },
@@ -282,6 +315,9 @@ const deleteRouteDef = createRoute({
 const bulkWriteRoute = createRoute({
   method: "post",
   path: "/bulk",
+  middleware: access.handler(
+    "A collection the team may write records into (assertCanWriteType); deleting records someone else created takes full access to the team's content (assertCanDeleteRecords).",
+  ),
   summary: "Create, update or delete many records in one request",
   description:
     "Up to 5 000 rows. Rows that fail come back in `errors` — the call is a partial success, not an all-or-nothing transaction. Past 5 000 rows, open a bulk operation instead.",
@@ -311,6 +347,9 @@ const bulkWriteRoute = createRoute({
 const beginBulkOperationRoute = createRoute({
   method: "post",
   path: "/bulk-operations",
+  middleware: access.handler(
+    "The collection must be the team's own (beginApiLoad checks it).",
+  ),
   summary: "Open (or re-find) a load too large for one request",
   description:
     "Announces the load without carrying a row. Idempotent on the load's description plus `rowsDigest`: re-submitting returns the same operation and the chunks already received.",
@@ -340,6 +379,9 @@ const beginBulkOperationRoute = createRoute({
 const bulkOperationChunkRoute = createRoute({
   method: "post",
   path: "/bulk-operations/{id}/chunks",
+  middleware: access.handler(
+    "The operation must be one the active team started.",
+  ),
   summary: "Upload one numbered chunk of a load",
   description:
     "Applied on arrival. Re-sending a chunk already received is a no-op, not a second write.",
@@ -370,6 +412,9 @@ const bulkOperationChunkRoute = createRoute({
 const commitBulkOperationRoute = createRoute({
   method: "post",
   path: "/bulk-operations/{id}/commit",
+  middleware: access.handler(
+    "The operation must be one the active team started.",
+  ),
   summary: "Close a load and get its tally",
   description:
     "Refused while a chunk is missing — a load that wrote 198 000 of 200 000 rows must say so rather than report success.",
@@ -392,6 +437,9 @@ const commitBulkOperationRoute = createRoute({
 const getBulkOperationRoute = createRoute({
   method: "get",
   path: "/bulk-operations/{id}",
+  middleware: access.handler(
+    "The operation must be one the active team started.",
+  ),
   summary: "Read a load's state and counters",
   tags: ["CollectionRecords"],
   request: { params: paramsIdSchema },
@@ -428,6 +476,7 @@ collectionRecordRoutes.openapi(listRoute, async (c) => {
   const result = await listCollectionRecords({
     teamId: team.id,
     collectionId,
+    drive: await driveVisibility(c.get("principal"), team.id),
     status,
     search,
     filters,
@@ -451,6 +500,7 @@ collectionRecordRoutes.openapi(aggregateRoute, async (c) => {
   const groups = await aggregateRecordsByGroup({
     teamId: team.id,
     collectionId,
+    drive: await driveVisibility(c.get("principal"), team.id),
     groupKey,
     status,
     sumKey,
@@ -474,6 +524,7 @@ collectionRecordRoutes.openapi(mapRoute, async (c) => {
   const result = await getMapPoints({
     teamId: team.id,
     collectionId,
+    drive: await driveVisibility(c.get("principal"), team.id),
     fieldKey,
     bbox,
   });
@@ -488,6 +539,7 @@ collectionRecordRoutes.openapi(getRoute, async (c) => {
     id,
     teamId: team.id,
     organizationId: team.organizationId,
+    drive: await driveVisibility(c.get("principal"), team.id),
   });
   return c.json(record, 200);
 });
@@ -503,6 +555,7 @@ collectionRecordRoutes.openapi(historyRoute, async (c) => {
     recordId: id,
     teamId: team.id,
     organizationId: team.organizationId,
+    drive: await driveVisibility(c.get("principal"), team.id),
   });
   const history = await getRecordHistory({
     recordId: id,
@@ -523,6 +576,13 @@ collectionRecordRoutes.openapi(createRouteDef, async (c) => {
     collectionId: body.collectionId,
     teamId: team.id,
     organizationId: team.organizationId,
+    userId: c.get("user").id,
+  });
+  await requireRecordAudienceAllowed({
+    userId: user.id,
+    organizationId: team.organizationId,
+    teamId: team.id,
+    sharing: body.sharing,
   });
   const created = await createCollectionRecord({
     organizationId: team.organizationId,
@@ -547,11 +607,16 @@ collectionRecordRoutes.openapi(updateRouteDef, async (c) => {
   const user = c.get("user");
   const { id } = c.req.valid("param");
   const { data, sharing } = c.req.valid("json");
-  await assertCanWriteRecord({
-    recordId: id,
+  const scope = {
     teamId: team.id,
     organizationId: team.organizationId,
-  });
+    userId: user.id,
+  };
+  await assertCanWriteRecord({ recordId: id, ...scope });
+  if (sharing !== undefined) {
+    await assertCanShareRecord({ recordId: id, ...scope });
+    await requireRecordAudienceAllowed({ ...scope, sharing });
+  }
   // `sharing` is owner-only — enforced inside the service via `callerTeamId`.
   const updated = await setRecordData({
     id,
@@ -573,6 +638,7 @@ collectionRecordRoutes.openapi(statusRoute, async (c) => {
     recordId: id,
     teamId: team.id,
     organizationId: team.organizationId,
+    userId: c.get("user").id,
   });
   const updated = await setRecordStatus({ id, status });
   return c.json(updated, 200);
@@ -582,11 +648,13 @@ collectionRecordRoutes.openapi(deleteRouteDef, async (c) => {
   const team = c.get("team");
   if (!team) return c.json(teamRequired(), 403);
   const { id } = c.req.valid("param");
-  await assertCanWriteRecord({
-    recordId: id,
+  const scope = {
     teamId: team.id,
     organizationId: team.organizationId,
-  });
+    userId: c.get("user").id,
+  };
+  await assertCanWriteRecord({ recordId: id, ...scope });
+  await assertCanDeleteRecords({ recordIds: [id], ...scope });
   const result = await deleteCollectionRecord({ id });
   return c.json(result, 200);
 });
@@ -599,13 +667,15 @@ collectionRecordRoutes.openapi(bulkWriteRoute, async (c) => {
   // The acting user, as on every other write here. A bulk call is one request
   // that writes many rows, not a different kind of author.
   const actor = { actorType: "user" as const, actorUserId: user.id };
+  // Every op writes: a viewer reads, whatever the op.
+  await assertCanWriteType({
+    collectionId: body.collectionId,
+    teamId: team.id,
+    organizationId: team.organizationId,
+    userId: user.id,
+  });
 
   if (body.op === "create") {
-    await assertCanWriteType({
-      collectionId: body.collectionId,
-      teamId: team.id,
-      organizationId: team.organizationId,
-    });
     const result = await bulkCreateCollectionRecords({
       organizationId: team.organizationId,
       teamId: team.id,
@@ -628,14 +698,24 @@ collectionRecordRoutes.openapi(bulkWriteRoute, async (c) => {
   // every id it sent — and one the write services cannot check, since they
   // scope by team. An id from another collection is refused, not written.
   const ids = body.op === "update" ? body.updates.map((u) => u.id) : body.ids;
-  const owned = await idsInCollection({
+  const inCollection = await idsInCollection({
     teamId: team.id,
     collectionId: body.collectionId,
     ids,
   });
-  const strays = ids
-    .filter((id) => !owned.has(id))
-    .map((id) => ({ id, error: "Record not found in this collection." }));
+  // A record mirroring a file kept from this person is theirs to write only
+  // with `edit` on the file (`authz/mirror-writes.ts`).
+  const mirrors = await partitionMirrorWrites({
+    principal: c.get("principal"),
+    recordIds: [...inCollection],
+  });
+  const owned = new Set(mirrors.writable);
+  const strays = [
+    ...ids
+      .filter((id) => !inCollection.has(id))
+      .map((id) => ({ id, error: "Record not found in this collection." })),
+    ...mirrors.refused,
+  ];
 
   if (body.op === "update") {
     const result = await bulkUpdateCollectionRecords({
@@ -654,9 +734,16 @@ collectionRecordRoutes.openapi(bulkWriteRoute, async (c) => {
     );
   }
 
+  const deletable = ids.filter((id) => owned.has(id));
+  await assertCanDeleteRecords({
+    recordIds: deletable,
+    teamId: team.id,
+    organizationId: team.organizationId,
+    userId: user.id,
+  });
   const result = await bulkDeleteCollectionRecords({
     teamId: team.id,
-    ids: ids.filter((id) => owned.has(id)),
+    ids: deletable,
     actor,
   });
   return c.json(

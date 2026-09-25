@@ -10,6 +10,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+import { projects } from "./access";
 import { aiConversations } from "./ai";
 import { organization, team, user } from "./auth-schema";
 
@@ -24,14 +25,19 @@ import { organization, team, user } from "./auth-schema";
  *  - every write carries an audit trail (who/agent vs human, which
  *    triggering assistant message) so the team panel can reason about
  *    "what did the agent learn and from whom";
- *  - two namespaces stack: `user` (private to a `userId`) and `team`
- *    (shared across the whole `teamId`).
+ *  - three namespaces stack: `user` (private to a `userId`), `team`
+ *    (shared across the whole `teamId`) and `project` (shared with the
+ *    people of one project, read in its chats).
  *
  * Distinct from `ai_context_*` (Projects-style static instructions +
  * uploaded files preloaded in the system prompt — human-edited only).
  * `ai_memories` is the dynamic, agent-curated knowledge base.
  */
-export const aiMemoryScopeEnum = pgEnum("ai_memory_scope", ["user", "team"]);
+export const aiMemoryScopeEnum = pgEnum("ai_memory_scope", [
+  "user",
+  "team",
+  "project",
+]);
 
 /**
  * Discriminates writes by source. `agent` = written via the chatbot
@@ -47,12 +53,17 @@ export const aiMemoryActorEnum = pgEnum("ai_memory_actor", ["agent", "human"]);
  * server-side and store only the relative `path`, with the namespace
  * encoded by `scope` + `userId`.
  *
- * Two unique partial indexes enforce path uniqueness within a scope:
- * `(teamId, userId, path)` for `scope='user'` and `(teamId, path)` for
- * `scope='team'`. The CHECK constraint guarantees `userId IS NOT NULL`
- * iff `scope='user'`, so every row is reachable through exactly one of
- * those indexes — including via the `ON CONFLICT` clause used by the
- * `overwrite` service for atomic upsert.
+ * Three unique partial indexes enforce path uniqueness within a scope:
+ * `(teamId, userId, path)` for `scope='user'`, `(teamId, path)` for
+ * `scope='team'` and `(projectId, path)` for `scope='project'`. The CHECK
+ * constraint ties each scope to its owner (`userId` for a user's notes,
+ * `projectId` for a project's, neither for the team's), so every row is
+ * reachable through exactly one of those indexes.
+ *
+ * The CHECK compares `scope::text`: `project` was added to the enum in the
+ * migration that created it, and Postgres refuses a new enum value as a
+ * constant inside the transaction that adds it, which is the one every
+ * pending migration runs in.
  */
 export const aiMemories = pgTable(
   "ai_memories",
@@ -78,6 +89,16 @@ export const aiMemories = pgTable(
      * `userId` is already NULL).
      */
     userId: uuid("user_id").references(() => user.id, { onDelete: "cascade" }),
+
+    /**
+     * NOT NULL exactly when scope='project': the project whose people share
+     * the note. `cascade` on project delete, with its history and vectors
+     * removed first by `deleteProject`: a project's notes are its own and
+     * leave with it.
+     */
+    projectId: uuid("project_id").references(() => projects.id, {
+      onDelete: "cascade",
+    }),
 
     /**
      * Relative path inside the namespace, e.g. `preferences.md` or
@@ -156,17 +177,24 @@ export const aiMemories = pgTable(
     uniqueIndex("ai_memories_team_path_uq")
       .on(t.teamId, t.path)
       .where(sql`${t.scope} = 'team'`),
+    // Keyed on the owner rather than the scope: a partial index may not
+    // cast an enum (not immutable), and the CHECK below makes `project_id`
+    // set exactly on a project's notes.
+    uniqueIndex("ai_memories_project_path_uq")
+      .on(t.projectId, t.path)
+      .where(sql`${t.projectId} IS NOT NULL`),
     index("ai_memories_team_idx").on(t.teamId),
     index("ai_memories_team_user_idx").on(t.teamId, t.userId),
+    index("ai_memories_project_idx").on(t.projectId),
 
     /**
-     * Enforce the user/scope coupling at the DB level. The service
+     * Enforce the owner/scope coupling at the DB level. The service
      * layer already validates this, but the constraint protects
      * against any future code path that bypasses the service.
      */
     check(
       "ai_memories_scope_user_chk",
-      sql`(${t.scope} = 'user' AND ${t.userId} IS NOT NULL) OR (${t.scope} = 'team' AND ${t.userId} IS NULL)`,
+      sql`(${t.scope}::text = 'user' AND ${t.userId} IS NOT NULL AND ${t.projectId} IS NULL) OR (${t.scope}::text = 'team' AND ${t.userId} IS NULL AND ${t.projectId} IS NULL) OR (${t.scope}::text = 'project' AND ${t.userId} IS NULL AND ${t.projectId} IS NOT NULL)`,
     ),
   ],
 );

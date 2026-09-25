@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   bigint,
+  boolean,
   decimal,
   index,
   integer,
@@ -14,6 +15,7 @@ import {
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
+import { projects } from "./access";
 import { aiConversations } from "./ai";
 import { team, user } from "./auth-schema";
 import { folders } from "./folders";
@@ -102,6 +104,16 @@ export const documents = pgTable(
       onDelete: "set null",
     }),
 
+    // Access (see `db/schema/access.ts`). The owner has full access whatever
+    // the container says; `projectId` null means the team's drive; a
+    // restricted document stops inheriting from its folder and container, so
+    // only its owner and its grants reach it.
+    ownerUserId: uuid("owner_user_id").references(() => user.id, {
+      onDelete: "set null",
+    }),
+    projectId: uuid("project_id").references(() => projects.id),
+    accessRestricted: boolean("access_restricted").notNull().default(false),
+
     // Timestamps
     createdAt: timestamp("created_at", { mode: "date", withTimezone: true })
       .defaultNow()
@@ -117,6 +129,9 @@ export const documents = pgTable(
     index("documents_created_at_idx").on(table.createdAt),
     index("documents_file_hash_idx").on(table.fileHash),
     index("documents_status_idx").on(table.status),
+    index("documents_project_idx")
+      .on(table.projectId)
+      .where(sql`project_id IS NOT NULL`),
   ],
 );
 

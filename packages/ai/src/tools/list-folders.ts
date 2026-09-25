@@ -1,6 +1,7 @@
 import { listFolders } from "@fretik/shared/services/folders/list";
 import { tool } from "ai";
 import { z } from "zod";
+import { actingPrincipal } from "../agents/shared/acting-principal";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
 import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
 
@@ -31,6 +32,7 @@ export const createListFoldersTool = () =>
       const ctx = getRuntimeContext(options);
       try {
         const folders = await listFolders({
+          principal: await actingPrincipal(ctx),
           teamId: ctx.teamId,
           parentFolderId: parentFolderId ?? null,
         });

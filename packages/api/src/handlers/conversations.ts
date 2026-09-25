@@ -1,12 +1,11 @@
+import { access, teamOfResource } from "@fretik/shared/authz/http";
+import { requirePlacement } from "@fretik/shared/authz/placement";
+import { projectsTakenPartIn } from "@fretik/shared/authz/principal";
 import {
   authMiddleware,
   type HonoLoggedAppType,
 } from "@fretik/shared/lib/auth-middleware";
-import {
-  notFound,
-  teamRequired,
-  throwHttpError,
-} from "@fretik/shared/lib/errors";
+import { notFound, throwHttpError } from "@fretik/shared/lib/errors";
 import { bodyIdListSchema, paramsIdSchema } from "@fretik/shared/schemas";
 import {
   AddConversationMembersSchema,
@@ -30,7 +29,10 @@ import {
 } from "@fretik/shared/schemas/common/responses";
 import { createConversation } from "@fretik/shared/services/ai/create";
 import { deleteConversations } from "@fretik/shared/services/ai/delete";
-import { getConversation } from "@fretik/shared/services/ai/get";
+import {
+  getConversation,
+  getReadableConversation,
+} from "@fretik/shared/services/ai/get";
 import { listConversations } from "@fretik/shared/services/ai/list";
 import { addConversationMembers } from "@fretik/shared/services/ai/members/add";
 import { markConversationRead } from "@fretik/shared/services/ai/members/mark-read";
@@ -48,6 +50,16 @@ import { z } from "zod";
 // ROUTER SETUP         //
 // ==================== //
 
+/**
+ * A chat belongs to its participants (`ai_conversation_members`): its owner
+ * has full access, the others take part (`use`) — they write in it, rename it
+ * and bring colleagues in. Whoever it is given to read (`view`) — a person,
+ * their team, the organization, or its team when it is opened — reads it and
+ * its messages, with no seat. Being in its team is not enough. The routes on
+ * one conversation name the level they need (`access.resource`) and act in
+ * the conversation's own team, whichever one the caller has open; the
+ * participants' services stay gated on the caller's seat.
+ */
 const conversationRoutes = new OpenAPIHono<HonoLoggedAppType>();
 conversationRoutes.use("*", authMiddleware);
 
@@ -58,6 +70,9 @@ conversationRoutes.use("*", authMiddleware);
 const listConversationsRoute = createRoute({
   method: "get",
   path: "/",
+  middleware: access.session(
+    "The conversations the caller takes part in, in the active team — or, for a guest, who has none, in the organization.",
+  ),
   summary: "List AI conversations",
   description:
     "List conversations the current user participates in for a given agent type (defaults to chatbot), the caller's pinned ones first then most-recently-active. `pinned` narrows to one of those two blocks; `paginate=cursor` walks the unpinned block forward by key and returns `nextCursor` instead of an exact `count`.",
@@ -85,6 +100,9 @@ const listConversationsRoute = createRoute({
 const createConversationRoute = createRoute({
   method: "post",
   path: "/",
+  middleware: access.session(
+    "Starts a conversation with the caller as its owner: in the active team, or in a project they take part in (`authz/placement.ts`).",
+  ),
   summary: "Create an AI conversation",
   description: "Create a new conversation scoped to the current user and team.",
   tags: ["Conversations"],
@@ -111,9 +129,10 @@ const createConversationRoute = createRoute({
 const getConversationRoute = createRoute({
   method: "get",
   path: "/{id}",
+  middleware: access.resource("conversation", "view"),
   summary: "Get an AI conversation",
   description:
-    "Return a single conversation the current user participates in: metadata, member roster, the caller's role and email opt-in, plus unread / action-required flags.",
+    "Return a conversation the caller may read: metadata, participants, and the caller's `level` on it (`view` reads, `use` takes part, `full` owns it). The caller's own state (role, email opt-in, unread / action-required, pin) is empty when they read it without taking part.",
   tags: ["Conversations"],
   request: { params: paramsIdSchema },
   responses: {
@@ -132,6 +151,7 @@ const getConversationRoute = createRoute({
 const updateConversationRoute = createRoute({
   method: "patch",
   path: "/{id}",
+  middleware: access.resource("conversation", "use"),
   summary: "Update an AI conversation",
   description:
     "Rename a conversation. Any participant may rename. The email-on-completion opt-in is per-member and lives on PATCH /{id}/members/me.",
@@ -163,6 +183,9 @@ const updateConversationRoute = createRoute({
 const deleteConversationsRoute = createRoute({
   method: "delete",
   path: "/",
+  middleware: access.handler(
+    "Only a conversation's owner deletes it, wherever it lives in the organization; other ids are skipped (deleteConversations).",
+  ),
   summary: "Delete AI conversations",
   description: "Delete multiple conversations by id.",
   tags: ["Conversations"],
@@ -183,6 +206,7 @@ const deleteConversationsRoute = createRoute({
 const getMessagesRoute = createRoute({
   method: "get",
   path: "/{id}/messages",
+  middleware: access.resource("conversation", "view"),
   summary: "Get messages of an AI conversation",
   description:
     "Return the message history as Vercel AI SDK UIMessage objects, ready to inject into the Chat class on the client. `limit` returns only the last N messages (still oldest-first) — the mount path uses it to keep reload payloads bounded.",
@@ -209,6 +233,7 @@ const getMessagesRoute = createRoute({
 const getBackgroundTasksRoute = createRoute({
   method: "get",
   path: "/{id}/background-tasks",
+  middleware: access.resource("conversation", "view"),
   summary: "List background work a conversation is waiting on",
   description:
     "Workflow runs the agent launched from this conversation: everything still running, plus what finished recently. The conversation is resumed automatically once they are all done.",
@@ -237,9 +262,10 @@ const memberIdParamsSchema = z.object({
 const addMembersRoute = createRoute({
   method: "post",
   path: "/{id}/members",
+  middleware: access.resource("conversation", "use"),
   summary: "Add conversation members",
   description:
-    "Add team members as participants. Ids that aren't real team members are ignored. Returns the refreshed roster.",
+    "Bring people of the conversation's team in as participants; anyone who takes part may. Ids that aren't people of that team are ignored, and someone who only read it now takes part. Returns the refreshed roster.",
   tags: ["Conversations"],
   request: {
     params: paramsIdSchema,
@@ -262,9 +288,10 @@ const addMembersRoute = createRoute({
 const removeMemberRoute = createRoute({
   method: "delete",
   path: "/{id}/members/{userId}",
+  middleware: access.resource("conversation", "use"),
   summary: "Remove a conversation member",
   description:
-    "Remove a participant. The conversation owner cannot be removed. Returns the refreshed roster.",
+    "Anyone may leave; removing someone else takes full access to the conversation. The owner cannot be removed. Returns the refreshed roster.",
   tags: ["Conversations"],
   request: { params: memberIdParamsSchema },
   responses: {
@@ -281,6 +308,7 @@ const removeMemberRoute = createRoute({
 const updateMemberPreferencesRoute = createRoute({
   method: "patch",
   path: "/{id}/members/me",
+  middleware: access.resource("conversation", "use"),
   summary: "Update my own preferences on this conversation",
   description:
     "Email-on-completion and the pin are both PER MEMBER: a conversation is shared, and neither field changes what anyone else sees. Every field is optional and only the ones sent are written. Re-pinning something already pinned keeps its position instead of moving it to the top.",
@@ -310,6 +338,7 @@ const updateMemberPreferencesRoute = createRoute({
 const markReadRoute = createRoute({
   method: "post",
   path: "/{id}/read",
+  middleware: access.resource("conversation", "view"),
   summary: "Mark a conversation as read",
   description:
     "Clear the unread indicator and any action-required badge for the current user.",
@@ -334,13 +363,21 @@ const markReadRoute = createRoute({
 conversationRoutes.openapi(listConversationsRoute, async (c) => {
   const user = c.get("user");
   const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
+  const principal = c.get("principal");
+  // The team open, or, with none (a guest, a member not in a team yet), the
+  // projects they take part in, whichever team holds them.
+  const scope = team
+    ? { teamId: team.id }
+    : {
+        organizationId: principal.organizationId,
+        projectIds: projectsTakenPartIn(principal),
+      };
 
   const { agentType, pinned, paginate, cursor, ...params } =
     c.req.valid("query");
 
   const result = await listConversations({
-    teamId: team.id,
+    scope,
     userId: user.id,
     agentType,
     params,
@@ -354,15 +391,21 @@ conversationRoutes.openapi(listConversationsRoute, async (c) => {
 
 conversationRoutes.openapi(createConversationRoute, async (c) => {
   const user = c.get("user");
-  const team = c.get("team");
   const organization = c.get("organization");
-  if (!team) return throwHttpError(403, teamRequired());
+  const { title, agentType, modelProfileKey, projectId } = c.req.valid("json");
 
-  const { title, agentType, modelProfileKey } = c.req.valid("json");
+  // A chat is no contribution to the team: a viewer starts one too.
+  const placement = await requirePlacement({
+    principal: c.get("principal"),
+    activeTeamId: c.get("team")?.id,
+    projectId,
+    contributes: false,
+  });
 
   const row = await createConversation({
     organizationId: organization.id,
-    teamId: team.id,
+    teamId: placement.teamId,
+    projectId: placement.projectId,
     userId: user.id,
     title,
     agentType,
@@ -373,16 +416,9 @@ conversationRoutes.openapi(createConversationRoute, async (c) => {
 });
 
 conversationRoutes.openapi(getConversationRoute, async (c) => {
-  const user = c.get("user");
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
-
-  const { id } = c.req.valid("param");
-
-  const conversation = await getConversation({
-    id,
-    teamId: team.id,
-    userId: user.id,
+  const conversation = await getReadableConversation({
+    resource: c.get("resource"),
+    userId: c.get("user").id,
   });
   if (!conversation) {
     return throwHttpError(404, notFound("Conversation not found"));
@@ -393,15 +429,12 @@ conversationRoutes.openapi(getConversationRoute, async (c) => {
 
 conversationRoutes.openapi(updateConversationRoute, async (c) => {
   const user = c.get("user");
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
-
   const { id } = c.req.valid("param");
   const updates = c.req.valid("json");
 
   const updated = await updateConversation({
     id,
-    teamId: team.id,
+    teamId: teamOfResource(c.get("resource")),
     userId: user.id,
     updates,
   });
@@ -410,78 +443,39 @@ conversationRoutes.openapi(updateConversationRoute, async (c) => {
 });
 
 conversationRoutes.openapi(deleteConversationsRoute, async (c) => {
-  const user = c.get("user");
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
-
   const { ids } = c.req.valid("json");
 
   const res = await deleteConversations({
     ids,
-    teamId: team.id,
-    userId: user.id,
+    organizationId: c.get("principal").organizationId,
+    userId: c.get("user").id,
   });
 
   return c.json({ rowCount: res.rowCount }, 200);
 });
 
 conversationRoutes.openapi(getMessagesRoute, async (c) => {
-  const user = c.get("user");
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
-
+  // Whoever may read the conversation reads its messages (`access.resource`).
   const { id } = c.req.valid("param");
-
-  const conversation = await getConversation({
-    id,
-    teamId: team.id,
-    userId: user.id,
-  });
-
-  if (!conversation) {
-    return throwHttpError(404, notFound("Conversation not found"));
-  }
-
   const { limit } = c.req.valid("query");
-  const messages = await getConversationMessages(conversation.id, limit);
+  const messages = await getConversationMessages(id, limit);
 
   return c.json(messages, 200);
 });
 
 conversationRoutes.openapi(getBackgroundTasksRoute, async (c) => {
-  const user = c.get("user");
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
-
   const { id } = c.req.valid("param");
-
-  const conversation = await getConversation({
-    id,
-    teamId: team.id,
-    userId: user.id,
-  });
-
-  if (!conversation) {
-    return throwHttpError(404, notFound("Conversation not found"));
-  }
-
-  const tasks = await listConversationTasks(conversation.id);
+  const tasks = await listConversationTasks(id);
 
   return c.json({ tasks: tasks.map(serializeConversationTask) }, 200);
 });
 
 conversationRoutes.openapi(addMembersRoute, async (c) => {
-  const user = c.get("user");
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
-
-  const { id } = c.req.valid("param");
   const { userIds } = c.req.valid("json");
 
   const members = await addConversationMembers({
-    conversationId: id,
-    teamId: team.id,
-    requesterId: user.id,
+    principal: c.get("principal"),
+    resource: c.get("resource"),
     userIds,
   });
 
@@ -489,16 +483,12 @@ conversationRoutes.openapi(addMembersRoute, async (c) => {
 });
 
 conversationRoutes.openapi(removeMemberRoute, async (c) => {
-  const user = c.get("user");
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
-
   const { id, userId } = c.req.valid("param");
 
   const members = await removeConversationMember({
     conversationId: id,
-    teamId: team.id,
-    requesterId: user.id,
+    teamId: teamOfResource(c.get("resource")),
+    principal: c.get("principal"),
     targetUserId: userId,
   });
 
@@ -507,16 +497,14 @@ conversationRoutes.openapi(removeMemberRoute, async (c) => {
 
 conversationRoutes.openapi(updateMemberPreferencesRoute, async (c) => {
   const user = c.get("user");
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
-
+  const teamId = teamOfResource(c.get("resource"));
   const { id } = c.req.valid("param");
   const { emailOnCompletion, pinned } = c.req.valid("json");
 
   if (emailOnCompletion !== undefined) {
     await setMemberEmailPreference({
       conversationId: id,
-      teamId: team.id,
+      teamId,
       userId: user.id,
       emailOnCompletion,
     });
@@ -524,7 +512,7 @@ conversationRoutes.openapi(updateMemberPreferencesRoute, async (c) => {
   if (pinned !== undefined) {
     await setMemberPinned({
       conversationId: id,
-      teamId: team.id,
+      teamId,
       userId: user.id,
       pinned,
     });
@@ -535,7 +523,7 @@ conversationRoutes.openapi(updateMemberPreferencesRoute, async (c) => {
   // one that can be reported honestly.
   const conversation = await getConversation({
     id,
-    teamId: team.id,
+    teamId,
     userId: user.id,
   });
   if (!conversation) {
@@ -554,9 +542,6 @@ conversationRoutes.openapi(updateMemberPreferencesRoute, async (c) => {
 
 conversationRoutes.openapi(markReadRoute, async (c) => {
   const user = c.get("user");
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
-
   const { id } = c.req.valid("param");
 
   await markConversationRead({ conversationId: id, userId: user.id });

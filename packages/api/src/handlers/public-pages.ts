@@ -1,3 +1,5 @@
+import { access } from "@fretik/shared/authz/http";
+import { teamAgentPrincipal } from "@fretik/shared/authz/team-agent";
 import db from "@fretik/shared/db";
 import { type HonoLoggedAppType } from "@fretik/shared/lib/auth-middleware";
 import {
@@ -117,6 +119,9 @@ publicPageRoutes.use(
 const getPageRoute = createRoute({
   method: "get",
   path: "/{token}",
+  middleware: access.public(
+    "Publishing a page IS the decision to expose it; the token names it.",
+  ),
   summary: "Public definition + access verdict for a published page",
   description:
     "Always 200. Serves the definition FROZEN at publish time, never the team's working copy.",
@@ -184,6 +189,9 @@ const publicPageDataResponseSchema = z.object({
 const postDataRoute = createRoute({
   method: "post",
   path: "/{token}/data",
+  middleware: access.public(
+    "A published page loads its declared datasets for anyone holding its token.",
+  ),
   summary: "Execute a published page's datasets",
   description:
     "Always 200. Runs under the OWNING team's scope (that is what makes a public page show real numbers) against the FROZEN definition. The body carries variable values, an optional dataset subset, and an optional window/ordering per dataset — never filters, collection ids or query fragments.",
@@ -224,7 +232,7 @@ publicPageRoutes.openapi(postDataRoute, async (c) => {
   // covers the window and ordering too: two viewers on different pages of the
   // same table must never share an entry.
   const data = await selectOrCache(
-    () =>
+    async () =>
       runPageData({
         // The frozen snapshot — edits made since publishing never reach an
         // anonymous viewer.
@@ -235,6 +243,12 @@ publicPageRoutes.openapi(postDataRoute, async (c) => {
         // the null makes the resolver refuse rather than guess.
         teamId: result.page.teamId,
         userId: null,
+        // Read as the team's agent: a public link shows what the team can
+        // see, never a file private to one of its people.
+        reader: await teamAgentPrincipal({
+          organizationId: result.page.organizationId,
+          teamId: result.page.teamId,
+        }),
         variables,
         ...(datasetIds !== undefined ? { datasetIds } : {}),
         ...(queries !== undefined ? { queries } : {}),

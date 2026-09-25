@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  boolean,
   index,
   integer,
   jsonb,
@@ -15,6 +16,7 @@ import {
 // contract is declared once and drizzle-kit sees no schema-parse cycle (the
 // reverse edge is type-only, erased at runtime).
 import type { PageDefinition, PageRuntimeError } from "../../schemas/pages";
+import { projects } from "./access";
 import { aiConversations } from "./ai";
 import { organization, team, user } from "./auth-schema";
 
@@ -100,6 +102,18 @@ export const pages = pgTable(
       onDelete: "set null",
     }),
 
+    // Access (see `db/schema/access.ts`). `userId` above is the LEGACY form
+    // of the same decision — "private to this person" — and stays the one
+    // code before the access engine reads. So the two are kept in step:
+    // written as `userId = accessRestricted ? ownerUserId : null`, and read as
+    // restricted when EITHER says so (`authz/resources`), which is what keeps
+    // a row an older container writes during a deploy private.
+    ownerUserId: uuid("owner_user_id").references(() => user.id, {
+      onDelete: "set null",
+    }),
+    projectId: uuid("project_id").references(() => projects.id),
+    accessRestricted: boolean("access_restricted").notNull().default(false),
+
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -111,6 +125,9 @@ export const pages = pgTable(
   (t) => [
     index("pages_team_idx").on(t.teamId, t.updatedAt),
     index("pages_org_idx").on(t.organizationId),
+    index("pages_project_idx")
+      .on(t.projectId)
+      .where(sql`project_id IS NOT NULL`),
   ],
 );
 

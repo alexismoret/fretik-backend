@@ -7,8 +7,13 @@ import {
 import { promoteChatFilesToDrive } from "@fretik/shared/services/chat-files/promote-to-drive";
 import { tool } from "ai";
 import { z } from "zod";
+import { actingPrincipal } from "../agents/shared/acting-principal";
 import { gateBuiltinWriteTool } from "../agents/shared/policy-tool-gate";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
+import {
+  requireTurnDriveAction,
+  requireTurnPlacement,
+} from "../agents/shared/turn-access";
 import { workflowWriteBackstop } from "../agents/shared/workflow-write-backstop";
 import { WORKSPACE_DIRS } from "../lib/conversation-storage";
 import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
@@ -175,6 +180,20 @@ export const createUploadToDriveTool = () =>
         }
       }
 
+      // The rules of the Drive's own routes, for the person the turn acts
+      // for: saving is adding where the files land — the folder named, else
+      // the root of the chat's project, else the team's root — and replacing
+      // a document's content is changing that document.
+      const placement = await requireTurnPlacement(ctx, {
+        folderId: parentFolderId ?? null,
+      });
+      if (replaceDocumentId) {
+        await requireTurnDriveAction(ctx, {
+          kind: "editDocument",
+          documentId: replaceDocumentId,
+        });
+      }
+
       const workspacePaths = sources.filter(
         (entry) => entry.source.kind === "workspace",
       );
@@ -261,6 +280,7 @@ export const createUploadToDriveTool = () =>
 
       // Workspace files: one promotion each (each is its own S3 read and its
       // own document row), but all under the single approval above.
+      const principal = await actingPrincipal(ctx);
       for (const entry of workspacePaths) {
         if (entry.source.kind !== "workspace") continue;
         try {
@@ -270,7 +290,9 @@ export const createUploadToDriveTool = () =>
             organizationId: ctx.organizationId,
             teamId: ctx.teamId,
             userId,
+            principal,
             folderId: parentFolderId ?? null,
+            projectId: placement.projectId,
             ...(replaceDocumentId ? { replaceDocumentId } : {}),
             actorContext: { actor: "agent", userId, conversationId },
           });
@@ -312,6 +334,7 @@ export const createUploadToDriveTool = () =>
             teamId: ctx.teamId,
             userId,
             folderId: parentFolderId ?? null,
+            projectId: placement.projectId,
           });
         const fileNameById = new Map(
           resolvedAttachments.map((entry) => [

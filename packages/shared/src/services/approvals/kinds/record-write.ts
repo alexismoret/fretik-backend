@@ -4,6 +4,10 @@ import { findOperationForApproval } from "../../bulk-operations/find";
 import { startBulkOperation } from "../../bulk-operations/start";
 import { executeRecordWriteApproval } from "../execute-record-write";
 import { isRecordImportPayload, isRecordWritePayload } from "../payload-guards";
+import {
+  REQUESTER_CANNOT_CONTRIBUTE,
+  requesterMayContribute,
+} from "../requester-access";
 import { asRecordResults, recordWriteWire } from "./record-write-wire";
 import type { ApprovalKindHandler } from "./types";
 
@@ -34,6 +38,15 @@ export const recordWriteHandler: ApprovalKindHandler = {
       throw new Error(
         `Approval ${approval.id} defers to a bulk operation that no longer exists`,
       );
+    }
+    // Same question as an inline grant (`execute-record-write.ts`): the
+    // import writes for someone who may no longer be allowed to.
+    if (!(await requesterMayContribute(approval))) {
+      await cancelBulkOperation({
+        operationId: operation.id,
+        reason: REQUESTER_CANNOT_CONTRIBUTE,
+      });
+      return;
     }
     await startBulkOperation(operation);
   },

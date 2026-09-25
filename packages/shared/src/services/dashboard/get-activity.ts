@@ -1,5 +1,18 @@
-import { sql } from "drizzle-orm";
+import { type SQL, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
+import {
+  documentAccessColumnsOf,
+  driveVisibility,
+  mirrorRecordVisible,
+} from "../../authz/drive-sql";
+import {
+  legacyPrivacyAlias,
+  legacyPrivacyColumns,
+} from "../../authz/legacy-privacy";
+import type { Principal } from "../../authz/principal";
+import { flatAccessible } from "../../authz/sql";
 import db from "../../db";
+import { documents } from "../../db/schema";
 import type { DashboardActivityItem } from "../../schemas/dashboard";
 
 const DEFAULT_LIMIT = 10;
@@ -35,6 +48,18 @@ const DISPLAY_EVENT_TYPES = [
 const asString = (value: unknown): string | null =>
   typeof value === "string" && value.length > 0 ? value : null;
 
+const EVENT_DOCUMENT = "event_document";
+const eventDocument = alias(documents, EVENT_DOCUMENT);
+
+/**
+ * The Drive item an entry names is gone, and it was open to its whole team
+ * when it went (`teamOpenDriveItems`): the team reads the entry.
+ */
+const gone = (table: SQL, id: SQL): SQL => sql`
+  (de.payload->>'teamOpen')::boolean IS TRUE
+  AND NOT EXISTS (SELECT 1 FROM ${table} WHERE id = (${id})::uuid)
+`;
+
 /**
  * The home "Recent activity" feed, read straight from the durable journal
  * (`domain_events`) — the single append-only source every mutation writes to.
@@ -47,14 +72,31 @@ const asString = (value: unknown): string | null =>
 export const getDashboardActivity = async (data: {
   teamId: string;
   /**
-   * The reader. Run events of a workflow private to someone else are left
-   * out — same rule as the "needs attention" card — and so are run events of
-   * a workflow that no longer exists, whose privacy can no longer be known.
+   * The reader. Run events of a workflow they cannot see are left out — same
+   * rule as the "needs attention" card — and so are run events of a workflow
+   * that no longer exists, whose audience can no longer be known.
+   *
+   * The Drive follows the same rule: an event about a file or a folder shows
+   * to those who can open it (a record's, to those who can see the record).
+   * Once the file or folder is gone, it shows to the team if the whole team
+   * could open it then, and to no one otherwise — its name was its
+   * audience's.
    */
-  userId: string;
+  principal: Principal;
   limit?: number;
 }): Promise<{ items: DashboardActivityItem[] }> => {
-  const { teamId, userId } = data;
+  const { teamId, principal } = data;
+  const workflowVisible =
+    principal.kind === "system"
+      ? sql`true`
+      : flatAccessible({
+          principal,
+          level: "view",
+          resourceType: "workflow",
+          columns: legacyPrivacyColumns(legacyPrivacyAlias("w")),
+          restrictedCeiling: "view",
+        });
+  const drive = await driveVisibility(principal, teamId);
   const limit = data.limit ?? DEFAULT_LIMIT;
   const typeList = sql.join(
     DISPLAY_EVENT_TYPES.map((type) => sql`${type}`),
@@ -96,8 +138,23 @@ export const getDashboardActivity = async (data: {
       )
       AND (
         de.payload->>'workflowId' IS NULL
-        OR (w.id IS NOT NULL AND (w.user_id IS NULL OR w.user_id = ${userId}))
+        OR (w.id IS NOT NULL AND ${workflowVisible})
       )
+      AND (
+        de.payload->>'documentId' IS NULL
+        OR EXISTS (
+          SELECT 1 FROM ${documents} AS ${sql.identifier(EVENT_DOCUMENT)}
+          WHERE ${eventDocument.id} = (de.payload->>'documentId')::uuid
+            AND ${drive.document(documentAccessColumnsOf(eventDocument))}
+        )
+        OR (${gone(sql`documents`, sql`de.payload->>'documentId'`)})
+      )
+      AND (
+        de.subject_type IS DISTINCT FROM 'folder'
+        OR ${drive.folder(sql`(de.payload->>'folderId')::uuid`)}
+        OR (${gone(sql`folders`, sql`de.payload->>'folderId'`)})
+      )
+      AND (orr.id IS NULL OR ${mirrorRecordVisible(drive, sql`orr.document_id`)})
     ORDER BY de.id DESC
     LIMIT ${limit}
   `);

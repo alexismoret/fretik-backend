@@ -1,3 +1,5 @@
+import { driveVisibility } from "@fretik/shared/authz/drive-sql";
+import { SYSTEM } from "@fretik/shared/authz/system-principals";
 import db from "@fretik/shared/db";
 import { parseLlmJsonObject } from "@fretik/shared/lib/llm-json";
 import {
@@ -255,6 +257,9 @@ export const extractRelations = async (input: {
   const { ids } = await bulkCreateLinks({
     organizationId,
     teamId,
+    // What the text states, between records it named; each edge is read
+    // only by those who can see both ends.
+    drive: await driveVisibility(SYSTEM.memoryPipeline, teamId),
     source: "ai_inference",
     links: linkInputs.map((l) => ({
       linkTypeId: l.linkTypeId,

@@ -5,6 +5,7 @@ import {
   fieldConfigSchema,
   fieldDefinitionTypeSchema,
 } from "@fretik/shared/schemas/field-definitions";
+import { requireCollectionAudienceAllowed } from "@fretik/shared/services/collection-sharing/audience-policy";
 import { assertCanManageType } from "@fretik/shared/services/collection-sharing/write-access";
 import { COLLECTION_LIMITS } from "@fretik/shared/services/collections/constants";
 import { createCollection } from "@fretik/shared/services/collections/create";
@@ -20,6 +21,8 @@ import {
   agentEventActor,
   getRuntimeContext,
 } from "../agents/shared/runtime-context";
+import { requireTurnContributor } from "../agents/shared/turn-access";
+import { liftAccessRefusal } from "../lib/access-refusal";
 import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
 
 /**
@@ -159,6 +162,15 @@ export const createManageCollectionTool = () =>
               "create requires key, label, and a one-line description.",
             );
           }
+          // A new collection is new team content: a viewer reads. How far it
+          // is shared follows the organization's policies, as in the app.
+          await requireTurnContributor(ctx);
+          await requireCollectionAudienceAllowed({
+            userId: ctx.userId,
+            organizationId: ctx.organizationId,
+            teamId: ctx.teamId,
+            sharing: input.sharing,
+          });
           if (input.fields && input.fields.length > 0) {
             const created = await createCollectionWithFields({
               organizationId: ctx.organizationId,
@@ -225,12 +237,25 @@ export const createManageCollectionTool = () =>
         }
 
         // The type itself is its owner's to change — an org-level one takes an
-        // org admin — whatever write grant covers its records.
+        // org admin — whatever write grant covers its records. Deleting it or
+        // changing who sees it takes full access to the team's content.
         await assertCanManageType({
           collectionId,
           teamId: ctx.teamId,
           organizationId: ctx.organizationId,
           userId: ctx.userId,
+          change:
+            input.action === "delete"
+              ? "delete"
+              : input.sharing === undefined
+                ? "details"
+                : "sharing",
+        });
+        await requireCollectionAudienceAllowed({
+          userId: ctx.userId,
+          organizationId: ctx.organizationId,
+          teamId: ctx.teamId,
+          sharing: input.action === "delete" ? undefined : input.sharing,
         });
 
         if (input.action === "delete") {
@@ -275,9 +300,12 @@ export const createManageCollectionTool = () =>
         });
         return { ok: true, type: { id: type.id, key: type.key } };
       } catch (err) {
-        return toolError(
-          TOOL_ERROR_CODES.COLLECTION_QUERY_ERROR,
-          `manageCollection ${input.action} failed: ${err instanceof Error ? err.message : String(err)}`,
+        return (
+          liftAccessRefusal(err) ??
+          toolError(
+            TOOL_ERROR_CODES.COLLECTION_QUERY_ERROR,
+            `manageCollection ${input.action} failed: ${err instanceof Error ? err.message : String(err)}`,
+          )
         );
       }
     },

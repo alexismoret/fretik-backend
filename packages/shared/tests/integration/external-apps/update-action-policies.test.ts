@@ -30,6 +30,7 @@ import { rejection } from "../../lib/expect-rejection";
  */
 
 let fx: WorkspaceFixture;
+/** The organization's owner — an admin, who leads every team. */
 let admin: string;
 
 const FINGERPRINT = "deadbeef0001";
@@ -107,8 +108,7 @@ describe("an MCP connection's tools are editable", () => {
     const row = await updateConnection({
       id: conn.id,
       teamId: fx.teamId,
-      userId: admin,
-      isOrgAdmin: true,
+      principal: await fx.principalOf(admin),
       actionPolicies: { items: "auto" },
     });
     expect(row.actionPolicies).toEqual({ items: "auto" });
@@ -119,15 +119,13 @@ describe("an MCP connection's tools are editable", () => {
     await updateConnection({
       id: conn.id,
       teamId: fx.teamId,
-      userId: admin,
-      isOrgAdmin: true,
+      principal: await fx.principalOf(admin),
       actionPolicies: { items: "auto", schema: "blocked" },
     });
     const row = await updateConnection({
       id: conn.id,
       teamId: fx.teamId,
-      userId: admin,
-      isOrgAdmin: true,
+      principal: await fx.principalOf(admin),
       actionPolicies: { items: null },
     });
     expect(row.actionPolicies).toEqual({ schema: "blocked" });
@@ -141,8 +139,7 @@ describe("an MCP connection's tools are editable", () => {
       updateConnection({
         id: conn.id,
         teamId: fx.teamId,
-        userId: admin,
-        isOrgAdmin: true,
+        principal: await fx.principalOf(admin),
         actionPolicies: { not_a_tool: "auto" },
       }),
     );
@@ -156,8 +153,7 @@ describe("an MCP connection's tools are editable", () => {
       updateConnection({
         id: conn.id,
         teamId: fx.teamId,
-        userId: admin,
-        isOrgAdmin: true,
+        principal: await fx.principalOf(admin),
         actionPolicies: { items: "auto" },
       }),
     );
@@ -175,26 +171,24 @@ describe("scoping", () => {
       updateConnection({
         id: theirs.id,
         teamId: fx.teamId,
-        userId: admin,
-        isOrgAdmin: true,
+        principal: await fx.principalOf(admin),
         actionPolicies: { items: "auto" },
       }),
     );
     expect(codeOf(err)).toBe("EXTERNAL_APP_CONNECTION_NOT_FOUND");
   });
 
-  test("a non-admin cannot change a team connection's permissions", async () => {
+  test("a member who does not lead the team cannot change a team connection's permissions", async () => {
     const conn = await createMcpConnection();
     const err = await rejection(
       updateConnection({
         id: conn.id,
         teamId: fx.teamId,
-        userId: admin,
-        isOrgAdmin: false,
+        principal: await fx.principalOf(fx.userIds[1]),
         actionPolicies: { items: "auto" },
       }),
     );
-    expect(codeOf(err)).toBe("FORBIDDEN");
+    expect(codeOf(err)).toBe("ACCESS_DENIED");
   });
 });
 
@@ -205,8 +199,7 @@ describe("connection options", () => {
       updateConnection({
         id: conn.id,
         teamId: fx.teamId,
-        userId: admin,
-        isOrgAdmin: true,
+        principal: await fx.principalOf(admin),
         options: { persona: "ops" },
       }),
     );

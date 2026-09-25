@@ -33,7 +33,11 @@ import { runMistralOcr } from "../lib/mistral-ocr";
 import { maybePersistLargeOutput } from "../lib/persisted-output";
 import { TOOL_ERROR_CODES } from "../lib/tool-error-codes";
 import { withTraceSession } from "../lib/trace-tool";
-import { loadAccessibleContext } from "../services/chatbot-context/load-context";
+import {
+  loadAccessibleContext,
+  teamContextReach,
+  type TeamContextReach,
+} from "../services/chatbot-context/load-context";
 import { readSkillWorkspaceFile } from "../skills/read-skill-file";
 
 /**
@@ -186,7 +190,7 @@ const buildFileNotFoundHint = (relative: string): string | undefined => {
     return `The file may not have been generated yet. Check the stdout of the previous \`python\` / \`bash\` call for the actual output path.`;
   }
   if (relative.startsWith(`${WORKSPACE_DIRS.memories}/`)) {
-    return `Memory paths mirror the \`memory\` tool's namespace: \`${WORKSPACE_DIRS.memories}/user/<path>\` or \`${WORKSPACE_DIRS.memories}/team/<path>\`. Call \`memory({ command: "view", path: "/memories/team/" })\` to list what exists.`;
+    return `Memory paths mirror the \`memory\` tool's namespaces: \`${WORKSPACE_DIRS.memories}/user/<path>\`, \`${WORKSPACE_DIRS.memories}/team/<path>\` or, in a project's chat, \`${WORKSPACE_DIRS.memories}/project/<path>\`. \`<memory_index>\` lists what exists.`;
   }
   return undefined;
 };
@@ -493,16 +497,20 @@ const resolveContextContent = async (args: {
   organizationId: string;
   teamId: string;
   userId: string | undefined;
+  /** The same reach as the manifest the file was named in. */
+  teamReach: TeamContextReach;
   relative: string;
   absolute: string;
 }): Promise<ResolveResult> => {
-  const { organizationId, teamId, userId, relative, absolute } = args;
+  const { organizationId, teamId, userId, teamReach, relative, absolute } =
+    args;
   const name = basename(relative);
 
   const accessible = await loadAccessibleContext({
     userId,
     teamId,
     organizationId,
+    teamReach,
   });
   const file = accessible.files.find(
     (f) => sanitizeSessionPath(f.filename) === name,
@@ -725,6 +733,7 @@ export const createReadTool = () =>
           organizationId: ctx.organizationId,
           teamId: ctx.teamId,
           userId: ctx.userId,
+          teamReach: teamContextReach(ctx),
           relative: resolved.relative,
           absolute: resolved.absolute,
         });

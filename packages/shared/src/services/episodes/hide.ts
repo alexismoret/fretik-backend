@@ -11,13 +11,14 @@ import { deleteEpisodeVectors } from "./vectors";
  * searchKnowledge, dreaming and the default settings view immediately. The
  * nightly GC's 30-day purge (`purgeExpiredEpisodes`) finalizes the hard
  * delete. Privacy mirrors `getEpisode`: a member may hide their OWN private
- * episode; a team-visible one (`userId IS NULL`) is shared memory — admin only.
+ * episode; a team-visible one (`userId IS NULL`) is shared memory, which takes
+ * `team.memory.manage` (the team's leads and admins) — decided by the caller.
  */
 export const hideEpisode = async (input: {
   episodeId: string;
   teamId: string;
   userId: string;
-  isAdmin: boolean;
+  canManageTeamMemory: boolean;
 }): Promise<void> => {
   const episode = await db.query.aiEpisodes.findFirst({
     columns: {
@@ -37,10 +38,10 @@ export const hideEpisode = async (input: {
   if (!episode) {
     return throwHttpError(404, notFound("Episode not found"));
   }
-  if (episode.userId === null && !input.isAdmin) {
+  if (episode.userId === null && !input.canManageTeamMemory) {
     return throwHttpError(
       403,
-      forbidden("Only an admin can delete team memory"),
+      forbidden("Only a team lead can delete team memory"),
     );
   }
 

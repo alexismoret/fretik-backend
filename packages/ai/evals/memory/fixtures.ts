@@ -18,6 +18,8 @@
  * `cleanupMemoryFixtures` (`--cleanup`).
  */
 
+import { driveVisibility } from "@fretik/shared/authz/drive-sql";
+import { SYSTEM } from "@fretik/shared/authz/system-principals";
 import db from "@fretik/shared/db";
 import {
   aiConversationMembers,
@@ -627,6 +629,7 @@ export const makeRelationScenario = async (
   const { ids } = await bulkCreateLinks({
     organizationId,
     teamId,
+    drive: await driveVisibility(SYSTEM.operatorScript, teamId),
     source: "ai_inference",
     links: [
       {

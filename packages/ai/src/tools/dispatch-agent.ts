@@ -49,9 +49,11 @@ const SUB_AGENT_SUMMARY_BUDGET_CHARS = 24_000;
 
 /**
  * What a sub-agent inherits from the turn that dispatched it: the same
- * identity and the same RULES. The team's tool policies travel with it — a
- * sub-agent runs the parent's tools, so without them a tool the team blocked
- * reappeared one level down, and an approval-gated write ran unasked.
+ * identity, the same place and the same RULES. The team's tool policies
+ * travel with it — a sub-agent runs the parent's tools, so without them a
+ * tool the team blocked reappeared one level down, and an approval-gated
+ * write ran unasked. So does the place: a sub-agent of a project chat works
+ * in the project, and keeps the team's own context from someone outside it.
  * Prompt fragments stay behind on purpose (the sub-agent's prompt is static).
  */
 export const subAgentCallOptions = (
@@ -62,6 +64,8 @@ export const subAgentCallOptions = (
     | "userId"
     | "userName"
     | "conversationId"
+    | "projectId"
+    | "outsideTeam"
     | "timeZone"
     | "traceId"
     | "workflowAutonomy"
@@ -74,6 +78,8 @@ export const subAgentCallOptions = (
   userId: ctx.userId,
   userName: ctx.userName,
   conversationId: ctx.conversationId,
+  projectId: ctx.projectId,
+  outsideTeam: ctx.outsideTeam,
   timeZone: ctx.timeZone,
   traceId: ctx.traceId ? `${ctx.traceId}.${traceSuffix}` : undefined,
   // Inherit the enclosing workflow run's write gate (undefined for chat).

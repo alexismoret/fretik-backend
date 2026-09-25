@@ -1244,6 +1244,10 @@ export const PageResponseSchema = z.object({
   icon: z.string().nullable(),
   color: z.string().nullable(),
   userId: z.string().nullable(),
+  /** The team that holds it: where its apps are connected. */
+  teamId: z.string(),
+  /** The project it belongs to; null for its team's. */
+  projectId: z.string().nullable(),
   definition: PageDefinitionSchema,
   /** Tail of the sandboxed page's error reports — the authoring agent's
    * self-heal feed. Reset on every code write. */

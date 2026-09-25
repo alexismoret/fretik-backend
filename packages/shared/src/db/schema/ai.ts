@@ -13,6 +13,7 @@ import {
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
+import { projects } from "./access";
 import { organization, team, user } from "./auth-schema";
 
 /**
@@ -62,6 +63,15 @@ export const aiConversations = pgTable(
       .notNull()
       .references(() => team.id, { onDelete: "cascade" }),
     userId: uuid("user_id").references(() => user.id, { onDelete: "set null" }),
+
+    // Access (see `db/schema/access.ts`). A conversation is private to its
+    // participants (`ai_conversation_members`) unless it is opened to its
+    // container: `accessRestricted = false` lets the team — or the project,
+    // when `projectId` is set — read it; taking part stays a seat someone
+    // gives. Private by default, projects included: nobody's chat is
+    // published by being in a project.
+    projectId: uuid("project_id").references(() => projects.id),
+    accessRestricted: boolean("access_restricted").notNull().default(true),
 
     agentType: aiAgentTypeEnum("agent_type").notNull().default("chatbot"),
 
@@ -117,6 +127,9 @@ export const aiConversations = pgTable(
       t.updatedAt,
       t.id,
     ),
+    index("ai_conversations_project_idx")
+      .on(t.projectId)
+      .where(sql`project_id IS NOT NULL`),
   ],
 );
 

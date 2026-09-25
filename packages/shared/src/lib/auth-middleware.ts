@@ -1,10 +1,13 @@
 import { createMiddleware } from "hono/factory";
+import { loadPrincipal } from "../authz/load-principal";
+import type { UserPrincipal } from "../authz/principal";
 import db from "../db";
 import type { organization, team, user } from "../db/schema";
 import { auth } from "./auth";
 import {
   TEAM_MEMBERSHIP_CACHE_TTL,
   teamMembershipCacheKey,
+  teamRowCacheKey,
 } from "./auth-roles";
 import { selectOrCache } from "./redis";
 
@@ -14,8 +17,39 @@ export type HonoLoggedAppType = {
     session: typeof auth.$Infer.Session.session;
     organization: typeof organization.$inferSelect;
     team: typeof team.$inferSelect | null;
+    /** Who is asking, as the access engine sees them (`authz/`). */
+    principal: UserPrincipal;
   };
 };
+
+/** A signed-in person, in no organization in particular (`sessionMiddleware`). */
+export type HonoSessionAppType = {
+  Variables: {
+    user: typeof user.$inferSelect;
+    session: typeof auth.$Infer.Session.session;
+  };
+};
+
+/**
+ * The session alone, for the few routes about the person rather than one of
+ * their organizations: the organizations they belong to and the invitations
+ * addressed to them, which the app needs before any organization is open.
+ * Everything else goes through `authMiddleware`, which also requires the
+ * active organization and loads the principal.
+ */
+export const sessionMiddleware = createMiddleware<HonoSessionAppType>(
+  async (c, next) => {
+    const sessionData = await auth.api.getSession({
+      headers: c.req.raw.headers,
+    });
+    if (!sessionData) {
+      return c.json({ message: "Unauthorized" }, 401);
+    }
+    c.set("user", sessionData.user as typeof user.$inferSelect);
+    c.set("session", sessionData.session);
+    await next();
+  },
+);
 
 /**
  * Handles Better Auth session and populates organization/team context.
@@ -61,6 +95,24 @@ export const authMiddleware = createMiddleware<HonoLoggedAppType>(
       );
     }
 
+    // The session remembers its active organization after the person is
+    // removed from it (or leaves from another device). Membership is checked
+    // here, once, for every route: nothing below may serve an organization
+    // the caller no longer belongs to.
+    const principal = await loadPrincipal({
+      organizationId: org.id,
+      userId: authUser.id,
+    });
+    if (!principal) {
+      return c.json(
+        {
+          message: "You are not a member of the active organization",
+          code: "ORGANIZATION_REQUIRED",
+        },
+        403,
+      );
+    }
+
     const activeTeamId = authSession.activeTeamId;
     let activeTeam: typeof team.$inferSelect | undefined = undefined;
 
@@ -70,7 +122,7 @@ export const authMiddleware = createMiddleware<HonoLoggedAppType>(
           db.query.team.findFirst({
             where: { id: activeTeamId },
           }),
-        `team:${activeTeamId}`,
+        teamRowCacheKey(activeTeamId),
       );
 
       // The session keeps its `activeTeamId` when the active organization
@@ -98,6 +150,7 @@ export const authMiddleware = createMiddleware<HonoLoggedAppType>(
     c.set("session", authSession);
     c.set("organization", org);
     c.set("team", activeTeam ?? null);
+    c.set("principal", principal);
 
     await next();
   },

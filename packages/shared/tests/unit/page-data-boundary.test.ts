@@ -3,6 +3,7 @@ import { describe, expect, mock, test } from "bun:test";
 // method only exists once `@hono/zod-openapi` has patched Zod. In a service
 // that happens at boot; here it has to be imported for the side effect.
 import "@hono/zod-openapi";
+import { systemPrincipal } from "../../src/authz/principal";
 import type {
   PageDataset,
   PageDefinition,
@@ -71,6 +72,7 @@ await mockModule("../../src/services/field-definitions/get-for-team", {
   getFieldDefinitionsForTeam: () => Promise.resolve(fieldDefinitions),
 });
 
+const { driveVisibility } = await import("../../src/authz/drive-sql");
 const { resolvePageState, runPageData } =
   await import("../../src/services/pages/run-page-data");
 const { buildPageFieldDescriptors } =
@@ -79,6 +81,17 @@ const { collectionsSource } =
   await import("../../src/services/pages/sources/collections");
 const { registerExternalPageQueryExecutor, resetExternalPageQueryExecutor } =
   await import("../../src/services/pages/sources/external");
+
+/**
+ * Who the runs read as. Which Drive files surface through their mirror
+ * records is the integration suite's claim (`authz/drive-mirror-records`):
+ * here the reader is a system principal, which opens every file without a
+ * query, so the record services see exactly what this suite puts in.
+ */
+const READER = systemPrincipal(
+  "unit test: the Drive is not this suite's subject",
+);
+const everyFile = () => driveVisibility(READER, "team-1");
 
 const page = (
   variables: PageVariable[],
@@ -183,6 +196,7 @@ describe("runPageData — orchestration and degradation", () => {
       definition: page([], [inline("sales", [{ amount: 10 }])]),
       teamId: "team-1",
       userId: null,
+      reader: READER,
       variables: {},
     });
     expect(datasets.sales).toEqual({
@@ -226,6 +240,7 @@ describe("runPageData — orchestration and degradation", () => {
       ),
       teamId: "team-1",
       userId: null,
+      reader: READER,
       variables: {},
     });
     const elapsed = performance.now() - startedAt;
@@ -281,6 +296,7 @@ describe("runPageData — orchestration and degradation", () => {
         ),
         teamId: "team-1",
         userId: null,
+        reader: READER,
         variables: {},
       });
 
@@ -310,7 +326,12 @@ describe("collectionsSource — the stored definition owns the query", () => {
         collectionId: "type-1",
         filters: [{ key: "status", op: "eq", value: { var: "status" } }],
       },
-      { teamId: "team-1", userId: null, state: { status: "won" } },
+      {
+        teamId: "team-1",
+        userId: null,
+        drive: everyFile,
+        state: { status: "won" },
+      },
     );
     expect(listCalls[0]?.filters).toEqual([
       { key: "status", op: "eq", value: "won" },
@@ -327,7 +348,12 @@ describe("collectionsSource — the stored definition owns the query", () => {
         collectionId: "type-1",
         filters: [{ key: "status", op: "eq", value: { var: "status" } }],
       },
-      { teamId: "team-1", userId: null, state: { status: "" } },
+      {
+        teamId: "team-1",
+        userId: null,
+        drive: everyFile,
+        state: { status: "" },
+      },
     );
     expect(listCalls[0]?.filters).toEqual([]);
   });
@@ -342,7 +368,7 @@ describe("collectionsSource — the stored definition owns the query", () => {
         collectionId: "type-1",
         limit: 999_999,
       },
-      { teamId: "team-1", userId: null, state: {} },
+      { teamId: "team-1", userId: null, drive: everyFile, state: {} },
     );
     expect(listCalls[0]?.limit).toBe(PAGE_LIMITS.maxRows);
   });
@@ -350,7 +376,7 @@ describe("collectionsSource — the stored definition owns the query", () => {
   test("a collection the team cannot see degrades to forbidden", async () => {
     const result = await collectionsSource.resolve(
       { id: "records", kind: "collections", collectionId: "type-unknown" },
-      { teamId: "team-1", userId: null, state: {} },
+      { teamId: "team-1", userId: null, drive: everyFile, state: {} },
     );
     expect(result.status).toBe("forbidden");
   });
@@ -378,6 +404,7 @@ describe("collectionsSource — the stored definition owns the query", () => {
       ),
       teamId: "team-1",
       userId: null,
+      reader: READER,
       variables: {},
     });
     expect(datasets.broken?.status).toBe("error");
@@ -409,6 +436,7 @@ describe("collectionsSource — the stored definition owns the query", () => {
       ),
       teamId: "team-1",
       userId: null,
+      reader: READER,
       variables: {},
       datasetIds: ["sales"],
     });
@@ -434,6 +462,7 @@ describe("collectionsSource — the stored definition owns the query", () => {
       ),
       teamId: "team-1",
       userId: null,
+      reader: READER,
       variables: {},
     });
     expect(datasets.heavy?.status).toBe("ok");
@@ -449,7 +478,7 @@ describe("collectionsSource — the stored definition owns the query", () => {
     listResult = { count: 500, data: [{ id: "r1", label: "R1", data: {} }] };
     const result = await collectionsSource.resolve(
       { id: "records", kind: "collections", collectionId: "type-1" },
-      { teamId: "team-1", userId: null, state: {} },
+      { teamId: "team-1", userId: null, drive: everyFile, state: {} },
     );
     expect(result.status === "ok" && result.truncated).toBe(true);
   });
@@ -482,6 +511,7 @@ describe("collectionsSource — the window and ordering a viewer may ask for", (
     const result = await collectionsSource.resolve(dataset, {
       teamId: "team-1",
       userId: null,
+      drive: everyFile,
       state: {},
       query: { page: 4, pageSize: 50 },
     });
@@ -501,6 +531,7 @@ describe("collectionsSource — the window and ordering a viewer may ask for", (
     const result = await collectionsSource.resolve(dataset, {
       teamId: "team-1",
       userId: null,
+      drive: everyFile,
       state: {},
       query: { page: 1000, pageSize: 200 },
     });
@@ -522,6 +553,7 @@ describe("collectionsSource — the window and ordering a viewer may ask for", (
       {
         teamId: "team-1",
         userId: null,
+        drive: everyFile,
         state: {},
         query: { sortBy: "montant", sortDir: "asc" },
       },
@@ -540,6 +572,7 @@ describe("collectionsSource — the window and ordering a viewer may ask for", (
       await collectionsSource.resolve(dataset, {
         teamId: "team-1",
         userId: null,
+        drive: everyFile,
         state: {},
         query: { sortBy: key },
       });
@@ -554,6 +587,7 @@ describe("collectionsSource — the window and ordering a viewer may ask for", (
     const result = await collectionsSource.resolve(dataset, {
       teamId: "team-1",
       userId: null,
+      drive: everyFile,
       state: {},
       query: { sortBy: "montant; DROP TABLE collection_records" },
     });
@@ -571,6 +605,7 @@ describe("collectionsSource — the window and ordering a viewer may ask for", (
     const result = await collectionsSource.resolve(dataset, {
       teamId: "team-1",
       userId: null,
+      drive: everyFile,
       state: {},
       query: { sortBy: "client" },
     });
@@ -592,6 +627,7 @@ describe("collectionsSource — the window and ordering a viewer may ask for", (
       {
         teamId: "team-1",
         userId: null,
+        drive: everyFile,
         state: {},
         query: { page: 2, sortBy: "montant" },
       },
@@ -609,6 +645,7 @@ describe("collectionsSource — the window and ordering a viewer may ask for", (
       {
         teamId: "team-1",
         userId: null,
+        drive: everyFile,
         state: {},
         query: { page: 7 },
       },
@@ -630,6 +667,7 @@ describe("collectionsSource — the window and ordering a viewer may ask for", (
       {
         teamId: "team-1",
         userId: null,
+        drive: everyFile,
         state: {},
         query: { pageSize: 60 },
       },
@@ -654,6 +692,7 @@ describe("collectionsSource — the window and ordering a viewer may ask for", (
     await collectionsSource.resolve(aggregate, {
       teamId: "team-1",
       userId: null,
+      drive: everyFile,
       state: {},
       query: { sortBy: "total", sortDir: "asc" },
     });
@@ -664,6 +703,7 @@ describe("collectionsSource — the window and ordering a viewer may ask for", (
     await collectionsSource.resolve(aggregate, {
       teamId: "team-1",
       userId: null,
+      drive: everyFile,
       state: {},
       query: { sortBy: "montant" },
     });

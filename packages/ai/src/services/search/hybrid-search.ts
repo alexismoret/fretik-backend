@@ -47,6 +47,13 @@ export type { HybridCandidate } from "./fuse-arms";
  * AND (user_id IS NULL OR user_id = $userId)
  * AND (organization_id = $orgId OR organization_id IS NULL)
  *
+ * to every row WITHOUT an audience of its own (`acl_principals IS NULL`).
+ * A restricted or shared document, page or workflow carries its audience
+ * instead (`@fretik/shared/services/ai-vectors/acl`), and is kept when that
+ * overlaps the searcher's ids — themself, their active team, the
+ * organization — whatever team it belongs to: a page shared with someone in
+ * another team is found by them, a restricted document by nobody else.
+ *
  * This single predicate covers every legal row shape — tenant
  * documents, team-scope memories/context, user-scope memories
  * (team_id set, user_id = $userId), global skills (all three
@@ -212,41 +219,110 @@ export interface HybridSearchInput {
    * user-scope row leaks.
    */
   userId?: string;
+  /**
+   * The projects the searcher reaches. What a project holds names the
+   * project as its audience (`acl_principals`), never its team, so it is
+   * found by the people of the project, whatever team they search from.
+   */
+  projectIds?: readonly string[];
+  /**
+   * Search one project and nothing of its team: what names the project as
+   * its audience, and the searcher's own rows (`userId`), when there is one.
+   * What a project chat gathers by itself: it stands on its project, and
+   * whoever reads it may not be one of the team's people. The team's records
+   * are not searched at all.
+   */
+  withinProject?: string;
   filters?: HybridSearchFilters;
 }
 
 const serializeHalfvec = (embedding: number[]): string =>
   `[${embedding.join(",")}]`;
 
-const buildFilterClauses = (
-  teamId: string,
-  organizationId: string,
-  userId: string | undefined,
-  filters: HybridSearchFilters | undefined,
-): SQL[] => {
-  // Scope predicate — 3 symmetric AND-clauses validating every legal
-  // row shape per the `ai_vectors_scope_consistency` CHECK constraint
-  // (S3+S4). The CHECK guarantees that team_id and organization_id
-  // either co-NULL (skills) or co-set (everything else); we still
-  // state both clauses explicitly so the planner can pick the partial
-  // index that fits the result population (idx_ai_vectors_global for
-  // skills, idx_ai_vectors_team_user_partial for memories/context).
+/** Whose rows a search may return: the searcher and where they search from. */
+type SearchScope = Pick<
+  HybridSearchInput,
+  "teamId" | "organizationId" | "userId" | "projectIds" | "withinProject"
+>;
+
+/**
+ * Whose rows a search of one project returns: the rows naming the project
+ * (or the searcher) as their audience, and the searcher's own rows without
+ * one — their notes, their episodes, their own context. Never a row that is
+ * simply the team's.
+ */
+const projectScopeClause = (
+  scope: SearchScope & { withinProject: string },
+): SQL => {
+  const { teamId, organizationId, userId } = scope;
+  const audience = [scope.withinProject, ...(userId ? [userId] : [])];
+  const reached = sql`(${aiVectors.aclPrincipals} && ${sql.param(audience)}::uuid[] AND ${aiVectors.organizationId} = ${organizationId})`;
+  if (!userId) return reached;
+  const ownRows = and(
+    isNull(aiVectors.aclPrincipals),
+    eq(aiVectors.userId, userId),
+    or(eq(aiVectors.teamId, teamId), isNull(aiVectors.teamId)),
+    eq(aiVectors.organizationId, organizationId),
+  ) as SQL;
+  return or(reached, ownRows) as SQL;
+};
+
+/** Whose rows a search from a team returns: the team's, and what reaches the searcher. */
+const teamScopeClause = (scope: SearchScope): SQL => {
+  const { teamId, organizationId, userId } = scope;
+  const projectIds = scope.projectIds ?? [];
+  // Scope predicate, for rows without an audience of their own — 3
+  // symmetric AND-clauses validating every legal row shape per the
+  // `ai_vectors_scope_consistency` CHECK constraint (S3+S4). The CHECK
+  // guarantees that team_id and organization_id either co-NULL (skills)
+  // or co-set (everything else); we still state both clauses explicitly
+  // so the planner can pick the partial index that fits the result
+  // population (idx_ai_vectors_global for skills,
+  // idx_ai_vectors_team_user_partial for memories/context).
   //
   // When `userId` is undefined (system / internal flow with no acting
   // user), the user-scope clause collapses to `user_id IS NULL` —
-  // user-owned rows stay invisible, no leak.
+  // user-owned rows stay invisible, no leak — and a row with its own
+  // audience is kept only for the team or the organization.
   const userScopeClause = userId
     ? (or(isNull(aiVectors.userId), eq(aiVectors.userId, userId)) as SQL)
     : isNull(aiVectors.userId);
 
-  const clauses: SQL[] = [
-    or(eq(aiVectors.teamId, teamId), isNull(aiVectors.teamId)) as SQL,
+  const legacyScope = and(
+    isNull(aiVectors.aclPrincipals),
+    or(eq(aiVectors.teamId, teamId), isNull(aiVectors.teamId)),
     userScopeClause,
     or(
       eq(aiVectors.organizationId, organizationId),
       isNull(aiVectors.organizationId),
-    ) as SQL,
+    ),
+  ) as SQL;
+
+  // A row with its own audience: the searcher, their active team, their
+  // projects, the organization. The active team and not all of theirs —
+  // search works in one team at a time, and what is simply another team's
+  // stays there. A project is its own audience wherever it is searched from.
+  const searcherIds = [
+    ...(userId ? [userId] : []),
+    teamId,
+    ...projectIds,
+    organizationId,
   ];
+  const ownAudience = sql`(${aiVectors.aclPrincipals} && ${sql.param(searcherIds)}::uuid[] AND ${aiVectors.organizationId} = ${organizationId})`;
+
+  return or(legacyScope, ownAudience) as SQL;
+};
+
+const buildFilterClauses = (
+  scope: SearchScope,
+  filters: HybridSearchFilters | undefined,
+): SQL[] => {
+  const scopeClause =
+    scope.withinProject === undefined
+      ? teamScopeClause(scope)
+      : projectScopeClause({ ...scope, withinProject: scope.withinProject });
+
+  const clauses: SQL[] = [scopeClause];
   if (!filters) return clauses;
 
   if (filters.sourceTypes && filters.sourceTypes.length > 0) {
@@ -354,13 +430,11 @@ const warnIfFamished = async (
 
 const runSemanticSearch = async (
   queryEmbedding: number[],
-  teamId: string,
-  organizationId: string,
-  userId: string | undefined,
+  scope: SearchScope,
   filters: HybridSearchFilters | undefined,
 ): Promise<RawRow[]> => {
   const vectorLiteral = serializeHalfvec(queryEmbedding);
-  const clauses = buildFilterClauses(teamId, organizationId, userId, filters);
+  const clauses = buildFilterClauses(scope, filters);
   const distance = sql<number>`${aiVectors.embedding} <=> ${vectorLiteral}::halfvec`;
 
   const rows = await db.transaction(async (tx) => {
@@ -400,12 +474,10 @@ const runSemanticSearch = async (
 
 const runBm25Search = async (
   queryText: string,
-  teamId: string,
-  organizationId: string,
-  userId: string | undefined,
+  scope: SearchScope,
   filters: HybridSearchFilters | undefined,
 ): Promise<RawRow[]> => {
-  const clauses = buildFilterClauses(teamId, organizationId, userId, filters);
+  const clauses = buildFilterClauses(scope, filters);
   // The GIN-indexed `search_vector` column is a GENERATED STORED
   // tsvector whose tokeniser is `'simple'` (see ai-vectors.ts) —
   // plainto_tsquery must match or the index is skipped.
@@ -445,8 +517,14 @@ const runBm25Search = async (
 export const hybridSearch = async (
   input: HybridSearchInput,
 ): Promise<HybridCandidate[]> => {
-  const { query, queryEmbedding, teamId, organizationId, userId, filters } =
-    input;
+  const { query, queryEmbedding, teamId, organizationId, filters } = input;
+  const scope: SearchScope = {
+    teamId,
+    organizationId,
+    userId: input.userId,
+    projectIds: input.projectIds,
+    withinProject: input.withinProject,
+  };
 
   // The two LEXICAL arms start now, without waiting for the embedding.
   //
@@ -466,13 +544,7 @@ export const hybridSearch = async (
   const semanticPromise = Promise.resolve(queryEmbedding)
     .then((vector) => {
       if (Array.isArray(vector) && vector.length === EMBEDDING_DIMENSIONS) {
-        return runSemanticSearch(
-          vector,
-          teamId,
-          organizationId,
-          userId,
-          filters,
-        );
+        return runSemanticSearch(vector, scope, filters);
       }
       console.warn(
         `[hybrid-search] invalid query embedding (len=${vector?.length ?? 0}, expected=${EMBEDDING_DIMENSIONS}) — falling back to BM25-only`,
@@ -500,12 +572,9 @@ export const hybridSearch = async (
   const armTimings: StageTimings = {};
   const [semanticRows, bm25Rows, registryRows] = await Promise.all([
     timeStage(armTimings, "semantic", semanticPromise),
-    timeStage(
-      armTimings,
-      "bm25",
-      runBm25Search(query, teamId, organizationId, userId, filters),
-    ),
-    wantsRecords(filters)
+    timeStage(armTimings, "bm25", runBm25Search(query, scope, filters)),
+    // The records are the team's: a search of one project leaves them out.
+    wantsRecords(filters) && scope.withinProject === undefined
       ? timeStage(
           armTimings,
           "registry",

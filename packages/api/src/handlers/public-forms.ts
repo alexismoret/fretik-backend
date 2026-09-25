@@ -1,3 +1,4 @@
+import { access } from "@fretik/shared/authz/http";
 import { auth } from "@fretik/shared/lib/auth";
 import { type HonoLoggedAppType } from "@fretik/shared/lib/auth-middleware";
 import {
@@ -52,6 +53,9 @@ const accessStatus: Record<
 const getFormRoute = createRoute({
   method: "get",
   path: "/{token}",
+  middleware: access.public(
+    "A public form is filled in by people with no account; a private one is checked in the handler.",
+  ),
   summary: "Public form definition + access verdict for a form workflow",
   tags: ["Forms"],
   request: { params: z.object({ token: z.string().min(1) }) },
@@ -105,78 +109,87 @@ publicFormRoutes.use(
 
 // Plain route (not `createRoute`) because the body is multipart with dynamic,
 // per-field file parts — same pattern as the chat-files upload handler.
-publicFormRoutes.post("/:token/submit", async (c) => {
-  const token = c.req.param("token");
-  const userId = await optionalUserId(c);
-  const result = await resolveFormAccess({ token, userId });
+publicFormRoutes.post(
+  "/:token/submit",
+  access.public(
+    "A public form is submitted by people with no account; a private one is checked in the handler.",
+  ),
+  async (c) => {
+    const token = c.req.param("token");
+    const userId = await optionalUserId(c);
+    const result = await resolveFormAccess({ token, userId });
 
-  if (result.access !== "ready") {
-    return c.json(
-      { code: result.access.toUpperCase() },
-      accessStatus[result.access],
-    );
-  }
-
-  const body = await c.req.formData();
-
-  // Scalar answers ride in one JSON `values` part; every File part is a file
-  // field keyed by the field's key (multiple parts under one key = multi-file).
-  let values: Record<string, unknown> = {};
-  const valuesRaw = body.get("values");
-  if (typeof valuesRaw === "string" && valuesRaw.length > 0) {
-    try {
-      const parsed: unknown = JSON.parse(valuesRaw);
-      if (
-        parsed !== null &&
-        typeof parsed === "object" &&
-        !Array.isArray(parsed)
-      ) {
-        values = parsed as Record<string, unknown>;
-      }
-    } catch {
+    if (result.access !== "ready") {
       return c.json(
-        { code: "VALIDATION_ERROR", message: "Invalid form values." },
+        { code: result.access.toUpperCase() },
+        accessStatus[result.access],
+      );
+    }
+
+    const body = await c.req.formData();
+
+    // Scalar answers ride in one JSON `values` part; every File part is a file
+    // field keyed by the field's key (multiple parts under one key = multi-file).
+    let values: Record<string, unknown> = {};
+    const valuesRaw = body.get("values");
+    if (typeof valuesRaw === "string" && valuesRaw.length > 0) {
+      try {
+        const parsed: unknown = JSON.parse(valuesRaw);
+        if (
+          parsed !== null &&
+          typeof parsed === "object" &&
+          !Array.isArray(parsed)
+        ) {
+          values = parsed as Record<string, unknown>;
+        }
+      } catch {
+        return c.json(
+          { code: "VALIDATION_ERROR", message: "Invalid form values." },
+          400,
+        );
+      }
+    }
+
+    // Collect uploads for each declared file field (`getAll` returns the
+    // File-inclusive union; `entries()` doesn't narrow it).
+    const files = new Map<string, File[]>();
+    for (const field of result.form.fields) {
+      if (field.type !== "file") continue;
+      const uploaded = body
+        .getAll(field.key)
+        .filter((v): v is File => v instanceof File);
+      if (uploaded.length > 0) files.set(field.key, uploaded);
+    }
+
+    const outcome = await submitWorkflowForm({
+      workflow: result.workflow,
+      form: result.form,
+      values,
+      files,
+      triggeredByUserId: userId ?? null,
+      isTest: result.mode === "test",
+    });
+
+    if (!outcome.ok) {
+      return c.json(
+        { code: "VALIDATION_ERROR", message: outcome.message },
         400,
       );
     }
-  }
-
-  // Collect uploads for each declared file field (`getAll` returns the
-  // File-inclusive union; `entries()` doesn't narrow it).
-  const files = new Map<string, File[]>();
-  for (const field of result.form.fields) {
-    if (field.type !== "file") continue;
-    const uploaded = body
-      .getAll(field.key)
-      .filter((v): v is File => v instanceof File);
-    if (uploaded.length > 0) files.set(field.key, uploaded);
-  }
-
-  const outcome = await submitWorkflowForm({
-    workflow: result.workflow,
-    form: result.form,
-    values,
-    files,
-    triggeredByUserId: userId ?? null,
-    isTest: result.mode === "test",
-  });
-
-  if (!outcome.ok) {
-    return c.json({ code: "VALIDATION_ERROR", message: outcome.message }, 400);
-  }
-  return c.json(
-    {
-      ok: true,
-      ...(result.form.successMessage !== undefined
-        ? { successMessage: result.form.successMessage }
-        : {}),
-      // A test submission returns its run so the cockpit can jump to it.
-      ...(result.mode === "test"
-        ? { runId: outcome.runId, workflowId: outcome.workflowId }
-        : {}),
-    },
-    200,
-  );
-});
+    return c.json(
+      {
+        ok: true,
+        ...(result.form.successMessage !== undefined
+          ? { successMessage: result.form.successMessage }
+          : {}),
+        // A test submission returns its run so the cockpit can jump to it.
+        ...(result.mode === "test"
+          ? { runId: outcome.runId, workflowId: outcome.workflowId }
+          : {}),
+      },
+      200,
+    );
+  },
+);
 
 export { publicFormRoutes };

@@ -12,6 +12,10 @@ import {
   sql,
   type SQL,
 } from "drizzle-orm";
+import {
+  type DriveVisibility,
+  mirrorRecordVisible,
+} from "../../authz/drive-sql";
 import db from "../../db";
 import type {
   CollectionRecordWithData,
@@ -65,6 +69,7 @@ export type CollectionRecordListItem = CollectionRecordWithData & {
  */
 const fetchOutgoingLinkSummaries = async (
   recordIds: string[],
+  drive: DriveVisibility,
 ): Promise<Record<string, RecordLinkSummary[]>> => {
   if (recordIds.length === 0) return {};
   const toRec = aliasedTable(collectionRecords, "to_rec");
@@ -82,7 +87,12 @@ const fetchOutgoingLinkSummaries = async (
     .innerJoin(linkTypes, eq(links.linkTypeId, linkTypes.id))
     .innerJoin(toRec, eq(links.toRecordId, toRec.id))
     .where(
-      and(inArray(links.fromRecordId, recordIds), isNull(links.invalidatedAt)),
+      and(
+        inArray(links.fromRecordId, recordIds),
+        isNull(links.invalidatedAt),
+        // The far end travels by name: never a file the person cannot open.
+        mirrorRecordVisible(drive, toRec.documentId),
+      ),
     );
 
   const grouped: Record<string, RecordLinkSummary[]> = {};
@@ -280,6 +290,8 @@ const buildFilterCondition = (
 export const listCollectionRecords = async (data: {
   teamId: string;
   collectionId: string;
+  /** What the person can open in the Drive: a hidden file's mirror is out. */
+  drive: DriveVisibility;
   status?: OntologyStatus;
   search?: string;
   filters?: RecordFilter[];
@@ -360,7 +372,9 @@ export const listCollectionRecords = async (data: {
     eq(collectionRecords.collectionId, collectionId),
     eq(collectionRecords.status, status),
   ];
-  conditions.push(recordVisibilityCondition({ teamId, scope }));
+  conditions.push(
+    recordVisibilityCondition({ teamId, scope, drive: data.drive }),
+  );
   if (documentId) {
     conditions.push(eq(collectionRecords.documentId, documentId));
   }
@@ -521,6 +535,7 @@ export const listCollectionRecords = async (data: {
       teamId: ownerTeamId,
       collectionId,
       recordIds,
+      drive: data.drive,
     }),
   ]);
   const enriched: CollectionRecordListItem[] = items.map((r) => ({
@@ -533,7 +548,7 @@ export const listCollectionRecords = async (data: {
     return { count: totalResult?.total ?? 0, data: enriched, ...walk };
   }
 
-  const summaries = await fetchOutgoingLinkSummaries(recordIds);
+  const summaries = await fetchOutgoingLinkSummaries(recordIds, data.drive);
   return {
     count: totalResult?.total ?? 0,
     data: enriched.map((r) => ({
@@ -557,8 +572,14 @@ export const getCollectionRecord = async (data: {
   id: string;
   teamId: string;
   organizationId: string;
+  /** What the person can open in the Drive: a hidden file's mirror is out. */
+  drive: DriveVisibility;
 }) => {
-  const viewer = { teamId: data.teamId, organizationId: data.organizationId };
+  const viewer = {
+    teamId: data.teamId,
+    organizationId: data.organizationId,
+    drive: data.drive,
+  };
   await assertCanReadRecord({ recordId: data.id, ...viewer });
 
   const record = await db.query.collectionRecords.findFirst({
@@ -602,6 +623,7 @@ export const getCollectionRecord = async (data: {
       teamId: record.teamId,
       collectionId: record.collectionId,
       recordIds: [record.id],
+      drive: data.drive,
     }),
   ]);
   return {

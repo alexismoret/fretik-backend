@@ -1,4 +1,6 @@
 import { randomUUIDv7 } from "bun";
+import { driveVisibility, visibleDocumentsWhere } from "../../authz/drive-sql";
+import type { Principal } from "../../authz/principal";
 
 import db from "../../db";
 import { documentVersions } from "../../db/schema";
@@ -58,13 +60,21 @@ export const promoteSandboxFileToDrive = async (args: {
   organizationId: string;
   teamId: string;
   userId: string;
+  /** Who files it: only the files they can open count as already there. */
+  principal: Principal;
   folderId?: string | null;
+  /**
+   * The project whose root it lands at when no folder is given; a folder
+   * decides for itself.
+   */
+  projectId?: string | null;
   /** Land these bytes on an existing document as its next version. */
   replaceDocumentId?: string;
   actorContext: DocumentVersionActorContext;
 }): Promise<PromoteSandboxFileResult> => {
   const { conversationId, path, organizationId, teamId, userId } = args;
   const folderId = args.folderId ?? null;
+  const rootProjectId = args.projectId ?? null;
 
   const bytes = await readSessionFile(conversationId, path);
   if (!bytes) {
@@ -117,7 +127,14 @@ export const promoteSandboxFileToDrive = async (args: {
     where: {
       teamId,
       fileHash,
-      ...(folderId === null ? { folderId: { isNull: true } } : { folderId }),
+      ...(folderId === null
+        ? {
+            folderId: { isNull: true },
+            projectId:
+              rootProjectId === null ? { isNull: true } : { eq: rootProjectId },
+          }
+        : { folderId }),
+      ...visibleDocumentsWhere(await driveVisibility(args.principal, teamId)),
     },
   });
   if (alreadyThere) {
@@ -161,7 +178,13 @@ export const promoteSandboxFileToDrive = async (args: {
   // of this document instead of a second one with the same name. A failure
   // between the two writes would silently produce exactly that.
   await db.transaction(async (tx) => {
-    await createDocumentRecord({ metadata, teamId, userId, tx });
+    await createDocumentRecord({
+      metadata,
+      teamId,
+      userId,
+      tx,
+      projectId: rootProjectId,
+    });
     await tx.insert(documentVersions).values({
       documentId,
       teamId,

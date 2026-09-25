@@ -1,4 +1,8 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
+import {
+  type DriveVisibility,
+  mirrorRecordVisible,
+} from "../../authz/drive-sql";
 import db from "../../db";
 import { collectionRecords } from "../../db/schema";
 import {
@@ -58,10 +62,20 @@ const TRIGRAM_PREFILTER_EPSILON = 0.001;
  */
 export const matchSpansToRecords = async (input: {
   teamId: string;
+  /**
+   * Whose text this is: a record that mirrors a file they cannot open is not
+   * a match — naming a hidden file must not bring it into the answer.
+   */
+  drive: DriveVisibility;
   spans: string[];
   maxAnchors?: number;
 }): Promise<RecordAnchor[]> => {
   const maxAnchors = input.maxAnchors ?? DEFAULT_MAX_ANCHORS;
+  const visible = mirrorRecordVisible(
+    input.drive,
+    collectionRecords.documentId,
+  );
+  const visibleRaw = mirrorRecordVisible(input.drive, sql`r.document_id`);
 
   const normBySpan = new Map<string, string>();
   for (const s of input.spans) {
@@ -98,6 +112,7 @@ export const matchSpansToRecords = async (input: {
         eq(collectionRecords.teamId, input.teamId),
         eq(collectionRecords.status, "confirmed"),
         inArray(collectionRecords.normalizedLabel, norms),
+        visible,
       ),
     )
     .limit(maxAnchors * 2);
@@ -130,6 +145,7 @@ export const matchSpansToRecords = async (input: {
           norms.map((n) => sql`${n}`),
           sql`, `,
         )}]::text[]`,
+        visible,
       ),
     )
     .limit(maxAnchors * 2);
@@ -167,6 +183,7 @@ export const matchSpansToRecords = async (input: {
       JOIN unnest(${spanArray}) AS c(span)
         ON r.search_vector @@ plainto_tsquery('simple', c.span)
       WHERE r.team_id = ${input.teamId} AND r.status = 'confirmed'
+        AND ${visibleRaw}
       LIMIT ${maxAnchors * 2}
     `);
     for (const r of ftRows.rows) {
@@ -227,6 +244,7 @@ export const matchSpansToRecords = async (input: {
         ON r.normalized_label % c.norm
        AND similarity(r.normalized_label, c.norm) >= ${FUZZY_MATCH_THRESHOLD}
       WHERE r.team_id = ${input.teamId} AND r.status = 'confirmed'
+        AND ${visibleRaw}
       ORDER BY sim DESC
       LIMIT ${maxAnchors * 2}
     `);
@@ -280,6 +298,8 @@ const generateSpans = (text: string, maxSpans: number): string[] => {
  */
 export const anchorTextToRecords = async (input: {
   teamId: string;
+  /** Whose text this is (`matchSpansToRecords`). */
+  drive: DriveVisibility;
   text: string;
   maxAnchors?: number;
   /**
@@ -297,6 +317,7 @@ export const anchorTextToRecords = async (input: {
   if (spans.length === 0) return [];
   return matchSpansToRecords({
     teamId: input.teamId,
+    drive: input.drive,
     spans,
     maxAnchors: input.maxAnchors,
   });

@@ -10,6 +10,10 @@ export * from "./auth-audit";
 // Organization extensions (enterprise_settings, agency_settings)
 export * from "./organization-extensions";
 
+// Access control: team roles, projects, grants, access requests and the
+// access journal — the tables behind `authz/`.
+export * from "./access";
+
 // Per-team AI model selection (chantier C8)
 export * from "./team-ai-settings";
 
@@ -125,6 +129,9 @@ export * from "./pages";
 
 // Per-user sidebar pins (collections + pages kept one click away)
 export * from "./pins";
+
+// Where each person last worked, so a new session opens there
+export * from "./workspaces";
 
 // One-shot jobs that run once per deployed version, with their outcomes
 export * from "./release-tasks";

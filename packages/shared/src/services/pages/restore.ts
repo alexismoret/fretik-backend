@@ -1,4 +1,5 @@
 import { and, eq } from "drizzle-orm";
+import type { Principal } from "../../authz/principal";
 import db from "../../db";
 import { pages } from "../../db/schema";
 import { badRequest, notFound, throwHttpError } from "../../lib/errors";
@@ -13,7 +14,7 @@ import {
   writePageVersion,
   type PageVersionActor,
 } from "./versions";
-import { pageVisibilityWhere, type PageRequester } from "./visibility";
+import { pageAccessWhere } from "./visibility";
 
 /**
  * Put a page back into a state it was in.
@@ -32,7 +33,7 @@ export const restorePageVersion = async (params: {
   teamId: string;
   versionNumber: number;
   actingUserId: string;
-  requester?: PageRequester;
+  principal: Principal;
   actor?: PageVersionActor;
 }): Promise<{ page: PageResponse; restoredFrom: number }> => {
   const existing = await db.query.pages.findFirst({
@@ -40,7 +41,7 @@ export const restorePageVersion = async (params: {
     where: {
       id: params.pageId,
       teamId: params.teamId,
-      ...pageVisibilityWhere(params.requester),
+      ...pageAccessWhere(params.principal, "edit"),
     },
   });
   if (!existing) return throwHttpError(404, notFound("Page"));

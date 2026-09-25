@@ -18,8 +18,13 @@
  * `interface FakeRow` drifts from the table the day a column is added, and the
  * test keeps passing while production breaks; `$inferInsert` does not.
  */
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
+import {
+  bumpAccessVersion,
+  loadPrincipal,
+} from "../../src/authz/load-principal";
+import type { UserPrincipal } from "../../src/authz/principal";
 import db from "../../src/db";
 import {
   aiConversations,
@@ -34,6 +39,7 @@ import {
   pages,
   team,
   teamMember,
+  teamSettings,
   user,
 } from "../../src/db/schema";
 import { EMPTY_PAGE_DEFINITION } from "../../src/schemas/pages";
@@ -103,6 +109,22 @@ export interface WorkspaceFixture {
     values: Pick<LinkInsert, "linkTypeId" | "fromRecordId" | "toRecordId"> &
       Partial<LinkInsert>,
   ) => Promise<{ id: string }>;
+  /**
+   * One more person of the organization, for a test that needs a third party
+   * (someone to add to a team, a second owner). In the workspace's team unless
+   * `inTeam` is false. Removed by `cleanup` with everyone else.
+   */
+  addPerson: (options?: {
+    role?: "owner" | "admin" | "member" | "guest";
+    /** Defaults to true, except for a guest, who belongs to no team. */
+    inTeam?: boolean;
+  }) => Promise<string>;
+  /**
+   * The access engine's principal for a user of this workspace, loaded fresh:
+   * the fixture writes memberships straight to the tables, which bumps no
+   * access version, so a cached principal could predate them.
+   */
+  principalOf: (userId: string) => Promise<UserPrincipal>;
   /** Drops the organization; every dependent row cascades with it. */
   cleanup: () => Promise<void>;
 }
@@ -307,13 +329,61 @@ export const createWorkspaceFixture = async (): Promise<WorkspaceFixture> => {
     return row;
   };
 
+  const addedPeople: string[] = [];
+  const addPerson: WorkspaceFixture["addPerson"] = async (options) => {
+    const [row] = await db
+      .insert(user)
+      .values({
+        name: `Tester ${tag()}`,
+        email: `it-p-${tag()}@example.test`,
+        emailVerified: true,
+      })
+      .returning({ id: user.id });
+    if (!row) throw new Error("fixture: failed to insert a person");
+    addedPeople.push(row.id);
+    await db.insert(member).values({
+      userId: row.id,
+      organizationId: org.id,
+      role: options?.role ?? "member",
+      createdAt: new Date(),
+    });
+    if (options?.inTeam ?? options?.role !== "guest") {
+      await db
+        .insert(teamMember)
+        .values({ userId: row.id, teamId: t.id, createdAt: new Date() });
+    }
+    return row.id;
+  };
+
+  const principalOf: WorkspaceFixture["principalOf"] = async (userId) => {
+    await bumpAccessVersion(org.id);
+    const principal = await loadPrincipal({ organizationId: org.id, userId });
+    if (!principal) throw new Error("fixture: user is not in the workspace");
+    return principal;
+  };
+
   const cleanup = async (): Promise<void> => {
+    // A team made through the real services has an agent account — a `user`
+    // row like the two above, which the cascade below does not reach either.
+    const agents = await db
+      .select({ userId: teamSettings.botUserId })
+      .from(teamSettings)
+      .innerJoin(team, eq(team.id, teamSettings.teamId))
+      .where(eq(team.organizationId, org.id));
     await db.delete(organization).where(eq(organization.id, org.id));
     // `user` has no FK to organization (Better Auth owns that table), so the
     // cascade does not reach it — and a leftover row collides on the unique
     // email index the next time the same suffix is drawn.
-    await db.delete(user).where(eq(user.id, userA.id));
-    await db.delete(user).where(eq(user.id, userB.id));
+    await db
+      .delete(user)
+      .where(
+        inArray(user.id, [
+          userA.id,
+          userB.id,
+          ...addedPeople,
+          ...agents.map((agent) => agent.userId),
+        ]),
+      );
   };
 
   return {
@@ -329,6 +399,8 @@ export const createWorkspaceFixture = async (): Promise<WorkspaceFixture> => {
     createField,
     createLinkType,
     createLink,
+    addPerson,
+    principalOf,
     cleanup,
   };
 };

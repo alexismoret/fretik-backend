@@ -1,12 +1,24 @@
 import { and, eq } from "drizzle-orm";
+import { resolveAccess } from "../../authz/access";
+import { restrictionColumns } from "../../authz/legacy-privacy";
+import { atLeast } from "../../authz/levels";
+import type { Principal } from "../../authz/principal";
 import db from "../../db";
 import { pages } from "../../db/schema";
-import { badRequest, notFound, throwHttpError } from "../../lib/errors";
+import {
+  badRequest,
+  forbidden,
+  notFound,
+  throwHttpError,
+} from "../../lib/errors";
 import {
   UpdatePageSchema,
   type PageResponse,
   type UpdatePageInput,
 } from "../../schemas/pages";
+import { keepAccessAfterRestricting } from "../access/keep-access";
+import { recordAccessEvent } from "../access/record-event";
+import { refreshAclsAfterAccessChange } from "../ai-vectors/acl";
 import { resyncVectorUserScope } from "../ai-vectors/resync-user-scope";
 import { ensurePageCompiled } from "./compile";
 import { derivePageDescription } from "./derive-description";
@@ -21,8 +33,7 @@ import type {
   PageVersionOperation,
 } from "./versions";
 import { trimPageVersions, writePageVersion } from "./versions";
-import type { PageRequester } from "./visibility";
-import { pageOwnerWriteError, pageVisibilityWhere } from "./visibility";
+import { pageAccessWhere } from "./visibility";
 
 /**
  * Patch a page. Any field may be omitted; the definition, when present, is
@@ -38,7 +49,8 @@ export const updatePage = async (params: {
   pageId: string;
   teamId: string;
   actingUserId: string;
-  requester?: PageRequester;
+  /** Who is asking; editing takes `edit`, changing who sees it `full`. */
+  principal: Principal;
   input: UpdatePageInput;
   /**
    * The conversation doing the writing, when there is one. It only ever fills a
@@ -63,19 +75,35 @@ export const updatePage = async (params: {
       definition: true,
       description: true,
       sourceConversationId: true,
+      ownerUserId: true,
+      userId: true,
+      createdByUserId: true,
+      accessRestricted: true,
     },
     where: {
       id: params.pageId,
       teamId: params.teamId,
-      ...pageVisibilityWhere(params.requester),
+      ...pageAccessWhere(params.principal, "edit"),
     },
   });
   if (!existing) return throwHttpError(404, notFound("Page"));
 
-  if (input.userId !== undefined) {
-    const ownerError = pageOwnerWriteError(input.userId, params.actingUserId);
-    if (ownerError) return throwHttpError(400, badRequest(ownerError));
-  }
+  // `userId` is the LEGACY way to say who sees the page: null opens it to its
+  // container, a person's id restricts it. Deciding that is sharing, so it
+  // takes full access; and it never moves ownership — restricting keeps the
+  // owner, the one a legacy client names being the caller or the owner.
+  const owner =
+    existing.ownerUserId ?? existing.userId ?? existing.createdByUserId;
+  const restriction =
+    input.userId === undefined
+      ? undefined
+      : await decideRestriction({
+          principal: params.principal,
+          pageId: existing.id,
+          requestedUserId: input.userId,
+          actingUserId: params.actingUserId,
+          ownerUserId: owner,
+        });
 
   const sanitized = input.definition
     ? sanitizePageDefinition(input.definition)
@@ -123,7 +151,12 @@ export const updatePage = async (params: {
           : {}),
         ...(input.icon !== undefined ? { icon: input.icon } : {}),
         ...(input.color !== undefined ? { color: input.color } : {}),
-        ...(input.userId !== undefined ? { userId: input.userId } : {}),
+        ...(restriction === undefined
+          ? {}
+          : restrictionColumns({
+              restricted: restriction.restricted,
+              ownerUserId: restriction.ownerUserId,
+            })),
         ...(params.sourceConversationId !== undefined &&
         existing.sourceConversationId === null
           ? { sourceConversationId: params.sourceConversationId }
@@ -140,13 +173,43 @@ export const updatePage = async (params: {
     // rewrites the card text, but it swallows its own errors, so a dropped
     // refresh would leave a privatised page readable by the whole team until
     // someone saved it again. One indexed UPDATE, no embedding.
-    if (input.userId !== undefined) {
+    if (restriction !== undefined) {
       await resyncVectorUserScope({
         sourceType: "pages",
         sourceId: updated.id,
-        userId: input.userId,
+        userId: updated.userId,
         tx,
       });
+      if (restriction.restricted) {
+        await keepAccessAfterRestricting({
+          tx,
+          resourceType: "page",
+          resourceId: updated.id,
+          organizationId: updated.organizationId,
+          ownerUserId: restriction.ownerUserId,
+          actingUserId: params.actingUserId,
+        });
+      }
+      await refreshAclsAfterAccessChange({
+        executor: tx,
+        type: "page",
+        id: updated.id,
+      });
+      const wasRestricted =
+        existing.accessRestricted || existing.userId !== null;
+      if (wasRestricted !== restriction.restricted) {
+        await recordAccessEvent({
+          executor: tx,
+          organizationId: updated.organizationId,
+          actorUserId: params.actingUserId,
+          action: "restriction.changed",
+          resource: { type: "page", id: updated.id },
+          metadata: {
+            restricted: restriction.restricted,
+            resourceName: updated.name,
+          },
+        });
+      }
     }
 
     // Only a DEFINITION change is a version. Renaming a page or recolouring
@@ -184,5 +247,49 @@ export const updatePage = async (params: {
   return {
     page: serializePage(row),
     warnings: [...(sanitized?.warnings ?? []), ...autofixes],
+  };
+};
+
+/**
+ * Decide a legacy `userId` write: who may change the restriction, and what it
+ * becomes. Full access is required — it is sharing — unless the caller is a
+ * system principal. The named id must be the caller's (what the app sends) or
+ * the owner's; it restricts the page and keeps its owner, and a page with no
+ * owner left is taken over by the caller who restricts it.
+ */
+const decideRestriction = async (input: {
+  principal: Principal;
+  pageId: string;
+  requestedUserId: string | null;
+  actingUserId: string;
+  ownerUserId: string | null;
+}): Promise<{ restricted: boolean; ownerUserId: string | null }> => {
+  const resolved =
+    input.principal.kind === "system"
+      ? { level: "full" as const }
+      : await resolveAccess(input.principal, "page", input.pageId);
+  if (!resolved || !atLeast(resolved.level, "full")) {
+    return throwHttpError(
+      403,
+      forbidden("Changing who sees this page takes full access"),
+    );
+  }
+  if (input.requestedUserId === null) {
+    return { restricted: false, ownerUserId: input.ownerUserId };
+  }
+  if (
+    input.requestedUserId !== input.actingUserId &&
+    input.requestedUserId !== input.ownerUserId
+  ) {
+    return throwHttpError(
+      400,
+      badRequest(
+        "page.userId can only be null (open to the team) or your own id (restricted). A page is never handed to someone else this way.",
+      ),
+    );
+  }
+  return {
+    restricted: true,
+    ownerUserId: input.ownerUserId ?? input.actingUserId,
   };
 };

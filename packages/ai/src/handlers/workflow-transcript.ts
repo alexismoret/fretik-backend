@@ -1,12 +1,9 @@
+import { access } from "@fretik/shared/authz/http";
 import {
   authMiddleware,
   type HonoLoggedAppType,
 } from "@fretik/shared/lib/auth-middleware";
-import {
-  notFound,
-  teamRequired,
-  throwHttpError,
-} from "@fretik/shared/lib/errors";
+import { notFound, throwHttpError } from "@fretik/shared/lib/errors";
 import { ANTI_BUFFERING_HEADERS } from "@fretik/shared/lib/sse-headers";
 import {
   clearConversationActiveStream,
@@ -17,7 +14,6 @@ import {
   isTurnLogOrphan,
   readTurnLogAsSse,
 } from "@fretik/shared/services/ai/turn-log";
-import { isOrgAdmin } from "@fretik/shared/services/organization/member-role";
 import { getWorkflowRunRow } from "@fretik/shared/services/workflows/get-run";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { UI_MESSAGE_STREAM_HEADERS } from "ai";
@@ -30,9 +26,11 @@ import { uuidv7TimestampMs } from "../lib/uuidv7-time";
  * turns; this endpoint streams the turn currently being generated, chunk
  * by chunk, same wire format as the chat's reconnection endpoint.
  *
- * Auth mirrors the API transcript route: Better Auth cookie + the run's
- * team + the parent workflow's visibility gate — NOT conversation
- * membership, because workflow conversations have no member roster.
+ * Auth mirrors the API transcript route: Better Auth cookie + the caller's
+ * organization + `view` on the parent workflow — NOT conversation
+ * membership, because workflow conversations have no member roster, and not
+ * the team the caller has open: a workflow shared from another team, or with
+ * a guest, shows its runs wherever it opens.
  */
 
 /** Same benefit-of-the-doubt window as the chat's reconnection endpoint:
@@ -58,58 +56,58 @@ workflowTranscriptRoutes.use("*", authMiddleware);
  *                        so a reconnect resumes with zero overlap, and the
  *                        stream ends with `[DONE]` when the turn closes.
  */
-workflowTranscriptRoutes.get("/:runId/transcript/stream", async (c) => {
-  const user = c.get("user");
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
+workflowTranscriptRoutes.get(
+  "/:runId/transcript/stream",
+  access.handler(
+    "A run's live transcript is read with view on its workflow (getWorkflowRunRow).",
+  ),
+  async (c) => {
+    const principal = c.get("principal");
+    const runId = c.req.param("runId");
+    const run = await getWorkflowRunRow({
+      id: runId,
+      organizationId: principal.organizationId,
+      principal,
+    });
+    if (!run) return throwHttpError(404, notFound("Run not found"));
+    const conversationId = run.conversationId;
+    if (conversationId === null) return new Response(null, { status: 204 });
 
-  const runId = c.req.param("runId");
-  const run = await getWorkflowRunRow({
-    id: runId,
-    teamId: team.id,
-    requester: {
-      userId: user.id,
-      isAdmin: await isOrgAdmin(team.organizationId, user.id),
-    },
-  });
-  if (!run) return throwHttpError(404, notFound("Run not found"));
-  const conversationId = run.conversationId;
-  if (conversationId === null) return new Response(null, { status: 204 });
-
-  const activeStreamId = await getConversationActiveStream(conversationId);
-  if (!activeStreamId) {
-    return new Response(null, { status: 204 });
-  }
-
-  const status = await getTurnLogStatus(activeStreamId);
-  if (!status.exists) {
-    const claimedAt = uuidv7TimestampMs(activeStreamId);
-    const isFreshClaim =
-      claimedAt !== null && Date.now() - claimedAt < STREAM_CLAIM_GRACE_MS;
-    if (!isFreshClaim) {
-      await clearConversationActiveStream(conversationId, activeStreamId);
+    const activeStreamId = await getConversationActiveStream(conversationId);
+    if (!activeStreamId) {
+      return new Response(null, { status: 204 });
     }
-    return new Response(null, { status: 204 });
-  }
-  if (isTurnLogOrphan(status, Date.now())) {
-    // Dead producer (deploy/crash mid-turn). The deadline is tool-aware —
-    // a workflow step executing a slow tool is expected silence, not a
-    // death. No drain here: workflow turns persist through their own
-    // turn-indexed path, and the client falls back to that transcript.
-    await clearConversationActiveStream(conversationId, activeStreamId);
-    return new Response(null, { status: 204 });
-  }
 
-  const rawCursor = c.req.header("Last-Event-ID") ?? c.req.query("cursor");
-  const cursor =
-    rawCursor && TURN_LOG_CURSOR_RE.test(rawCursor) ? rawCursor : "0-0";
-  return new Response(readTurnLogAsSse(activeStreamId, cursor), {
-    status: 200,
-    headers: {
-      ...UI_MESSAGE_STREAM_HEADERS,
-      ...ANTI_BUFFERING_HEADERS,
-    },
-  });
-});
+    const status = await getTurnLogStatus(activeStreamId);
+    if (!status.exists) {
+      const claimedAt = uuidv7TimestampMs(activeStreamId);
+      const isFreshClaim =
+        claimedAt !== null && Date.now() - claimedAt < STREAM_CLAIM_GRACE_MS;
+      if (!isFreshClaim) {
+        await clearConversationActiveStream(conversationId, activeStreamId);
+      }
+      return new Response(null, { status: 204 });
+    }
+    if (isTurnLogOrphan(status, Date.now())) {
+      // Dead producer (deploy/crash mid-turn). The deadline is tool-aware —
+      // a workflow step executing a slow tool is expected silence, not a
+      // death. No drain here: workflow turns persist through their own
+      // turn-indexed path, and the client falls back to that transcript.
+      await clearConversationActiveStream(conversationId, activeStreamId);
+      return new Response(null, { status: 204 });
+    }
+
+    const rawCursor = c.req.header("Last-Event-ID") ?? c.req.query("cursor");
+    const cursor =
+      rawCursor && TURN_LOG_CURSOR_RE.test(rawCursor) ? rawCursor : "0-0";
+    return new Response(readTurnLogAsSse(activeStreamId, cursor), {
+      status: 200,
+      headers: {
+        ...UI_MESSAGE_STREAM_HEADERS,
+        ...ANTI_BUFFERING_HEADERS,
+      },
+    });
+  },
+);
 
 export { workflowTranscriptRoutes };

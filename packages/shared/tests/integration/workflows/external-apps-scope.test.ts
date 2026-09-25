@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { CreateWorkflowInput } from "../../../src/schemas/workflows";
 import { createWorkflow } from "../../../src/services/workflows/create";
 import { updateWorkflow } from "../../../src/services/workflows/update";
+import { validateWorkflowExternalApps } from "../../../src/services/workflows/validate-external-apps";
 import {
   createWorkspaceFixture,
   type WorkspaceFixture,
@@ -68,6 +69,16 @@ beforeAll(async () => {
   [owner, teammate] = fx.userIds;
 });
 
+/** Create a workflow as one of the workspace's users. */
+const create = async (by: string, input: CreateWorkflowInput) =>
+  createWorkflow({
+    organizationId: fx.organizationId,
+    teamId: fx.teamId,
+    createdByUserId: by,
+    principal: await fx.principalOf(by),
+    input,
+  });
+
 afterAll(async () => {
   await fx.cleanup();
 });
@@ -75,12 +86,10 @@ afterAll(async () => {
 describe("declaring apps on a team workflow", () => {
   test("a team-shared connection is accepted", async () => {
     const conn = await fx.createConnection({ createdByUserId: owner });
-    const workflow = await createWorkflow({
-      organizationId: fx.organizationId,
-      teamId: fx.teamId,
-      createdByUserId: owner,
-      input: draft({ externalAppConnectionIds: [conn.id] }),
-    });
+    const workflow = await create(
+      owner,
+      draft({ externalAppConnectionIds: [conn.id] }),
+    );
     expect(workflow.externalAppConnectionIds).toEqual([conn.id]);
   });
 
@@ -91,12 +100,7 @@ describe("declaring apps on a team workflow", () => {
       displayName: "My mailbox",
     });
     const err = await rejection(
-      createWorkflow({
-        organizationId: fx.organizationId,
-        teamId: fx.teamId,
-        createdByUserId: owner,
-        input: draft({ externalAppConnectionIds: [personal.id] }),
-      }),
+      create(owner, draft({ externalAppConnectionIds: [personal.id] })),
     );
     expect(messageOf(err)).toContain("My mailbox");
     expect(messageOf(err)).toContain("private");
@@ -109,12 +113,10 @@ describe("declaring apps on a private workflow", () => {
       userId: owner,
       createdByUserId: owner,
     });
-    const workflow = await createWorkflow({
-      organizationId: fx.organizationId,
-      teamId: fx.teamId,
-      createdByUserId: owner,
-      input: draft({ userId: owner, externalAppConnectionIds: [personal.id] }),
-    });
+    const workflow = await create(
+      owner,
+      draft({ userId: owner, externalAppConnectionIds: [personal.id] }),
+    );
     expect(workflow.externalAppConnectionIds).toEqual([personal.id]);
   });
 
@@ -124,12 +126,10 @@ describe("declaring apps on a private workflow", () => {
       createdByUserId: teammate,
     });
     const err = await rejection(
-      createWorkflow({
-        organizationId: fx.organizationId,
-        teamId: fx.teamId,
-        createdByUserId: owner,
-        input: draft({ userId: owner, externalAppConnectionIds: [theirs.id] }),
-      }),
+      create(
+        owner,
+        draft({ userId: owner, externalAppConnectionIds: [theirs.id] }),
+      ),
     );
     expect(messageOf(err)).toContain("Unknown external-app connection");
     // The name never leaks: an author who cannot use a connection does not get
@@ -137,43 +137,50 @@ describe("declaring apps on a private workflow", () => {
     expect(messageOf(err)).not.toContain("Integration app");
   });
 
-  test("an admin cannot lend their OWN app to a teammate's workflow", async () => {
-    // The one case where the writer and the workflow's identity differ. The
-    // admin can name this connection — it is theirs — but the run acts as the
-    // teammate, who could not resolve it. Refused on the workflow's identity,
-    // not on the author's, which is the distinction the two checks exist for.
+  test("an app the author may name but the workflow's identity cannot open is refused", async () => {
+    // The one case where the writer and the workflow's identity differ: the
+    // author names their own personal connection on a workflow that runs as
+    // someone else. Refused on the workflow's identity, not on the author's,
+    // which is the distinction the two checks exist for. The services can no
+    // longer produce this pair (a restricted workflow is its owner's alone to
+    // edit, below), so the validator is asked directly.
     const adminsOwn = await fx.createConnection({
       userId: owner,
       createdByUserId: owner,
       displayName: "Admin's own mailbox",
     });
-    const theirWorkflow = await createWorkflow({
-      organizationId: fx.organizationId,
-      teamId: fx.teamId,
-      createdByUserId: teammate,
-      input: draft({ userId: teammate }),
-    });
     const err = await rejection(
-      updateWorkflow({
-        id: theirWorkflow.id,
+      validateWorkflowExternalApps({
+        connectionIds: [adminsOwn.id],
         teamId: fx.teamId,
-        input: { externalAppConnectionIds: [adminsOwn.id] },
-        requester: { userId: owner, isAdmin: true },
+        runsAsUserId: teammate,
+        actor: await fx.principalOf(owner),
       }),
     );
     expect(messageOf(err)).toContain("Admin's own mailbox");
     expect(messageOf(err)).toContain("personal to someone else");
   });
+
+  test("an admin cannot reach a teammate's private workflow at all", async () => {
+    // It runs with the teammate's access, so changing it would act as them.
+    // The organization's owner gets nothing here by that role.
+    const theirWorkflow = await create(teammate, draft({ userId: teammate }));
+    const updated = await updateWorkflow({
+      id: theirWorkflow.id,
+      teamId: fx.teamId,
+      input: { name: "Taken over" },
+      principal: await fx.principalOf(owner),
+    });
+    expect(updated).toBeUndefined();
+  });
 });
 
 describe("re-scoping a workflow that declares apps", () => {
   const createPrivateWith = async (connectionId: string) =>
-    createWorkflow({
-      organizationId: fx.organizationId,
-      teamId: fx.teamId,
-      createdByUserId: owner,
-      input: draft({ userId: owner, externalAppConnectionIds: [connectionId] }),
-    });
+    create(
+      owner,
+      draft({ userId: owner, externalAppConnectionIds: [connectionId] }),
+    );
 
   test("going team-shared is refused while a personal app is declared", async () => {
     // The patch carries only the scope — the stored list is what makes it
@@ -190,7 +197,7 @@ describe("re-scoping a workflow that declares apps", () => {
         id: workflow.id,
         teamId: fx.teamId,
         input: { userId: null },
-        requester: { userId: owner, isAdmin: false },
+        principal: await fx.principalOf(owner),
       }),
     );
     expect(messageOf(err)).toContain("Personal CRM");
@@ -207,7 +214,7 @@ describe("re-scoping a workflow that declares apps", () => {
       id: workflow.id,
       teamId: fx.teamId,
       input: { userId: null, externalAppConnectionIds: [shared.id] },
-      requester: { userId: owner, isAdmin: false },
+      principal: await fx.principalOf(owner),
     });
     expect(updated?.userId).toBeNull();
     expect(updated?.externalAppConnectionIds).toEqual([shared.id]);
@@ -223,7 +230,7 @@ describe("re-scoping a workflow that declares apps", () => {
       id: workflow.id,
       teamId: fx.teamId,
       input: { externalAppConnectionIds: [] },
-      requester: { userId: owner, isAdmin: false },
+      principal: await fx.principalOf(owner),
     });
     expect(updated?.externalAppConnectionIds).toEqual([]);
   });

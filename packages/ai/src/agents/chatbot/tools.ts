@@ -89,6 +89,7 @@ export const buildCoreTools = (domainTools: SearchableToolRegistry) => ({
   }),
   querySql: buildChatbotTool({
     ...createSqlQueryTool(),
+    teamData: true,
     category: "core",
     searchHint: "postgres sql structured query count filter aggregate",
   }),
@@ -258,48 +259,56 @@ export const buildDomainTools = () => ({
   }),
   describeCollection: buildChatbotTool({
     ...createDescribeCollectionTool(),
+    teamData: true,
     category: "domain",
     searchHint:
       "describe collection fields columns schema metadata key label type description config options enum allowed values choices select multi_select bounds min max relations typed view what fields",
   }),
   listRecords: buildChatbotTool({
     ...createListRecordsTool(),
+    teamData: true,
     category: "domain",
     searchHint:
       "list browse records of a type rows entities companies people custom records search status confirmed suggested pending pagination",
   }),
   getRecord: buildChatbotTool({
     ...createGetRecordTool(),
+    teamData: true,
     category: "domain",
     searchHint:
       "get record by id detail fields linked records relations connections neighbors what is connected to",
   }),
   manageRecord: buildChatbotTool({
     ...createManageRecordTool(),
+    teamData: true,
     category: "domain",
     searchHint:
       "create add update edit delete remove record row entity confirm reject accept ai suggestion set status write data object",
   }),
   manageLink: buildChatbotTool({
     ...createManageLinkTool(),
+    teamData: true,
     category: "domain",
     searchHint:
       "link unlink connect disconnect relate records relationship edge association attach detach",
   }),
   manageCollection: buildChatbotTool({
     ...createManageCollectionTool(),
+    teamData: true,
     category: "domain",
     searchHint:
       "create update delete collection schema table model define new kind of thing entity category rename",
   }),
   manageSync: buildChatbotTool({
     ...createManageSyncTool(),
+    teamData: true,
     category: "domain",
     searchHint:
       "sync connect feed pull import external app connection refresh schedule cadence source api live data fill collection from app stale figures",
   }),
   manageField: buildChatbotTool({
     ...createManageFieldTool(),
+    teamData: true,
     category: "domain",
     searchHint:
       "add edit remove change field column attribute property type schema select options number bounds relation rollup formula computed calculated derived",

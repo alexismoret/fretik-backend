@@ -1,4 +1,5 @@
 import { inArray } from "drizzle-orm";
+import { teamOpenDriveItems } from "../../authz/drive-sql";
 import db, { type Transaction } from "../../db";
 import { collectionRecords } from "../../db/schema";
 import { chunkForBulk } from "../../lib/db-bulk";
@@ -6,6 +7,7 @@ import { type EventActor, SYSTEM_ACTOR } from "../domain-events/emit";
 import { emitDomainEventsBulk } from "../domain-events/emit-bulk";
 import { hideEpisodesForRecords } from "../episodes/hide-for-source";
 import { deleteEpisodeVectors } from "../episodes/vectors";
+import { deletedRecordPayload } from "./delete";
 
 /**
  * Result of a bulk delete. `deletedIds` are the records actually removed (owned
@@ -44,12 +46,14 @@ export const bulkDeleteCollectionRecords = async (input: {
 
   // Fetch the owned rows once (chunked SELECTs keep the IN-list bounded). The
   // event payload keeps id + label so the deletion stays auditable after the
-  // row is gone (the cascade nulls `subject_record_id`).
+  // row is gone (the cascade nulls `subject_record_id`) — and, for a file's
+  // mirror, the file, whose audience decides who reads the entry.
   const owned: {
     id: string;
     organizationId: string;
     teamId: string;
     label: string;
+    documentId: string | null;
   }[] = [];
   for (const idChunk of chunkForBulk(requestedIds)) {
     const rows = await exec
@@ -58,6 +62,7 @@ export const bulkDeleteCollectionRecords = async (input: {
         organizationId: collectionRecords.organizationId,
         teamId: collectionRecords.teamId,
         label: collectionRecords.label,
+        documentId: collectionRecords.documentId,
       })
       .from(collectionRecords)
       .where(inArray(collectionRecords.id, idChunk));
@@ -68,6 +73,14 @@ export const bulkDeleteCollectionRecords = async (input: {
   const errors = requestedIds
     .filter((id) => !ownedSet.has(id))
     .map((id) => ({ id, error: "Record not found in your team." }));
+
+  // Read while the files still exist: a mirror's deletion rides with its
+  // file's, and the journal must say whether the team could open it.
+  const teamOpenDocuments = await teamOpenDriveItems(
+    "document",
+    owned.flatMap((r) => (r.documentId === null ? [] : [r.documentId])),
+    exec,
+  );
 
   const deletedIds: string[] = [];
   const runBatch = async (
@@ -83,7 +96,7 @@ export const bulkDeleteCollectionRecords = async (input: {
       actor,
       events: batch.map((r) => ({
         type: "record.deleted",
-        payload: { recordId: r.id, label: r.label },
+        payload: deletedRecordPayload(r, teamOpenDocuments),
         dedupKey: `record.deleted:${r.id}`,
       })),
     });

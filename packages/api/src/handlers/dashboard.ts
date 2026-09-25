@@ -1,3 +1,4 @@
+import { access } from "@fretik/shared/authz/http";
 import {
   authMiddleware,
   type HonoLoggedAppType,
@@ -33,6 +34,9 @@ dashboardRoutes.use("*", authMiddleware);
 const summaryRoute = createRoute({
   method: "get",
   path: "/summary",
+  middleware: access.session(
+    "Counts for the active team only; no item's content leaves the counters.",
+  ),
   summary: "Home dashboard summary",
   description:
     "Workspace KPIs for the home dashboard: total records with a 14-day sparkline, 7-day workflow-run volume and success rate, and this week's documents-processed series.",
@@ -52,6 +56,9 @@ const summaryRoute = createRoute({
 const activityRoute = createRoute({
   method: "get",
   path: "/activity",
+  middleware: access.session(
+    "The active team's feed, without runs of workflows private to someone else.",
+  ),
   summary: "Home dashboard recent activity",
   description:
     "The unified recent-activity feed, read from the durable journal (documents, records, catalog, files, apps, skills), newest first.",
@@ -76,6 +83,9 @@ const activityRoute = createRoute({
 const decisionsRoute = createRoute({
   method: "get",
   path: "/decisions",
+  middleware: access.session(
+    "Counts for the active team only, like the summary: no launch's or document's content leaves the counters.",
+  ),
   summary: "Home dashboard quick decisions",
   description:
     "Over the last 30 days: workflow launches the trigger gate filtered out and an estimate of the tokens they would have cost, documents the Drive filer placed and how many were undone.",
@@ -95,6 +105,9 @@ const decisionsRoute = createRoute({
 const attentionRoute = createRoute({
   method: "get",
   path: "/attention",
+  middleware: access.session(
+    "What waits on the caller in the active team, and only on them.",
+  ),
   summary: "Home dashboard needs-attention inbox",
   description:
     "Workflow runs waiting on the user: those paused for an approval, then those that failed in the last week. Hides other users' private workflows.",
@@ -137,7 +150,7 @@ dashboardRoutes.openapi(activityRoute, async (c) => {
   const { limit } = c.req.valid("query");
   const activity = await getDashboardActivity({
     teamId: team.id,
-    userId: c.get("user").id,
+    principal: c.get("principal"),
     limit,
   });
 
@@ -145,13 +158,12 @@ dashboardRoutes.openapi(activityRoute, async (c) => {
 });
 
 dashboardRoutes.openapi(attentionRoute, async (c) => {
-  const user = c.get("user");
   const team = c.get("team");
   if (!team) return throwHttpError(403, teamRequired());
 
   const attention = await getDashboardAttention({
     teamId: team.id,
-    userId: user.id,
+    principal: c.get("principal"),
   });
 
   return c.json(attention, 200);

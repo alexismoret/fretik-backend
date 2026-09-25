@@ -9,6 +9,7 @@ import {
 } from "../../../src/db/schema";
 import type { WorkflowPlaybook } from "../../../src/schemas/workflows";
 import { assertConversationAccess } from "../../../src/services/ai/assert-conversation-access";
+import { removeConversationMember } from "../../../src/services/ai/members/remove";
 import {
   createWorkspaceFixture,
   type WorkspaceFixture,
@@ -23,6 +24,11 @@ import { rejection } from "../../lib/expect-rejection";
  * of a solo chat could list, download or delete its attachments. Each case
  * below pairs two callers of the same team who differ in the one thing the
  * rule is about: taking part in the chat, or seeing the workflow.
+ *
+ * A seat is an explicit share, so it is honoured wherever the chat lives —
+ * to read it, for someone outside the chat's team, who cannot take part there
+ * (`levelCeiling`); being in the chat's team is not a share. And an organization's owner gets nothing here
+ * by that role: they run the structure, not people's private work.
  *
  * The fixture's first user is the organization owner, the second a member.
  */
@@ -49,11 +55,13 @@ afterAll(async () => {
   await fx.cleanup();
 });
 
-const caller = (userId: string) => ({
-  teamId: fx.teamId,
-  organizationId: fx.organizationId,
-  userId,
-});
+/** Opening a conversation to read it, as one of the workspace's users. */
+const open = async (conversationId: string, userId: string) =>
+  assertConversationAccess({
+    conversationId,
+    principal: await fx.principalOf(userId),
+    level: "view",
+  });
 
 const expectAbsent = async (promise: Promise<unknown>): Promise<void> => {
   const error = await rejection(promise);
@@ -98,20 +106,13 @@ describe("a chat belongs to its participants", () => {
       .insert(aiConversationMembers)
       .values({ conversationId: chat.id, userId: author, role: "owner" });
 
-    await assertConversationAccess({
-      conversationId: chat.id,
-      ...caller(author),
-    });
-    await expectAbsent(
-      assertConversationAccess({
-        conversationId: chat.id,
-        ...caller(teammate),
-      }),
-    );
+    await open(chat.id, author);
+    await expectAbsent(open(chat.id, teammate));
   });
 
-  test("a chat of another team is absent even to a participant", async () => {
-    const [author] = fx.userIds;
+  test("a participant's seat reaches a chat of a team they are not in; the team alone gives nothing", async () => {
+    const [author, participant] = fx.userIds;
+    // A team neither of them is in: only the seats can open it.
     const otherTeam = await fx.createTeam();
     const chat = await fx.createConversation({
       userId: author,
@@ -121,12 +122,37 @@ describe("a chat belongs to its participants", () => {
       .insert(aiConversationMembers)
       .values({ conversationId: chat.id, userId: author, role: "owner" });
 
-    await expectAbsent(
+    await open(chat.id, author);
+    await expectAbsent(open(chat.id, participant));
+
+    await db
+      .insert(aiConversationMembers)
+      .values({ conversationId: chat.id, userId: participant, role: "member" });
+    await open(chat.id, participant);
+  });
+
+  test("a participant may take part; reading more than their seat is refused", async () => {
+    const [author, participant] = fx.userIds;
+    const chat = await fx.createConversation({ userId: author });
+    await db.insert(aiConversationMembers).values([
+      { conversationId: chat.id, userId: author, role: "owner" },
+      { conversationId: chat.id, userId: participant, role: "member" },
+    ]);
+
+    await assertConversationAccess({
+      conversationId: chat.id,
+      principal: await fx.principalOf(participant),
+      level: "use",
+    });
+    const refusal = await rejection(
       assertConversationAccess({
         conversationId: chat.id,
-        ...caller(author),
+        principal: await fx.principalOf(participant),
+        level: "full",
       }),
     );
+    expect(refusal).toBeInstanceOf(HTTPException);
+    expect((refusal as HTTPException).status).toBe(403);
   });
 });
 
@@ -134,26 +160,50 @@ describe("a workflow run belongs to whoever may see the workflow", () => {
   test("a team-shared workflow's run is open to the team", async () => {
     const conversationId = await createRunConversation(null);
 
-    await assertConversationAccess({
-      conversationId,
-      ...caller(fx.userIds[1]),
-    });
+    await open(conversationId, fx.userIds[1]);
   });
 
-  test("a private workflow's run is its owner's, and an admin's", async () => {
+  test("a private workflow's run is its owner's alone, not an admin's", async () => {
     const [owner, member] = fx.userIds;
     // Private to the MEMBER: the owner of the organization is the admin here.
     const conversationId = await createRunConversation(member);
 
-    await assertConversationAccess({ conversationId, ...caller(member) });
-    await assertConversationAccess({ conversationId, ...caller(owner) });
+    await open(conversationId, member);
+    await expectAbsent(open(conversationId, owner));
 
     const privateToOwner = await createRunConversation(owner);
-    await expectAbsent(
-      assertConversationAccess({
-        conversationId: privateToOwner,
-        ...caller(member),
-      }),
-    );
+    await expectAbsent(open(privateToOwner, member));
+  });
+});
+
+describe("who takes someone out of a chat", () => {
+  test("anyone leaves; only full access removes someone else, never the owner", async () => {
+    const [author, teammate] = fx.userIds;
+    const third = await fx.addPerson();
+    const chat = await fx.createConversation({ userId: author });
+    await db.insert(aiConversationMembers).values([
+      { conversationId: chat.id, userId: author, role: "owner" },
+      { conversationId: chat.id, userId: teammate, role: "member" },
+      { conversationId: chat.id, userId: third, role: "member" },
+    ]);
+    const remove = async (requester: string, target: string) =>
+      removeConversationMember({
+        conversationId: chat.id,
+        teamId: fx.teamId,
+        principal: await fx.principalOf(requester),
+        targetUserId: target,
+      });
+    const refused = async (promise: Promise<unknown>) => {
+      const error = await rejection(promise);
+      expect(error).toBeInstanceOf(HTTPException);
+      return (error as HTTPException).status;
+    };
+
+    expect(await refused(remove(teammate, third))).toBe(403);
+    expect(await refused(remove(teammate, author))).toBe(403);
+    const afterLeaving = await remove(teammate, teammate);
+    expect(afterLeaving.map((member) => member.userId)).not.toContain(teammate);
+    const afterRemoval = await remove(author, third);
+    expect(afterRemoval.map((member) => member.userId)).toEqual([author]);
   });
 });

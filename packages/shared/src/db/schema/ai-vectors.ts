@@ -12,6 +12,7 @@ import {
   timestamp,
   uuid,
 } from "drizzle-orm/pg-core";
+import type { AiMemoryScope } from "./ai-memory";
 import { organization, team, user } from "./auth-schema";
 
 /*
@@ -118,7 +119,7 @@ type DocumentVectorMetadata = {
  * and apply scope-aware UX without an extra round-trip.
  */
 type MemoryVectorMetadata = {
-  scope: "user" | "team";
+  scope: AiMemoryScope;
   path: string;
   size_bytes: number;
   created_at: string;
@@ -374,6 +375,23 @@ export const aiVectors = pgTable(
     // (user-scope) and context files (user-scope). Documents and skills
     // always leave this NULL.
     userId: uuid("user_id").references(() => user.id, { onDelete: "cascade" }),
+
+    /**
+     * Who may find this row, when that is not simply its team and its user:
+     * the ids of the people, teams, projects or organization that reach the
+     * resource it describes — for a restricted or shared document, page or
+     * workflow. NULL keeps the scope above (`team_id`, `user_id`), which is
+     * every other row.
+     *
+     * Written by `services/ai-vectors/acl.ts` in the same transaction as the
+     * change that moves it (a grant, a restriction, a move), from the engine's
+     * own rules, so the assistant never finds what the person could not open.
+     * Search keeps a row when this overlaps the searcher's ids.
+     *
+     * Not indexed: the embedding and full-text indexes pick the candidates,
+     * and this only filters them.
+     */
+    aclPrincipals: uuid("acl_principals").array(),
 
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()

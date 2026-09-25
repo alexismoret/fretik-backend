@@ -51,6 +51,36 @@ export default {
     expiration: "Cette invitation expire le {{expiresAt}}.",
     ignore:
       "Si vous n'attendiez pas cette invitation, vous pouvez ignorer cet e-mail en toute sécurité.",
+    subjectItem: "{{inviterName}} a partagé « {{itemName}} » avec vous",
+    messageItem: {
+      view: "{{inviterName}} vous invite à consulter « {{itemName}} » dans {{organizationName}} sur Fretik.",
+      use: "{{inviterName}} vous invite à utiliser « {{itemName}} » dans {{organizationName}} sur Fretik.",
+      takePart:
+        "{{inviterName}} vous invite à participer à « {{itemName}} » dans {{organizationName}} sur Fretik.",
+      edit: "{{inviterName}} vous invite à modifier « {{itemName}} » dans {{organizationName}} sur Fretik.",
+      full: "{{inviterName}} vous donne un accès complet à « {{itemName}} » dans {{organizationName}} sur Fretik.",
+    },
+    itemLabel: "Partagé avec vous : {{itemName}}",
+    guestLabel:
+      "En tant qu'invité, vous ne voyez que ce qui est partagé avec vous.",
+    ctaItem: "Accepter et ouvrir",
+    existingAccount:
+      "Vous avez déjà un compte Fretik avec cette adresse : connectez-vous pour accepter. {{organizationName}} apparaîtra ensuite dans votre sélecteur d'espaces de travail, à côté de ceux que vous avez déjà.",
+  },
+
+  sharedWithGuest: {
+    subject: "{{sharerName}} a partagé « {{resourceName}} » avec vous",
+    greeting: "Bonjour {{name}},",
+    intro: {
+      view: "{{sharerName}} a partagé « {{resourceName}} » avec vous dans {{organizationName}} : vous pouvez le consulter.",
+      use: "{{sharerName}} a partagé « {{resourceName}} » avec vous dans {{organizationName}} : vous pouvez l'utiliser.",
+      takePart:
+        "{{sharerName}} a partagé « {{resourceName}} » avec vous dans {{organizationName}} : vous pouvez y participer.",
+      edit: "{{sharerName}} a partagé « {{resourceName}} » avec vous dans {{organizationName}} : vous pouvez le modifier.",
+      full: "{{sharerName}} vous a donné un accès complet à « {{resourceName}} » dans {{organizationName}}.",
+    },
+    until: "Votre accès dure jusqu'au {{date}}.",
+    cta: "L'ouvrir",
   },
 
   chatbotFinished: {
@@ -159,5 +189,39 @@ export default {
     cta: "Vérifier vos paramètres de sécurité",
     notYou:
       "Si vous n'êtes pas à l'origine de cette action, changez votre mot de passe immédiatement et supprimez toute clé d'accès que vous ne reconnaissez pas.",
+  },
+
+  accessRequest: {
+    subject: "{{requesterName}} demande l'accès à {{resourceName}}",
+    greeting: "Bonjour {{name}},",
+    intro: {
+      view: "{{requesterName}} demande à consulter « {{resourceName}} ».",
+      use: "{{requesterName}} demande à utiliser « {{resourceName}} ».",
+      edit: "{{requesterName}} demande à modifier « {{resourceName}} ».",
+      full: "{{requesterName}} demande un accès complet à « {{resourceName}} ».",
+    },
+    messageLabel: "Son message",
+    cta: "Voir la demande",
+    footnote:
+      "Vous recevez cet e-mail parce que vous avez un accès complet à cet élément : seules les personnes ayant un accès complet peuvent répondre.",
+  },
+
+  accessRequestDecided: {
+    greeting: "Bonjour {{name}},",
+    approved: {
+      subject: "Vous avez désormais accès à {{resourceName}}",
+      intro: {
+        view: "{{deciderName}} vous permet désormais de consulter « {{resourceName}} ».",
+        use: "{{deciderName}} vous permet désormais d'utiliser « {{resourceName}} ».",
+        edit: "{{deciderName}} vous permet désormais de modifier « {{resourceName}} ».",
+        full: "{{deciderName}} vous a donné un accès complet à « {{resourceName}} ».",
+      },
+      cta: "L'ouvrir",
+    },
+    denied: {
+      subject: "Votre demande pour {{resourceName}} a été refusée",
+      intro:
+        "{{deciderName}} a refusé votre demande d'accès supplémentaire à « {{resourceName}} ».",
+    },
   },
 };

@@ -4,6 +4,7 @@ import {
   readEventsAfter,
 } from "@fretik/shared/services/domain-events/consume";
 import { filterWorkflowConversationIds } from "@fretik/shared/services/workflows/filter-workflow-conversation-ids";
+import { keepVisibleTriggerPairs } from "@fretik/shared/services/workflows/keep-visible-trigger-pairs";
 import { listActiveEventWorkflows } from "@fretik/shared/services/workflows/list-active-event-workflows";
 import { listExistingEventRuns } from "@fretik/shared/services/workflows/list-existing-event-runs";
 import { intFromEnv } from "../lib/env";
@@ -83,7 +84,10 @@ export const runWorkflowTriggerSweep = async (): Promise<{
 
   const teamIds = [...new Set(candidates.map((e) => e.teamId))];
   const workflows = await listActiveEventWorkflows({ teamIds });
-  const pairs = pairWorkflowsWithEvents(candidates, workflows);
+  // A workflow hears about a Drive item only when it may open it.
+  const pairs = await keepVisibleTriggerPairs(
+    pairWorkflowsWithEvents(candidates, workflows),
+  );
 
   let created = 0;
   if (pairs.length > 0) {

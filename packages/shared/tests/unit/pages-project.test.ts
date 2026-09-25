@@ -2,10 +2,14 @@ import { describe, expect, test } from "bun:test";
 // `schemas/pages` reaches `common/params`, which calls `.openapi()` — patched
 // into Zod by this import, and only by it.
 import "@hono/zod-openapi";
+import { systemPrincipal } from "../../src/authz/principal";
 import type { PageDefinition } from "../../src/schemas/pages";
 import { compilePageCode } from "../../src/services/pages/compile";
 import { renderPage } from "../../src/services/pages/render/render-page";
 import { closeRenderViews } from "../../src/services/pages/render/webview";
+
+/** These pages read no records, so who they are read as never matters. */
+const READER = systemPrincipal("unit test: a render over inline data");
 
 /**
  * A page as a small Vue PROJECT — an entry, components, a composable, a helper.
@@ -179,6 +183,7 @@ describe("a project in a real browser", () => {
       definition: definitionFor(compileResult.compiled),
       teamId: "00000000-0000-7000-8000-000000000000",
       userId: null,
+      reader: READER,
       pageName: "Project probe",
     });
 

@@ -1,3 +1,4 @@
+import { SYSTEM } from "@fretik/shared/authz/system-principals";
 import { createWorkerConnection } from "@fretik/shared/lib/queue/connection";
 import { countRecentEventRuns } from "@fretik/shared/services/workflows/count-recent-event-runs";
 import { createWorkflowRun } from "@fretik/shared/services/workflows/create-run";
@@ -57,7 +58,13 @@ export const startWorkflowRunCreateWorker =
 
         if (await eventRunExists({ workflowId, sourceEventId })) return;
 
-        const workflow = await getWorkflowRow({ id: workflowId, teamId });
+        // The engine acting on a trigger it matched, for nobody in particular:
+        // the run itself then acts as the workflow's identity.
+        const workflow = await getWorkflowRow({
+          id: workflowId,
+          teamId,
+          principal: SYSTEM.workflowEngine,
+        });
         // Paused/archived (or deleted) since enqueue — drop it silently.
         // (This is also how a runaway pause neutralizes the jobs behind it.)
         if (!workflow || workflow.status !== "active") return;

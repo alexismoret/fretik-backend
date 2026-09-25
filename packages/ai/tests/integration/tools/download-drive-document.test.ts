@@ -11,7 +11,8 @@
  * sandbox is mocked via the shared `sandbox-fixture`.
  */
 import db from "@fretik/shared/db";
-import { documents, organization, team } from "@fretik/shared/db/schema";
+import { documents, organization, team, user } from "@fretik/shared/db/schema";
+import { bootstrapTeamWithBotUser } from "@fretik/shared/services/auth/bot-user";
 import {
   afterAll,
   beforeAll,
@@ -20,7 +21,7 @@ import {
   expect,
   test,
 } from "bun:test";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { getProfileForRole } from "../../../src/lib/model-registry/resolve";
 import { mockModuleStrict } from "../../lib/mock-module";
@@ -78,6 +79,8 @@ interface DriveFixture {
   organizationId: string;
   teamId: string;
   otherTeamId: string;
+  /** Each team's agent — who a turn with no person behind it acts as. */
+  agentIds: string[];
   insertedDocIds: string[];
   /** Insert a documents row scoped to the fixture's primary team. */
   insertDoc: (args: {
@@ -188,6 +191,19 @@ beforeAll(async () => {
     throw new Error("fixture: failed to insert two teams");
   }
 
+  // The turns below carry no person, so they act as the team's agent
+  // (`acting-principal.ts`), and read the team's files with its access.
+  const agentIds = [
+    await bootstrapTeamWithBotUser({
+      teamId: primary.id,
+      organizationId: org.id,
+    }),
+    await bootstrapTeamWithBotUser({
+      teamId: other.id,
+      organizationId: org.id,
+    }),
+  ];
+
   const insertedDocIds: string[] = [];
   const insertDoc: DriveFixture["insertDoc"] = async (args) => {
     const id = randomUUID();
@@ -221,14 +237,17 @@ beforeAll(async () => {
     organizationId: org.id,
     teamId: primary.id,
     otherTeamId: other.id,
+    agentIds,
     insertedDocIds,
     insertDoc,
   };
 });
 
 afterAll(async () => {
-  // Cascade delete via the team FK on documents.
+  // Cascade delete via the team FK on documents. The agents are `user` rows,
+  // which no FK to the organization reaches.
   await db.delete(organization).where(eq(organization.id, fx.organizationId));
+  await db.delete(user).where(inArray(user.id, fx.agentIds));
 });
 
 beforeEach(() => {
@@ -242,13 +261,13 @@ describe("download_drive_document — ACL + status checks", () => {
     expect(out["code"]).toBe("NOT_FOUND");
   });
 
-  test("returns FORBIDDEN for documents owned by another team", async () => {
+  test("answers a document of another team like one that does not exist", async () => {
     const docId = await fx.insertDoc({
       teamId: fx.otherTeamId,
       bytes: new TextEncoder().encode("secret"),
     });
     const out = await execDownload("conv-1", docId, fx.teamId);
-    expect(out["code"]).toBe("FORBIDDEN");
+    expect(out["code"]).toBe("NOT_FOUND");
     expect(sandboxFs.list("conv-1", "drive").length).toBe(0);
   });
 

@@ -49,6 +49,21 @@ export const recordSharingSchema = z.discriminatedUnion("inherit", [
 export type Audience = z.infer<typeof audienceSchema>;
 export type RecordSharing = z.infer<typeof recordSharingSchema>;
 
+/**
+ * How far an audience reaches, in the terms of the sharing policies
+ * (`authz/sharing-policy.ts`): the whole organization, or teams other than
+ * the owner's.
+ */
+export const audienceReach = (
+  audience: Audience,
+  ownerTeamId: string,
+): { organization: boolean; beyondTeam: boolean } => ({
+  organization: audience.mode === "org",
+  beyondTeam:
+    audience.mode === "teams" &&
+    audience.teams.some((team) => team.teamId !== ownerTeamId),
+});
+
 /** Grant/share a type or record with a team (or org-wide when grantee is null). */
 export const shareRequestSchema = z.object({
   granteeTeamId: z.uuid().nullable(),

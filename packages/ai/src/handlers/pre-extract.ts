@@ -1,3 +1,4 @@
+import { access } from "@fretik/shared/authz/http";
 import { fieldDefinitionResponseSchema } from "@fretik/shared/schemas/field-definitions";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { z } from "zod";
@@ -56,58 +57,64 @@ const PreExtractRequestSchema = z.object({
 const preExtractRoutes = new OpenAPIHono<HonoInternalAppType>();
 preExtractRoutes.use("*", internalMiddleware);
 
-preExtractRoutes.post("/", async (c) => {
-  const raw: unknown = await c.req.json();
-  const parsed = PreExtractRequestSchema.safeParse(raw);
-  if (!parsed.success) {
-    return c.json(
-      {
-        code: "VALIDATION_ERROR",
-        message: "Invalid request body",
-        details: parsed.error.issues.map((i) => i.message),
-      },
-      400,
-    );
-  }
+preExtractRoutes.post(
+  "/",
+  access.internal(
+    "The upload pipeline extracts a document it has just stored for the team it names.",
+  ),
+  async (c) => {
+    const raw: unknown = await c.req.json();
+    const parsed = PreExtractRequestSchema.safeParse(raw);
+    if (!parsed.success) {
+      return c.json(
+        {
+          code: "VALIDATION_ERROR",
+          message: "Invalid request body",
+          details: parsed.error.issues.map((i) => i.message),
+        },
+        400,
+      );
+    }
 
-  const {
-    documentId,
-    mimeType,
-    originalFilename,
-    organizationId,
-    overrideS3Key,
-    fileHash,
-    fieldDefinitions,
-  } = parsed.data;
-
-  try {
-    const result = await runPreExtract({
+    const {
       documentId,
-      originalFilename,
       mimeType,
+      originalFilename,
       organizationId,
       overrideS3Key,
       fileHash,
       fieldDefinitions,
-      // From the internal context headers (X-Context-Team-Id) — drives the
-      // team's workhorse pick for the primary pre-extract model (C8b).
-      teamId: c.get("context").teamId,
-    });
-    return c.json(result, 200);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error(
-      `[pre-extract] failed for document ${documentId} (override=${overrideS3Key ?? "none"}):`,
-      message,
-    );
-    return c.json(
-      {
-        code: "PREEXTRACT_ERROR",
+    } = parsed.data;
+
+    try {
+      const result = await runPreExtract({
+        documentId,
+        originalFilename,
+        mimeType,
+        organizationId,
+        overrideS3Key,
+        fileHash,
+        fieldDefinitions,
+        // From the internal context headers (X-Context-Team-Id) — drives the
+        // team's workhorse pick for the primary pre-extract model (C8b).
+        teamId: c.get("context").teamId,
+      });
+      return c.json(result, 200);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(
+        `[pre-extract] failed for document ${documentId} (override=${overrideS3Key ?? "none"}):`,
         message,
-      },
-      500,
-    );
-  }
-});
+      );
+      return c.json(
+        {
+          code: "PREEXTRACT_ERROR",
+          message,
+        },
+        500,
+      );
+    }
+  },
+);
 
 export { preExtractRoutes };

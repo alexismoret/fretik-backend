@@ -23,7 +23,10 @@ const PLAYBOOK: WorkflowPlaybook = {
 let ws: WorkspaceFixture;
 let workflowId: string;
 
-const createWorkflow = async (name: string): Promise<string> => {
+const createWorkflow = async (
+  name: string,
+  shape: Partial<typeof workflows.$inferInsert> = {},
+): Promise<string> => {
   const [row] = await db
     .insert(workflows)
     .values({
@@ -34,6 +37,7 @@ const createWorkflow = async (name: string): Promise<string> => {
       playbook: PLAYBOOK,
       status: "active",
       createdByUserId: ws.userIds[0],
+      ...shape,
     })
     .returning({ id: workflows.id });
   if (!row) throw new Error("fixture: workflow");
@@ -68,11 +72,12 @@ afterAll(async () => {
   await ws.cleanup();
 });
 
-const list = (hideFiltered: boolean) =>
+const list = async (hideFiltered: boolean, userId = ws.userIds[0]) =>
   listWorkflowRuns({
     workflowId,
     teamId: ws.teamId,
     params: { limit: 20, page: 0 },
+    principal: await ws.principalOf(userId),
     hideFiltered,
   });
 
@@ -89,5 +94,30 @@ describe("listWorkflowRuns", () => {
     expect(page.data).toHaveLength(3);
     expect(page.count).toBe(3);
     expect(page.filteredCount).toBe(2);
+  });
+
+  test("a workflow the caller cannot see counts nothing, filtered launches included", async () => {
+    const [owner, colleague] = ws.userIds;
+    const privateId = await createWorkflow("Private", {
+      userId: owner,
+      ownerUserId: owner,
+      accessRestricted: true,
+    });
+    await db
+      .insert(workflowRuns)
+      .values([run(privateId, "filtered"), run(privateId, "succeeded")]);
+    const read = async (userId: string) =>
+      listWorkflowRuns({
+        workflowId: privateId,
+        teamId: ws.teamId,
+        params: { limit: 20, page: 0 },
+        principal: await ws.principalOf(userId),
+      });
+    expect((await read(owner)).filteredCount).toBe(1);
+    expect(await read(colleague)).toEqual({
+      count: 0,
+      data: [],
+      filteredCount: 0,
+    });
   });
 });

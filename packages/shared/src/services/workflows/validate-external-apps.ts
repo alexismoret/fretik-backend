@@ -1,3 +1,4 @@
+import type { Principal } from "../../authz/principal";
 import db from "../../db";
 import { badRequest, throwHttpError } from "../../lib/errors";
 
@@ -12,8 +13,8 @@ import { badRequest, throwHttpError } from "../../lib/errors";
  *     or personal to them. A teammate's personal connection is not found, so
  *     it is refused as unknown and its display name never leaks.
  *
- *  2. **Can the WORKFLOW use it?** Answered against `workflow.userId ?? the
- *     team bot` — the identity a run acts as, and the only one
+ *  2. **Can the WORKFLOW use it?** Answered against the identity a run acts
+ *     as — its owner when it is restricted, else the team's agent — and the only one
  *     `resolveConnection` will resolve a connection for. A TEAM workflow can
  *     therefore never reach a personal connection: declaring one promises an
  *     app the run cannot open, and the failure would surface much later as
@@ -32,28 +33,41 @@ import { badRequest, throwHttpError } from "../../lib/errors";
 export const validateWorkflowExternalApps = async (params: {
   connectionIds: string[];
   teamId: string;
-  /** The workflow's owner: null = team-shared (runs as the team bot). */
-  ownerUserId: string | null;
+  /**
+   * Who a run acts as: the owner of a restricted workflow, or null for one
+   * open to its team, which runs as the team's agent.
+   */
+  runsAsUserId: string | null;
   /**
    * Who is writing. Bounds which connections can be NAMED, so an author never
-   * learns the display name of a teammate's personal connection. Absent =
-   * system trust (internal callers), which sees the whole team — the same
-   * convention as `workflowVisibilityWhere`.
+   * learns the display name of a teammate's personal connection. A system
+   * principal (an internal caller) sees the whole team.
    */
-  actorUserId?: string;
+  actor: Principal;
 }): Promise<string[]> => {
   const ids = [...new Set(params.connectionIds)];
   if (ids.length === 0) return ids;
 
+  // A team's shared apps are its people's to name — not someone who only
+  // takes part in one of its projects (its administrators manage them).
+  const namesShared =
+    params.actor.kind === "system" ||
+    params.actor.isOrgAdmin ||
+    params.actor.teamRoles.has(params.teamId);
   const rows = await db.query.externalAppConnections.findMany({
     columns: { id: true, userId: true, displayName: true },
     where: {
       id: { in: ids },
       teamId: params.teamId,
-      ...(params.actorUserId !== undefined
-        ? {
-            OR: [{ userId: { isNull: true } }, { userId: params.actorUserId }],
-          }
+      ...(params.actor.kind === "user"
+        ? namesShared
+          ? {
+              OR: [
+                { userId: { isNull: true } },
+                { userId: params.actor.userId },
+              ],
+            }
+          : { userId: params.actor.userId }
         : {}),
     },
   });
@@ -72,14 +86,14 @@ export const validateWorkflowExternalApps = async (params: {
   // Now the workflow's own identity: a connection it could not resolve at run
   // time has no business being declared on it.
   const unreachable = rows.filter(
-    (row) => row.userId !== null && row.userId !== params.ownerUserId,
+    (row) => row.userId !== null && row.userId !== params.runsAsUserId,
   );
   if (unreachable.length > 0) {
     const names = unreachable.map((row) => row.displayName).join(", ");
     return throwHttpError(
       400,
       badRequest(
-        params.ownerUserId === null
+        params.runsAsUserId === null
           ? `A team workflow runs as the team assistant and cannot use a personal connection (${names}). Make the workflow private, or share the connection with the team.`
           : `This workflow runs as its owner, who cannot use ${names} because it is personal to someone else. Share that connection with the team to use it here.`,
       ),

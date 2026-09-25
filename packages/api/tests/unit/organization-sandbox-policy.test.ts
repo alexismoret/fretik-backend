@@ -1,3 +1,5 @@
+import type { UserPrincipal } from "@fretik/shared/authz/principal";
+import { resolveOrganizationAccessPolicy } from "@fretik/shared/schemas/access-policy";
 import "@hono/zod-openapi";
 import { beforeEach, describe, expect, test } from "bun:test";
 import { mockModule } from "../lib/mock-module";
@@ -17,8 +19,9 @@ import { mockModule } from "../lib/mock-module";
  *
  * The session wall itself is not re-tested here — `auth-boundary.test.ts`
  * probes every mounted router for it, this one included. What is doubled is
- * the middleware (identity is an input, not the subject) and the service (a DB
- * + Redis boundary); the route, its schema and the admin gate are real.
+ * the middleware (identity is an input, not the subject), the stored policies
+ * and the service (DB + Redis boundaries); the route, its schema and the
+ * capability gate (`organization.manage`, decided by the real engine) are real.
  */
 
 const scenario: {
@@ -31,6 +34,19 @@ const scenario: {
   writes: [],
 };
 
+/** The caller as the engine sees them: an admin, or a plain member. */
+const principal = (): UserPrincipal => ({
+  kind: "user",
+  userId: "user-1",
+  organizationId: "org-1",
+  orgRole: scenario.isAdmin ? "admin" : "member",
+  isOrgAdmin: scenario.isAdmin,
+  isGuest: false,
+  teamRoles: new Map([["team-1", "member"]]),
+  teamContentLevels: new Map([["team-1", "full"]]),
+  projectLevels: new Map(),
+});
+
 await mockModule("@fretik/shared/lib/auth-middleware", {
   authMiddleware: async (
     c: {
@@ -41,12 +57,19 @@ await mockModule("@fretik/shared/lib/auth-middleware", {
     c.set("user", { id: "user-1" });
     c.set("organization", { id: "org-1" });
     c.set("team", { id: "team-1", organizationId: "org-1" });
+    c.set("principal", principal());
     await next();
   },
 });
 
-await mockModule("@fretik/shared/services/organization/member-role", {
-  isOrgAdmin: (): Promise<boolean> => Promise.resolve(scenario.isAdmin),
+// The organization's access policy as stored: none, so the defaults.
+await mockModule("@fretik/shared/services/organization/access-policy", {
+  getOrganizationAccessPolicy: (): Promise<unknown> =>
+    Promise.resolve(resolveOrganizationAccessPolicy({})),
+});
+// Whom a refusal names: nobody here — the refusal itself is the subject.
+await mockModule("@fretik/shared/authz/contacts", {
+  capabilityContacts: (): Promise<unknown[]> => Promise.resolve([]),
 });
 
 await mockModule("@fretik/shared/services/organization/sandbox-policy", {

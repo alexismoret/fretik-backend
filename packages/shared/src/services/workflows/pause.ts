@@ -1,6 +1,6 @@
+import type { Principal } from "../../authz/principal";
 import type { WorkflowResponse } from "../../schemas/workflows";
 import { deactivateWorkflow } from "./deactivate";
-import type { WorkflowRequester } from "./visibility";
 
 /**
  * Pause a workflow (→ paused): stops firing, drops its schedule. A paused
@@ -12,6 +12,6 @@ export const pauseWorkflow = (params: {
   id: string;
   teamId: string;
   reason?: string | null;
-  requester?: WorkflowRequester;
+  principal: Principal;
 }): Promise<WorkflowResponse | undefined> =>
   deactivateWorkflow({ ...params, status: "paused" });

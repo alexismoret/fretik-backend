@@ -1,3 +1,5 @@
+import { type DriveVisibility, driveVisibility } from "../../authz/drive-sql";
+import type { Principal } from "../../authz/principal";
 import type {
   PageDataResponse,
   PageDataset,
@@ -178,6 +180,13 @@ export const runPageData = async (params: {
    * route. External datasets resolve "their own connection" from it. */
   userId: string | null;
   /**
+   * Who the rows are read AS: the viewer, or the team's agent on the
+   * anonymous public route (`authz/team-agent.ts`). It decides which records
+   * that mirror a Drive file come back, so a published page shows what its
+   * team can see and never a file private to one of its people.
+   */
+  reader: Principal;
+  /**
    * The page being viewed. Carried for ONE purpose: a source that resolves a
    * per-viewer choice (which connected account this page reads through) needs
    * to know which page the choice is about. Absent on a dry run and on the
@@ -201,6 +210,11 @@ export const runPageData = async (params: {
   const state = resolvePageState(params.definition, params.variables);
   const deadlineAt =
     Date.now() + (params.externalBudgetMs ?? EXTERNAL_RUN_BUDGET_MS);
+
+  // Once per run, and only when a dataset reads records.
+  let drive: Promise<DriveVisibility> | undefined;
+  const driveOnce = (): Promise<DriveVisibility> =>
+    (drive ??= driveVisibility(params.reader, params.teamId));
 
   const wanted = params.datasetIds ? new Set(params.datasetIds) : null;
   const results: Record<string, PageDatasetResult> = {};
@@ -227,6 +241,7 @@ export const runPageData = async (params: {
         teamId: params.teamId,
         userId: params.userId,
         ...(params.pageId !== undefined ? { pageId: params.pageId } : {}),
+        drive: driveOnce,
         state,
         ...(params.queries?.[id] !== undefined
           ? { query: params.queries[id] }

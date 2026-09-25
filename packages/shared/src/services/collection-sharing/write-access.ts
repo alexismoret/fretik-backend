@@ -1,7 +1,19 @@
-import { and, eq, isNull, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { requireUserCapability } from "../../authz/gates";
+import { loadPrincipal } from "../../authz/load-principal";
+import {
+  mirrorWriteRefusals,
+  refuseMirrorWrite,
+} from "../../authz/mirror-writes";
+import type { UserPrincipal } from "../../authz/principal";
+import { throwResourceRefusal } from "../../authz/refusals";
+import { teamAgentPrincipal } from "../../authz/team-agent";
 import db, { type Executor } from "../../db";
-import { collectionGrants, recordShares } from "../../db/schema";
-import { assertOrgAdmin } from "../../lib/auth-roles";
+import {
+  collectionGrants,
+  collectionRecords,
+  recordShares,
+} from "../../db/schema";
 import { forbidden, notFound, throwHttpError } from "../../lib/errors";
 
 /**
@@ -21,13 +33,46 @@ import { forbidden, notFound, throwHttpError } from "../../lib/errors";
  *     that record.
  * Anything cross-organization is `404` (never disclosed as existing).
  *
+ * And the PERSON behind the write must contribute to the acting team: its
+ * leads and members do, a viewer reads (`team.content.create`). Every check
+ * below takes `userId` for that — undefined only when no person is behind the
+ * write (a team workflow acting as the team), which the team itself vouches
+ * for.
+ *
+ * A record that MIRRORS a Drive file follows the file too: one kept to some
+ * people takes `edit` on it, and reads as missing to whoever cannot open it
+ * (`authz/mirror-writes.ts`).
+ *
  * STRUCTURE is not data. A write grant opens a type's RECORDS, never its shape:
  * renaming, disabling or deleting the type, and adding or changing its fields,
  * stay with the team that owns it (`assertCanManageType`,
  * `assertCanEditTypeFields`, `assertCanWriteField`). An org-level type holds
  * every team's records, so changing the type itself is an org admin's call —
  * deleting one cascades the records of teams that never agreed to it.
+ *
+ * And the team's policy holds back what cannot be undone. With its members at
+ * `edit` on the team's content (`memberContentLevel`), deleting and sharing
+ * stay with its leads: changing a collection's sharing or deleting it, and
+ * deleting a record, except one's own (`assertCanManageType`'s `change`,
+ * `assertCanDeleteRecords`). Collections are not engine resources with levels
+ * of their own yet, so their doors ask the person's level on the team's
+ * content here.
  */
+
+/** The person may contribute to the acting team's content: not a viewer. */
+const requireContributor = async (input: {
+  userId: string | undefined;
+  teamId: string;
+  organizationId: string;
+}): Promise<void> => {
+  if (input.userId === undefined) return;
+  await requireUserCapability({
+    userId: input.userId,
+    organizationId: input.organizationId,
+    capability: "team.content.create",
+    teamId: input.teamId,
+  });
+};
 
 /** A `write` type grant to `teamId` (team-scoped or org-wide) exists. */
 const hasTypeWriteGrant = async (input: {
@@ -87,8 +132,10 @@ export const assertCanWriteType = async (input: {
   collectionId: string;
   teamId: string;
   organizationId: string;
+  userId: string | undefined;
   tx?: Executor;
 }): Promise<void> => {
+  await requireContributor(input);
   const exec = input.tx ?? db;
   const type = await exec.query.collections.findFirst({
     columns: { teamId: true, organizationId: true },
@@ -112,16 +159,36 @@ export const assertCanWriteType = async (input: {
 };
 
 /**
+ * Who a record write is for, as the engine sees them: the person, or — with no
+ * person behind it (a team workflow) — the team's agent, which reaches what
+ * the team reaches and nothing private.
+ */
+const writerPrincipal = async (input: {
+  teamId: string;
+  organizationId: string;
+  userId: string | undefined;
+}): Promise<UserPrincipal | null> =>
+  input.userId === undefined
+    ? teamAgentPrincipal(input)
+    : loadPrincipal({
+        organizationId: input.organizationId,
+        userId: input.userId,
+      });
+
+/**
  * Assert `teamId` may write the record `recordId`. Owner team, a `write` type
  * grant on its type, or a `write` share on the record; `404` cross-org / missing,
- * `403` foreign without a grant.
+ * `403` foreign without a grant. A record that mirrors a file kept to some
+ * people also takes `edit` on the file.
  */
 export const assertCanWriteRecord = async (input: {
   recordId: string;
   teamId: string;
   organizationId: string;
+  userId: string | undefined;
   tx?: Executor;
 }): Promise<void> => {
+  await requireContributor(input);
   const exec = input.tx ?? db;
   const record = await exec.query.collectionRecords.findFirst({
     columns: {
@@ -129,11 +196,26 @@ export const assertCanWriteRecord = async (input: {
       organizationId: true,
       collectionId: true,
       inheritTypeSharing: true,
+      documentId: true,
     },
     where: { id: input.recordId },
   });
   if (!record || record.organizationId !== input.organizationId) {
     return throwHttpError(404, notFound("Record not found"));
+  }
+  if (record.documentId !== null) {
+    const principal = await writerPrincipal(input);
+    if (principal === null) {
+      return throwHttpError(404, notFound("Record not found"));
+    }
+    const refusal = (
+      await mirrorWriteRefusals({
+        principal,
+        recordIds: [input.recordId],
+        executor: exec,
+      })
+    ).get(input.recordId);
+    if (refusal !== undefined) return refuseMirrorWrite(principal, refusal);
   }
   if (record.teamId === input.teamId) return;
   // A type `write` grant only opens a record that still INHERITS the type's
@@ -186,14 +268,32 @@ export const assertCanManageType = async (input: {
   organizationId: string;
   /** Undefined for a caller with no person behind it (a team workflow). */
   userId: string | undefined;
+  /**
+   * What changes: its details (the default), who may see it, or the type
+   * itself going away. The last two take full access to the team's content.
+   */
+  change?: "details" | "sharing" | "delete";
   tx?: Executor;
 }): Promise<void> => {
+  await requireContributor(input);
   const type = await findTypeInOrganization({
     collectionId: input.collectionId,
     organizationId: input.organizationId,
     exec: input.tx ?? db,
   });
-  if (type.teamId === input.teamId) return;
+  if (type.teamId === input.teamId) {
+    if ((input.change ?? "details") === "details") return;
+    return requireFullTeamContent({
+      userId: input.userId,
+      teamId: input.teamId,
+      organizationId: input.organizationId,
+      collectionId: input.collectionId,
+      message:
+        input.change === "sharing"
+          ? "Changing who can see this collection takes full access to the team's content."
+          : "Deleting this collection takes full access to the team's content.",
+    });
+  }
   if (type.teamId === null) {
     if (input.userId === undefined) {
       return throwHttpError(
@@ -201,9 +301,10 @@ export const assertCanManageType = async (input: {
         forbidden("Only an organization admin can change this collection"),
       );
     }
-    return assertOrgAdmin({
+    return requireUserCapability({
       userId: input.userId,
       organizationId: input.organizationId,
+      capability: "organization.templates",
       message: "Only an organization admin can change this collection",
     });
   }
@@ -212,6 +313,149 @@ export const assertCanManageType = async (input: {
     forbidden("Only the team that owns this collection can change it"),
   );
 };
+
+/**
+ * The records among `recordIds` of the team this person holds less than full
+ * access to: the ones someone else created, while their level on the team's
+ * content is short of full. Deleting a record and changing who may see it take
+ * full access; the team's policy keeps both with its leads and each record's
+ * author. Other teams' records are left out: the write grant or share they
+ * came through decides those, as before.
+ */
+export const recordsShortOfFull = async (input: {
+  principal: UserPrincipal;
+  teamId: string;
+  recordIds: readonly string[];
+  tx?: Executor;
+}): Promise<{ id: string; collectionId: string }[]> => {
+  if (
+    input.recordIds.length === 0 ||
+    input.principal.teamContentLevels.get(input.teamId) === "full"
+  ) {
+    return [];
+  }
+  return (input.tx ?? db)
+    .select({
+      id: collectionRecords.id,
+      collectionId: collectionRecords.collectionId,
+    })
+    .from(collectionRecords)
+    .where(
+      and(
+        inArray(collectionRecords.id, [...input.recordIds]),
+        eq(collectionRecords.teamId, input.teamId),
+        sql`${collectionRecords.createdByUserId} IS DISTINCT FROM ${input.principal.userId}`,
+      ),
+    );
+};
+
+/** Why a record someone else created cannot be deleted, as every door says it. */
+export const RECORD_DELETION_REFUSAL =
+  "Deleting a record someone else created takes full access to the team's content.";
+
+/** Why the sharing of a record someone else created cannot be changed. */
+export const RECORD_SHARING_REFUSAL =
+  "Changing who can see a record someone else created takes full access to the team's content.";
+
+/**
+ * Assert the person holds full access to these records of the team
+ * (`recordsShortOfFull`), before deleting them or changing who may see them:
+ * a 403 that says the level it takes and names whom to ask. A caller with no
+ * person behind it is the team.
+ */
+const assertFullOnRecords = async (input: {
+  recordIds: readonly string[];
+  teamId: string;
+  organizationId: string;
+  userId: string | undefined;
+  message: string;
+  tx?: Executor;
+}): Promise<void> => {
+  if (input.userId === undefined || input.recordIds.length === 0) return;
+  const principal = await loadPrincipal({
+    organizationId: input.organizationId,
+    userId: input.userId,
+  });
+  if (principal === null) {
+    return throwHttpError(404, notFound("Record not found"));
+  }
+  const [held] = await recordsShortOfFull({ ...input, principal });
+  if (held === undefined) return;
+  return refuseShortOfFull({
+    principal,
+    teamId: input.teamId,
+    collectionId: held.collectionId,
+    message: input.message,
+  });
+};
+
+/** Deleting records of the team: full access, or having created them. */
+export const assertCanDeleteRecords = (input: {
+  recordIds: readonly string[];
+  teamId: string;
+  organizationId: string;
+  userId: string | undefined;
+  tx?: Executor;
+}): Promise<void> =>
+  assertFullOnRecords({ ...input, message: RECORD_DELETION_REFUSAL });
+
+/** Changing who may see a record of the team: full access, or its author. */
+export const assertCanShareRecord = (input: {
+  recordId: string;
+  teamId: string;
+  organizationId: string;
+  userId: string | undefined;
+  tx?: Executor;
+}): Promise<void> =>
+  assertFullOnRecords({
+    ...input,
+    recordIds: [input.recordId],
+    message: RECORD_SHARING_REFUSAL,
+  });
+
+/**
+ * The person's level on the team's content is full: its leads, and its
+ * members under the default policy. A caller with no person behind it is the
+ * team, which vouches for itself.
+ */
+const requireFullTeamContent = async (input: {
+  userId: string | undefined;
+  teamId: string;
+  organizationId: string;
+  collectionId: string;
+  message: string;
+}): Promise<void> => {
+  if (input.userId === undefined) return;
+  const principal = await loadPrincipal({
+    organizationId: input.organizationId,
+    userId: input.userId,
+  });
+  if (principal === null) {
+    return throwHttpError(404, notFound("Collection not found"));
+  }
+  if (principal.teamContentLevels.get(input.teamId) === "full") return;
+  return refuseShortOfFull({ principal, ...input });
+};
+
+/** A 403 that says the level it takes, and names the team's leads to ask. */
+const refuseShortOfFull = (input: {
+  principal: UserPrincipal;
+  teamId: string;
+  collectionId: string;
+  message: string;
+}): Promise<never> =>
+  throwResourceRefusal({
+    principal: input.principal,
+    resource: {
+      type: "collection",
+      id: input.collectionId,
+      ownerUserId: null,
+      teamId: input.teamId,
+    },
+    required: "full",
+    current: input.principal.teamContentLevels.get(input.teamId) ?? null,
+    message: input.message,
+  });
 
 /**
  * Assert `teamId` may add or edit ITS OWN field definitions on the type: its
@@ -223,8 +467,10 @@ export const assertCanEditTypeFields = async (input: {
   collectionId: string;
   teamId: string;
   organizationId: string;
+  userId: string | undefined;
   tx?: Executor;
 }): Promise<void> => {
+  await requireContributor(input);
   const type = await findTypeInOrganization({
     collectionId: input.collectionId,
     organizationId: input.organizationId,
@@ -261,9 +507,10 @@ export const assertCanWriteField = async (input: {
     return throwHttpError(404, notFound("Field definition not found"));
   }
   if (field.teamId === null) {
-    return assertOrgAdmin({
+    return requireUserCapability({
       userId: input.userId,
       organizationId: input.organizationId,
+      capability: "organization.templates",
       message: "Only an organization admin can change an organization field",
     });
   }
@@ -274,6 +521,7 @@ export const assertCanWriteField = async (input: {
     collectionId: field.collectionId,
     teamId: input.teamId,
     organizationId: input.organizationId,
+    userId: input.userId,
     tx: exec,
   });
 };
@@ -287,6 +535,7 @@ export const assertCanWriteLink = async (input: {
   linkId: string;
   teamId: string;
   organizationId: string;
+  userId: string | undefined;
   tx?: Executor;
 }): Promise<void> => {
   const exec = input.tx ?? db;
@@ -301,6 +550,7 @@ export const assertCanWriteLink = async (input: {
     recordId: link.fromRecordId,
     teamId: input.teamId,
     organizationId: input.organizationId,
+    userId: input.userId,
     tx: exec,
   });
 };

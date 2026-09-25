@@ -1,4 +1,14 @@
 import {
+  idsByTeam,
+  requireAccessForEachResolved,
+} from "@fretik/shared/authz/access";
+import { requireDriveMove } from "@fretik/shared/authz/drive";
+import { access, teamOfResource } from "@fretik/shared/authz/http";
+import {
+  requirePlacement,
+  teamOfProject,
+} from "@fretik/shared/authz/placement";
+import {
   authMiddleware,
   type HonoLoggedAppType,
 } from "@fretik/shared/lib/auth-middleware";
@@ -33,6 +43,12 @@ import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 // ROUTER SETUP         //
 // ==================== //
 
+/**
+ * Each route on one folder names the level it takes (`access.resource`): view
+ * to open it, edit to rename or move it, full to delete it — with everything
+ * inside. Creating a folder, or moving one, also takes edit on the folder it
+ * lands in.
+ */
 const folderRoutes = new OpenAPIHono<HonoLoggedAppType>();
 folderRoutes.use("*", authMiddleware);
 
@@ -47,6 +63,9 @@ folderRoutes.use("*", authMiddleware);
 const createFolderRoute = createRoute({
   method: "post",
   path: "",
+  middleware: access.handler(
+    "Where it lands (`authz/placement.ts`): edit on its parent, taking part in its project, or contributing to the active team at its root.",
+  ),
   summary: "Create a folder",
   description: "Create a new folder",
   tags: ["Folders"],
@@ -71,8 +90,12 @@ const createFolderRoute = createRoute({
 const getRootDriveRoute = createRoute({
   method: "get",
   path: "",
+  middleware: access.session(
+    "The root of the active team's Drive, or of a project the caller reaches (`projectId`, view on it); only what the caller can open (authz/drive-sql).",
+  ),
   summary: "Get root drive",
-  description: "Get root folder details and its children",
+  description:
+    "Get root folder details and its children: the active team's root (what is in no project), or a project's (`projectId`).",
   tags: ["Folders"],
   request: {
     query: driveListParamsSchema,
@@ -94,6 +117,7 @@ const getRootDriveRoute = createRoute({
 const getFolderExplorerRoute = createRoute({
   method: "get",
   path: "/{id}",
+  middleware: access.resource("folder", "view"),
   summary: "Get a folder explorer",
   description: "Get a specific folder details and its children",
   tags: ["Folders"],
@@ -119,6 +143,7 @@ const getFolderExplorerRoute = createRoute({
 const updateFolderRoute = createRoute({
   method: "patch",
   path: "/{id}",
+  middleware: access.resource("folder", "edit"),
   summary: "Update a folder",
   description: "Update a specific folder by ID",
   tags: ["Folders"],
@@ -151,6 +176,9 @@ const updateFolderRoute = createRoute({
 const deleteFoldersRoute = createRoute({
   method: "delete",
   path: "",
+  middleware: access.handler(
+    "Each folder takes full access, and is deleted in its own team; ids out of sight are skipped (requireAccessForEachResolved).",
+  ),
   summary: "Delete multiple folders",
   description: "Delete multiple folders by ID",
   tags: ["Folders"],
@@ -176,20 +204,19 @@ const deleteFoldersRoute = createRoute({
 
 folderRoutes.openapi(createFolderRoute, async (c) => {
   const user = c.get("user");
-  const team = c.get("team");
-
-  // Require active team
-  if (!team) {
-    return throwHttpError(403, teamRequired());
-  }
-
-  // Get input
-  const { name, parentFolderId } = c.req.valid("json");
+  const { name, parentFolderId, projectId } = c.req.valid("json");
+  const placement = await requirePlacement({
+    principal: c.get("principal"),
+    activeTeamId: c.get("team")?.id,
+    folderId: parentFolderId,
+    projectId,
+  });
 
   const newFolder = await createFolder({
     name,
     parentFolderId,
-    teamId: team.id,
+    teamId: placement.teamId,
+    projectId: placement.projectId,
     userId: user.id,
     actor: { actorType: "user", actorUserId: user.id },
   });
@@ -198,48 +225,65 @@ folderRoutes.openapi(createFolderRoute, async (c) => {
 });
 
 folderRoutes.openapi(getRootDriveRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
-
+  const principal = c.get("principal");
   const params = c.req.valid("query");
 
+  // A project's root is in its team's Drive, reached through the project.
+  if (params.projectId !== undefined) {
+    const result = await getRootDrive({
+      principal,
+      teamId: await teamOfProject(principal, params.projectId),
+      projectId: params.projectId,
+      params,
+    });
+    return c.json({ ...result, level: null }, 200);
+  }
+
+  const team = c.get("team");
+  if (!team) return throwHttpError(403, teamRequired());
   const result = await getRootDrive({
+    principal,
     teamId: team.id,
+    projectId: null,
     params,
   });
 
-  return c.json(result, 200);
+  return c.json({ ...result, level: null }, 200);
 });
 
 folderRoutes.openapi(getFolderExplorerRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
+  const resource = c.get("resource");
 
   const { id } = c.req.valid("param");
   const params = c.req.valid("query");
 
   const result = await getFolder({
+    principal: c.get("principal"),
     folderId: id,
-    teamId: team.id,
+    teamId: teamOfResource(resource),
     params,
   });
 
-  return c.json(result, 200);
+  return c.json({ ...result, level: resource.level }, 200);
 });
 
 folderRoutes.openapi(updateFolderRoute, async (c) => {
   const user = c.get("user");
-  const team = c.get("team");
-  if (!team) {
-    return throwHttpError(403, teamRequired());
-  }
+  const teamId = teamOfResource(c.get("resource"));
 
   const { id } = c.req.valid("param");
   const updates = c.req.valid("json");
+  if (updates.parentFolderId !== undefined) {
+    await requireDriveMove(c.get("principal"), {
+      type: "folder",
+      id,
+      folderId: updates.parentFolderId,
+    });
+  }
 
   const updatedFolder = await updateFolder({
     id,
-    teamId: team.id,
+    teamId,
     updates,
     actor: { actorType: "user", actorUserId: user.id },
   });
@@ -249,20 +293,28 @@ folderRoutes.openapi(updateFolderRoute, async (c) => {
 
 folderRoutes.openapi(deleteFoldersRoute, async (c) => {
   const user = c.get("user");
-  const team = c.get("team");
-  if (!team) {
-    return throwHttpError(403, teamRequired());
-  }
-
   const { ids } = c.req.valid("json");
-
-  const res = await deleteFolders({
+  const deletable = await requireAccessForEachResolved({
+    principal: c.get("principal"),
+    type: "folder",
     ids,
-    teamId: team.id,
-    actor: { actorType: "user", actorUserId: user.id },
+    required: "full",
   });
 
-  return c.json({ rowCount: res.rowCount }, 200);
+  // Each in its own team: a selection made in a folder shared from another
+  // team is that team's.
+  let rowCount = 0;
+  for (const [teamId, teamIds] of idsByTeam(deletable)) {
+    // oxlint-disable-next-line no-await-in-loop -- one team, rarely two
+    const res = await deleteFolders({
+      ids: teamIds,
+      teamId,
+      actor: { actorType: "user", actorUserId: user.id },
+    });
+    rowCount += res.rowCount ?? 0;
+  }
+
+  return c.json({ rowCount }, 200);
 });
 
 export { folderRoutes };

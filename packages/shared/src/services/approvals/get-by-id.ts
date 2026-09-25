@@ -27,3 +27,26 @@ export const getApprovalForCaller = async (
   }
   return row;
 };
+
+/**
+ * Fetch an approval by ID within the caller's organization, wherever it lives
+ * — the team of its conversation, not the one the caller has open (a guest
+ * has none, and a member may approve in another team's project). Who may see
+ * or decide it is `authorize.ts`'s, from its conversation and its requester;
+ * everything after that runs in the approval's own team. 404 elsewhere.
+ */
+export const getApprovalInOrganization = async (
+  id: string,
+  organizationId: string,
+): Promise<ToolApprovalRequest> => {
+  const row = await db.query.toolApprovalRequests.findFirst({
+    where: { id, organizationId },
+  });
+  if (row === undefined) {
+    return throwHttpError(404, {
+      code: ERROR_CODES.TOOL_APPROVAL_NOT_FOUND,
+      message: "Approval not found",
+    });
+  }
+  return row;
+};

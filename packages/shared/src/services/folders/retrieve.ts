@@ -10,6 +10,13 @@ import {
   sql,
   type SQL,
 } from "drizzle-orm";
+import { resolveAccessMany } from "../../authz/access";
+import {
+  DOCUMENT_ACCESS_COLUMNS,
+  driveVisibility,
+  type DriveVisibility,
+} from "../../authz/drive-sql";
+import type { Principal } from "../../authz/principal";
 import db from "../../db";
 import {
   collections,
@@ -40,6 +47,7 @@ import { qualifiedCollectionTable } from "../collection-schema/identifiers";
 import { readRecordDataBatch } from "../collection-schema/record-io";
 import { DOCUMENT_COLLECTION_KEY } from "../collections/constants";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
+import { readProjectName } from "../projects/read";
 import { listAutoFiled } from "./list-auto-filed";
 
 /** Resolve a team's org-scoped `document` object-type id (its extension table). */
@@ -62,36 +70,40 @@ const resolveDocumentTypeId = async (
 };
 
 /**
- * Retrieves the root drive for a team.
+ * Retrieves a Drive's root: a team's, or a project's (`projectId`) — what the
+ * person can open there. A team's root holds what is in no project; each
+ * project's root holds its own, and the caller has checked they reach it.
  */
 export const getRootDrive = async (data: {
+  principal: Principal;
   teamId: string;
+  projectId?: string | null;
   params: DriveListParams;
-}) => {
-  const { teamId, params } = data;
-  return getFolderExplorer({ folderId: null, teamId, params });
-};
+}) => getFolderExplorer({ ...data, folderId: null });
 
 /**
- * Retrieves a specific folder and its children.
+ * Retrieves a specific folder and what the person can open in it.
  */
 export const getFolder = async (data: {
+  principal: Principal;
   folderId: string;
   teamId: string;
   params: DriveListParams;
-}) => {
-  const { folderId, teamId, params } = data;
-  return getFolderExplorer({ folderId, teamId, params });
-};
+}) => getFolderExplorer(data);
 
 /**
  * Retrieves the breadcrumbs for a specific folder.
+ *
+ * Only the folders the person can open are named: above a folder shared
+ * with them inside one they cannot open, the path goes straight to the root,
+ * rather than reveal the names of what they were never given.
  */
 export const getFolderBreadcrumbs = async (data: {
   folderId: string | null;
   teamId: string;
+  visibility: DriveVisibility;
 }): Promise<FolderBreadcrumb[]> => {
-  const { folderId, teamId } = data;
+  const { folderId, teamId, visibility } = data;
   const breadcrumbs: FolderBreadcrumb[] = [{ id: null, name: "/" }];
 
   if (!folderId) {
@@ -117,11 +129,17 @@ export const getFolderBreadcrumbs = async (data: {
     SELECT id, name FROM folder_parents ORDER BY level DESC
   `);
 
+  // Root first: keep the folders from the last one the person cannot open.
+  const chain = breadcrumbsResult.rows;
+  let firstShown = chain.length;
+  while (
+    firstShown > 0 &&
+    visibility.canOpenFolder(chain[firstShown - 1]!.id)
+  ) {
+    firstShown -= 1;
+  }
   breadcrumbs.push(
-    ...breadcrumbsResult.rows.map((row) => ({
-      id: row.id,
-      name: row.name,
-    })),
+    ...chain.slice(firstShown).map((row) => ({ id: row.id, name: row.name })),
   );
 
   return breadcrumbs;
@@ -135,15 +153,52 @@ type DocWithRelations = {
   mimeType: string;
   status: DocumentStatus;
   source: DocumentSource;
+  projectId: string | null;
   createdAt: Date;
   updatedAt: Date;
   mirrorRecord: { id: string; collectionId: string } | null;
 };
 
+/** A Drive item before the caller's level on it is known. */
+type ListedItem = DriveItem extends infer Item
+  ? Item extends unknown
+    ? Omit<Item, "level">
+    : never
+  : never;
+
+/**
+ * Each listed item with the caller's level on it, as the engine decides it:
+ * the item's menu offers what that level allows. One batched decision per
+ * kind of item, over a page the lists have already filtered to what the
+ * caller can open.
+ */
+const withLevels = async (
+  principal: Principal,
+  items: readonly ListedItem[],
+): Promise<DriveItem[]> => {
+  const idsOf = (type: ListedItem["type"]) =>
+    items.flatMap((item) => (item.type === type ? [item.data.id] : []));
+  const [folderLevels, documentLevels] = await Promise.all([
+    resolveAccessMany(principal, "folder", idsOf("folder")),
+    resolveAccessMany(principal, "document", idsOf("document")),
+  ]);
+  return items.map((item): DriveItem =>
+    item.type === "folder"
+      ? {
+          ...item,
+          level: folderLevels.get(item.data.id)?.level ?? "view",
+        }
+      : {
+          ...item,
+          level: documentLevels.get(item.data.id)?.level ?? "view",
+        },
+  );
+};
+
 const mapDocsToDriveItems = async (
   docs: DocWithRelations[],
   teamId: string,
-): Promise<DriveItem[]> => {
+): Promise<ListedItem[]> => {
   const readyDocs = docs.filter(hasStoredThumbnail);
   const thumbnailUrls = await Promise.all(
     readyDocs.map((d) => getPresignedUrl(buildDocumentThumbnailKey(d.id))),
@@ -183,6 +238,7 @@ const mapDocsToDriveItems = async (
         mimeType: d.mimeType,
         status: d.status,
         thumbnailUrl: urlMap.get(d.id) ?? null,
+        projectId: d.projectId,
         fieldValues: d.mirrorRecord
           ? (fieldValuesById.get(d.mirrorRecord.id) ?? {})
           : {},
@@ -223,16 +279,19 @@ const documentFilterExists = (
  * Retrieves documents matching advanced filters across all folders in a team.
  */
 const getFilteredDocuments = async (data: {
+  principal: Principal;
   teamId: string;
   params: DriveListParams;
+  visibility: DriveVisibility;
 }): Promise<{ count: number; data: DriveItem[] }> => {
-  const { teamId, params } = data;
+  const { principal, teamId, params, visibility } = data;
   const { page, limit, search } = params;
   const offset = page * limit;
 
   const baseConditions = [
     eq(documents.teamId, teamId),
     ne(documents.status, "error"),
+    visibility.document(DOCUMENT_ACCESS_COLUMNS),
   ];
   if (search) {
     baseConditions.push(ilike(documents.originalFilename, `%${search}%`));
@@ -303,6 +362,7 @@ const getFilteredDocuments = async (data: {
       mimeType: true,
       status: true,
       source: true,
+      projectId: true,
       createdAt: true,
       updatedAt: true,
     },
@@ -321,156 +381,165 @@ const getFilteredDocuments = async (data: {
 
   return {
     count: totalCount,
-    data: await mapDocsToDriveItems(orderedDocs, teamId),
+    data: await withLevels(
+      principal,
+      await mapDocsToDriveItems(orderedDocs, teamId),
+    ),
   };
 };
 
 /**
  * Retrieves folder explorer data including folder details, children, and breadcrumbs.
+ *
+ * Only what the person can open is listed and counted (`authz/drive-sql.ts`):
+ * a restricted folder or file is invisible to whoever it is not shared with,
+ * and so is everything inside a restricted folder. The folders' stored
+ * counts include what the person may not see, so the page counts its own.
  */
 const getFolderExplorer = async (data: {
+  principal: Principal;
   folderId: string | null;
   teamId: string;
+  /** At a root: whose root, a project's or (null) the team's. */
+  projectId?: string | null;
   params: DriveListParams;
 }) => {
-  const { folderId, teamId, params } = data;
+  const { principal, folderId, teamId, params } = data;
+  const visibility = await driveVisibility(principal, teamId);
 
   if (hasAdvancedFilter(params)) {
-    const children = await getFilteredDocuments({ teamId, params });
+    const children = await getFilteredDocuments({
+      principal,
+      teamId,
+      params,
+      visibility,
+    });
     return {
       folder: null,
       children,
       breadcrumbs: [{ id: null, name: "/" }] satisfies FolderBreadcrumb[],
+      project: null,
     };
   }
 
   const { page, limit, search } = params;
   const offset = page * limit;
-  const isRoot = !folderId;
 
   let currentFolder: FolderResponse | null = null;
-
   if (folderId) {
     const folder = await db.query.folders.findFirst({
       where: { id: folderId, teamId },
     });
-    if (!folder) {
+    if (!folder || !visibility.canOpenFolder(folder.id)) {
       return throwHttpError(404, notFound());
     }
     currentFolder = folder;
   }
+  // The place listed: a folder's own, else the root asked for.
+  const projectId = currentFolder
+    ? currentFolder.projectId
+    : (data.projectId ?? null);
 
-  const breadcrumbs = await getFolderBreadcrumbs({ folderId, teamId });
+  const [breadcrumbs, project] = await Promise.all([
+    getFolderBreadcrumbs({ folderId, teamId, visibility }),
+    projectId === null ? null : readProjectName(projectId),
+  ]);
 
-  let totalFoldersCount = 0;
-  let totalDocumentsCount = 0;
-
-  if (isRoot) {
-    const [subFoldersCountResult] = await db
-      .select({ count: count() })
-      .from(folders)
-      .where(
-        and(
-          eq(folders.teamId, teamId),
+  const folderWhere = and(
+    eq(folders.teamId, teamId),
+    folderId === null
+      ? and(
           isNull(folders.parentFolderId),
-          ...(search ? [ilike(folders.name, `%${search}%`)] : []),
-        ),
-      );
+          rootOf(folders.projectId, projectId),
+        )
+      : eq(folders.parentFolderId, folderId),
+    visibility.folder(folders.id),
+    ...(search ? [ilike(folders.name, `%${search}%`)] : []),
+  );
+  const documentWhere = and(
+    eq(documents.teamId, teamId),
+    folderId === null
+      ? and(isNull(documents.folderId), rootOf(documents.projectId, projectId))
+      : eq(documents.folderId, folderId),
+    ne(documents.status, "error"),
+    visibility.document(DOCUMENT_ACCESS_COLUMNS),
+    ...(search ? [ilike(documents.originalFilename, `%${search}%`)] : []),
+  );
 
-    const [documentsCountResult] = await db
-      .select({ count: count() })
-      .from(documents)
-      .where(
-        and(
-          eq(documents.teamId, teamId),
-          isNull(documents.folderId),
-          ne(documents.status, "error"),
-          ...(search ? [ilike(documents.originalFilename, `%${search}%`)] : []),
-        ),
-      );
+  const [[folderCount], [documentCount]] = await Promise.all([
+    db.select({ count: count() }).from(folders).where(folderWhere),
+    db.select({ count: count() }).from(documents).where(documentWhere),
+  ]);
+  const totalFoldersCount = folderCount?.count ?? 0;
+  const totalDocumentsCount = documentCount?.count ?? 0;
 
-    totalFoldersCount = subFoldersCountResult?.count || 0;
-    totalDocumentsCount = documentsCountResult?.count || 0;
-  } else if (currentFolder) {
-    totalFoldersCount = currentFolder.subFolderCount;
-    totalDocumentsCount = currentFolder.documentCount;
-  }
-
-  const totalItemsCount = totalFoldersCount + totalDocumentsCount;
-  const children: DriveItem[] = [];
-
-  const docColumns = {
-    id: true,
-    folderId: true,
-    originalFilename: true,
-    fileSize: true,
-    mimeType: true,
-    status: true,
-    source: true,
-    createdAt: true,
-    updatedAt: true,
-  } as const;
-
-  const docWhere = {
-    teamId,
-    folderId: isRoot ? ({ isNull: true } as const) : folderId,
-    status: { ne: "error" as const },
-    ...(search && { originalFilename: { ilike: `%${search}%` } }),
-  };
-
+  // Folders first, then documents, one page across both.
+  const children: ListedItem[] = [];
   if (offset < totalFoldersCount) {
-    const folderLimit = Math.min(limit, totalFoldersCount - offset);
-    const subFolders = await db.query.folders.findMany({
-      where: {
-        teamId,
-        parentFolderId: isRoot ? { isNull: true } : folderId,
-        ...(search && { name: { ilike: `%${search}%` } }),
-      },
-      orderBy: { updatedAt: "desc" },
-      limit: folderLimit,
-      offset: offset,
-    });
-
+    const subFolders = await db
+      .select()
+      .from(folders)
+      .where(folderWhere)
+      .orderBy(desc(folders.updatedAt))
+      .limit(Math.min(limit, totalFoldersCount - offset))
+      .offset(offset);
     children.push(
       ...subFolders.map((f) => ({ type: "folder" as const, data: f })),
     );
+  }
 
-    if (children.length < limit && totalDocumentsCount > 0) {
-      const remainingLimit = limit - children.length;
-      const subDocs = await db.query.documents.findMany({
-        columns: docColumns,
-        where: docWhere,
+  const documentLimit = limit - children.length;
+  if (documentLimit > 0 && totalDocumentsCount > 0) {
+    const documentOffset = Math.max(0, offset - totalFoldersCount);
+    const idRows = await db
+      .select({ id: documents.id })
+      .from(documents)
+      .where(documentWhere)
+      .orderBy(desc(documents.updatedAt))
+      .limit(documentLimit)
+      .offset(documentOffset);
+    const ids = idRows.map((row) => row.id);
+    if (ids.length > 0) {
+      const docs = await db.query.documents.findMany({
+        columns: {
+          id: true,
+          folderId: true,
+          originalFilename: true,
+          fileSize: true,
+          mimeType: true,
+          status: true,
+          source: true,
+          projectId: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+        where: { id: { in: ids } },
         with: {
           mirrorRecord: { columns: { id: true, collectionId: true } },
         },
-        orderBy: { updatedAt: "desc" },
-        limit: remainingLimit,
       });
-
-      children.push(...(await mapDocsToDriveItems(subDocs, teamId)));
+      const byId = new Map(docs.map((doc) => [doc.id, doc]));
+      const ordered = ids.flatMap((id) => {
+        const doc = byId.get(id);
+        return doc ? [doc] : [];
+      });
+      children.push(...(await mapDocsToDriveItems(ordered, teamId)));
     }
-  } else {
-    const docOffset = offset - totalFoldersCount;
-    const subDocs = await db.query.documents.findMany({
-      columns: docColumns,
-      where: docWhere,
-      with: {
-        mirrorRecord: { columns: { id: true, collectionId: true } },
-      },
-      orderBy: { updatedAt: "desc" },
-      limit: limit,
-      offset: docOffset,
-    });
-
-    children.push(...(await mapDocsToDriveItems(subDocs, teamId)));
   }
 
   return {
     folder: currentFolder,
     children: {
-      count: totalItemsCount,
-      data: children,
+      count: totalFoldersCount + totalDocumentsCount,
+      data: await withLevels(principal, children),
     },
     breadcrumbs,
+    project,
   };
 };
+
+/** The items at one root: a project's, or the team's own (in no project). */
+const rootOf = (
+  column: typeof folders.projectId | typeof documents.projectId,
+  projectId: string | null,
+) => (projectId === null ? isNull(column) : eq(column, projectId));

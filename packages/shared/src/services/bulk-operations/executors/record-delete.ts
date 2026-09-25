@@ -4,12 +4,12 @@ import type {
   ToolApprovalRecordImportPayload,
 } from "../../../db/schema";
 import { bulkDeleteCollectionRecords } from "../../collection-records/bulk-delete";
-import { idsInCollection } from "../../collection-records/ids-in-collection";
 import { getRecordSnapshots } from "../../collection-records/snapshot-batch";
 import type { EventActor } from "../../domain-events/emit";
 import { importAgentKey } from "../agent-key";
 import type { BulkOperationExecutor, ChunkOutcome } from "../types";
 import { MALFORMED_ROW, readTargetId } from "./rows";
+import { writableIds } from "./writable-ids";
 
 /**
  * `record_delete` — many records of ONE collection, removed in chunks.
@@ -35,14 +35,10 @@ const actorFor = (op: BulkOperation): EventActor => ({
   agentKey: importAgentKey(op.id),
 });
 
-const ownedIds = (op: BulkOperation, ids: string[]): Promise<Set<string>> =>
-  idsInCollection({
-    teamId: op.teamId,
-    collectionId: op.params.collectionId,
-    ids,
-  });
-
-/** Ids that are not this collection's, as positional failures. */
+/**
+ * Ids this load may not delete (another collection's, or mirroring a file kept
+ * from its writer — `writable-ids.ts`), as positional failures.
+ */
 const strayErrors = async (
   op: BulkOperation,
   parsed: (string | null)[],
@@ -51,15 +47,12 @@ const strayErrors = async (
     id === null ? [{ index, error: MALFORMED_ROW("`{id}`") }] : [],
   );
   const ids = parsed.flatMap((id) => (id === null ? [] : [id]));
-  const owned = await ownedIds(op, ids);
+  const { writable, refused } = await writableIds(op, ids);
   parsed.forEach((id, index) => {
-    if (id === null || owned.has(id)) return;
-    errors.push({
-      index,
-      error: `Record ${id} is not in ${op.params.collectionKey}.`,
-    });
+    const error = id === null ? undefined : refused.get(id);
+    if (error !== undefined) errors.push({ index, error });
   });
-  return { errors, ids: ids.filter((id) => owned.has(id)) };
+  return { errors, ids: ids.filter((id) => writable.has(id)) };
 };
 
 export const recordDeleteExecutor: BulkOperationExecutor = {

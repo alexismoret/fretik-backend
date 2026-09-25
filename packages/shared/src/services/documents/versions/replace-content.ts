@@ -1,5 +1,7 @@
 import { eq, sql } from "drizzle-orm";
 
+import { driveVisibility } from "../../../authz/drive-sql";
+import { SYSTEM } from "../../../authz/system-principals";
 import db from "../../../db";
 import { teamSettings } from "../../../db/schema";
 import {
@@ -246,7 +248,12 @@ export const replaceDocumentContent = async (args: {
   // into the document's activity timeline, and it does not move during a
   // replacement. Null for a document whose mirror was never created — the
   // event is still journalled, only without a record to hang it on.
-  const mirrorRecordId = await resolveDocumentRecordId({ documentId, teamId });
+  const mirrorRecordId = await resolveDocumentRecordId({
+    documentId,
+    teamId,
+    // The file's own mirror: the replacement is already authorised.
+    drive: await driveVisibility(SYSTEM.documentPipeline, teamId),
+  });
 
   const { updated, version } = await withVersionNumberConflictAsStale(
     documentId,

@@ -86,6 +86,7 @@ export const createPageProbeTool = () =>
         },
         teamId: project.teamId,
         userId: project.userId,
+        reader: await project.principal(),
         dataOnly: true,
       });
 

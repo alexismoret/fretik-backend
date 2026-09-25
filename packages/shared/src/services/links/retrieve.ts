@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+import type { DriveVisibility } from "../../authz/drive-sql";
 import db from "../../db";
 import {
   assertCanReadRecord,
@@ -119,9 +120,15 @@ export const listLinksForRecord = async (data: {
   recordId: string;
   teamId: string;
   organizationId: string;
+  /** What the person can open in the Drive: a hidden file's mirror is out. */
+  drive: DriveVisibility;
 }) => {
   const { recordId } = data;
-  const viewer = { teamId: data.teamId, organizationId: data.organizationId };
+  const viewer = {
+    teamId: data.teamId,
+    organizationId: data.organizationId,
+    drive: data.drive,
+  };
   await assertCanReadRecord({ recordId, ...viewer });
 
   const [outgoing, incoming] = await Promise.all([

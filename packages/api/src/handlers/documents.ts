@@ -1,3 +1,11 @@
+import {
+  idsByTeam,
+  requireAccessForEachResolved,
+} from "@fretik/shared/authz/access";
+import { requireDriveMove } from "@fretik/shared/authz/drive";
+import { driveVisibility } from "@fretik/shared/authz/drive-sql";
+import { access, teamOfResource } from "@fretik/shared/authz/http";
+import { requirePlacement } from "@fretik/shared/authz/placement";
 import type { Document, DocumentVersion } from "@fretik/shared/db/schema";
 import {
   authMiddleware,
@@ -64,6 +72,7 @@ import { listDocumentVersions } from "@fretik/shared/services/documents/versions
 import { restoreDocumentVersion } from "@fretik/shared/services/documents/versions/restore";
 import { confirmAutoFiling } from "@fretik/shared/services/folders/confirm-filing";
 import { undoAutoFiling } from "@fretik/shared/services/folders/undo-filing";
+import { readProjectName } from "@fretik/shared/services/projects/read";
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import { streamSSE } from "hono/streaming";
 
@@ -71,6 +80,12 @@ import { streamSSE } from "hono/streaming";
 // ROUTER SETUP         //
 // ==================== //
 
+/**
+ * Each route on one document names the level it takes (`access.resource`):
+ * view to open, preview or download it, edit to change, rename, move or
+ * re-extract it, full to delete it. Adding a document — an upload, a written
+ * one, a move — also takes edit on the folder it lands in.
+ */
 const documentRoutes = new OpenAPIHono<HonoLoggedAppType>();
 documentRoutes.use("*", authMiddleware);
 
@@ -82,6 +97,7 @@ const formatDocumentResponse = (doc: Document) => ({
   id: doc.id,
   teamId: doc.teamId,
   folderId: doc.folderId,
+  projectId: doc.projectId,
   status: doc.status,
   source: doc.source,
   errorMessage: doc.errorMessage,
@@ -112,6 +128,9 @@ const formatVersionResponse = (version: DocumentVersion) => ({
 const uploadDocumentRoute = createRoute({
   method: "post",
   path: "/upload",
+  middleware: access.handler(
+    "Where it lands (`authz/placement.ts`): edit on its folder, taking part in its project, or contributing to the active team at its root.",
+  ),
   summary: "Upload a document",
   description:
     "Uploads a single file, saves it to DB with 'uploading' status, and starts background processing (S3, thumbnail, pre-extraction).",
@@ -141,6 +160,9 @@ const uploadDocumentRoute = createRoute({
 const listRecentDocumentsRoute = createRoute({
   method: "get",
   path: "",
+  middleware: access.session(
+    "The active team's recent Drive documents, only those the caller can open (authz/drive-sql).",
+  ),
   summary: "List recent documents",
   description:
     "The team's most recently added documents, newest first — a lightweight projection (name, kind, size, status, when) for the home dashboard. Paginated with an exact total.",
@@ -163,6 +185,7 @@ const listRecentDocumentsRoute = createRoute({
 const updateDocumentRoute = createRoute({
   method: "patch",
   path: "/{id}",
+  middleware: access.resource("document", "edit"),
   summary: "Update a document",
   description: "Update a specific document by ID",
   tags: ["Documents"],
@@ -195,6 +218,9 @@ const updateDocumentRoute = createRoute({
 const deleteDocumentsRoute = createRoute({
   method: "delete",
   path: "",
+  middleware: access.handler(
+    "Each document takes full access, and is deleted in its own team; ids out of sight are skipped (requireAccessForEachResolved).",
+  ),
   summary: "Delete multiple documents",
   description: "Delete multiple documents by ID",
   tags: ["Documents"],
@@ -221,6 +247,7 @@ const deleteDocumentsRoute = createRoute({
 const getDocumentDetailsRoute = createRoute({
   method: "get",
   path: "/{id}",
+  middleware: access.resource("document", "view"),
   summary: "Get document details",
   description:
     "Retrieves detailed information about a document, including properties and a presigned file URL",
@@ -246,6 +273,7 @@ const getDocumentDetailsRoute = createRoute({
 const reextractDocumentRoute = createRoute({
   method: "post",
   path: "/{id}/reextract",
+  middleware: access.resource("document", "edit"),
   summary: "Re-extract a document",
   description:
     "Re-runs classification and entity extraction against the team's current field definitions (OCR is reused from cache). The document returns to `processing`; progress streams over the existing upload SSE.",
@@ -277,6 +305,8 @@ const reextractDocumentRoute = createRoute({
 const undoFilingRoute = createRoute({
   method: "post",
   path: "/{id}/filing/undo",
+  // Back to the root of its own tree: a move that stays in its project.
+  middleware: access.resource("document", "edit"),
   summary: "Undo an automatic filing",
   description:
     "Moves a document the Drive filer placed back to the root, and records that the filing was wrong. 409 when the document has been moved since.",
@@ -299,6 +329,8 @@ const undoFilingRoute = createRoute({
 const confirmFilingRoute = createRoute({
   method: "post",
   path: "/{id}/filing/confirm",
+  // Saying where a document belongs is placing it, whether or not it moves.
+  middleware: access.resource("document", "edit"),
   summary: "Confirm an automatic filing",
   description:
     "Records that the folder the Drive filer chose is the right one. Nothing moves. 409 when the document has been moved since.",
@@ -328,6 +360,9 @@ const confirmFilingRoute = createRoute({
 const createAuthoredDocumentRoute = createRoute({
   method: "post",
   path: "/authored",
+  middleware: access.handler(
+    "Where it lands (`authz/placement.ts`): edit on its folder, taking part in its project, or contributing to the active team at its root.",
+  ),
   summary: "Create a written document",
   description:
     "Creates a markdown document authored in Fretik. Unlike an upload it is `ready` immediately — nothing to convert or OCR — and is mirrored into the graph and indexed for search like any other document.",
@@ -351,6 +386,7 @@ const createAuthoredDocumentRoute = createRoute({
 const getDocumentContentRoute = createRoute({
   method: "get",
   path: "/{id}/content",
+  middleware: access.resource("document", "view"),
   summary: "Read a written document's text",
   description:
     "Returns the markdown of a document authored in Fretik. Uploaded files are not text and are read through their presigned URL instead.",
@@ -376,6 +412,7 @@ const getDocumentContentRoute = createRoute({
 const saveDocumentContentRoute = createRoute({
   method: "patch",
   path: "/{id}/content",
+  middleware: access.resource("document", "edit"),
   summary: "Save a written document's text",
   description:
     "Replaces the markdown and records a version. Consecutive saves by the same author within a few minutes fold into one version. Send `baseUpdatedAt` to be refused with 409 rather than overwrite a concurrent save.",
@@ -416,6 +453,7 @@ const saveDocumentContentRoute = createRoute({
 const listDocumentVersionsRoute = createRoute({
   method: "get",
   path: "/{id}/versions",
+  middleware: access.resource("document", "view"),
   summary: "List a document's versions",
   description:
     "History of a document, newest first, with who produced each version. Available for every document — a written one, an uploaded file that was replaced, or one that was never touched (which has a single version).",
@@ -437,6 +475,7 @@ const listDocumentVersionsRoute = createRoute({
 const restoreDocumentVersionRoute = createRoute({
   method: "post",
   path: "/{id}/versions/{versionId}/restore",
+  middleware: access.resource("document", "edit"),
   summary: "Restore a document version",
   description:
     "Brings back a previous version's content. The rollback becomes the newest version rather than truncating history, so it can itself be undone. Files that carry derived data (thumbnail, extracted fields) are re-processed against the restored bytes.",
@@ -469,6 +508,7 @@ const restoreDocumentVersionRoute = createRoute({
 const getDocumentPreviewSourceRoute = createRoute({
   method: "get",
   path: "/{id}/preview-source",
+  middleware: access.resource("document", "view"),
   summary: "Get what a viewer should render for a document",
   description:
     "A short-lived link to what the viewer should fetch when a document's own bytes cannot be rendered in a browser: a PDF rendering (legacy Office, OpenDocument, RTF, TIFF) or the extracted markdown sidecar (mail). `kind` is null for a type that renders from its own bytes.",
@@ -492,6 +532,7 @@ const getDocumentPreviewSourceRoute = createRoute({
 const downloadDocumentVersionRoute = createRoute({
   method: "get",
   path: "/{id}/versions/{versionId}/download",
+  middleware: access.resource("document", "view"),
   summary: "Download one version",
   description:
     "A short-lived link to a past version's bytes. Reading an old version must not move the document, so this is what the history offers instead of restoring: the file downloads under a name carrying its version number.",
@@ -521,24 +562,24 @@ const downloadDocumentVersionRoute = createRoute({
  * --
  */
 documentRoutes.openapi(uploadDocumentRoute, async (c) => {
-  const user = c.get("user");
-  const team = c.get("team");
-  const organization = c.get("organization");
-
-  if (!team) {
-    return c.json(teamRequired(), 403);
-  }
-
-  const { file, folderId, onConflict } = c.req.valid("form");
-
-  const result = await uploadDocument(
-    file,
-    organization.id,
-    team.id,
-    user.id,
+  const principal = c.get("principal");
+  const { file, folderId, projectId, onConflict } = c.req.valid("form");
+  const placement = await requirePlacement({
+    principal,
+    activeTeamId: c.get("team")?.id,
     folderId,
+    projectId,
+  });
+
+  const result = await uploadDocument({
+    file,
+    organizationId: principal.organizationId,
+    teamId: placement.teamId,
+    principal,
+    folderId,
+    projectId: placement.projectId,
     onConflict,
-  );
+  });
 
   // `outcome` rides on the document rather than wrapping it: every existing
   // caller reads `id` / `status` off the top level, and a same-name upload that
@@ -554,45 +595,53 @@ documentRoutes.openapi(uploadDocumentRoute, async (c) => {
  * --
  * SSE endpoint for real-time document processing progress.
  */
-documentRoutes.get("/upload/:documentId/progress", async (c) => {
-  const team = c.get("team");
-  if (!team) {
-    return throwHttpError(403, teamRequired());
-  }
+documentRoutes.get(
+  "/upload/:documentId/progress",
+  access.resource("document", "view", "documentId"),
+  async (c) => {
+    const teamId = teamOfResource(c.get("resource"));
 
-  // The progress bus is keyed by document id alone, so the authorization is
-  // this pre-check: once the stream is open it relays whatever it is told.
-  // A malformed id is refused here too — Postgres would reject it as a uuid
-  // and surface a 500.
-  const documentId = c.req.param("documentId");
-  if (
-    !z.uuid().safeParse(documentId).success ||
-    !(await getUploadProgress({ documentId, teamId: team.id }))
-  ) {
-    return throwHttpError(404, notFound());
-  }
+    // The progress bus is keyed by document id alone, so the authorization is
+    // this pre-check: once the stream is open it relays whatever it is told.
+    // A malformed id is refused here too — Postgres would reject it as a uuid
+    // and surface a 500.
+    const documentId = c.req.param("documentId");
+    if (
+      !z.uuid().safeParse(documentId).success ||
+      !(await getUploadProgress({ documentId, teamId }))
+    ) {
+      return throwHttpError(404, notFound());
+    }
 
-  applyAntiBufferingHeaders(c);
-  return streamSSE(c, async (stream) => {
-    await streamUploadProgress({ documentId, teamId: team.id, stream });
-  });
-});
+    applyAntiBufferingHeaders(c);
+    return streamSSE(c, async (stream) => {
+      await streamUploadProgress({ documentId, teamId, stream });
+    });
+  },
+);
 
 /**
  * -- DELETE DOCUMENTS
  * --
  */
 documentRoutes.openapi(deleteDocumentsRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) {
-    return throwHttpError(403, teamRequired());
+  const { ids } = c.req.valid("json");
+  const deletable = await requireAccessForEachResolved({
+    principal: c.get("principal"),
+    type: "document",
+    ids,
+    required: "full",
+  });
+
+  // Each in its own team: a selection made in a folder shared from another
+  // team is that team's.
+  let rowCount = 0;
+  for (const [teamId, teamIds] of idsByTeam(deletable)) {
+    // oxlint-disable-next-line no-await-in-loop -- one team, rarely two
+    rowCount += (await deleteDocuments({ ids: teamIds, teamId })).rowCount ?? 0;
   }
 
-  const { ids } = c.req.valid("json");
-
-  const res = await deleteDocuments({ ids, teamId: team.id });
-
-  return c.json({ rowCount: res.rowCount }, 200);
+  return c.json({ rowCount }, 200);
 });
 
 /**
@@ -600,18 +649,23 @@ documentRoutes.openapi(deleteDocumentsRoute, async (c) => {
  * --
  */
 documentRoutes.openapi(updateDocumentRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) {
-    return throwHttpError(403, teamRequired());
-  }
+  const teamId = teamOfResource(c.get("resource"));
+  const { organizationId } = c.get("principal");
 
   const { id } = c.req.valid("param");
   const updates = c.req.valid("json");
+  if (updates.folderId !== undefined) {
+    await requireDriveMove(c.get("principal"), {
+      type: "document",
+      id,
+      folderId: updates.folderId,
+    });
+  }
 
   const updatedDocument = await updateDocument({
     id,
-    teamId: team.id,
-    organizationId: team.organizationId,
+    teamId,
+    organizationId,
     updates,
   });
 
@@ -626,28 +680,23 @@ documentRoutes.openapi(updateDocumentRoute, async (c) => {
  * -- UNDO / CONFIRM AUTOMATIC FILING
  * --
  */
+// Both act in the document's own team, whichever the caller has open.
 documentRoutes.openapi(undoFilingRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
-  const user = c.get("user");
   const { id } = c.req.valid("param");
   const result = await undoAutoFiling({
     documentId: id,
-    teamId: team.id,
-    userId: user.id,
+    teamId: teamOfResource(c.get("resource")),
+    userId: c.get("user").id,
   });
   return c.json(result, 200);
 });
 
 documentRoutes.openapi(confirmFilingRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
-  const user = c.get("user");
   const { id } = c.req.valid("param");
   const result = await confirmAutoFiling({
     documentId: id,
-    teamId: team.id,
-    userId: user.id,
+    teamId: teamOfResource(c.get("resource")),
+    userId: c.get("user").id,
   });
   return c.json(result, 200);
 });
@@ -660,16 +709,14 @@ documentRoutes.openapi(confirmFilingRoute, async (c) => {
  * returns immediately; the document flips back to `processing`.
  */
 documentRoutes.openapi(reextractDocumentRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) {
-    return throwHttpError(403, teamRequired());
-  }
+  const teamId = teamOfResource(c.get("resource"));
+  const { organizationId } = c.get("principal");
 
   const { id } = c.req.valid("param");
   await reextractDocument({
     documentId: id,
-    teamId: team.id,
-    organizationId: team.organizationId,
+    teamId,
+    organizationId,
   });
 
   return c.json({ success: true }, 202);
@@ -681,20 +728,23 @@ documentRoutes.openapi(reextractDocumentRoute, async (c) => {
  */
 documentRoutes.openapi(createAuthoredDocumentRoute, async (c) => {
   const user = c.get("user");
-  const team = c.get("team");
-  if (!team) {
-    return throwHttpError(403, teamRequired());
-  }
-
-  const { title, content, folderId } = c.req.valid("json");
+  const principal = c.get("principal");
+  const { title, content, folderId, projectId } = c.req.valid("json");
+  const placement = await requirePlacement({
+    principal,
+    activeTeamId: c.get("team")?.id,
+    folderId,
+    projectId,
+  });
 
   const document = await createAuthoredDocument({
-    organizationId: team.organizationId,
-    teamId: team.id,
+    organizationId: principal.organizationId,
+    teamId: placement.teamId,
     userId: user.id,
     title,
     content,
     folderId: folderId ?? null,
+    projectId: placement.projectId,
     actorContext: { actor: "human", userId: user.id },
     eventActor: { actorType: "user", actorUserId: user.id },
   });
@@ -707,15 +757,12 @@ documentRoutes.openapi(createAuthoredDocumentRoute, async (c) => {
  * --
  */
 documentRoutes.openapi(getDocumentContentRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) {
-    return throwHttpError(403, teamRequired());
-  }
+  const teamId = teamOfResource(c.get("resource"));
 
   const { id } = c.req.valid("param");
   const { document, content } = await getAuthoredContent({
     documentId: id,
-    teamId: team.id,
+    teamId,
   });
 
   return c.json({ document: formatDocumentResponse(document), content }, 200);
@@ -727,18 +774,16 @@ documentRoutes.openapi(getDocumentContentRoute, async (c) => {
  */
 documentRoutes.openapi(saveDocumentContentRoute, async (c) => {
   const user = c.get("user");
-  const team = c.get("team");
-  if (!team) {
-    return throwHttpError(403, teamRequired());
-  }
+  const teamId = teamOfResource(c.get("resource"));
+  const { organizationId } = c.get("principal");
 
   const { id } = c.req.valid("param");
   const { content, baseUpdatedAt } = c.req.valid("json");
 
   const result = await saveAuthoredContent({
     documentId: id,
-    teamId: team.id,
-    organizationId: team.organizationId,
+    teamId,
+    organizationId,
     content,
     actorContext: { actor: "human", userId: user.id },
     ...(baseUpdatedAt ? { expectedUpdatedAt: baseUpdatedAt } : {}),
@@ -759,15 +804,12 @@ documentRoutes.openapi(saveDocumentContentRoute, async (c) => {
  * --
  */
 documentRoutes.openapi(listDocumentVersionsRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) {
-    return throwHttpError(403, teamRequired());
-  }
+  const teamId = teamOfResource(c.get("resource"));
 
   const { id } = c.req.valid("param");
   const versions = await listDocumentVersions({
     documentId: id,
-    teamId: team.id,
+    teamId,
   });
 
   return c.json(
@@ -787,16 +829,14 @@ documentRoutes.openapi(listDocumentVersionsRoute, async (c) => {
  */
 documentRoutes.openapi(restoreDocumentVersionRoute, async (c) => {
   const user = c.get("user");
-  const team = c.get("team");
-  if (!team) {
-    return throwHttpError(403, teamRequired());
-  }
+  const teamId = teamOfResource(c.get("resource"));
+  const { organizationId } = c.get("principal");
 
   const { id, versionId } = c.req.valid("param");
   const result = await restoreDocumentVersion({
     documentId: id,
-    teamId: team.id,
-    organizationId: team.organizationId,
+    teamId,
+    organizationId,
     versionId,
     actorContext: { actor: "human", userId: user.id },
   });
@@ -816,16 +856,13 @@ documentRoutes.openapi(restoreDocumentVersionRoute, async (c) => {
  * --
  */
 documentRoutes.openapi(downloadDocumentVersionRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) {
-    return throwHttpError(403, teamRequired());
-  }
+  const teamId = teamOfResource(c.get("resource"));
 
   const { id, versionId } = c.req.valid("param");
   const result = await getDocumentVersionDownloadUrl({
     documentId: id,
     versionId,
-    teamId: team.id,
+    teamId,
   });
 
   return c.json(result, 200);
@@ -843,7 +880,11 @@ documentRoutes.openapi(listRecentDocumentsRoute, async (c) => {
   }
 
   const params = c.req.valid("query");
-  const result = await listRecentDocuments({ teamId: team.id, params });
+  const result = await listRecentDocuments({
+    principal: c.get("principal"),
+    teamId: team.id,
+    params,
+  });
 
   return c.json(result, 200);
 });
@@ -857,15 +898,13 @@ documentRoutes.openapi(listRecentDocumentsRoute, async (c) => {
  * round-trips.
  */
 documentRoutes.openapi(getDocumentDetailsRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) {
-    return c.json(teamRequired(), 403);
-  }
+  const teamId = teamOfResource(c.get("resource"));
 
   const { id } = c.req.valid("param");
 
+  const visibility = await driveVisibility(c.get("principal"), teamId);
   const { document, fileUrl, fieldValues, fieldDefinitions } =
-    await getDocumentDetails({ id, teamId: team.id });
+    await getDocumentDetails({ id, teamId, visibility });
 
   const breadcrumbs = await getDocumentBreadcrumbs({
     document: {
@@ -873,7 +912,8 @@ documentRoutes.openapi(getDocumentDetailsRoute, async (c) => {
       originalFilename: document.originalFilename,
       folderId: document.folderId,
     },
-    teamId: team.id,
+    teamId,
+    visibility,
   });
 
   // Drizzle returns numeric/decimal as string — coerce before serialising
@@ -887,11 +927,18 @@ documentRoutes.openapi(getDocumentDetailsRoute, async (c) => {
       }
     : null;
 
+  const project =
+    document.projectId === null
+      ? null
+      : await readProjectName(document.projectId);
+
   return c.json(
     {
       id: document.id,
       teamId: document.teamId,
       folderId: document.folderId,
+      projectId: document.projectId,
+      project,
       status: document.status,
       source: document.source,
       errorMessage: document.errorMessage,
@@ -908,6 +955,7 @@ documentRoutes.openapi(getDocumentDetailsRoute, async (c) => {
       fileUrl,
       fieldValues,
       fieldDefinitions,
+      level: c.get("resource").level,
     },
     200,
   );
@@ -921,13 +969,10 @@ documentRoutes.openapi(getDocumentDetailsRoute, async (c) => {
  * extraction pipeline already wrote.
  */
 documentRoutes.openapi(getDocumentPreviewSourceRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) {
-    return c.json(teamRequired(), 403);
-  }
+  const teamId = teamOfResource(c.get("resource"));
 
   const { id } = c.req.valid("param");
-  const source = await getDocumentPreviewSource({ id, teamId: team.id });
+  const source = await getDocumentPreviewSource({ id, teamId });
 
   return c.json(source, 200);
 });

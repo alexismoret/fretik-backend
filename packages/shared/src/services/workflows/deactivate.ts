@@ -1,4 +1,5 @@
 import { and, eq } from "drizzle-orm";
+import type { Principal } from "../../authz/principal";
 import db from "../../db";
 import { workflows } from "../../db/schema";
 import { deleteWorkflowSchedule } from "../../lib/trigger-client";
@@ -11,7 +12,6 @@ import {
   deleteWorkflowVectorRows,
   refreshWorkflowVectors,
 } from "./vector-refresh";
-import type { WorkflowRequester } from "./visibility";
 
 /**
  * Tear down a workflow's Trigger.dev schedule (if any) and set its status —
@@ -27,10 +27,16 @@ export const deactivateWorkflow = async (params: {
   /** Why the workflow stopped, when not a plain manual pause (the circuit
    * breaker passes `circuit_breaker:<N>`). Omitted → cleared to NULL. */
   reason?: string | null;
-  requester?: WorkflowRequester;
+  /** Stopping or archiving a workflow takes full access on it. */
+  principal: Principal;
 }): Promise<WorkflowResponse | undefined> => {
   const { id, teamId, status } = params;
-  const row = await getWorkflowRow({ id, teamId, requester: params.requester });
+  const row = await getWorkflowRow({
+    id,
+    teamId,
+    principal: params.principal,
+    level: "full",
+  });
   if (!row) return undefined;
 
   if (row.triggerScheduleId) {

@@ -20,6 +20,7 @@ import {
   agentEventActor,
   getRuntimeContext,
 } from "../agents/shared/runtime-context";
+import { liftAccessRefusal } from "../lib/access-refusal";
 import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
 
 /**
@@ -97,6 +98,7 @@ export const createManageFieldTool = () =>
           collectionId,
           teamId: ctx.teamId,
           organizationId: ctx.organizationId,
+          userId: ctx.userId,
         });
 
         if (input.action === "add") {
@@ -250,9 +252,12 @@ export const createManageFieldTool = () =>
         });
         return { ok: true, field: { id: updated.id, key: updated.key } };
       } catch (err) {
-        return toolError(
-          TOOL_ERROR_CODES.COLLECTION_QUERY_ERROR,
-          `manageField ${input.action} failed: ${err instanceof Error ? err.message : String(err)}`,
+        return (
+          liftAccessRefusal(err) ??
+          toolError(
+            TOOL_ERROR_CODES.COLLECTION_QUERY_ERROR,
+            `manageField ${input.action} failed: ${err instanceof Error ? err.message : String(err)}`,
+          )
         );
       }
     },

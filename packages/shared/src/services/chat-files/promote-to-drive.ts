@@ -47,6 +47,12 @@ interface PromoteArgs {
    * team.
    */
   folderId?: string | null;
+  /**
+   * The project whose root they land at when no folder is given; a folder
+   * decides for itself. Where they may land is the caller's check
+   * (`authz/placement.ts`).
+   */
+  projectId?: string | null;
 }
 
 /** Why a file could not be promoted — lets the UI pick the right copy. */
@@ -171,7 +177,12 @@ export const promoteChatFilesToDrive = async (
         metadata: { documentId, organizationId, teamId },
       });
 
-      await createDocumentRecord({ metadata, teamId, userId });
+      await createDocumentRecord({
+        metadata,
+        teamId,
+        userId,
+        projectId: args.projectId ?? null,
+      });
 
       // Enqueue after the row + bytes exist. On failure (Redis down),
       // finalize the document to a clean `error` state instead of leaving

@@ -1,6 +1,8 @@
 import db from "../db";
 import type { RenderedApprovalSummary } from "../external-apps/i18n/render-summary";
 import { OTP_EXPIRY_MINUTES } from "../lib/auth-constants";
+import type { AccessLevel } from "../schemas/access";
+import type { SharingResourceType } from "../schemas/access-sharing";
 import { i18n } from "./i18n";
 import { renderMarkdownToEmailHtml } from "./markdown-to-html";
 import { renderEmail } from "./render";
@@ -13,6 +15,18 @@ if (!appUrl) {
 /** BCP-47 tag for date formatting, derived from the email locale. */
 const dateLocale = (lang: string): string =>
   lang === "fr" ? "fr-FR" : "en-US";
+
+/**
+ * How a level reads for a type: `use` of a chat or a project is taking part
+ * in it (the app's "Can take part"); `use` of anything else is using it.
+ */
+const levelWording = (
+  level: AccessLevel,
+  type: SharingResourceType,
+): AccessLevel | "takePart" =>
+  level === "use" && (type === "conversation" || type === "project")
+    ? "takePart"
+    : level;
 
 export interface EmailData {
   subject: string;
@@ -34,12 +48,32 @@ interface OrganizationInvitationParams {
    * `services/invitations/accept-team-invitation.ts`).
    */
   existingMember?: boolean;
+  /**
+   * The address already has a Fretik account, in another organization: the
+   * email says to sign in with it, and where the organization will appear.
+   */
+  existingAccount?: boolean;
+  /**
+   * The item the invitation was sent for, when it was sent from the share
+   * dialog: the email names it, and accepting opens it. A guest's invitation
+   * always has one — it is the only reason they are invited at all.
+   */
+  item?: InvitationItem | null;
+}
+
+/** An item shared by email, as an invitation names it. */
+export interface InvitationItem {
+  type: SharingResourceType;
+  id: string;
+  name: string;
+  level: AccessLevel;
 }
 
 /**
  * Generate the email data for an organization invitation.
  * If a teamId is provided, the team name is fetched and displayed.
- * `lang` is the invitee's team language (falls back to `en`).
+ * `lang` is the invitee's own language when the address has an account, the
+ * inviting team's otherwise (`services/invitations/send-invitation-email.ts`).
  */
 export const generateOrganizationInvitation = async (
   params: OrganizationInvitationParams,
@@ -62,23 +96,34 @@ export const generateOrganizationInvitation = async (
   // that branch — but fall back to the generic copy rather than render a
   // sentence with a hole in it.
   const isTeamAccessForMember = Boolean(params.existingMember && teamName);
+  const item = params.item ?? null;
+  const isGuest = params.role === "guest";
 
-  const message = isTeamAccessForMember
-    ? t("organizationInvitation.messageExistingMember", {
-        inviterName: params.inviterName,
-        teamName,
-        organizationName: params.organizationName,
-      })
-    : teamName
-      ? t("organizationInvitation.messageWithTeam", {
+  const message = item
+    ? t(
+        `organizationInvitation.messageItem.${levelWording(item.level, item.type)}`,
+        {
+          inviterName: params.inviterName,
+          itemName: item.name,
+          organizationName: params.organizationName,
+        },
+      )
+    : isTeamAccessForMember
+      ? t("organizationInvitation.messageExistingMember", {
           inviterName: params.inviterName,
           teamName,
           organizationName: params.organizationName,
         })
-      : t("organizationInvitation.message", {
-          inviterName: params.inviterName,
-          organizationName: params.organizationName,
-        });
+      : teamName
+        ? t("organizationInvitation.messageWithTeam", {
+            inviterName: params.inviterName,
+            teamName,
+            organizationName: params.organizationName,
+          })
+        : t("organizationInvitation.message", {
+            inviterName: params.inviterName,
+            organizationName: params.organizationName,
+          });
 
   const formattedExpiresAt = params.expiresAt.toLocaleDateString(
     dateLocale(lang),
@@ -97,18 +142,31 @@ export const generateOrganizationInvitation = async (
       organizationLabel: t("organizationInvitation.organizationLabel", {
         organizationName: params.organizationName,
       }),
-      teamLabel: teamName
-        ? t("organizationInvitation.teamLabel", { teamName })
-        : "",
+      teamLabel: item
+        ? t("organizationInvitation.itemLabel", { itemName: item.name })
+        : teamName
+          ? t("organizationInvitation.teamLabel", { teamName })
+          : "",
       // Empty string omits the line (the template guards it with `{{#if}}`):
-      // announcing a role we are not going to apply would be a lie.
-      roleLabel: isTeamAccessForMember
-        ? ""
-        : t("organizationInvitation.roleLabel", { roleName: params.role }),
+      // announcing a role we are not going to apply would be a lie. A guest
+      // holds no role to announce, only what is shared with them.
+      roleLabel: isGuest
+        ? t("organizationInvitation.guestLabel")
+        : isTeamAccessForMember
+          ? ""
+          : t("organizationInvitation.roleLabel", { roleName: params.role }),
+      accountNote:
+        params.existingAccount && !params.existingMember
+          ? t("organizationInvitation.existingAccount", {
+              organizationName: params.organizationName,
+            })
+          : "",
       acceptUrl,
-      cta: isTeamAccessForMember
-        ? t("organizationInvitation.ctaExistingMember")
-        : t("organizationInvitation.cta"),
+      cta: item
+        ? t("organizationInvitation.ctaItem")
+        : isTeamAccessForMember
+          ? t("organizationInvitation.ctaExistingMember")
+          : t("organizationInvitation.cta"),
       expiration: t("organizationInvitation.expiration", {
         expiresAt: formattedExpiresAt,
       }),
@@ -117,11 +175,16 @@ export const generateOrganizationInvitation = async (
     lang,
   );
 
-  const subject = isTeamAccessForMember
-    ? t("organizationInvitation.subjectExistingMember", { teamName })
-    : t("organizationInvitation.subject", {
-        organizationName: params.organizationName,
-      });
+  const subject = item
+    ? t("organizationInvitation.subjectItem", {
+        inviterName: params.inviterName,
+        itemName: item.name,
+      })
+    : isTeamAccessForMember
+      ? t("organizationInvitation.subjectExistingMember", { teamName })
+      : t("organizationInvitation.subject", {
+          organizationName: params.organizationName,
+        });
 
   return { subject, html };
 };
@@ -666,4 +729,163 @@ export const generateSecurityNoticeEmail = async (
   );
 
   return { subject: t(`securityNotice.${params.kind}.subject`), html };
+};
+
+/** Where the app opens a resource that can be shared. */
+const resourceUrl = (resource: {
+  type: SharingResourceType;
+  id: string;
+}): string => {
+  switch (resource.type) {
+    case "document":
+      return `${appUrl}/document/${resource.id}`;
+    case "folder":
+      return `${appUrl}/drive/${resource.id}`;
+    case "page":
+      return `${appUrl}/pages/${resource.id}`;
+    case "workflow":
+      return `${appUrl}/workflows/${resource.id}`;
+    case "conversation":
+      return `${appUrl}/chatbot/${resource.id}`;
+    case "project":
+      return `${appUrl}/projects/${resource.id}`;
+    // Never asked for by name (`isRequestableResourceType`); a collection
+    // is reached by its key, which is not in the request.
+    case "collection":
+      return `${appUrl}/collections`;
+  }
+};
+
+interface AccessRequestEmailParams {
+  requestId: string;
+  recipientName: string;
+  requesterName: string;
+  resourceName: string;
+  level: AccessLevel;
+  /** The requester's note, when they left one. */
+  message: string | null;
+}
+
+/**
+ * To someone who can answer an access request: who asks, for what, and why.
+ * The link opens the request where it is answered (`/shared`).
+ */
+export const generateAccessRequestEmail = async (
+  params: AccessRequestEmailParams,
+  lang: string,
+): Promise<EmailData> => {
+  const t = i18n.getFixedT(lang);
+  const names = {
+    requesterName: params.requesterName,
+    resourceName: params.resourceName,
+  };
+  const html = await renderEmail(
+    "access-request",
+    {
+      greeting: t("accessRequest.greeting", { name: params.recipientName }),
+      intro: t(`accessRequest.intro.${params.level}`, names),
+      // Empty omits the block (the template guards it with `{{#if}}`).
+      message: params.message ?? "",
+      messageLabel: t("accessRequest.messageLabel"),
+      ctaUrl: `${appUrl}/shared?request=${params.requestId}`,
+      cta: t("accessRequest.cta"),
+      footnote: t("accessRequest.footnote"),
+    },
+    lang,
+  );
+  return { subject: t("accessRequest.subject", names), html };
+};
+
+interface AccessRequestDecidedEmailParams {
+  recipientName: string;
+  resource: { type: SharingResourceType; id: string; name: string };
+  decision: "approved" | "denied";
+  /** The level granted, for an approval. */
+  level: AccessLevel | null;
+  deciderName: string;
+}
+
+/** To the requester: their request was answered, and how. */
+export const generateAccessRequestDecidedEmail = async (
+  params: AccessRequestDecidedEmailParams,
+  lang: string,
+): Promise<EmailData> => {
+  const t = i18n.getFixedT(lang);
+  const names = {
+    deciderName: params.deciderName,
+    resourceName: params.resource.name,
+  };
+  const approved = params.decision === "approved" && params.level !== null;
+  const html = await renderEmail(
+    "access-request-decided",
+    {
+      greeting: t("accessRequestDecided.greeting", {
+        name: params.recipientName,
+      }),
+      intro: approved
+        ? t(`accessRequestDecided.approved.intro.${params.level}`, names)
+        : t("accessRequestDecided.denied.intro", names),
+      ctaUrl: approved ? resourceUrl(params.resource) : "",
+      cta: t("accessRequestDecided.approved.cta"),
+    },
+    lang,
+  );
+  return {
+    subject: approved
+      ? t("accessRequestDecided.approved.subject", names)
+      : t("accessRequestDecided.denied.subject", names),
+    html,
+  };
+};
+
+interface SharedWithGuestEmailParams {
+  recipientName: string;
+  sharerName: string;
+  organizationName: string;
+  resource: { type: SharingResourceType; id: string; name: string };
+  level: AccessLevel;
+  /** When the guest's access ends; null when it lasts until removed. */
+  expiresAt: Date | null;
+}
+
+/**
+ * Something new shared with a guest. A guest does not browse the
+ * organization's workspace, so this email is how they learn it is there.
+ * Same layout as a decided request: a sentence and a button.
+ */
+export const generateSharedWithGuestEmail = async (
+  params: SharedWithGuestEmailParams,
+  lang: string,
+): Promise<EmailData> => {
+  const t = i18n.getFixedT(lang);
+  const names = {
+    sharerName: params.sharerName,
+    resourceName: params.resource.name,
+    organizationName: params.organizationName,
+  };
+  const intro = t(
+    `sharedWithGuest.intro.${levelWording(params.level, params.resource.type)}`,
+    names,
+  );
+  const until =
+    params.expiresAt === null
+      ? ""
+      : t("sharedWithGuest.until", {
+          date: params.expiresAt.toLocaleDateString(dateLocale(lang), {
+            year: "numeric",
+            month: "long",
+            day: "numeric",
+          }),
+        });
+  const html = await renderEmail(
+    "access-request-decided",
+    {
+      greeting: t("sharedWithGuest.greeting", { name: params.recipientName }),
+      intro: until === "" ? intro : `${intro} ${until}`,
+      ctaUrl: resourceUrl(params.resource),
+      cta: t("sharedWithGuest.cta"),
+    },
+    lang,
+  );
+  return { subject: t("sharedWithGuest.subject", names), html };
 };

@@ -1,7 +1,14 @@
-import type {
-  ToolApprovalRequest,
-  ToolApprovalToolCallResult,
+import { eq } from "drizzle-orm";
+import { HTTPException } from "hono/http-exception";
+import db from "../../../db";
+import {
+  aiConversations,
+  type ToolApprovalRequest,
+  type ToolApprovalToolCallResult,
+  workflowRuns,
+  workflows,
 } from "../../../db/schema";
+import { parseApiError } from "../../../schemas/errors";
 import { TOOL_CALL_APPLY } from "../../tool-policies/builtin-apply";
 import { markConsumed } from "../complete";
 import { isToolCallPayload } from "../payload-guards";
@@ -53,14 +60,46 @@ const applyToolCall = async (
         teamId: approval.teamId,
         userId: approval.userId,
         conversationId: approval.conversationId,
+        projectId: await projectOfConversation(approval.conversationId),
       },
       payload.args,
     );
     return { ok: true, data };
   } catch (error) {
-    return {
-      ok: false,
-      error: error instanceof Error ? error.message : String(error),
-    };
+    return { ok: false, error: failureMessage(error) };
   }
+};
+
+/**
+ * The project the approved write works in, as it is now — where it lands at
+ * a root. A workflow run's is its workflow's (a run's chat carries none of
+ * its own, so moving the workflow moves its runs); a chat's is its own.
+ */
+const projectOfConversation = async (
+  conversationId: string,
+): Promise<string | null> => {
+  const [row] = await db
+    .select({
+      chat: aiConversations.projectId,
+      workflow: workflows.projectId,
+    })
+    .from(aiConversations)
+    .leftJoin(workflowRuns, eq(workflowRuns.conversationId, aiConversations.id))
+    .leftJoin(workflows, eq(workflows.id, workflowRuns.workflowId))
+    .where(eq(aiConversations.id, conversationId))
+    .limit(1);
+  return row?.workflow ?? row?.chat ?? null;
+};
+
+/**
+ * What the approval card shows when applying failed. A refusal from the
+ * access engine — the person was made a viewer, or left, while the approval
+ * waited — carries its sentence inside a JSON envelope; the card shows the
+ * sentence.
+ */
+const failureMessage = (error: unknown): string => {
+  if (error instanceof HTTPException) {
+    return parseApiError(error.message)?.message ?? error.message;
+  }
+  return error instanceof Error ? error.message : String(error);
 };

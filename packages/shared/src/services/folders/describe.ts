@@ -21,6 +21,10 @@ import { FOLDER_DESCRIPTION_MAX_CHARS } from "../../schemas/folders";
  * pipeline when each file was uploaded, so the material is already in
  * Postgres. Re-reading the files to describe the folder would cost more than
  * every decision the description will ever inform.
+ *
+ * Only the documents open to whoever opens the folder are read: everyone who
+ * can open the folder reads its description, so a document restricted to a
+ * few people must not shape it.
  */
 
 /** Below this, a folder has not shown what it is for. */
@@ -106,6 +110,7 @@ export const describeFolder = async (params: {
       and(
         eq(documents.folderId, params.folderId),
         eq(documents.teamId, params.teamId),
+        eq(documents.accessRestricted, false),
         isNotNull(documentProperties.documentSummary),
       ),
     )

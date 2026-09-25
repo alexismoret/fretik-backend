@@ -1,3 +1,4 @@
+import { access } from "@fretik/shared/authz/http";
 import { DecisionRequestSchema } from "@fretik/shared/schemas/decisions";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { withNamedTrace } from "../lib/trace-tool";
@@ -34,48 +35,54 @@ import type { HonoInternalAppType } from "../types/hono";
 const decisionRoutes = new OpenAPIHono<HonoInternalAppType>();
 decisionRoutes.use("*", internalMiddleware);
 
-decisionRoutes.post("/", async (c) => {
-  const raw: unknown = await c.req.json();
-  const parsed = DecisionRequestSchema.safeParse(raw);
-  if (!parsed.success) {
-    return c.json(
-      {
-        code: "VALIDATION_ERROR",
-        message: "Invalid request body",
-        details: parsed.error.issues.map((i) => i.message),
-      },
-      400,
-    );
-  }
-  const requestError = decisionRequestError(parsed.data);
-  if (requestError !== null) {
-    console.error(`[decisions] rejected request: ${requestError}`);
-    return c.json({ code: "VALIDATION_ERROR", message: requestError }, 400);
-  }
+decisionRoutes.post(
+  "/",
+  access.internal(
+    "Background workers ask a registered decision point; what the answer allows stays with them.",
+  ),
+  async (c) => {
+    const raw: unknown = await c.req.json();
+    const parsed = DecisionRequestSchema.safeParse(raw);
+    if (!parsed.success) {
+      return c.json(
+        {
+          code: "VALIDATION_ERROR",
+          message: "Invalid request body",
+          details: parsed.error.issues.map((i) => i.message),
+        },
+        400,
+      );
+    }
+    const requestError = decisionRequestError(parsed.data);
+    if (requestError !== null) {
+      console.error(`[decisions] rejected request: ${requestError}`);
+      return c.json({ code: "VALIDATION_ERROR", message: requestError }, 400);
+    }
 
-  const context = c.get("context");
-  try {
-    const result = await withNamedTrace(
-      "decision",
-      {
-        ...(parsed.data.sessionId !== undefined
-          ? { sessionId: parsed.data.sessionId }
-          : {}),
-        tags: [`decision:${parsed.data.point}`],
-        metadata: { point: parsed.data.point, teamId: context.teamId },
-      },
-      () =>
-        decidePoint(parsed.data, {
-          teamId: context.teamId,
-          organizationId: context.organizationId,
-        }),
-    );
-    return c.json(result, 200);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error("[decisions] unexpected failure:", message);
-    return c.json({ code: "DECISION_ERROR", message }, 500);
-  }
-});
+    const context = c.get("context");
+    try {
+      const result = await withNamedTrace(
+        "decision",
+        {
+          ...(parsed.data.sessionId !== undefined
+            ? { sessionId: parsed.data.sessionId }
+            : {}),
+          tags: [`decision:${parsed.data.point}`],
+          metadata: { point: parsed.data.point, teamId: context.teamId },
+        },
+        () =>
+          decidePoint(parsed.data, {
+            teamId: context.teamId,
+            organizationId: context.organizationId,
+          }),
+      );
+      return c.json(result, 200);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("[decisions] unexpected failure:", message);
+      return c.json({ code: "DECISION_ERROR", message }, 500);
+    }
+  },
+);
 
 export { decisionRoutes };

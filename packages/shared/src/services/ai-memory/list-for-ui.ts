@@ -2,9 +2,11 @@ import { and, eq, isNull, or, sql } from "drizzle-orm";
 import db from "../../db";
 import {
   aiMemories,
+  type AiMemory,
   type AiMemoryActor,
   type AiMemoryScope,
 } from "../../db/schema/ai-memory";
+import type { TeamMemoryScope } from "./types";
 
 /**
  * Shape returned by the API for the settings list view. Reuses the
@@ -34,6 +36,57 @@ export interface MemorySummary {
 }
 
 /**
+ * The people a summary names, by `name` only: surfacing emails in a shared
+ * list would leak PII for users that have not opted in to public profile
+ * sharing.
+ */
+export const MEMORY_SUMMARY_RELATIONS = {
+  createdBy: { columns: { id: true, name: true } },
+  lastModifiedBy: { columns: { id: true, name: true } },
+} as const;
+
+/** A note row as the summary reads it, with its two people loaded. */
+export type MemorySummaryRow = Pick<
+  AiMemory,
+  | "id"
+  | "scope"
+  | "path"
+  | "sizeBytes"
+  | "createdAt"
+  | "updatedAt"
+  | "createdByUserId"
+  | "createdByActor"
+  | "createdByConversationId"
+  | "lastModifiedByUserId"
+  | "lastModifiedByActor"
+  | "lastModifiedByConversationId"
+> & {
+  createdBy: { name: string } | null;
+  lastModifiedBy: { name: string } | null;
+};
+
+export const toMemorySummary = (row: MemorySummaryRow): MemorySummary => ({
+  id: row.id,
+  scope: row.scope,
+  path: row.path,
+  sizeBytes: row.sizeBytes,
+  createdAt: row.createdAt,
+  updatedAt: row.updatedAt,
+  createdBy: {
+    userId: row.createdByUserId,
+    name: row.createdBy?.name ?? null,
+    actor: row.createdByActor,
+    conversationId: row.createdByConversationId,
+  },
+  lastModifiedBy: {
+    userId: row.lastModifiedByUserId,
+    name: row.lastModifiedBy?.name ?? null,
+    actor: row.lastModifiedByActor,
+    conversationId: row.lastModifiedByConversationId,
+  },
+});
+
+/**
  * Filter shape passed by the API handler. `scope` is optional —
  * omitting it returns the user/team merge (default for the legacy
  * untargeted call); the settings UI tabs always pass an explicit
@@ -43,7 +96,7 @@ export interface ListMemoriesForUiArgs {
   organizationId: string;
   teamId: string;
   currentUserId: string;
-  scope?: AiMemoryScope;
+  scope?: TeamMemoryScope;
   limit: number;
   offset: number;
 }
@@ -57,9 +110,9 @@ export interface ListMemoriesForUiArgs {
  *    everything visible — e.g. an admin export).
  *
  * The Drizzle v2 query builder loads `createdBy` and `lastModifiedBy`
- * users via the relation aliases declared in `relations.ts`. We expose
- * `name` only — surfacing emails in the team-shared list would leak PII
- * for users that have not opted in to public profile sharing.
+ * users via the relation aliases declared in `relations.ts`
+ * (`MEMORY_SUMMARY_RELATIONS`). A project's notes never appear here: they
+ * are listed from the project (`listProjectMemoriesForUi`).
  *
  * `total` is computed via a parallel `COUNT(*)` so the UI can render
  * page indicators without a second round-trip. The limit/offset are
@@ -77,10 +130,7 @@ export const listMemoriesForUi = async (
   // The CHECK constraint on the table guarantees `userId IS NULL` for
   // team rows, so filtering on `scope='team'` alone is sufficient.
   const findArgs = {
-    with: {
-      createdBy: { columns: { id: true, name: true } },
-      lastModifiedBy: { columns: { id: true, name: true } },
-    },
+    with: MEMORY_SUMMARY_RELATIONS,
     orderBy: { updatedAt: "desc" },
     limit: args.limit,
     offset: args.offset,
@@ -147,26 +197,47 @@ export const listMemoriesForUi = async (
   ]);
 
   return {
-    memories: rows.map((row): MemorySummary => ({
-      id: row.id,
-      scope: row.scope,
-      path: row.path,
-      sizeBytes: row.sizeBytes,
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt,
-      createdBy: {
-        userId: row.createdByUserId,
-        name: row.createdBy?.name ?? null,
-        actor: row.createdByActor,
-        conversationId: row.createdByConversationId,
+    memories: rows.map(toMemorySummary),
+    total: totalRow[0]?.count ?? 0,
+  };
+};
+
+/**
+ * A project's notes, paginated, newest first: what its people and the
+ * assistant keep for it. The caller has decided the reader reaches the
+ * project.
+ */
+export const listProjectMemoriesForUi = async (args: {
+  organizationId: string;
+  projectId: string;
+  limit: number;
+  offset: number;
+}): Promise<{ memories: MemorySummary[]; total: number }> => {
+  const [rows, totalRow] = await Promise.all([
+    db.query.aiMemories.findMany({
+      where: {
+        organizationId: args.organizationId,
+        scope: "project",
+        projectId: args.projectId,
       },
-      lastModifiedBy: {
-        userId: row.lastModifiedByUserId,
-        name: row.lastModifiedBy?.name ?? null,
-        actor: row.lastModifiedByActor,
-        conversationId: row.lastModifiedByConversationId,
-      },
-    })),
+      with: MEMORY_SUMMARY_RELATIONS,
+      orderBy: { updatedAt: "desc" },
+      limit: args.limit,
+      offset: args.offset,
+    }),
+    db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(aiMemories)
+      .where(
+        and(
+          eq(aiMemories.organizationId, args.organizationId),
+          eq(aiMemories.scope, "project"),
+          eq(aiMemories.projectId, args.projectId),
+        ),
+      ),
+  ]);
+  return {
+    memories: rows.map(toMemorySummary),
     total: totalRow[0]?.count ?? 0,
   };
 };

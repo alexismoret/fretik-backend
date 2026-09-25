@@ -17,7 +17,18 @@ export interface MemoryScopeKey {
   organizationId: string;
   teamId: string;
   userId: string;
+  /**
+   * The project `/memories/project/` names: the chat's, in one of its chats.
+   * Absent elsewhere, where a project note names nothing.
+   */
+  projectId?: string | null;
 }
+
+/**
+ * The namespaces of a team's own memory settings: a person's notes and the
+ * team's. A project's notes are read and written from the project.
+ */
+export type TeamMemoryScope = Exclude<AiMemoryScope, "project">;
 
 /**
  * Discriminates who is performing the write so the audit log can

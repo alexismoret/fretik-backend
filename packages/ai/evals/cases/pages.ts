@@ -9,6 +9,8 @@
 // oxlint-disable-next-line import/no-duplicates
 import "@hono/zod-openapi";
 
+import { driveVisibility } from "@fretik/shared/authz/drive-sql";
+import { SYSTEM } from "@fretik/shared/authz/system-principals";
 import db from "@fretik/shared/db";
 import {
   collectionRecords,
@@ -196,6 +198,7 @@ const fixtureIsCurrent = async (ctx: EvalCaseContext): Promise<boolean> => {
   const rows = await queryCollectionRecords({
     teamId: ctx.teamId,
     collectionId: typeId,
+    drive: await driveVisibility(SYSTEM.operatorScript, ctx.teamId),
     limit: ITEM_ROW_COUNT + 1,
   });
   if (rows.length !== ITEM_ROW_COUNT) return false;
@@ -236,7 +239,12 @@ const fixtureIsCurrent = async (ctx: EvalCaseContext): Promise<boolean> => {
  * reruns fast. Cases sweep only the pages of EARLIER runs.
  */
 const seedItemsOnce = async (ctx: EvalCaseContext): Promise<void> => {
-  const base = { organizationId: ctx.organizationId, teamId: ctx.teamId };
+  const base = {
+    organizationId: ctx.organizationId,
+    teamId: ctx.teamId,
+    // Seeding, not reading: the operator's script sees every file.
+    drive: await driveVisibility(SYSTEM.operatorScript, ctx.teamId),
+  };
   let lastErr: unknown;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
@@ -881,6 +889,7 @@ const dryRunStored = async (
     definition: parsed.data,
     teamId: ctx.teamId,
     userId: ctx.userId ?? null,
+    reader: SYSTEM.operatorScript,
     // Already compiled by the write gate; recompiling costs ~220ms and can
     // only report what the write already refused to store.
     assumeCompiled: parsed.data.code.compiled !== undefined,
@@ -2455,6 +2464,7 @@ const fileToObjectsToPage: EvalCase = {
           const rows = await queryCollectionRecords({
             teamId: ctx.teamId,
             collectionId: type.id,
+            drive: await driveVisibility(SYSTEM.operatorScript, ctx.teamId),
             limit: 50,
           });
           if (rows.length !== SALES_ROW_COUNT) continue;

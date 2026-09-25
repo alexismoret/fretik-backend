@@ -37,10 +37,38 @@ await mockModule("@fretik/shared/services/pages/update", {
   },
 });
 
+/**
+ * The access gates, recorded: what a build is asked for is the unit's
+ * business, and the engine behind it has its own suites. `gateRefusal` makes
+ * the next gate refuse, as the engine would.
+ */
+const realAccess = await import("@fretik/shared/authz/access");
+const realGates = await import("@fretik/shared/authz/gates");
+const gateCalls: { gate: string; args: unknown }[] = [];
+let gateRefusal: HTTPException | null = null;
+const gate =
+  (name: string) =>
+  async (args: unknown): Promise<void> => {
+    gateCalls.push({ gate: name, args });
+    if (gateRefusal) throw gateRefusal;
+  };
+await mockModule("@fretik/shared/authz/access", {
+  requireAccess: gate("requireAccess"),
+});
+await mockModule("@fretik/shared/authz/gates", {
+  requireCapability: gate("requireCapability"),
+});
+
 afterAll(() => {
   void mock.module("@fretik/shared/services/pages/create", () => realCreate);
   void mock.module("@fretik/shared/services/pages/update", () => realUpdate);
+  void mock.module("@fretik/shared/authz/access", () => realAccess);
+  void mock.module("@fretik/shared/authz/gates", () => realGates);
 });
+
+const { systemPrincipal } = await import("@fretik/shared/authz/principal");
+/** Whoever the build writes for; the gates above decide what they may do. */
+const PRINCIPAL = systemPrincipal("page build unit test");
 
 const { buildPageProject, PAGE_BUILDER_AGENT_ID } =
   await import("../../../../src/services/page-project/build");
@@ -89,13 +117,78 @@ const build = async (files: Record<string, string>) =>
     organizationId: "org-1",
     userId: "user-1",
     conversationId: "conv-1",
-    requester: undefined,
+    principal: PRINCIPAL,
   });
 
 beforeEach(() => {
   createCalls.length = 0;
   updateCalls.length = 0;
   createThrows = null;
+  gateCalls.length = 0;
+  gateRefusal = null;
+});
+
+describe("buildPageProject — the same gates as the app", () => {
+  test("a new page takes creating content in the team", async () => {
+    await build({ "Page.vue": CLEAN });
+
+    expect(gateCalls).toEqual([
+      {
+        gate: "requireCapability",
+        args: {
+          principal: PRINCIPAL,
+          capability: "team.content.create",
+          teamId: "team-1",
+        },
+      },
+    ]);
+  });
+
+  test("saving over a page takes edit on it", async () => {
+    await buildPageProject({
+      state: {
+        ...emptyProjectState(),
+        pageId: PAGE_ID,
+        files: { "page.json": PAGE_JSON, "Page.vue": CLEAN },
+      },
+      teamId: "team-1",
+      organizationId: "org-1",
+      userId: "user-1",
+      conversationId: "conv-1",
+      principal: PRINCIPAL,
+    });
+
+    expect(gateCalls).toEqual([
+      {
+        gate: "requireAccess",
+        args: {
+          principal: PRINCIPAL,
+          type: "page",
+          id: PAGE_ID,
+          required: "edit",
+          notFoundMessage: "Page not found",
+        },
+      },
+    ]);
+    expect(updateCalls).toHaveLength(1);
+  });
+
+  test("a refusal is thrown, not listed as something to fix, and nothing is saved", async () => {
+    // No edit to the files lifts it: the tool wrapper turns it into the
+    // refusal the model relays (`lib/access-refusal.ts`).
+    gateRefusal = new HTTPException(403, {
+      message: JSON.stringify({ code: "ACCESS_DENIED", message: "No." }),
+    });
+
+    const refusal = gateRefusal;
+    const thrown = await build({ "Page.vue": CLEAN }).then(
+      () => null,
+      (error: unknown) => error,
+    );
+
+    expect(thrown).toBe(refusal);
+    expect(createCalls).toHaveLength(0);
+  });
 });
 
 describe("buildPageProject", () => {
@@ -200,7 +293,7 @@ describe("buildPageProject", () => {
       organizationId: "org-1",
       userId: "user-1",
       conversationId: "conv-1",
-      requester: undefined,
+      principal: PRINCIPAL,
     });
 
     expect(result.ok).toBe(false);
@@ -219,7 +312,7 @@ describe("buildPageProject", () => {
       organizationId: "org-1",
       userId: "user-1",
       conversationId: "conv-1",
-      requester: undefined,
+      principal: PRINCIPAL,
       rescue: true,
     });
 
@@ -296,7 +389,7 @@ describe("buildPageProject — what the version says it cost", () => {
       organizationId: "org-1",
       userId: "user-1",
       conversationId: "conv-1",
-      requester: undefined,
+      principal: PRINCIPAL,
       traceId: "turn-9.page",
     });
 
@@ -326,7 +419,7 @@ describe("buildPageProject — what the version says it cost", () => {
       organizationId: "org-1",
       userId: "user-1",
       conversationId: "conv-1",
-      requester: undefined,
+      principal: PRINCIPAL,
       traceId: "turn-unmetered.page",
     });
 

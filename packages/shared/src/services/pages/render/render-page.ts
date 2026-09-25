@@ -1,3 +1,4 @@
+import type { Principal } from "../../../authz/principal";
 import type {
   PageCompiled,
   PageDataResponse,
@@ -283,6 +284,8 @@ export const renderPage = async (params: {
   definition: PageDefinition;
   teamId: string;
   userId: string | null;
+  /** Who the fixtures are read as (`runPageData`). */
+  reader: Principal;
   pageName: string;
   dark?: boolean;
   locale?: "en" | "fr";
@@ -319,6 +322,7 @@ export const renderPage = async (params: {
     definition: params.definition,
     teamId: params.teamId,
     userId: params.userId,
+    reader: params.reader,
     variables: {},
   });
 

@@ -193,10 +193,9 @@ export const member = pgTable(
      *
      * Better Auth's accept-invitation endpoint ends in an unconditional
      * `createMember()`, so an existing member accepting an invitation would
-     * write a SECOND row here — and every role lookup in this codebase is
-     * `findFirst`-shaped (`services/organization/member-role.ts`,
-     * `lib/auth-roles.ts`), which would make that person's role whichever row
-     * Postgres happened to return. `lib/auth-hooks.ts` closes the one path
+     * write a SECOND row here — and the role lookup is `findFirst`-shaped
+     * (`authz/load-principal.ts`), which would make that person's role
+     * whichever row Postgres happened to return. `lib/auth-hooks.ts` closes the one path
      * that could reach it; this closes the class.
      *
      * Note the consequence: a duplicate insert is now an error, not a bad

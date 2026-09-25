@@ -5,12 +5,15 @@ import {
   eq,
   gt,
   gte,
+  inArray,
   isNotNull,
   max,
   sql,
 } from "drizzle-orm";
+import { driveVisibility, mirrorRecordVisible } from "../../authz/drive-sql";
+import { teamAgentPrincipal } from "../../authz/team-agent";
 import db from "../../db";
-import { domainEvents } from "../../db/schema";
+import { collectionRecords, domainEvents } from "../../db/schema";
 
 /**
  * Candidate discovery for the nightly "dreaming" consolidation cron (P6).
@@ -93,8 +96,13 @@ export const listStaleConversationDistills = async (input: {
  * (episode missing or older than the last event) — an unchanged record costs
  * zero LLM calls night after night. Busiest first, so the per-team cap keeps
  * the highest-signal digests.
+ *
+ * A digest is a TEAM memory, so only a record the whole team can see gets one:
+ * never the mirror of a file kept to some of its people. The team's agent
+ * reads exactly that (`authz/team-agent.ts`).
  */
 export const listRecordActivityCandidates = async (input: {
+  organizationId: string;
   teamId: string;
   minEvents: number;
   windowDays: number;
@@ -123,9 +131,40 @@ export const listRecordActivityCandidates = async (input: {
     .orderBy(desc(eventCount))
     .limit(input.limit * 4);
 
+  const busy = rows.flatMap((r) =>
+    r.recordId && r.lastEventAt
+      ? [
+          {
+            recordId: r.recordId,
+            eventCount: r.eventCount,
+            lastEventAt: r.lastEventAt,
+          },
+        ]
+      : [],
+  );
+  if (busy.length === 0) return [];
+
+  const team = await driveVisibility(
+    await teamAgentPrincipal(input),
+    input.teamId,
+  );
+  const teamVisible = await db
+    .select({ id: collectionRecords.id })
+    .from(collectionRecords)
+    .where(
+      and(
+        inArray(
+          collectionRecords.id,
+          busy.map((r) => r.recordId),
+        ),
+        mirrorRecordVisible(team, collectionRecords.documentId),
+      ),
+    );
+  const visibleIds = new Set(teamVisible.map((r) => r.id));
+
   const byRecord = new Map<string, { eventCount: number; lastEventAt: Date }>();
-  for (const r of rows) {
-    if (r.recordId && r.lastEventAt) {
+  for (const r of busy) {
+    if (visibleIds.has(r.recordId)) {
       byRecord.set(r.recordId, {
         eventCount: r.eventCount,
         lastEventAt: r.lastEventAt,

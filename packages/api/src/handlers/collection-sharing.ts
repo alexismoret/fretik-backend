@@ -1,3 +1,4 @@
+import { access } from "@fretik/shared/authz/http";
 import {
   authMiddleware,
   type HonoLoggedAppType,
@@ -35,6 +36,9 @@ collectionSharingRoutes.use("*", authMiddleware);
 const listTypeGrantsRoute = createRoute({
   method: "get",
   path: "/types/{id}/grants",
+  middleware: access.handler(
+    "Only the owning team sees who a collection is shared with.",
+  ),
   summary: "List a type's grants",
   tags: ["CollectionSharing"],
   request: { params: paramsIdSchema },
@@ -51,6 +55,9 @@ const listTypeGrantsRoute = createRoute({
 const listRecordSharesRoute = createRoute({
   method: "get",
   path: "/records/{id}/shares",
+  middleware: access.handler(
+    "Only the owning team sees who a record is shared with.",
+  ),
   summary: "List a record's shares",
   tags: ["CollectionSharing"],
   request: { params: paramsIdSchema },
@@ -67,6 +74,9 @@ const listRecordSharesRoute = createRoute({
 const sharedTypesRoute = createRoute({
   method: "get",
   path: "/types/shared",
+  middleware: access.session(
+    "Collections other teams shared with the active team.",
+  ),
   summary: "Sharing state of the team's types",
   description:
     "Returns the team's shared-out type ids and the type ids shared with the team (for badges + the 'Shared with me' filter).",
@@ -84,6 +94,9 @@ const sharedTypesRoute = createRoute({
 const sharedRecordsRoute = createRoute({
   method: "get",
   path: "/records/shared",
+  middleware: access.session(
+    "Records other teams shared with the active team.",
+  ),
   summary: "Record ids of a type the team has shared out",
   tags: ["CollectionSharing"],
   request: { query: z.object({ collectionId: z.uuid() }) },

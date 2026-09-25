@@ -1,4 +1,8 @@
 import { and, eq, inArray } from "drizzle-orm";
+import {
+  type DriveVisibility,
+  mirrorRecordVisible,
+} from "../../authz/drive-sql";
 import db, { type Executor } from "../../db";
 import { collectionRecords, collections } from "../../db/schema";
 import { notFound, throwHttpError } from "../../lib/errors";
@@ -16,14 +20,18 @@ import { collectionReadableCondition, recordReadableCondition } from "./access";
  * `listReadableRecordIds` before it leaves.
  *
  * A record the team may not read answers 404, exactly like one that does not
- * exist: its existence is itself the thing being protected.
+ * exist: its existence is itself the thing being protected. So does the
+ * mirror of a document the PERSON cannot open (`drive`): the team may read
+ * its records, the person may still not see that file.
  */
 
-/** The subset of `recordIds` that `teamId` may read, in one query. */
+/** The subset of `recordIds` the viewer may read, in one query. */
 export const listReadableRecordIds = async (input: {
   recordIds: string[];
   teamId: string;
   organizationId: string;
+  /** What the person can open in the Drive: a hidden file's mirror is out. */
+  drive: DriveVisibility;
   executor?: Executor;
 }): Promise<Set<string>> => {
   const recordIds = [...new Set(input.recordIds)];
@@ -37,22 +45,25 @@ export const listReadableRecordIds = async (input: {
       and(
         inArray(collectionRecords.id, recordIds),
         recordReadableCondition(input.teamId, input.organizationId),
+        mirrorRecordVisible(input.drive, collectionRecords.documentId),
       ),
     );
   return new Set(rows.map((row) => row.id));
 };
 
-/** Refuse (404) a record `teamId` may not read. */
+/** Refuse (404) a record the viewer may not read. */
 export const assertCanReadRecord = async (input: {
   recordId: string;
   teamId: string;
   organizationId: string;
+  drive: DriveVisibility;
   executor?: Executor;
 }): Promise<void> => {
   const readable = await listReadableRecordIds({
     recordIds: [input.recordId],
     teamId: input.teamId,
     organizationId: input.organizationId,
+    drive: input.drive,
     executor: input.executor,
   });
   if (!readable.has(input.recordId)) {

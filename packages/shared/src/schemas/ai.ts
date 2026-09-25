@@ -3,9 +3,11 @@ import type { UIMessage } from "ai";
 import {
   aiAgentTypeEnum,
   aiConversationMemberRoleEnum,
+  aiMemoryScopeEnum,
   aiVectorSourceTypeEnum,
   CONVERSATION_TASK_KINDS,
 } from "../db/schema";
+import { accessLevelSchema } from "./access";
 import { cursorParamSchema, paramsListSchema } from "./common/params";
 import { reasoningLevelSchema } from "./reasoning";
 
@@ -105,7 +107,7 @@ export const documentVectorMetadataSchema = z.object({
  * `source_type`, `source_id` stay on dedicated columns.
  */
 export const memoryVectorMetadataSchema = z.object({
-  scope: z.enum(["user", "team"]),
+  scope: z.enum(aiMemoryScopeEnum.enumValues),
   path: z.string().min(1),
   size_bytes: z.number().int().nonnegative(),
   created_at: z.string(),
@@ -246,6 +248,10 @@ export const CreateConversationSchema = z.object({
     description:
       "Flagship model picked for this conversation (chantier C8). Stamped at creation, immutable. Omitted → team default → code default.",
   }),
+  projectId: z.uuid().optional().openapi({
+    description:
+      "Start it in this project, which the caller takes part in, whatever team they have open. Omitted, it starts in the active team.",
+  }),
 });
 export type CreateConversationInput = z.infer<typeof CreateConversationSchema>;
 
@@ -281,6 +287,8 @@ export const ConversationResponseSchema = z.object({
   id: z.uuid(),
   organizationId: z.uuid(),
   teamId: z.uuid(),
+  /** The project it lives in; null for its team's. */
+  projectId: z.uuid().nullable(),
   userId: z.uuid().nullable(),
   agentType: aiAgentTypeSchema,
   title: z.string(),
@@ -288,8 +296,13 @@ export const ConversationResponseSchema = z.object({
   /** Flagship model pinned to this conversation (chantier C8). Null = default. */
   modelProfileKey: z.string().nullable(),
   members: z.array(ConversationMemberSchema),
-  /** The current user's role in this conversation. */
-  role: conversationMemberRoleSchema,
+  /** The current user's role in this conversation; null when they only read it. */
+  role: conversationMemberRoleSchema.nullable(),
+  /**
+   * What the current user may do in it: `view` reads, `use` takes part,
+   * `full` is its owner's.
+   */
+  level: accessLevelSchema,
   /** The current user's personal end-of-turn email opt-in. */
   emailOnCompletion: z.boolean(),
   /** When the current user last read the conversation (catch-up anchor). */

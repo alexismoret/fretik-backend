@@ -1,3 +1,4 @@
+import { access } from "@fretik/shared/authz/http";
 import {
   authMiddleware,
   type HonoLoggedAppType,
@@ -26,6 +27,9 @@ linkTypeRoutes.use("*", authMiddleware);
 const listRoute = createRoute({
   method: "get",
   path: "",
+  middleware: access.session(
+    "Link types of the active team and the organization's templates.",
+  ),
   summary: "List relation types",
   tags: ["LinkTypes"],
   request: {
@@ -46,6 +50,9 @@ const listRoute = createRoute({
 const createRouteDef = createRoute({
   method: "post",
   path: "",
+  middleware: access.session(
+    "Creates a link type in the active team, which the caller belongs to.",
+  ),
   summary: "Create a relation type",
   tags: ["LinkTypes"],
   request: {

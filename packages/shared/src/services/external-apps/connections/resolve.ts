@@ -2,6 +2,7 @@ import db from "../../../db";
 import { type ExternalAppConnection } from "../../../db/schema";
 import { throwHttpError } from "../../../lib/errors";
 import { ERROR_CODES } from "../../../schemas/errors";
+import { reachesTeamSharedConnections } from "./team-shared-reach";
 
 /**
  * Resolve the connection an op should run against.
@@ -18,6 +19,10 @@ import { ERROR_CODES } from "../../../schemas/errors";
  *
  * Disabled and errored connections are filtered out — the dispatcher
  * treats them as if they didn't exist for the purpose of selection.
+ *
+ * The team's shared connections are for its own people only
+ * (`reachesTeamSharedConnections`): someone who takes part in one of its
+ * projects from another team resolves their own, or nothing.
  */
 export const resolveConnection = async (params: {
   providerKey: string;
@@ -25,12 +30,19 @@ export const resolveConnection = async (params: {
   userId: string;
   explicitId?: string;
 }): Promise<ExternalAppConnection> => {
+  const callerScope = (await reachesTeamSharedConnections(
+    params.teamId,
+    params.userId,
+  ))
+    ? { OR: [{ userId: { isNull: true as const } }, { userId: params.userId }] }
+    : { userId: params.userId };
+
   if (params.explicitId !== undefined && params.explicitId !== "") {
     const row = await db.query.externalAppConnections.findFirst({
       where: {
         id: params.explicitId,
         teamId: params.teamId,
-        OR: [{ userId: { isNull: true } }, { userId: params.userId }],
+        ...callerScope,
       },
     });
     if (row === undefined) {
@@ -47,7 +59,7 @@ export const resolveConnection = async (params: {
       providerKey: params.providerKey,
       teamId: params.teamId,
       status: "active",
-      OR: [{ userId: { isNull: true } }, { userId: params.userId }],
+      ...callerScope,
     },
   });
 

@@ -1,3 +1,4 @@
+import type { DriveVisibility } from "@fretik/shared/authz/drive-sql";
 import { resolveDocumentRecordId } from "@fretik/shared/services/collection-records/resolve-document-record";
 import { getCollectionRecord } from "@fretik/shared/services/collection-records/retrieve";
 import {
@@ -10,9 +11,11 @@ import { createLink } from "@fretik/shared/services/links/create";
 import { invalidateLink } from "@fretik/shared/services/links/invalidate";
 import { tool } from "ai";
 import { z } from "zod";
+import { actingDrive } from "../agents/shared/acting-principal";
 import { gateBuiltinWriteTool } from "../agents/shared/policy-tool-gate";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
 import { workflowWriteBackstop } from "../agents/shared/workflow-write-backstop";
+import { liftAccessRefusal } from "../lib/access-refusal";
 import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
 import { inProcessEvaluator } from "../services/decisions/in-process";
 
@@ -77,6 +80,7 @@ export const createManageLinkTool = () =>
             linkId: input.linkId,
             teamId: ctx.teamId,
             organizationId: ctx.organizationId,
+            userId: ctx.userId,
           });
           const gate = await gateBuiltinWriteTool(ctx, {
             toolName: "manageLink",
@@ -87,13 +91,17 @@ export const createManageLinkTool = () =>
           return { ok: true, unlinked: link.id };
         }
 
+        // Both ends, and the record read below, see what the person sees.
+        const drive = await actingDrive(ctx);
         const fromRecordId = await resolveEnd(
           ctx.teamId,
+          drive,
           input.fromRecordId,
           input.fromDocumentId,
         );
         const toRecordId = await resolveEnd(
           ctx.teamId,
+          drive,
           input.toRecordId,
           input.toDocumentId,
         );
@@ -109,12 +117,14 @@ export const createManageLinkTool = () =>
           recordId: fromRecordId,
           teamId: ctx.teamId,
           organizationId: ctx.organizationId,
+          userId: ctx.userId,
         });
 
         const fromRecord = await getCollectionRecord({
           id: fromRecordId,
           teamId: ctx.teamId,
           organizationId: ctx.organizationId,
+          drive,
         });
         const { linkTypeId } = await resolveLinkType({
           organizationId: ctx.organizationId,
@@ -131,6 +141,7 @@ export const createManageLinkTool = () =>
         const link = await createLink({
           organizationId: ctx.organizationId,
           teamId: ctx.teamId,
+          drive,
           linkTypeId,
           fromRecordId,
           toRecordId,
@@ -138,9 +149,12 @@ export const createManageLinkTool = () =>
         });
         return { ok: true, linkId: link.id };
       } catch (err) {
-        return toolError(
-          TOOL_ERROR_CODES.COLLECTION_QUERY_ERROR,
-          `manageLink ${input.action} failed: ${err instanceof Error ? err.message : String(err)}`,
+        return (
+          liftAccessRefusal(err) ??
+          toolError(
+            TOOL_ERROR_CODES.COLLECTION_QUERY_ERROR,
+            `manageLink ${input.action} failed: ${err instanceof Error ? err.message : String(err)}`,
+          )
         );
       }
     },
@@ -153,12 +167,14 @@ export const createManageLinkTool = () =>
  */
 const resolveEnd = async (
   teamId: string,
+  drive: DriveVisibility,
   recordId: string | undefined,
   documentId: string | undefined,
 ): Promise<string | undefined> => {
   if (recordId) return recordId;
   if (!documentId) return undefined;
-  const mirrorId = await resolveDocumentRecordId({ documentId, teamId });
+  // A file the person cannot open reads like one with no record yet.
+  const mirrorId = await resolveDocumentRecordId({ documentId, teamId, drive });
   if (!mirrorId) {
     throw new Error(
       `No document record for file '${documentId}' — it may still be processing.`,

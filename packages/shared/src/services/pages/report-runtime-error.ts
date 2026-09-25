@@ -1,4 +1,5 @@
 import { and, eq } from "drizzle-orm";
+import type { Principal } from "../../authz/principal";
 import db from "../../db";
 import { pages } from "../../db/schema";
 import { notFound, throwHttpError } from "../../lib/errors";
@@ -7,7 +8,7 @@ import {
   type PageRuntimeError,
   type ReportPageErrorRequest,
 } from "../../schemas/pages";
-import { pageVisibilityWhere, type PageRequester } from "./visibility";
+import { pageAccessWhere } from "./visibility";
 
 /**
  * Append one runtime error the sandboxed page reported through the bridge.
@@ -21,7 +22,7 @@ import { pageVisibilityWhere, type PageRequester } from "./visibility";
 export const appendPageRuntimeError = async (params: {
   pageId: string;
   teamId: string;
-  requester?: PageRequester;
+  principal: Principal;
   report: ReportPageErrorRequest;
 }): Promise<void> => {
   const existing = await db.query.pages.findFirst({
@@ -29,7 +30,7 @@ export const appendPageRuntimeError = async (params: {
     where: {
       id: params.pageId,
       teamId: params.teamId,
-      ...pageVisibilityWhere(params.requester),
+      ...pageAccessWhere(params.principal, "view"),
     },
   });
   if (!existing) return throwHttpError(404, notFound("Page"));

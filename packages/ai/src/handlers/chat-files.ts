@@ -1,3 +1,13 @@
+import {
+  requireAccess,
+  type ResolvedResource,
+} from "@fretik/shared/authz/access";
+import { access, teamOfResource } from "@fretik/shared/authz/http";
+import {
+  type Placement,
+  requirePlacement,
+} from "@fretik/shared/authz/placement";
+import type { UserPrincipal } from "@fretik/shared/authz/principal";
 import db from "@fretik/shared/db";
 import { aiChatFiles } from "@fretik/shared/db/schema";
 import { mimeFromFilename } from "@fretik/shared/file-types";
@@ -10,13 +20,8 @@ import {
   listSessionPaths,
   readSessionFile,
 } from "@fretik/shared/lib/chatbot-session-storage";
-import {
-  notFound,
-  teamRequired,
-  throwHttpError,
-} from "@fretik/shared/lib/errors";
+import { notFound, throwHttpError } from "@fretik/shared/lib/errors";
 import { getPresignedUrl } from "@fretik/shared/lib/s3";
-import { assertConversationAccess } from "@fretik/shared/services/ai/assert-conversation-access";
 import {
   PromoteSandboxFileError,
   promoteSandboxFileToDrive,
@@ -29,7 +34,6 @@ import {
 import { getSessionFilePreviewSource } from "@fretik/shared/services/documents/preview";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { and, desc, eq, ne } from "drizzle-orm";
-import type { Context } from "hono";
 import {
   deleteFile,
   resolveWorkspacePath,
@@ -98,20 +102,46 @@ const DOWNLOADABLE_DIRS = new Set<string>([
 /**
  * Every route here addresses a conversation by the id in its path, and the
  * session's team is not the audience of one: a chat belongs to its
- * participants, a workflow run to whoever may see the workflow. Refuses (404)
- * anything else — see `assertConversationAccess`.
+ * participants, a workflow run to whoever may see the workflow. Each route
+ * names the level it takes on the conversation (`access.resource`): reading
+ * its files takes `view`, adding or removing one takes part in it (`use`).
+ * A file belongs to the conversation, whichever team the caller has open.
+ * Filing one into the Drive is the exception: it lands at the root of the
+ * chat's project when it is in one, else in the Drive of the team the caller
+ * has open, and takes adding content there (`authz/placement.ts`) — or edit
+ * on a document it lands on as a new version.
  */
-const assertCallerCanOpen = async (
-  c: Context<HonoLoggedAppType>,
-  conversationId: string,
-): Promise<void> => {
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
-  await assertConversationAccess({
-    conversationId,
-    teamId: team.id,
-    organizationId: team.organizationId,
-    userId: c.get("user").id,
+const READ = access.resource("conversation", "view");
+const TAKE_PART = access.resource("conversation", "use");
+
+/**
+ * Where a chat's file is filed, for someone who may add it there: the chat's
+ * project, else the team the caller has open.
+ */
+const requireDriveFiling = async (input: {
+  principal: UserPrincipal;
+  activeTeamId: string | undefined;
+  resource: ResolvedResource;
+  replaceDocumentId?: string;
+}): Promise<Placement> => {
+  if (input.replaceDocumentId !== undefined) {
+    const { node } = await requireAccess({
+      principal: input.principal,
+      type: "document",
+      id: input.replaceDocumentId,
+      required: "edit",
+      notFoundMessage: "Document not found",
+    });
+    return {
+      teamId:
+        node.teamId ?? throwHttpError(404, notFound("Document not found")),
+      projectId: node.projectId,
+    };
+  }
+  return requirePlacement({
+    principal: input.principal,
+    activeTeamId: input.activeTeamId,
+    projectId: input.resource.node.projectId,
   });
 };
 
@@ -119,12 +149,8 @@ const assertCallerCanOpen = async (
 // GET list             //
 // ==================== //
 
-chatFilesRoutes.get("/conversation/:id/files", async (c) => {
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
-
+chatFilesRoutes.get("/conversation/:id/files", READ, async (c) => {
   const conversationId = c.req.param("id");
-  await assertCallerCanOpen(c, conversationId);
 
   const rows = await db
     .select({
@@ -155,11 +181,8 @@ chatFilesRoutes.get("/conversation/:id/files", async (c) => {
 // POST upload          //
 // ==================== //
 
-chatFilesRoutes.post("/conversation/:id/files", async (c) => {
+chatFilesRoutes.post("/conversation/:id/files", TAKE_PART, async (c) => {
   const user = c.get("user");
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
-
   const conversationId = c.req.param("id");
   const form = await c.req.formData();
   const file = form.get("file");
@@ -174,11 +197,10 @@ chatFilesRoutes.post("/conversation/:id/files", async (c) => {
     );
   }
 
-  await assertCallerCanOpen(c, conversationId);
   const row = await uploadChatFile({
     file,
     conversationId,
-    teamId: team.id,
+    teamId: teamOfResource(c.get("resource")),
     userId: user.id,
   });
 
@@ -194,16 +216,13 @@ chatFilesRoutes.post("/conversation/:id/files", async (c) => {
  * agent produced — as one list. `/files` above stays what it always was: the
  * attachment rows the prompt bar counts against its cap.
  */
-chatFilesRoutes.get("/conversation/:id/workspace", async (c) => {
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
-
+chatFilesRoutes.get("/conversation/:id/workspace", READ, async (c) => {
   const conversationId = c.req.param("id");
-  await assertCallerCanOpen(c, conversationId);
 
+  // Its files are filed in its own team's Drive, wherever the caller is.
   const files = await listConversationWorkspaceFiles({
     conversationId,
-    teamId: team.id,
+    teamId: teamOfResource(c.get("resource")),
   });
   return c.json({ files });
 });
@@ -215,39 +234,40 @@ chatFilesRoutes.get("/conversation/:id/workspace", async (c) => {
  * and hashing the bytes, so answering it for every file on every open would
  * download the whole workspace to render a list of names.
  */
-chatFilesRoutes.get("/conversation/:id/workspace/drive-state", async (c) => {
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
+chatFilesRoutes.get(
+  "/conversation/:id/workspace/drive-state",
+  READ,
+  async (c) => {
+    const conversationId = c.req.param("id");
 
-  const conversationId = c.req.param("id");
-  await assertCallerCanOpen(c, conversationId);
+    const path = c.req.query("path");
+    if (!path) {
+      return c.json(
+        { code: "VALIDATION_ERROR", message: "Missing `path` query parameter" },
+        400,
+      );
+    }
 
-  const path = c.req.query("path");
-  if (!path) {
-    return c.json(
-      { code: "VALIDATION_ERROR", message: "Missing `path` query parameter" },
-      400,
-    );
-  }
+    const resolved = resolveWorkspacePath(path);
+    if (
+      !resolved ||
+      !DOWNLOADABLE_DIRS.has(resolved.relative.split("/")[0] ?? "")
+    ) {
+      return c.json(
+        { code: "VALIDATION_ERROR", message: "Path is not a workspace file" },
+        400,
+      );
+    }
 
-  const resolved = resolveWorkspacePath(path);
-  if (
-    !resolved ||
-    !DOWNLOADABLE_DIRS.has(resolved.relative.split("/")[0] ?? "")
-  ) {
-    return c.json(
-      { code: "VALIDATION_ERROR", message: "Path is not a workspace file" },
-      400,
-    );
-  }
-
-  const state = await resolveDriveState({
-    conversationId,
-    teamId: team.id,
-    path: resolved.relative,
-  });
-  return c.json(state);
-});
+    const state = await resolveDriveState({
+      conversationId,
+      teamId: teamOfResource(c.get("resource")),
+      path: resolved.relative,
+      principal: c.get("principal"),
+    });
+    return c.json(state);
+  },
+);
 
 /**
  * File one of this conversation's files into the Drive.
@@ -260,14 +280,11 @@ chatFilesRoutes.get("/conversation/:id/workspace/drive-state", async (c) => {
  * `replaceDocumentId` lands the bytes on an existing document as its next
  * VERSION — what the `supersedes` state above exists to offer.
  */
-chatFilesRoutes.post("/conversation/:id/workspace/promote", async (c) => {
+chatFilesRoutes.post("/conversation/:id/workspace/promote", READ, async (c) => {
   const user = c.get("user");
-  const team = c.get("team");
   const organization = c.get("organization");
-  if (!team) return throwHttpError(403, teamRequired());
 
   const conversationId = c.req.param("id");
-  await assertCallerCanOpen(c, conversationId);
 
   let body: unknown;
   try {
@@ -290,6 +307,12 @@ chatFilesRoutes.post("/conversation/:id/workspace/promote", async (c) => {
     typeof parsed.replaceDocumentId === "string"
       ? parsed.replaceDocumentId
       : undefined;
+  const placement = await requireDriveFiling({
+    principal: c.get("principal"),
+    activeTeamId: c.get("team")?.id,
+    resource: c.get("resource"),
+    ...(replaceDocumentId !== undefined ? { replaceDocumentId } : {}),
+  });
 
   const resolved = resolveWorkspacePath(path);
   if (
@@ -317,7 +340,8 @@ chatFilesRoutes.post("/conversation/:id/workspace/promote", async (c) => {
       fileIds: [row.id],
       conversationId,
       organizationId: organization.id,
-      teamId: team.id,
+      teamId: placement.teamId,
+      projectId: placement.projectId,
       userId: user.id,
     });
     const promoted = result.promoted[0];
@@ -345,8 +369,10 @@ chatFilesRoutes.post("/conversation/:id/workspace/promote", async (c) => {
       conversationId,
       path: resolved.relative,
       organizationId: organization.id,
-      teamId: team.id,
+      teamId: placement.teamId,
+      projectId: placement.projectId,
       userId: user.id,
+      principal: c.get("principal"),
       ...(replaceDocumentId !== undefined ? { replaceDocumentId } : {}),
       actorContext: { actor: "human", userId: user.id, conversationId },
     });
@@ -363,223 +389,230 @@ chatFilesRoutes.post("/conversation/:id/workspace/promote", async (c) => {
 // POST promote-to-drive //
 // ==================== //
 
-chatFilesRoutes.post("/conversation/:id/files/promote-to-drive", async (c) => {
-  const user = c.get("user");
-  const team = c.get("team");
-  const organization = c.get("organization");
-  if (!team) return throwHttpError(403, teamRequired());
+chatFilesRoutes.post(
+  "/conversation/:id/files/promote-to-drive",
+  READ,
+  async (c) => {
+    const user = c.get("user");
+    const organization = c.get("organization");
 
-  const conversationId = c.req.param("id");
+    const conversationId = c.req.param("id");
 
-  let body: unknown;
-  try {
-    body = await c.req.json();
-  } catch {
-    return c.json(
-      {
-        code: "VALIDATION_ERROR",
-        message: "Invalid JSON body",
-      },
-      400,
-    );
-  }
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json(
+        {
+          code: "VALIDATION_ERROR",
+          message: "Invalid JSON body",
+        },
+        400,
+      );
+    }
 
-  const fileIds =
-    typeof body === "object" &&
-    body !== null &&
-    "fileIds" in body &&
-    Array.isArray(body.fileIds)
-      ? (body as { fileIds: unknown[] }).fileIds.filter(
-          (v): v is string => typeof v === "string",
-        )
-      : null;
+    const fileIds =
+      typeof body === "object" &&
+      body !== null &&
+      "fileIds" in body &&
+      Array.isArray(body.fileIds)
+        ? (body as { fileIds: unknown[] }).fileIds.filter(
+            (v): v is string => typeof v === "string",
+          )
+        : null;
 
-  if (!fileIds) {
-    return c.json(
-      {
-        code: "VALIDATION_ERROR",
-        message: "Missing or invalid `fileIds` array",
-      },
-      400,
-    );
-  }
+    if (!fileIds) {
+      return c.json(
+        {
+          code: "VALIDATION_ERROR",
+          message: "Missing or invalid `fileIds` array",
+        },
+        400,
+      );
+    }
 
-  await assertCallerCanOpen(c, conversationId);
-  const result = await promoteChatFilesToDrive({
-    fileIds,
-    conversationId,
-    organizationId: organization.id,
-    teamId: team.id,
-    userId: user.id,
-  });
+    const placement = await requireDriveFiling({
+      principal: c.get("principal"),
+      activeTeamId: c.get("team")?.id,
+      resource: c.get("resource"),
+    });
+    const result = await promoteChatFilesToDrive({
+      fileIds,
+      conversationId,
+      organizationId: organization.id,
+      teamId: placement.teamId,
+      projectId: placement.projectId,
+      userId: user.id,
+    });
 
-  return c.json(result);
-});
+    return c.json(result);
+  },
+);
 
 // ==================== //
 // DELETE               //
 // ==================== //
 
-chatFilesRoutes.delete("/conversation/:id/files/:filename", async (c) => {
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
+chatFilesRoutes.delete(
+  "/conversation/:id/files/:filename",
+  TAKE_PART,
+  async (c) => {
+    const conversationId = c.req.param("id");
+    const filename = c.req.param("filename");
 
-  const conversationId = c.req.param("id");
-  const filename = c.req.param("filename");
-  await assertCallerCanOpen(c, conversationId);
+    const row = await db.query.aiChatFiles.findFirst({
+      columns: { id: true, hasMarkdown: true },
+      where: { conversationId, filename },
+    });
+    if (!row) {
+      return throwHttpError(404, notFound("Chat file not found"));
+    }
 
-  const row = await db.query.aiChatFiles.findFirst({
-    columns: { id: true, hasMarkdown: true },
-    where: { conversationId, filename },
-  });
-  if (!row) {
-    return throwHttpError(404, notFound("Chat file not found"));
-  }
+    // Façade `deleteFile` removes from sandbox + S3 in one call.
+    await deleteFile(conversationId, buildAttachmentPath(filename));
+    if (row.hasMarkdown) {
+      await deleteFile(
+        conversationId,
+        buildAttachmentPath(sidecarFilename(filename)),
+      );
+    }
 
-  // Façade `deleteFile` removes from sandbox + S3 in one call.
-  await deleteFile(conversationId, buildAttachmentPath(filename));
-  if (row.hasMarkdown) {
-    await deleteFile(
-      conversationId,
-      buildAttachmentPath(sidecarFilename(filename)),
-    );
-  }
+    await db
+      .delete(aiChatFiles)
+      .where(
+        and(
+          eq(aiChatFiles.conversationId, conversationId),
+          eq(aiChatFiles.id, row.id),
+        ),
+      );
 
-  await db
-    .delete(aiChatFiles)
-    .where(
-      and(
-        eq(aiChatFiles.conversationId, conversationId),
-        eq(aiChatFiles.id, row.id),
-      ),
-    );
-
-  return c.json({ success: true });
-});
+    return c.json({ success: true });
+  },
+);
 
 // ==================== //
 // GET download         //
 // ==================== //
 
-chatFilesRoutes.get("/conversation/:id/files/:filename/download", async (c) => {
-  const team = c.get("team");
-  if (!team) return throwHttpError(403, teamRequired());
+chatFilesRoutes.get(
+  "/conversation/:id/files/:filename/download",
+  READ,
+  async (c) => {
+    const conversationId = c.req.param("id");
+    const filename = c.req.param("filename");
 
-  const conversationId = c.req.param("id");
-  const filename = c.req.param("filename");
+    // Access is a property of the CONVERSATION, resolved once by the route's
+    // rule — every resolution branch below needs exactly that check, and it
+    // lets the `ai_chat_files` lookup drop its conversation join.
 
-  // Access is a property of the CONVERSATION, so resolve it once here —
-  // every resolution branch below needs exactly this check, and hoisting it
-  // lets the `ai_chat_files` lookup drop its conversation join.
-  await assertCallerCanOpen(c, conversationId);
+    // Three ways to name the file, resolved in this order:
+    //  1. An explicit `?path=` wins outright. It names a workspace path
+    //     (`outputs/chart.png`) and is how markdown file links and the
+    //     `presentFiles` cards address a file. Checked FIRST because a
+    //     basename is ambiguous: a link to `outputs/report.pdf` was
+    //     shadowed by an unrelated `attachments/report.pdf` upload that
+    //     happened to share the basename, silently serving other bytes.
+    //  2. User-uploaded files live in `ai_chat_files`, under
+    //     `chatbot-sessions/{conv}/attachments/{filename}`.
+    //  3. Tool-generated files with neither a row nor a `?path=` (old chat
+    //     history that only kept the basename) fall back to a best-effort
+    //     search across `outputs/`.
+    const explicitPath = c.req.query("path");
 
-  // Three ways to name the file, resolved in this order:
-  //  1. An explicit `?path=` wins outright. It names a workspace path
-  //     (`outputs/chart.png`) and is how markdown file links and the
-  //     `presentFiles` cards address a file. Checked FIRST because a
-  //     basename is ambiguous: a link to `outputs/report.pdf` was
-  //     shadowed by an unrelated `attachments/report.pdf` upload that
-  //     happened to share the basename, silently serving other bytes.
-  //  2. User-uploaded files live in `ai_chat_files`, under
-  //     `chatbot-sessions/{conv}/attachments/{filename}`.
-  //  3. Tool-generated files with neither a row nor a `?path=` (old chat
-  //     history that only kept the basename) fall back to a best-effort
-  //     search across `outputs/`.
-  const explicitPath = c.req.query("path");
+    let s3RelativePath: string;
 
-  let s3RelativePath: string;
-
-  if (explicitPath !== undefined && explicitPath.length > 0) {
-    const resolved = resolveWorkspacePath(explicitPath);
-    // Only the two S3-mirrored trees are servable: `attachments/` and
-    // `outputs/` are backed up by `mirrorSandboxChanges` after every
-    // sandbox run, while `skills/`, `drive/`, `runs/`, `context/`,
-    // `memory/` and the workspace root are not — a presigned URL for
-    // those would 404 on S3 anyway. Rejecting here makes that an honest
-    // error instead of a broken link. `sanitizeSessionPath` (inside
-    // `buildSessionKey`) already drops `.`/`..`; this is the second gate.
-    const head = resolved?.relative.split("/")[0];
-    if (!resolved || head === undefined || !DOWNLOADABLE_DIRS.has(head)) {
-      return throwHttpError(404, notFound("File not found"));
-    }
-    s3RelativePath = resolved.relative;
-  } else {
-    const row = await db.query.aiChatFiles.findFirst({
-      where: {
-        conversationId,
-        filename,
-      },
-      columns: { id: true },
-    });
-
-    if (row) {
-      s3RelativePath = buildAttachmentPath(filename);
-    } else {
-      const candidates = await listSessionPaths(conversationId, "outputs");
-      const match = candidates.find(
-        (path) => path === filename || path.endsWith(`/${filename}`),
-      );
-      if (!match) {
+    if (explicitPath !== undefined && explicitPath.length > 0) {
+      const resolved = resolveWorkspacePath(explicitPath);
+      // Only the two S3-mirrored trees are servable: `attachments/` and
+      // `outputs/` are backed up by `mirrorSandboxChanges` after every
+      // sandbox run, while `skills/`, `drive/`, `runs/`, `context/`,
+      // `memory/` and the workspace root are not — a presigned URL for
+      // those would 404 on S3 anyway. Rejecting here makes that an honest
+      // error instead of a broken link. `sanitizeSessionPath` (inside
+      // `buildSessionKey`) already drops `.`/`..`; this is the second gate.
+      const head = resolved?.relative.split("/")[0];
+      if (!resolved || head === undefined || !DOWNLOADABLE_DIRS.has(head)) {
         return throwHttpError(404, notFound("File not found"));
       }
-      s3RelativePath = match;
+      s3RelativePath = resolved.relative;
+    } else {
+      const row = await db.query.aiChatFiles.findFirst({
+        where: {
+          conversationId,
+          filename,
+        },
+        columns: { id: true },
+      });
+
+      if (row) {
+        s3RelativePath = buildAttachmentPath(filename);
+      } else {
+        const candidates = await listSessionPaths(conversationId, "outputs");
+        const match = candidates.find(
+          (path) => path === filename || path.endsWith(`/${filename}`),
+        );
+        if (!match) {
+          return throwHttpError(404, notFound("File not found"));
+        }
+        s3RelativePath = match;
+      }
     }
-  }
 
-  // `?preview=1` serves whatever a VIEWER should render for this file when
-  // its own bytes are not it: a LibreOffice rendering for legacy Office,
-  // OpenDocument, RTF and TIFF; the extracted markdown for mail. The registry
-  // decides which, so an arbitrary file cannot be used to make the service
-  // spend a Gotenberg call on it — a type that renders from its own bytes
-  // answers `{ kind: null, url: null }` and the caller falls back.
-  //
-  // Named from the RESOLVED path rather than the route param: the extension
-  // is what tells LibreOffice which importer to load, and `?path=` is the
-  // parameter that actually decides which bytes are read.
-  if (c.req.query("preview") === "1") {
-    const previewName = s3RelativePath.split("/").pop() ?? filename;
-    const bytes = await readSessionFile(conversationId, s3RelativePath);
-    if (!bytes || bytes.length === 0) {
-      return throwHttpError(404, notFound("File not found"));
+    // `?preview=1` serves whatever a VIEWER should render for this file when
+    // its own bytes are not it: a LibreOffice rendering for legacy Office,
+    // OpenDocument, RTF and TIFF; the extracted markdown for mail. The registry
+    // decides which, so an arbitrary file cannot be used to make the service
+    // spend a Gotenberg call on it — a type that renders from its own bytes
+    // answers `{ kind: null, url: null }` and the caller falls back.
+    //
+    // Named from the RESOLVED path rather than the route param: the extension
+    // is what tells LibreOffice which importer to load, and `?path=` is the
+    // parameter that actually decides which bytes are read.
+    if (c.req.query("preview") === "1") {
+      const previewName = s3RelativePath.split("/").pop() ?? filename;
+      const bytes = await readSessionFile(conversationId, s3RelativePath);
+      if (!bytes || bytes.length === 0) {
+        return throwHttpError(404, notFound("File not found"));
+      }
+
+      const source = await getSessionFilePreviewSource({
+        conversationId,
+        filename: previewName,
+        mimeType: mimeFromFilename(previewName),
+        bytes,
+        sidecarPath: `${WORKSPACE_DIRS.attachments}/${sidecarFilename(previewName)}`,
+      });
+
+      return c.json(source);
     }
 
-    const source = await getSessionFilePreviewSource({
-      conversationId,
-      filename: previewName,
-      mimeType: mimeFromFilename(previewName),
-      bytes,
-      sidecarPath: `${WORKSPACE_DIRS.attachments}/${sidecarFilename(previewName)}`,
-    });
+    // `?disposition=attachment` signs a `Content-Disposition` into the
+    // presigned URL so the browser saves the file instead of rendering it.
+    // Download actions pass it; inline previews (the `<img>` in a
+    // presentFiles card, the PDF viewer) deliberately do not.
+    // Named from the route param, not from the resolved key: S3 segments are
+    // sanitised to `[A-Za-z0-9._-]`, so keying the disposition off the stored
+    // path would hand the user `mon_rapport.xlsx` for a file they know as
+    // `mon rapport.xlsx`.
+    const downloadFilename =
+      c.req.query("disposition") === "attachment" ? filename : undefined;
 
-    return c.json(source);
-  }
-
-  // `?disposition=attachment` signs a `Content-Disposition` into the
-  // presigned URL so the browser saves the file instead of rendering it.
-  // Download actions pass it; inline previews (the `<img>` in a
-  // presentFiles card, the PDF viewer) deliberately do not.
-  // Named from the route param, not from the resolved key: S3 segments are
-  // sanitised to `[A-Za-z0-9._-]`, so keying the disposition off the stored
-  // path would hand the user `mon_rapport.xlsx` for a file they know as
-  // `mon rapport.xlsx`.
-  const downloadFilename =
-    c.req.query("disposition") === "attachment" ? filename : undefined;
-
-  const url = await getPresignedUrl(
-    buildSessionKey(conversationId, s3RelativePath),
-    3600,
-    downloadFilename !== undefined ? { downloadFilename } : {},
-  );
-  // `?presign=1` returns the presigned S3 URL as JSON instead of a
-  // redirect. The "Open with Excel/Word/PowerPoint" buttons need this
-  // because Office launches a fresh process WITHOUT the user's Better
-  // Auth cookie — the 302 redirect path fails with 401, but the S3
-  // presigned URL is self-authenticating for the next hour and Office
-  // can fetch it directly.
-  if (c.req.query("presign") === "1") {
-    return c.json({ url });
-  }
-  return c.redirect(url, 302);
-});
+    const url = await getPresignedUrl(
+      buildSessionKey(conversationId, s3RelativePath),
+      3600,
+      downloadFilename !== undefined ? { downloadFilename } : {},
+    );
+    // `?presign=1` returns the presigned S3 URL as JSON instead of a
+    // redirect. The "Open with Excel/Word/PowerPoint" buttons need this
+    // because Office launches a fresh process WITHOUT the user's Better
+    // Auth cookie — the 302 redirect path fails with 401, but the S3
+    // presigned URL is self-authenticating for the next hour and Office
+    // can fetch it directly.
+    if (c.req.query("presign") === "1") {
+      return c.json({ url });
+    }
+    return c.redirect(url, 302);
+  },
+);
 
 export { chatFilesRoutes };

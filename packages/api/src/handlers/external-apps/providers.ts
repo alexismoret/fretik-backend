@@ -1,3 +1,4 @@
+import { access } from "@fretik/shared/authz/http";
 import { listProviderManifests } from "@fretik/shared/external-apps/registry";
 import {
   authMiddleware,
@@ -31,6 +32,9 @@ providersRoutes.use("*", authMiddleware);
 const listRoute = createRoute({
   method: "get",
   path: "",
+  middleware: access.session(
+    "The catalog of apps Fretik supports, the same for every member.",
+  ),
   summary: "List external-app providers supported by Fretik",
   description:
     "Returns the provider catalogue (key, displayName, icon, scopes, actions). The actions list includes `kind` (read vs write) and a one-line `summary` so the frontend can preview capabilities without pulling the full manifest. Pass `includeSignatures=true` to also get, for READ actions only, their `params`, `returns`, and the sync capabilities (`pagination`, `batch`, `incremental`) plus the provider's `types` table — everything a form needs to be generated from the manifest rather than hand-written. It is opt-in because it multiplies the payload of a route that most callers fetch only to draw the provider picker. Auth-required so the route is consistent with the rest of `/external-apps/*`; the catalogue itself is not team-specific.",

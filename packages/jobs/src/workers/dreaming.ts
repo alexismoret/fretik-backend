@@ -157,6 +157,7 @@ export const runDreamingTeam = async (
   let digestsOk = 0;
   let digestsFailed = 0;
   const candidates = await listRecordActivityCandidates({
+    organizationId: data.organizationId,
     teamId: data.teamId,
     minEvents: DIGEST_MIN_EVENTS,
     windowDays: DIGEST_WINDOW_DAYS,

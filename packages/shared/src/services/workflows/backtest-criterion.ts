@@ -1,4 +1,5 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
+import type { UserPrincipal } from "../../authz/principal";
 import db from "../../db";
 import { domainEvents } from "../../db/schema";
 import { probabilityOf, thresholdFor } from "../../decisions/policy";
@@ -16,8 +17,11 @@ import { lintCriterion } from "./criterion-lint";
 import { filterWorkflowConversationIds } from "./filter-workflow-conversation-ids";
 import { buildGateQuestion, GATE_POINT, gateQuestionId } from "./gate-question";
 import { getWorkflowRow } from "./get";
+import {
+  actingPrincipalResolver,
+  keepPairsOpenTo,
+} from "./keep-visible-trigger-pairs";
 import { matchesEvent, selectTriggerCandidates } from "./trigger-matching";
-import type { WorkflowRequester } from "./visibility";
 
 /**
  * "Test the condition": replay a criterion over the events this workflow
@@ -31,6 +35,12 @@ import type { WorkflowRequester } from "./visibility";
  *
  * Journals nothing: these are not decisions, and a label written from a test
  * would calibrate the bar on firings that never happened.
+ *
+ * Testing is part of editing the workflow, so it takes `edit`. The events
+ * replayed are the ones its runs would hear of (the Drive items its acting
+ * identity can open, as in the sweep) AND that the person testing can open:
+ * each verdict names its event, and a test is no way to read the name of a
+ * file one cannot see.
  */
 
 /** How far back to look for matching events: events of the subscribed types
@@ -54,22 +64,24 @@ export const backtestCriterion = async (params: {
   organizationId: string;
   criterion: string;
   triggerConfig?: WorkflowTriggerConfig;
-  requester?: WorkflowRequester;
+  /** Who is testing: `edit` on the workflow, and sees only what they can open. */
+  principal: UserPrincipal;
   evaluator?: DecisionEvaluator;
 }): Promise<CriterionBacktestResponse> => {
+  const workflow = await getWorkflowRow({
+    id: params.workflowId,
+    teamId: params.teamId,
+    principal: params.principal,
+    level: "edit",
+  });
+  if (!workflow) return throwHttpError(404, notFound("Workflow"));
+
   const lintError = await lintCriterion({
     criterion: params.criterion,
     context: { teamId: params.teamId, organizationId: params.organizationId },
     ...(params.evaluator ? { evaluator: params.evaluator } : {}),
   });
   if (lintError !== null) return throwHttpError(400, badRequest(lintError));
-
-  const workflow = await getWorkflowRow({
-    id: params.workflowId,
-    teamId: params.teamId,
-    ...(params.requester !== undefined ? { requester: params.requester } : {}),
-  });
-  if (!workflow) return throwHttpError(404, notFound("Workflow"));
 
   const tested = {
     ...workflow,
@@ -102,8 +114,15 @@ export const backtestCriterion = async (params: {
       ),
     ],
   });
-  const events = selectTriggerCandidates(recent, workflowConversations)
+  const matching = selectTriggerCandidates(recent, workflowConversations)
     .filter((event) => matchesEvent(tested, event))
+    .map((event) => ({ workflow: tested, event }));
+  const heard = await keepPairsOpenTo(matching, actingPrincipalResolver());
+  const shown = await keepPairsOpenTo(heard, () =>
+    Promise.resolve(params.principal),
+  );
+  const events = shown
+    .map(({ event }) => event)
     .slice(0, CRITERION_BACKTEST_EVENTS);
   if (events.length === 0) return { threshold: null, results: [] };
 

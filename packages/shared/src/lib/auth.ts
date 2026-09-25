@@ -8,7 +8,6 @@ import { emailOTP, organization, twoFactor } from "better-auth/plugins";
 import db from "../db";
 import * as schema from "../db/schema";
 import { generateOtpEmail } from "../emails/generators";
-import { bootstrapTeamWithBotUser } from "../services/auth/bot-user";
 import { getUserLocaleByEmail } from "../services/auth/get-user-locale";
 import {
   findSignupInvitation,
@@ -18,25 +17,30 @@ import {
 import { seedStarterCollections } from "../services/collections/seed-starter-types";
 import { seedSystemOntology } from "../services/collections/seed-system-types";
 import { applyDocumentFieldTemplate } from "../services/field-definitions/apply-template";
-import { duplicateOrgDefsToTeam } from "../services/field-definitions/duplicate-org-to-team";
 import { getTeamLocale } from "../services/field-definitions/get-locale";
-import { sendOrganizationInvitationEmail } from "../services/invitations/send-invitation-email";
-import { pauseWorkflowsOfDepartedMember } from "../services/workflows/owner-presence";
+import { withdrawInvitationsToDeletedTeam } from "../services/invitations/withdraw-for-deleted-team";
+import { membershipLimitFor } from "../services/organization/membership-limit";
+import { maximumTeamsFor } from "../services/organization/team-limit";
 import { scrubWorkflowNotificationRecipient } from "../services/workflows/scrub-notification-recipient";
 import { accountSecurity } from "./auth-account-security";
+import { organizationAfterHooks } from "./auth-after-hooks";
 import { recordAuthEvent } from "./auth-audit";
 import {
   INVITATION_EXPIRY_SECONDS,
   MAX_MEMBERS_PER_TEAM,
   OTP_EXPIRY_SECONDS,
+  PENDING_INVITATION_LIMIT,
 } from "./auth-constants";
-import { organizationTeamInvitationHooks } from "./auth-hooks";
-import { passkeyOptions } from "./auth-passkey";
+import { organizationBeforeHooks } from "./auth-hooks";
 import {
-  invalidateMemberRoleCache,
-  invalidateOrgTeamMembershipCache,
-  invalidateTeamMembershipCache,
-} from "./auth-roles";
+  journalAfterTheFact,
+  onInvitationAccepted,
+  onInvitationClosed,
+  onMembershipChanged,
+  onTeamCreated,
+} from "./auth-membership";
+import { passkeyOptions } from "./auth-passkey";
+import { openLastWorkspace, rememberSessionWorkspace } from "./auth-workspace";
 import { sendEmail } from "./email";
 import { redis } from "./redis";
 
@@ -60,40 +64,20 @@ const electronScheme = process.env.ELECTRON_PROTOCOL_SCHEME ?? "com.fretik.app";
 const electronOrigins = [`${electronScheme}:/`, "app://fretik"];
 
 /**
- * Best-effort scrub of workflow email-recipient lists when a user loses
- * access (leaves a team / the org, or deletes their account). Never blocks
- * the removal itself — the send path re-checks the team roster anyway
- * (`filterTeamMemberIds`), so a missed scrub can't leak an email.
+ * Best-effort scrub of workflow email-recipient lists when a user deletes
+ * their account. Never blocks the deletion — the send path re-checks the team
+ * roster anyway (`filterTeamMemberIds`), so a missed scrub can't leak an
+ * email. Leaving a team or the organization is handled in
+ * `auth-membership.ts`.
  */
 const scrubNotificationRecipient = async (params: {
   userId: string;
-  teamId?: string;
-  organizationId?: string;
 }): Promise<void> => {
   try {
     await scrubWorkflowNotificationRecipient(params);
   } catch (err) {
     console.warn(
       `[workflow-notifications] failed to scrub recipient ${params.userId}:`,
-      err,
-    );
-  }
-};
-
-/**
- * Best-effort pause of the private workflows a departing member owns in the
- * given teams — they run AS that person (see `workflows/owner-presence.ts`).
- * Never blocks the removal: run creation re-checks the owner anyway.
- */
-const pauseDepartedOwnerWorkflows = async (params: {
-  userId: string;
-  teamIds: string[];
-}): Promise<void> => {
-  try {
-    await pauseWorkflowsOfDepartedMember(params);
-  } catch (err) {
-    console.warn(
-      `[workflows] failed to pause workflows owned by departing ${params.userId}:`,
       err,
     );
   }
@@ -221,11 +205,14 @@ const options = {
   /**
    * Request hooks. A `before` hook that returns a value short-circuits the
    * endpoint, which is the only seam in front of the organization plugin's own
-   * guards — see `auth-hooks.ts` for what it intercepts and, more importantly,
-   * for the conditions under which it does NOT.
+   * guards: the endpoints our routes replace are closed there, and an existing
+   * member's team invitation is accepted there (`auth-hooks.ts`).
    */
   hooks: {
-    before: organizationTeamInvitationHooks,
+    before: organizationBeforeHooks,
+    // Leaving (the one membership change with no organization hook), and
+    // the directory endpoints' answers to a guest (`auth-after-hooks.ts`).
+    after: organizationAfterHooks,
   },
 
   databaseHooks: {
@@ -267,12 +254,18 @@ const options = {
     },
     session: {
       create: {
+        // A new session opens where its person last worked.
+        before: (session) => openLastWorkspace(session),
         after: async (session) => {
           await recordAuthEvent("auth.sign_in", session.userId, {
             ip: session.ipAddress,
             userAgent: session.userAgent,
           });
         },
+      },
+      update: {
+        // ...which every move of a session remembers (`auth-workspace.ts`).
+        after: (session) => rememberSessionWorkspace(session),
       },
     },
   },
@@ -286,6 +279,10 @@ const options = {
       // ownership proof, so disable that requirement.
       requireEmailVerificationOnInvitation: false,
       invitationExpiresIn: INVITATION_EXPIRY_SECONDS,
+      invitationLimit: PENDING_INVITATION_LIMIT,
+      // People, not rows: the teams' agents and the guests take no seat.
+      membershipLimit: (user, { id: organizationId }) =>
+        membershipLimitFor({ organizationId, email: user.email }),
       cancelPendingInvitationsOnReInvite: true,
       organizationHooks: {
         afterCreateOrganization: async (data) => {
@@ -309,85 +306,67 @@ const options = {
           });
         },
         afterCreateTeam: async (data) => {
-          await bootstrapTeamWithBotUser({
+          await onTeamCreated({
             teamId: data.team.id,
             organizationId: data.team.organizationId,
           });
-          // Duplicate the org-scope field definitions into the new
-          // team so the runtime reads always find a non-empty set.
-          await duplicateOrgDefsToTeam({
+          await journalAfterTheFact({
+            organizationId: data.team.organizationId,
+            actorUserId: data.user?.id ?? null,
+            action: "team.created",
+            principal: { type: "team", id: data.team.id },
+            metadata: { teamName: data.team.name },
+          });
+        },
+        // Before, not after: once deleted, nothing on an invitation says
+        // which team it was for (`withdraw-for-deleted-team.ts`).
+        beforeDeleteTeam: async (data) => {
+          await withdrawInvitationsToDeletedTeam({
             organizationId: data.team.organizationId,
             teamId: data.team.id,
+            teamName: data.team.name,
+            actorUserId: data.user?.id ?? null,
           });
         },
-        // Workflow notification recipients are stored as jsonb userId lists
-        // (no FK) — drop the departing user from them so the config doesn't
-        // accumulate stale ids.
-        afterRemoveMember: async (data) => {
-          const { userId } = data.member;
-          const organizationId = data.organization.id;
-          await scrubNotificationRecipient({ userId, organizationId });
-          // `authMiddleware` caches team membership; removing an org member
-          // also drops their `team_member` rows, so their live session would
-          // keep team access until the TTL expires. Same for their role.
-          await invalidateOrgTeamMembershipCache(organizationId, userId);
-          await invalidateMemberRoleCache(organizationId, userId);
-          const teams = await db.query.team.findMany({
-            columns: { id: true },
-            where: { organizationId },
-          });
-          await pauseDepartedOwnerWorkflows({
-            userId,
-            teamIds: teams.map((t) => t.id),
+        afterDeleteTeam: async (data) => {
+          await onMembershipChanged(data.team.organizationId);
+          await journalAfterTheFact({
+            organizationId: data.team.organizationId,
+            actorUserId: data.user?.id ?? null,
+            action: "team.deleted",
+            principal: { type: "team", id: data.team.id },
+            metadata: { teamName: data.team.name },
           });
         },
-        afterRemoveTeamMember: async (data) => {
-          const { userId } = data.teamMember;
-          await scrubNotificationRecipient({ userId, teamId: data.team.id });
-          await invalidateTeamMembershipCache(data.team.id, userId);
-          await pauseDepartedOwnerWorkflows({
-            userId,
-            teamIds: [data.team.id],
+        // Who belongs where changed: every cached principal of the
+        // organization is stale (`authz/load-principal.ts`).
+        afterAddMember: async (data) => {
+          await onMembershipChanged(data.organization.id);
+        },
+        afterAcceptInvitation: async (data) => {
+          await onMembershipChanged(data.organization.id);
+          // What the invitation was shared for becomes theirs: a guest's
+          // items, or what was shared with a future member before they came.
+          await onInvitationAccepted({
+            organizationId: data.organization.id,
+            invitationId: data.invitation.id,
+            userId: data.user.id,
           });
         },
-        // A demoted admin loses admin rights on their next request, not when
-        // the cached role expires.
-        afterUpdateMemberRole: async (data) => {
-          await invalidateMemberRoleCache(
-            data.organization.id,
-            data.member.userId,
-          );
+        afterRejectInvitation: async (data) => {
+          await onInvitationClosed({
+            organizationId: data.organization.id,
+            invitationId: data.invitation.id,
+            email: data.invitation.email,
+            actorUserId: data.user.id,
+            action: "invitation.rejected",
+          });
         },
-      },
-
-      // Only ever reached for an invitation into the organization: the
-      // "existing member joins one more team" case is served by
-      // `organizationTeamInvitationHooks`, which sends its own email through
-      // the same service.
-      sendInvitationEmail: async (data) => {
-        await sendOrganizationInvitationEmail({
-          invitationId: data.id,
-          email: data.email,
-          inviterName: data.inviter.user.name,
-          organizationName: data.organization.name,
-          role: data.role,
-          teamId: data.invitation.teamId ?? null,
-          expiresAt: data.invitation.expiresAt,
-        });
       },
 
       teams: {
         enabled: true,
-        maximumTeams: async (data) => {
-          const settings = await db.query.organizationSettings.findFirst({
-            columns: { maxAgencies: true },
-            where: { organizationId: data.organizationId },
-          });
-          // No settings row (org predating `afterCreateOrganization`, or an
-          // insert that failed) must not silently cap the org at one team —
-          // fall back to the same default the column carries.
-          return settings?.maxAgencies ?? 10;
-        },
+        maximumTeams: async (data) => maximumTeamsFor(data.organizationId),
         maximumMembersPerTeam: MAX_MEMBERS_PER_TEAM,
         allowRemovingAllTeams: false,
       },
@@ -409,7 +388,15 @@ const options = {
         // address of a change-email OTP, or a not-yet-created user).
         const lang = await getUserLocaleByEmail(email);
         const { subject, html } = await generateOtpEmail(type, otp, lang);
-        void sendEmail({ to: { email }, subject, html });
+        // Not awaited, so the response takes the same time whether or not
+        // the address exists. Caught, because an unhandled rejection (the
+        // mail provider down, a refused key) exits the whole process.
+        sendEmail({ to: { email }, subject, html }).catch((err: unknown) => {
+          console.error(
+            "[auth] OTP email failed:",
+            err instanceof Error ? err.message : err,
+          );
+        });
       },
     }),
 

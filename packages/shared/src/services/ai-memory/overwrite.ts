@@ -4,7 +4,7 @@ import { aiMemories, type AiMemory } from "../../db/schema/ai-memory";
 import { createApiError, throwHttpError } from "../../lib/errors";
 import { emitDomainEvent, toDomainEventActor } from "../domain-events/emit";
 import { trimMemoryHistory, writeHistoryRow } from "./history";
-import { findMemoryByPath } from "./lookup";
+import { findMemoryByPath, memoryOwnerColumns } from "./lookup";
 import { MEMORY_MAX_BYTES, memoryByteSize, parseMemoryPath } from "./paths";
 import type { MemoryActorContext, MemoryScopeKey } from "./types";
 import { triggerMemoryVectorRefresh } from "./vector-refresh";
@@ -104,7 +104,7 @@ export const overwriteMemory = async (args: {
         organizationId: args.scopeKey.organizationId,
         teamId: args.scopeKey.teamId,
         scope: parsed.scope,
-        userId: parsed.scope === "user" ? args.scopeKey.userId : null,
+        ...memoryOwnerColumns(parsed.scope, args.scopeKey),
         path: parsed.relativePath,
         content: args.content,
         sizeBytes,

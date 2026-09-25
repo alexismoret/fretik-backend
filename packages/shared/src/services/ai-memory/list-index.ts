@@ -1,6 +1,7 @@
-import { and, eq, isNull, or } from "drizzle-orm";
+import { and, or } from "drizzle-orm";
 import db from "../../db";
 import { aiMemories, type AiMemoryScope } from "../../db/schema/ai-memory";
+import { memoryNamespaceConditions } from "./lookup";
 import type { MemoryScopeKey } from "./types";
 
 /**
@@ -29,66 +30,73 @@ interface IndexRow {
   sizeBytes: number;
 }
 
+/** How each namespace introduces itself in the index. */
+const NAMESPACE_HEADERS: Record<AiMemoryScope, string> = {
+  user: "(visible only to you)",
+  team: "(shared with the whole team — every write is audited)",
+  project: "(shared with the people of this project — every write is audited)",
+};
+
 /**
  * Compact manifest of the memory tree, injected into the chatbot
  * system prompt at every turn. The model uses it to decide whether
  * a file is worth `view`-ing and where to write new memories — no
  * round-trip required for discovery.
  *
- * Two namespaces (`/memories/user/` and `/memories/team/`) are
- * rendered side-by-side. The scope key's `userId` filters the user
- * namespace to private files only; team namespace is unfiltered
- * within the team.
+ * The namespaces the turn reads (`memoryNamespacesFor`) are rendered side by
+ * side: `/memories/user/` (the scope key's `userId`, private files only),
+ * `/memories/team/` for the team's people, and `/memories/project/` (the scope
+ * key's `projectId`) in a project's chats.
  *
- * Returns the empty-state string when no memories exist for either
- * scope. Callers should still inject the result — the prompt block
- * tells the model "feel free to start writing".
+ * Returns the empty-state string when no memories exist in any of them.
+ * Callers should still inject the result — the prompt block tells the model
+ * "feel free to start writing".
  */
 export const buildMemoryIndexManifest = async (
   scopeKey: MemoryScopeKey,
+  namespaces: readonly AiMemoryScope[],
 ): Promise<string> => {
-  const rows = await db
-    .select({
-      scope: aiMemories.scope,
-      path: aiMemories.path,
-      sizeBytes: aiMemories.sizeBytes,
-    })
-    .from(aiMemories)
-    .where(
-      and(
-        eq(aiMemories.organizationId, scopeKey.organizationId),
-        eq(aiMemories.teamId, scopeKey.teamId),
-        or(
-          and(
-            eq(aiMemories.scope, "user"),
-            eq(aiMemories.userId, scopeKey.userId),
-          ),
-          and(eq(aiMemories.scope, "team"), isNull(aiMemories.userId)),
-        ),
-      ),
-    )
-    .orderBy(aiMemories.scope, aiMemories.path);
+  const rows =
+    namespaces.length === 0
+      ? []
+      : await db
+          .select({
+            scope: aiMemories.scope,
+            path: aiMemories.path,
+            sizeBytes: aiMemories.sizeBytes,
+          })
+          .from(aiMemories)
+          .where(
+            or(
+              ...namespaces.map((scope) =>
+                and(...memoryNamespaceConditions(scope, scopeKey)),
+              ),
+            ),
+          )
+          .orderBy(aiMemories.scope, aiMemories.path);
 
   if (rows.length === 0) {
+    const where = namespaces.map((scope) => `/memories/${scope}/`).join(", ");
     return [
       "<memory_index>",
-      "(no memories yet — feel free to start writing using the `memory` tool)",
+      `(no memories yet in ${where} — feel free to start writing using the \`memory\` tool)`,
       "</memory_index>",
     ].join("\n");
   }
 
-  const userRows = rows.filter((r) => r.scope === "user");
-  const teamRows = rows.filter((r) => r.scope === "team");
+  const rowsOf = (scope: AiMemoryScope) =>
+    rows.filter((row) => row.scope === scope);
 
   // Beyond the global cap we only show counts — relying on
   // grep/view for discovery instead of dumping a long index.
   if (rows.length > TOTAL_FILE_CAP) {
-    const userBytes = userRows.reduce((acc, r) => acc + r.sizeBytes, 0);
-    const teamBytes = teamRows.reduce((acc, r) => acc + r.sizeBytes, 0);
     return [
       "<memory_index>",
-      `/memories/user/  ${userRows.length.toString()} files (${humanSize(userBytes)}) — use \`view\` or \`grep\` to explore`,
-      `/memories/team/  ${teamRows.length.toString()} files (${humanSize(teamBytes)}) — shared with the whole team`,
+      ...namespaces.map((scope) => {
+        const scoped = rowsOf(scope);
+        const bytes = scoped.reduce((acc, r) => acc + r.sizeBytes, 0);
+        return `/memories/${scope}/  ${scoped.length.toString()} files (${humanSize(bytes)}) ${NAMESPACE_HEADERS[scope]} — use \`view\` or \`grep\` to explore`;
+      }),
       "</memory_index>",
     ].join("\n");
   }
@@ -146,12 +154,13 @@ export const buildMemoryIndexManifest = async (
     }
   };
 
-  renderNamespace("/memories/user/", "(visible only to you)", userRows);
-  renderNamespace(
-    "/memories/team/",
-    "(shared with the whole team — every write is audited)",
-    teamRows,
-  );
+  for (const scope of namespaces) {
+    renderNamespace(
+      `/memories/${scope}/`,
+      NAMESPACE_HEADERS[scope],
+      rowsOf(scope),
+    );
+  }
   lines.push("</memory_index>");
 
   return lines.join("\n");

@@ -1,8 +1,8 @@
+import { access } from "@fretik/shared/authz/http";
 import {
   authMiddleware,
   type HonoLoggedAppType,
 } from "@fretik/shared/lib/auth-middleware";
-import { assertOrgAdmin } from "@fretik/shared/lib/auth-roles";
 import {
   forbidden,
   teamRequired,
@@ -47,13 +47,13 @@ import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
  *  GET    /skills/:id    fetch one with body (for the settings
  *                        editor). Open to any team member.
  *  POST   /skills        create a new team_uploaded skill (markdown
- *                        body). Org admin/owner only.
+ *                        body). Team leads and admins.
  *  PATCH  /skills/:id    update any combination of description, body,
  *                        and enabled. Toggle is the enabled-only
  *                        case. Bundled skills accept only enabled.
- *                        Org admin/owner only.
+ *                        Team leads and admins.
  *  DELETE /skills/:id    soft-delete a team_uploaded skill. Bundled
- *                        skills cannot be deleted. Org admin/owner.
+ *                        skills cannot be deleted. Team leads and admins.
  *
  * The chatbot system prompt does NOT call this handler — it queries
  * `services/skills/list-enabled-for-team` directly to keep the
@@ -71,6 +71,9 @@ skillsRoutes.use("*", authMiddleware);
 const listRoute = createRoute({
   method: "get",
   path: "",
+  middleware: access.session(
+    "Any member of the active team reads the skills it has.",
+  ),
   summary: "List skills available to the active team",
   description:
     "Returns every catalogue skill visible to the team (bundled + team_uploaded), with the effective `enabled` state after applying any team override. Always-on skills (`isDefault: true`) always report `enabled: true`. Body is excluded — fetch a single skill via `GET /skills/:id` to get the markdown body for the editor.",
@@ -90,6 +93,9 @@ const listRoute = createRoute({
 const getRoute = createRoute({
   method: "get",
   path: "/{id}",
+  middleware: access.session(
+    "A skill is looked up within the active team (or the bundled set).",
+  ),
   summary: "Fetch one skill (including markdown body) for the settings editor",
   description:
     "Returns the full skill detail including the `body` field. Scoped to skills visible to the active team: bundled skills (read-only) or team_uploaded skills owned by this team. 404 when the id doesn't match either.",
@@ -109,9 +115,10 @@ const getRoute = createRoute({
 const createRouteDef = createRoute({
   method: "post",
   path: "",
+  middleware: access.capability("team.settings.manage"),
   summary: "Create a team-uploaded skill",
   description:
-    'Requires admin/owner role. The `name` field is slugified server-side and deduplicated against bundled + this team\'s existing team_uploaded skills, so `"Extract DAE CSV"` becomes `"extract-dae-csv"` (or `"extract-dae-csv-2"` on collision). The new skill is created in the enabled state; toggle via `PATCH /skills/:id` to disable.',
+    'Requires `team.settings.manage` (team leads and organization admins). The `name` field is slugified server-side and deduplicated against bundled + this team\'s existing team_uploaded skills, so `"Extract DAE CSV"` becomes `"extract-dae-csv"` (or `"extract-dae-csv-2"` on collision). The new skill is created in the enabled state; toggle via `PATCH /skills/:id` to disable.',
   tags: ["Skills"],
   request: {
     body: {
@@ -133,9 +140,10 @@ const createRouteDef = createRoute({
 const updateRouteDef = createRoute({
   method: "patch",
   path: "/{id}",
+  middleware: access.capability("team.settings.manage"),
   summary: "Update a skill — any combination of description, body, enabled",
   description:
-    "Requires admin/owner role. Partial update: send only the fields to change. Send `{ enabled: false }` to disable, `{ body: '…' }` to edit content, `{ description: '…', enabled: true }` to do both at once. Bundled skills accept only `enabled` (their body lives on disk). Always-on skills reject `enabled` patches with `SKILL_NOT_TOGGLEABLE`. Bumps semver patch when body changes.",
+    "Requires `team.settings.manage` (team leads and organization admins). Partial update: send only the fields to change. Send `{ enabled: false }` to disable, `{ body: '…' }` to edit content, `{ description: '…', enabled: true }` to do both at once. Bundled skills accept only `enabled` (their body lives on disk). Always-on skills reject `enabled` patches with `SKILL_NOT_TOGGLEABLE`. Bumps semver patch when body changes.",
   tags: ["Skills"],
   request: {
     params: skillIdParamSchema,
@@ -159,9 +167,10 @@ const updateRouteDef = createRoute({
 const deleteRouteDef = createRoute({
   method: "delete",
   path: "/{id}",
+  middleware: access.capability("team.settings.manage"),
   summary: "Soft-delete a team-uploaded skill",
   description:
-    "Requires admin/owner role. Sets `deleted_at`; existing team_skills override rows are preserved so a manual restore recovers the previous toggle state. Bundled skills cannot be deleted.",
+    "Requires `team.settings.manage` (team leads and organization admins). Sets `deleted_at`; existing team_skills override rows are preserved so a manual restore recovers the previous toggle state. Bundled skills cannot be deleted.",
   tags: ["Skills"],
   request: { params: skillIdParamSchema },
   responses: {
@@ -176,6 +185,7 @@ const deleteRouteDef = createRoute({
 const catalogRouteDef = createRoute({
   method: "get",
   path: "/catalog",
+  middleware: access.session("Any member browses the public skills catalog."),
   summary: "Search the skill catalog (skills.sh, discovery-only)",
   description:
     "Searches the skills.sh catalog (metadata only — no user data transits it). Paginated and searchable via `q`. With no `q`, returns the official shelf (Anthropic + OpenAI skills). Each entry's `description` is hydrated from the skill's SKILL.md; `official` and `filesCount` come from the same source.",
@@ -194,6 +204,7 @@ const catalogRouteDef = createRoute({
 const catalogDetailRouteDef = createRoute({
   method: "get",
   path: "/catalog/detail",
+  middleware: access.session("Any member reads a public catalog entry."),
   summary: "Fetch a catalog skill's license + advisory audits",
   description:
     "Returns the skill's license (with a `restrictedLicense` flag the UI uses to block install of proprietary content) and advisory security audits for the detail panel. Never installs anything.",
@@ -213,9 +224,10 @@ const catalogDetailRouteDef = createRoute({
 const installRouteDef = createRoute({
   method: "post",
   path: "/install",
+  middleware: access.capability("team.settings.manage"),
   summary: "Install a catalog skill to the active team",
   description:
-    "Requires admin/owner role. Downloads the catalog skill's full SKILL.md body and creates a team_uploaded skill stamped with its `skills.sh:<owner>/<repo>/<slug>` provenance. Idempotent — re-installing the same skill returns the existing row. Refuses skills whose license forbids storing/redistributing their content.",
+    "Requires `team.settings.manage` (team leads and organization admins). Downloads the catalog skill's full SKILL.md body and creates a team_uploaded skill stamped with its `skills.sh:<owner>/<repo>/<slug>` provenance. Idempotent — re-installing the same skill returns the existing row. Refuses skills whose license forbids storing/redistributing their content.",
   tags: ["Skills"],
   request: {
     body: {
@@ -271,12 +283,6 @@ skillsRoutes.openapi(installRouteDef, async (c) => {
   const user = c.get("user");
   if (!user) return c.json(forbidden("Authentication required"), 403);
 
-  await assertOrgAdmin({
-    userId: user.id,
-    organizationId: team.organizationId,
-    message: "Installing skills requires admin or owner role",
-  });
-
   const { owner, repo, slug } = c.req.valid("json");
   const installed = await installSkillFromCatalog({
     teamId: team.id,
@@ -311,12 +317,6 @@ skillsRoutes.openapi(createRouteDef, async (c) => {
   const user = c.get("user");
   if (!user) return c.json(forbidden("Authentication required"), 403);
 
-  await assertOrgAdmin({
-    userId: user.id,
-    organizationId: team.organizationId,
-    message: "Creating skills requires admin or owner role",
-  });
-
   const body = c.req.valid("json");
   const created = await createSkill({
     teamId: team.id,
@@ -335,12 +335,6 @@ skillsRoutes.openapi(updateRouteDef, async (c) => {
 
   const user = c.get("user");
   if (!user) return c.json(forbidden("Authentication required"), 403);
-
-  await assertOrgAdmin({
-    userId: user.id,
-    organizationId: team.organizationId,
-    message: "Updating skills requires admin or owner role",
-  });
 
   const { id } = c.req.valid("param");
   const patch = c.req.valid("json");
@@ -362,12 +356,6 @@ skillsRoutes.openapi(deleteRouteDef, async (c) => {
 
   const user = c.get("user");
   if (!user) return c.json(forbidden("Authentication required"), 403);
-
-  await assertOrgAdmin({
-    userId: user.id,
-    organizationId: team.organizationId,
-    message: "Deleting skills requires admin or owner role",
-  });
 
   const { id } = c.req.valid("param");
   await deleteSkill({

@@ -144,6 +144,7 @@ describe("backtestCriterion", () => {
       workflowId,
       teamId: ws.teamId,
       organizationId: ws.organizationId,
+      principal: await ws.principalOf(ws.userIds[0]),
       criterion: "The document is a supplier invoice.",
       evaluator: fakeEvaluator(new Map([[matching, 0.9]])),
     });
@@ -170,6 +171,7 @@ describe("backtestCriterion", () => {
       workflowId,
       teamId: ws.teamId,
       organizationId: ws.organizationId,
+      principal: await ws.principalOf(ws.userIds[0]),
       criterion: "The document is a supplier invoice.",
       evaluator: fakeEvaluator(
         new Map<string, number | null>([
@@ -188,12 +190,14 @@ describe("backtestCriterion", () => {
 
   test("a criterion with an id in it is refused before any call", async () => {
     const workflowId = await createWorkflow(crypto.randomUUID());
+    const principal = await ws.principalOf(ws.userIds[0]);
     let calls = 0;
     const error = await caught(() =>
       backtestCriterion({
         workflowId,
         teamId: ws.teamId,
         organizationId: ws.organizationId,
+        principal,
         criterion: `The document id is ${crypto.randomUUID()}.`,
         evaluator: () => {
           calls += 1;
@@ -212,12 +216,14 @@ describe("backtestCriterion", () => {
       type: "document.uploaded",
       payload: { folderId: watched },
     });
+    const principal = await ws.principalOf(ws.userIds[0]);
     const asked: string[] = [];
     const error = await caught(() =>
       backtestCriterion({
         workflowId,
         teamId: ws.teamId,
         organizationId: ws.organizationId,
+        principal,
         criterion: "The file is the scan the client sent this morning.",
         evaluator: (request) => {
           asked.push(request.point);

@@ -5,6 +5,7 @@ import {
 import { stampEpisodeRecall } from "@fretik/shared/services/episodes/stamp-recall";
 import { getActiveSpanId, startObservation } from "@langfuse/tracing";
 import { generateText } from "ai";
+import { actingDrive } from "../../agents/shared/acting-principal";
 import { langfuseEnabled, telemetryFor } from "../../lib/langfuse";
 import { resolveMemoryModel } from "../../lib/model-registry/team-model";
 import {
@@ -218,6 +219,13 @@ export interface UnifiedRecallParams {
   teamId: string;
   /** Gates user-scope rows (private memories/episodes). Undefined = system. */
   userId?: string;
+  /**
+   * A project chat's recall: what the project holds and the reader's own
+   * notes and episodes, nothing of the team's. The team's records are neither
+   * anchors nor candidates: they are its people's, and a project chat's reader
+   * may come from another team.
+   */
+  projectId?: string;
   conversationId?: string;
   /** Telemetry only — recall logic is agent-agnostic. */
   agentType: string;
@@ -292,6 +300,17 @@ export interface UnifiedRecallParams {
 }
 
 /**
+ * Whether a turn has anywhere to recall from. Someone outside the team, in a
+ * chat of the team that is in no project, has none: the team's knowledge
+ * stays with its people (`teamContextReach`), and there is no project to
+ * search instead.
+ */
+export const recallsIn = (place: {
+  projectId?: string | undefined;
+  outsideTeam?: boolean | undefined;
+}): boolean => place.outsideTeam !== true || place.projectId !== undefined;
+
+/**
  * Start the gather for a message before the turn is set up.
  *
  * Soft-fails to an empty gather rather than rejecting: the promise may sit
@@ -350,7 +369,7 @@ const cacheKey = (params: UnifiedRecallParams): string => {
   const filesPart = params.attachedFiles
     .map((f) => `${f.filename}|${f.mimeType}`)
     .join(",");
-  return `${params.teamId}:${params.userId ?? "system"}:${params.modeOverride ?? RECALL_MODE}:${params.userMessage.slice(0, 200)}:${filesPart}`;
+  return `${params.teamId}:${params.projectId ?? "team"}:${params.userId ?? "system"}:${params.modeOverride ?? RECALL_MODE}:${params.userMessage.slice(0, 200)}:${filesPart}`;
 };
 
 const purgeExpired = (now: number): void => {
@@ -431,34 +450,63 @@ export const gatherRecallCandidates = async (
   // deterministic side alone could spend `ARM_TIMEOUT_MS` twice (5 s) before
   // the judge was even asked. Chained, it overlaps the three searches and the
   // gather costs `max(arms)` instead of `max(arms) + graph`.
-  const anchorsPromise = withArmBudget<RecordAnchor[]>(
-    timeStage(
-      timings,
-      "anchor",
-      anchorTextToRecords({
-        teamId: params.teamId,
-        text: params.userMessage,
-        maxAnchors: MAX_ANCHORS,
-        maxSpans: RECALL_MAX_ANCHOR_SPANS,
-      }),
-    ),
-    [],
-    "anchor",
-  );
-  const graphPromise = anchorsPromise.then((anchors) =>
-    withArmBudget(
-      timeStage(
-        timings,
-        "graph",
-        gatherGraphNeighborhood({
-          anchors: anchors.filter(anchorIsPrecise),
-          userId: params.userId,
-        }),
-      ),
-      null,
-      "graph",
-    ),
-  );
+  //
+  // Both read as the person the turn is for: a record mirroring a file they
+  // cannot open is neither an anchor nor a neighbour. A project chat anchors
+  // on nothing: the records are the team's.
+  const inProject = params.projectId !== undefined;
+  const drive = inProject ? null : actingDrive(params);
+  const anchorsPromise =
+    drive === null
+      ? Promise.resolve<RecordAnchor[]>([])
+      : withArmBudget<RecordAnchor[]>(
+          timeStage(
+            timings,
+            "anchor",
+            drive.then((visibility) =>
+              anchorTextToRecords({
+                teamId: params.teamId,
+                drive: visibility,
+                text: params.userMessage,
+                maxAnchors: MAX_ANCHORS,
+                maxSpans: RECALL_MAX_ANCHOR_SPANS,
+              }),
+            ),
+          ),
+          [],
+          "anchor",
+        );
+  const graphPromise =
+    drive === null
+      ? Promise.resolve(null)
+      : anchorsPromise.then((anchors) =>
+          withArmBudget(
+            timeStage(
+              timings,
+              "graph",
+              drive.then((visibility) =>
+                gatherGraphNeighborhood({
+                  anchors: anchors.filter(anchorIsPrecise),
+                  organizationId: params.organizationId,
+                  teamId: params.teamId,
+                  drive: visibility,
+                  userId: params.userId,
+                }),
+              ),
+            ),
+            null,
+            "graph",
+          ),
+        );
+  // Every search arm reads the same place: the team's, or the project's.
+  const searchScope = {
+    teamId: params.teamId,
+    organizationId: params.organizationId,
+    userId: params.userId,
+    ...(params.projectId === undefined
+      ? {}
+      : { withinProject: params.projectId }),
+  };
 
   const [anchors, graph, knowledge, documents, capabilities] =
     await Promise.all([
@@ -469,10 +517,12 @@ export const gatherRecallCandidates = async (
         "knowledge",
         searchRAG({
           query,
-          teamId: params.teamId,
-          organizationId: params.organizationId,
-          userId: params.userId,
-          filters: { sourceTypes: ["memories", "episodes", "records"] },
+          ...searchScope,
+          filters: {
+            sourceTypes: inProject
+              ? ["memories", "episodes"]
+              : ["memories", "episodes", "records"],
+          },
           topK: KNOWLEDGE_TOP_K,
           // The judge is the precision filter; skip the multi-query
           // reformulation latency (~1-3s) on this pre-turn hot path.
@@ -484,9 +534,7 @@ export const gatherRecallCandidates = async (
         "documents",
         searchRAG({
           query,
-          teamId: params.teamId,
-          organizationId: params.organizationId,
-          userId: params.userId,
+          ...searchScope,
           filters: { sourceTypes: ["documents"] },
           topK: DOCUMENTS_TOP_K,
           skipMultiQuery: true,
@@ -515,9 +563,7 @@ export const gatherRecallCandidates = async (
             "capabilities",
             searchRAG({
               query,
-              teamId: params.teamId,
-              organizationId: params.organizationId,
-              userId: params.userId,
+              ...searchScope,
               filters: { sourceTypes: ["workflows", "pages"] },
               topK: CAPABILITY_TOP_K,
               skipMultiQuery: true,

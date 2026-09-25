@@ -130,6 +130,12 @@ export const TOOL_ERROR_CODES = {
   // Memory
   MEMORY_INVALID_INPUT: "MEMORY_INVALID_INPUT",
   MEMORY_HTTP_ERROR: "MEMORY_HTTP_ERROR",
+  // A namespace this turn does not use: the team's for someone outside it,
+  // a project's outside a project's chats.
+  MEMORY_NAMESPACE_UNAVAILABLE: "MEMORY_NAMESPACE_UNAVAILABLE",
+  // The team's structured data (collections, records, SQL), called for
+  // someone who is not one of the team's people.
+  TEAM_DATA_UNAVAILABLE: "TEAM_DATA_UNAVAILABLE",
 
   // Web. One timeout code for every provider: the model's recourse is the
   // same whoever was slow — narrow the call or try a different route — and a
@@ -162,6 +168,11 @@ export const TOOL_ERROR_CODES = {
   // Tool-permission policy: the team set this tool to `blocked` (Settings →
   // Tool permissions). A backstop for a guessed/pruned tool name.
   TOOL_DISABLED_BY_POLICY: "TOOL_DISABLED_BY_POLICY",
+  // The person the assistant acts for may not do this: their access to the
+  // resource, or their role, falls short (`lib/access-refusal.ts`). Not an
+  // input-shape code: no argument changes someone's access, so the loop guard
+  // must not steer a retry — the way forward is the person asking for it.
+  ACCESS_DENIED: "ACCESS_DENIED",
 } as const;
 
 export type ToolErrorCode =

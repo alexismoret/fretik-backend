@@ -1,11 +1,11 @@
 import { and, count, eq, sql } from "drizzle-orm";
+import type { UserPrincipal } from "../../authz/principal";
 import db from "../../db";
 import { userPins } from "../../db/schema";
 import { notFound, throwHttpError } from "../../lib/errors";
 import { MAX_PINS_PER_USER_TEAM, type PinTarget } from "../../schemas/pins";
 import { listCollections } from "../collections/retrieve";
 import { getPage } from "../pages/retrieve";
-import type { PageRequester } from "../pages/visibility";
 import { getWorkflowRow } from "../workflows/get";
 
 /**
@@ -21,34 +21,29 @@ import { getWorkflowRow } from "../workflows/get";
  * preserves the original position rather than moving the entry to the end.
  */
 export const pinTarget = async (params: {
-  userId: string;
-  organizationId: string;
+  principal: UserPrincipal;
   teamId: string;
   target: PinTarget;
-  requester?: PageRequester;
 }): Promise<void> => {
-  if (params.target.targetType === "page") {
-    await getPage({
-      pageId: params.target.targetId,
-      teamId: params.teamId,
-      ...(params.requester ? { requester: params.requester } : {}),
-    });
-  } else if (params.target.targetType === "workflow") {
+  const { principal, teamId, target } = params;
+  if (target.targetType === "page") {
+    await getPage({ pageId: target.targetId, teamId, principal });
+  } else if (target.targetType === "workflow") {
     const workflow = await getWorkflowRow({
-      id: params.target.targetId,
-      teamId: params.teamId,
-      ...(params.requester ? { requester: params.requester } : {}),
+      id: target.targetId,
+      teamId,
+      principal,
     });
     if (!workflow) {
       return throwHttpError(404, notFound("Workflow"));
     }
   } else {
     const visible = await listCollections({
-      organizationId: params.organizationId,
-      teamId: params.teamId,
+      organizationId: principal.organizationId,
+      teamId,
       includeDisabled: false,
     });
-    if (!visible.some((c) => c.id === params.target.targetId)) {
+    if (!visible.some((c) => c.id === target.targetId)) {
       return throwHttpError(404, notFound("Collection"));
     }
   }
@@ -57,10 +52,7 @@ export const pinTarget = async (params: {
     .select({ value: count() })
     .from(userPins)
     .where(
-      and(
-        eq(userPins.userId, params.userId),
-        eq(userPins.teamId, params.teamId),
-      ),
+      and(eq(userPins.userId, principal.userId), eq(userPins.teamId, teamId)),
     );
   if ((pinned?.value ?? 0) >= MAX_PINS_PER_USER_TEAM) {
     return throwHttpError(400, {
@@ -72,15 +64,15 @@ export const pinTarget = async (params: {
   await db
     .insert(userPins)
     .values({
-      userId: params.userId,
-      organizationId: params.organizationId,
-      teamId: params.teamId,
-      targetType: params.target.targetType,
-      targetId: params.target.targetId,
+      userId: principal.userId,
+      organizationId: principal.organizationId,
+      teamId,
+      targetType: target.targetType,
+      targetId: target.targetId,
       // Appended in the statement itself, not read-then-written: two pins
       // racing from two tabs must not compute the same slot from the same
       // stale MAX.
-      displayOrder: sql`(SELECT COALESCE(MAX(${userPins.displayOrder}), -1) + 1 FROM ${userPins} WHERE ${userPins.userId} = ${params.userId} AND ${userPins.teamId} = ${params.teamId})`,
+      displayOrder: sql`(SELECT COALESCE(MAX(${userPins.displayOrder}), -1) + 1 FROM ${userPins} WHERE ${userPins.userId} = ${principal.userId} AND ${userPins.teamId} = ${teamId})`,
     })
     .onConflictDoNothing();
 };

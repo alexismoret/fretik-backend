@@ -222,10 +222,9 @@ describe("answerReadOnlySuggestion", () => {
     const row = await answerReadOnlySuggestion({
       connectionId: conn.id,
       teamId: fx.teamId,
-      userId: admin,
+      principal: await fx.principalOf(admin),
       actionName: "list_orders",
       accept: true,
-      isOrgAdmin: true,
     });
     expect(row.actionPolicies).toEqual({ list_orders: "auto" });
 
@@ -250,10 +249,9 @@ describe("answerReadOnlySuggestion", () => {
     const row = await answerReadOnlySuggestion({
       connectionId: conn.id,
       teamId: fx.teamId,
-      userId: admin,
+      principal: await fx.principalOf(admin),
       actionName: "list_orders",
       accept: false,
-      isOrgAdmin: true,
     });
     expect(row.actionPolicies ?? {}).toEqual({});
     expect(
@@ -274,33 +272,41 @@ describe("answerReadOnlySuggestion", () => {
     });
   });
 
-  test("a team connection needs an admin, and a tool with no suggestion is a 404", async () => {
+  test("a team connection's answer takes a team lead, and a tool with no suggestion is a 404", async () => {
     const conn = await createMcpConnection();
     await suggestMcpToolKinds({
       connectionId: conn.id,
       evaluator: recording().evaluator,
     });
-    const notAdmin = await rejection(
-      answerReadOnlySuggestion({
-        connectionId: conn.id,
+    // A member of the team, not its lead: accepting would set a permission
+    // for everyone, and rejecting would hide the suggestion from the lead.
+    for (const accept of [true, false]) {
+      const notLead = await rejection(
+        answerReadOnlySuggestion({
+          connectionId: conn.id,
+          teamId: fx.teamId,
+          principal: await fx.principalOf(fx.userIds[1]),
+          actionName: "list_orders",
+          accept,
+        }),
+      );
+      expect(notLead.message).toContain("ACCESS_DENIED");
+    }
+    expect(
+      await listReadOnlySuggestions({
         teamId: fx.teamId,
-        userId: admin,
-        actionName: "list_orders",
-        accept: true,
-        isOrgAdmin: false,
+        snapshotId: conn.snapshotId,
       }),
-    );
-    expect(notAdmin.message).toContain("FORBIDDEN");
+    ).toEqual(new Set(["list_orders"]));
 
     // `items` was answered `mixed`: journaled, but no read suggestion.
     const none = await rejection(
       answerReadOnlySuggestion({
         connectionId: conn.id,
         teamId: fx.teamId,
-        userId: admin,
+        principal: await fx.principalOf(admin),
         actionName: "items",
         accept: true,
-        isOrgAdmin: true,
       }),
     );
     expect(none.message).toContain("NOT_FOUND");

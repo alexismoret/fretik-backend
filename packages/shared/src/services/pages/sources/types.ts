@@ -1,3 +1,4 @@
+import type { DriveVisibility } from "../../../authz/drive-sql";
 import type {
   PageDataset,
   PageDatasetKind,
@@ -38,6 +39,13 @@ export interface PageDataSourceContext {
    * through); everything else ignores it, as it ignores `userId`.
    */
   pageId?: string;
+  /**
+   * The Drive files this run may surface through the records that mirror
+   * them: the run's READER's (`runPageData`). Computed on first use and shared
+   * by every dataset of the run, so a page that reads no records never pays
+   * for it.
+   */
+  drive: () => Promise<DriveVisibility>;
   /** Declared variables, already coerced. The only viewer input that gets in. */
   state: Record<string, PageValue>;
   /**

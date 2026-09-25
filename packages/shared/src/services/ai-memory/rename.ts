@@ -34,7 +34,7 @@ export const renameMemory = async (args: {
       400,
       createApiError(
         "MEMORY_INVALID_PATH",
-        "Cannot rename across namespaces (user ↔ team). Use view + create + delete instead.",
+        "Cannot rename across namespaces (user, team, project). Use view + create + delete instead.",
       ),
     );
   }

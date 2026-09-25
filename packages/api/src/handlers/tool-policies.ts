@@ -1,8 +1,8 @@
+import { access } from "@fretik/shared/authz/http";
 import {
   authMiddleware,
   type HonoLoggedAppType,
 } from "@fretik/shared/lib/auth-middleware";
-import { assertOrgAdmin } from "@fretik/shared/lib/auth-roles";
 import {
   badRequest,
   teamRequired,
@@ -28,8 +28,9 @@ import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
  * `/tool-policies` — the team's builtin-tool permission map. GET returns the
  * catalog (each policy-managed tool + its default, selectable levels, and the
  * team's override) so the settings page can render one row per tool. PATCH
- * (admin) applies a sparse override patch. External-app ACTION policies live on
- * the connection (see `/external-apps/connections/{id}`), not here.
+ * (`team.settings.manage`: team leads and admins) applies a sparse override
+ * patch. External-app ACTION policies live on the connection (see
+ * `/external-apps/connections/{id}`), not here.
  */
 const toolPoliciesRoutes = new OpenAPIHono<HonoLoggedAppType>();
 toolPoliciesRoutes.use("*", authMiddleware);
@@ -37,6 +38,9 @@ toolPoliciesRoutes.use("*", authMiddleware);
 const getRoute = createRoute({
   method: "get",
   path: "/",
+  middleware: access.session(
+    "Any member of the active team reads what its tools may do.",
+  ),
   summary: "List the team's builtin-tool permission policies",
   tags: ["ToolPolicies"],
   responses: {
@@ -54,7 +58,8 @@ const getRoute = createRoute({
 const patchRoute = createRoute({
   method: "patch",
   path: "/",
-  summary: "Set the team's builtin-tool permission overrides (admin only)",
+  middleware: access.capability("team.settings.manage"),
+  summary: "Set the team's builtin-tool permission overrides (team leads)",
   description:
     "Sparse patch keyed by tool name, or by `tool.action` for a single action of a multi-action tool: a level sets the override, `null` resets to the default. Names are validated against the catalog and levels against the relevant selectable set (`blocked` is tool-level only).",
   tags: ["ToolPolicies"],
@@ -125,14 +130,8 @@ toolPoliciesRoutes.openapi(getRoute, async (c) => {
 });
 
 toolPoliciesRoutes.openapi(patchRoute, async (c) => {
-  const user = c.get("user");
   const team = c.get("team");
   if (!team) return throwHttpError(403, teamRequired());
-  await assertOrgAdmin({
-    userId: user.id,
-    organizationId: team.organizationId,
-  });
-
   const patch = c.req.valid("json");
   // Validate names against the catalog and levels against the relevant
   // selectable set — reject anything outside (e.g. `approval` on a read tool,

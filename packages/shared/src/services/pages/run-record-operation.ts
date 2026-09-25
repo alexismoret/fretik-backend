@@ -1,4 +1,7 @@
 import { HTTPException } from "hono/http-exception";
+import { driveVisibility } from "../../authz/drive-sql";
+import { partitionMirrorWrites } from "../../authz/mirror-writes";
+import type { Principal } from "../../authz/principal";
 import db from "../../db";
 import { MAX_BULK_ITEMS } from "../../lib/db-bulk";
 import type {
@@ -10,6 +13,7 @@ import { isPageVarRef } from "../../schemas/pages";
 import { bulkDeleteCollectionRecords } from "../collection-records/bulk-delete";
 import { bulkUpdateCollectionRecords } from "../collection-records/bulk-update";
 import { createCollectionRecord } from "../collection-records/create";
+import { recordsShortOfFull } from "../collection-sharing/write-access";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
 import { createLink } from "../links/create";
 import { invalidateLink } from "../links/invalidate";
@@ -118,6 +122,9 @@ const ownedRecordIds = async (params: {
   teamId: string;
   collectionId: string;
   ids: string[];
+  /** The viewer: a record mirroring a file kept from them is not theirs to
+   * write without `edit` on the file (`authz/mirror-writes.ts`). */
+  principal: Principal;
 }): Promise<Set<string>> => {
   if (params.ids.length === 0) return new Set();
   const rows = await db.query.collectionRecords.findMany({
@@ -128,7 +135,11 @@ const ownedRecordIds = async (params: {
       teamId: params.teamId,
     },
   });
-  return new Set(rows.map((row) => row.id));
+  const { writable } = await partitionMirrorWrites({
+    principal: params.principal,
+    recordIds: rows.map((row) => row.id),
+  });
+  return new Set(writable);
 };
 
 /**
@@ -253,9 +264,12 @@ export const runPageRecordOperation = async (params: {
   organizationId: string;
   teamId: string;
   userId: string;
+  /** The viewer, as the engine sees them: their Drive bounds the write. */
+  principal: Principal;
   state: Record<string, PageValue>;
 }): Promise<PageRunResponse> => {
-  const { operation, organizationId, teamId, userId, state } = params;
+  const { operation, organizationId, teamId, userId, principal, state } =
+    params;
   // A page click is a USER write, not an agent one — the journal has to say so,
   // because "who changed this status" is the first question asked of a board.
   const actor = { actorType: "user" as const, actorUserId: userId };
@@ -281,6 +295,7 @@ export const runPageRecordOperation = async (params: {
       teamId,
       collectionId: operation.collectionId,
       ids: [fromId],
+      principal,
     });
     if (!owned.has(fromId)) {
       return {
@@ -338,6 +353,8 @@ export const runPageRecordOperation = async (params: {
       await createLink({
         organizationId,
         teamId,
+        // A click links only to what the viewer can open.
+        drive: await driveVisibility(principal, teamId),
         linkTypeId: linkType.id,
         fromRecordId: fromId,
         toRecordId: toId,
@@ -424,12 +441,23 @@ export const runPageRecordOperation = async (params: {
     teamId,
     collectionId: operation.collectionId,
     ids: requested,
+    principal,
   });
+  // Deleting a record someone else created takes full access to the team's
+  // content (the team's policy): those are refused, like records out of reach.
+  if (operation.mode === "delete" && principal.kind === "user") {
+    const held = await recordsShortOfFull({
+      principal,
+      teamId,
+      recordIds: [...owned],
+    });
+    for (const { id } of held) owned.delete(id);
+  }
   const refused = requested.filter((id) => !owned.has(id));
   if (owned.size === 0) {
     return {
       status: "error",
-      message: `none of the ${requested.length.toString()} ids is a record of this page's collection in your team.`,
+      message: `none of the ${requested.length.toString()} ids is a record of this page's collection in your team that you may ${operation.mode === "delete" ? "delete" : "change"}.`,
     };
   }
   const ids = requested.filter((id) => owned.has(id));

@@ -1,3 +1,5 @@
+import { driveVisibility } from "@fretik/shared/authz/drive-sql";
+import { access } from "@fretik/shared/authz/http";
 import {
   authMiddleware,
   type HonoLoggedAppType,
@@ -34,6 +36,9 @@ linkRoutes.use("*", authMiddleware);
 const listRoute = createRoute({
   method: "get",
   path: "",
+  middleware: access.handler(
+    "The record must be readable (assertCanReadRecord); far ends are filtered.",
+  ),
   summary: "List a record's active links",
   tags: ["Links"],
   request: { query: z.object({ recordId: z.uuid() }) },
@@ -52,6 +57,9 @@ const listRoute = createRoute({
 const createRouteDef = createRoute({
   method: "post",
   path: "",
+  middleware: access.handler(
+    "Write access to the source record, and both ends readable (bulk-create).",
+  ),
   summary: "Create a link between two records",
   tags: ["Links"],
   request: {
@@ -73,6 +81,9 @@ const createRouteDef = createRoute({
 const deleteRouteDef = createRoute({
   method: "delete",
   path: "/{id}",
+  middleware: access.handler(
+    "The same right as creating it: write access to its source record.",
+  ),
   summary: "Remove a link",
   tags: ["Links"],
   request: { params: paramsIdSchema },
@@ -95,6 +106,7 @@ linkRoutes.openapi(listRoute, async (c) => {
     recordId,
     teamId: team.id,
     organizationId: team.organizationId,
+    drive: await driveVisibility(c.get("principal"), team.id),
   });
   return c.json(links, 200);
 });
@@ -110,10 +122,13 @@ linkRoutes.openapi(createRouteDef, async (c) => {
     recordId: body.fromRecordId,
     teamId: team.id,
     organizationId: team.organizationId,
+    userId: c.get("user").id,
   });
   const created = await createLink({
     organizationId: team.organizationId,
     teamId: team.id,
+    // Both ends must be records the person can see.
+    drive: await driveVisibility(c.get("principal"), team.id),
     linkTypeId: body.linkTypeId,
     fromRecordId: body.fromRecordId,
     toRecordId: body.toRecordId,
@@ -133,6 +148,7 @@ linkRoutes.openapi(deleteRouteDef, async (c) => {
     linkId: id,
     teamId: team.id,
     organizationId: team.organizationId,
+    userId: c.get("user").id,
   });
   const invalidated = await invalidateLink({
     id,

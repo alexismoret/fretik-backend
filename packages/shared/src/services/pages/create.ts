@@ -1,3 +1,4 @@
+import { restrictionColumns } from "../../authz/legacy-privacy";
 import db from "../../db";
 import { pages } from "../../db/schema";
 import { badRequest, internalError, throwHttpError } from "../../lib/errors";
@@ -15,7 +16,6 @@ import { validatePageDefinitionConnections } from "./validate-connections";
 import { refreshPageVectors } from "./vector-refresh";
 import type { PageVersionActor, PageVersionMeta } from "./versions";
 import { trimPageVersions, writePageVersion } from "./versions";
-import { pageOwnerWriteError } from "./visibility";
 
 /**
  * Create a page. Always unpublished (`publicToken` NULL) — exposing it
@@ -32,6 +32,8 @@ import { pageOwnerWriteError } from "./visibility";
 export const createPage = async (params: {
   organizationId: string;
   teamId: string;
+  /** The project it is made in; null or omitted for its team's. */
+  projectId?: string | null;
   createdByUserId: string;
   input: CreatePageInput;
   /** Who is writing, for the history. Defaults to the human doing the create. */
@@ -41,11 +43,21 @@ export const createPage = async (params: {
 }): Promise<{ page: PageResponse; warnings: string[] }> => {
   const input = CreatePageSchema.parse(params.input);
 
-  const ownerError = pageOwnerWriteError(
-    input.userId ?? null,
-    params.createdByUserId,
-  );
-  if (ownerError) return throwHttpError(400, badRequest(ownerError));
+  // The creator owns the page. The legacy `userId` says who sees it: null
+  // opens it to the team, the creator's own id restricts it to them — never
+  // someone else's, which would make the page act as them.
+  if (
+    input.userId !== undefined &&
+    input.userId !== null &&
+    input.userId !== params.createdByUserId
+  ) {
+    return throwHttpError(
+      400,
+      badRequest(
+        "page.userId can only be null (open to the team) or your own id (restricted).",
+      ),
+    );
+  }
 
   const sanitized = sanitizePageDefinition(input.definition);
   // Refuses alongside the compiler, and for the same reason: these name a
@@ -81,7 +93,11 @@ export const createPage = async (params: {
       .values({
         organizationId: params.organizationId,
         teamId: params.teamId,
-        userId: input.userId ?? null,
+        projectId: params.projectId ?? null,
+        ...restrictionColumns({
+          restricted: input.userId !== undefined && input.userId !== null,
+          ownerUserId: params.createdByUserId,
+        }),
         name: input.name,
         description:
           derivePageDescription({

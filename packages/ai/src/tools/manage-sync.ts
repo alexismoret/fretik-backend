@@ -27,6 +27,8 @@ import {
   agentEventActor,
   getRuntimeContext,
 } from "../agents/shared/runtime-context";
+import { requireTurnContributor } from "../agents/shared/turn-access";
+import { liftAccessRefusal } from "../lib/access-refusal";
 import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
 
 /**
@@ -257,6 +259,12 @@ export const createManageSyncTool = () =>
             });
 
       try {
+        // Declaring, changing, removing or refreshing a source writes the
+        // team's collections: a viewer reads.
+        if (input.action !== "list" && input.action !== "preview") {
+          await requireTurnContributor(ctx);
+        }
+
         if (input.action === "list") {
           const collectionId = await collectionIdOf();
           const sources = await listSyncSources({
@@ -587,9 +595,12 @@ export const createManageSyncTool = () =>
           note: "The first run has started in the background. Tell the user the collection will fill in a moment, how often it refreshes, and that its columns are read-only here.",
         };
       } catch (error) {
-        return toolError(
-          TOOL_ERROR_CODES.COLLECTION_QUERY_ERROR,
-          error instanceof Error ? error.message : String(error),
+        return (
+          liftAccessRefusal(error) ??
+          toolError(
+            TOOL_ERROR_CODES.COLLECTION_QUERY_ERROR,
+            error instanceof Error ? error.message : String(error),
+          )
         );
       }
     },

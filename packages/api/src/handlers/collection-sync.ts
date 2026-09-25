@@ -1,3 +1,4 @@
+import { access } from "@fretik/shared/authz/http";
 import {
   authMiddleware,
   type HonoLoggedAppType,
@@ -98,6 +99,7 @@ const runRequestSchema = z.object({
 const listSourcesRoute = createRoute({
   method: "get",
   path: "/sources",
+  middleware: access.session("The active team's sync sources only."),
   summary: "List the sync sources of a collection (or of the whole team)",
   tags: ["CollectionSync"],
   request: { query: listQuerySchema },
@@ -118,6 +120,9 @@ const listSourcesRoute = createRoute({
 const getSourceRoute = createRoute({
   method: "get",
   path: "/sources/{id}",
+  middleware: access.session(
+    "A sync source is looked up within the active team.",
+  ),
   summary: "Get one sync source",
   tags: ["CollectionSync"],
   request: { params: paramsIdSchema },
@@ -135,6 +140,7 @@ const getSourceRoute = createRoute({
 const createSourceRoute = createRoute({
   method: "post",
   path: "/sources",
+  middleware: access.capability("team.content.create"),
   summary: "Declare that an app fills this collection, or some of its columns",
   description:
     '`kind: table` makes the source own the collection: one upstream row becomes one record, keyed by `externalIdPath`, and the mapped columns are created read-only. `kind: lookup` fills SOME columns of an existing collection, resolving its arguments per record from `{"$field": "<key>"}` bindings. The columns land as ORDINARY typed columns, so formulas, filters, sorts, indexes and the SQL tool work on them unchanged — what the source adds is provenance and a schedule. Creating one queues a first run.',
@@ -161,6 +167,7 @@ const createSourceRoute = createRoute({
 const updateSourceRoute = createRoute({
   method: "patch",
   path: "/sources/{id}",
+  middleware: access.capability("team.content.create"),
   summary: "Change a source's arguments, mapping, cadence or state",
   description:
     "Partial update. The `kind`, the collection and the external-id path are NOT editable: they decide what a record IS, so changing one would re-key every row already stored — rebuilding is a delete and a create, which is honest about what happens to the data. Dropping a column from `fields` does not delete it: it becomes an ordinary local field, with its values, editable from then on.",
@@ -187,6 +194,7 @@ const updateSourceRoute = createRoute({
 const deleteSourceRoute = createRoute({
   method: "delete",
   path: "/sources/{id}",
+  middleware: access.capability("team.content.create"),
   summary: "Stop syncing — the columns and their data are KEPT",
   description:
     "Deleting a source is not deleting data. Every column it filled stays, with the values of the last run, and becomes an ordinary editable field of the collection (`field_definitions.sync_source_id` is cleared, never the column). Records a `table` source created stay too. What goes away is the mapping, the schedule and the read-only rule — which is exactly what someone means by 'detach this from the app'.",
@@ -226,6 +234,7 @@ const runAcceptedSchema = z.object({
 const runSourceRoute = createRoute({
   method: "post",
   path: "/sources/{id}/run",
+  middleware: access.capability("team.content.create"),
   summary: "Refresh now",
   description:
     "Queues a run and answers with the queued job, not with data: the work happens in the background and the records change underneath. Poll `GET /sources/{id}/runs` for what it did. A refresh already in flight is JOINED rather than duplicated — pressing Refresh twice returns the same `jobId` and calls the third party once. A source that is disabled, or whose connection is gone, is refused with the reason rather than queued for a failure we already know about.",
@@ -252,6 +261,7 @@ const runSourceRoute = createRoute({
 const confirmFullResyncRoute = createRoute({
   method: "post",
   path: "/sources/{id}/confirm-full-resync",
+  middleware: access.capability("team.content.create"),
   summary: "Apply the orphan policy that a run refused to apply",
   description:
     "A run whose answer would have orphaned most of the collection applies NOTHING — it ends `partial` with `stopReason: orphan_floor` and asks, because an upstream filter narrowing and a mass deletion produce the same short answer and only a person can tell them apart. This confirms it: the next run walks every row and applies the orphan policy whatever the difference comes to. Refused when no run has asked, so a confirmation is always an answer to numbers somebody has seen.",
@@ -276,6 +286,7 @@ const confirmFullResyncRoute = createRoute({
 const listRunsRoute = createRoute({
   method: "get",
   path: "/sources/{id}/runs",
+  middleware: access.session("Runs of a sync source of the active team."),
   summary: "A source's recent runs",
   description:
     "Newest first. `upstreamCalls` is the number the team can act on — it is what a cadence costs someone else's rate limit — and `truncated` says a bound was reached (the row cap, the call budget, the run deadline) rather than the upstream having run out of rows.",
@@ -299,6 +310,9 @@ const listRunsRoute = createRoute({
 const previewRoute = createRoute({
   method: "post",
   path: "/preview",
+  middleware: access.session(
+    "Reads through a connection the caller may use: the team's or their own.",
+  ),
   summary: "Read a sample from the app and propose a mapping",
   description:
     "Calls the action once, keeps the first rows, and proposes one column per value — its type DECLARED from the manifest where the provider typed its answer, INFERRED from the sample where it did not (MCP servers, generic backends). `suggestedIdPaths` ranks the paths that look like a stable upstream id, which is what a `table` source is keyed on. Writes nothing: this is the only route here that waits on a third party, because it is the only one a person is watching.",

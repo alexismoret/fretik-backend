@@ -29,6 +29,10 @@ import { and, eq, inArray, or } from "drizzle-orm";
  *    context — toggle `enabled` or delete instead).
  *  - `enabled = false` is a global opt-out applied at render time, not
  *    here, so the ACL stays "can this user reach this row at all".
+ *  - The team's part follows the turn's `teamReach`: a project chat reads
+ *    the team's instructions and not its files, and someone outside the
+ *    team reads neither — through the manifest, `read("context/…")` and the
+ *    sandbox alike, since all three load through here.
  */
 
 export type ContextFileScope = "user" | "team";
@@ -55,15 +59,37 @@ export interface LoadedContext {
   files: AccessibleContextFile[];
 }
 
+/**
+ * How much of the team's persistent context a turn reads.
+ *
+ * - `all`: its instructions and its files, in a team's own chat.
+ * - `instructions`: its instructions only, in a project chat: the project
+ *   brings its own files, and the team's would crowd them out.
+ * - `none`: nothing, for someone who takes part in a project without being
+ *   one of the team's people.
+ */
+export type TeamContextReach = "all" | "instructions" | "none";
+
+export const teamContextReach = (place: {
+  projectId?: string | undefined;
+  outsideTeam?: boolean | undefined;
+}): TeamContextReach => {
+  if (place.outsideTeam === true) return "none";
+  return place.projectId === undefined ? "all" : "instructions";
+};
+
 export interface LoadContextArgs {
   userId: string | undefined;
   teamId: string;
   organizationId: string;
+  /** Absent means `all`: a team's chat, a workflow of the team. */
+  teamReach?: TeamContextReach;
 }
 
 export const loadAccessibleContext = async (
   args: LoadContextArgs,
 ): Promise<LoadedContext> => {
+  const teamReach = args.teamReach ?? "all";
   const profileRows = await db
     .select()
     .from(aiContextProfiles)
@@ -77,10 +103,12 @@ export const loadAccessibleContext = async (
                 eq(aiContextProfiles.userId, args.userId),
               )
             : undefined,
-          and(
-            eq(aiContextProfiles.scope, "team"),
-            eq(aiContextProfiles.teamId, args.teamId),
-          ),
+          teamReach === "none"
+            ? undefined
+            : and(
+                eq(aiContextProfiles.scope, "team"),
+                eq(aiContextProfiles.teamId, args.teamId),
+              ),
         ),
       ),
     );
@@ -89,13 +117,18 @@ export const loadAccessibleContext = async (
     return { userProfile: null, teamProfile: null, files: [] };
   }
 
-  const profileIds = profileRows.map((p) => p.id);
+  // The team's files only where the team's whole context applies.
+  const profileIds = profileRows
+    .filter((p) => p.scope === "user" || teamReach === "all")
+    .map((p) => p.id);
 
   const [files, fileMutes, profileMutes] = await Promise.all([
-    db
-      .select()
-      .from(aiContextFiles)
-      .where(inArray(aiContextFiles.profileId, profileIds)),
+    profileIds.length === 0
+      ? Promise.resolve([])
+      : db
+          .select()
+          .from(aiContextFiles)
+          .where(inArray(aiContextFiles.profileId, profileIds)),
     args.userId
       ? db
           .select({ fileId: aiContextUserFileMutes.fileId })

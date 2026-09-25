@@ -8,7 +8,13 @@ import { deleteCollectionRecord } from "@fretik/shared/services/collection-recor
 import { setRecordStatus } from "@fretik/shared/services/collection-records/set-status";
 import { getRecordSnapshots } from "@fretik/shared/services/collection-records/snapshot-batch";
 import { setRecordData } from "@fretik/shared/services/collection-records/update";
-import { assertCanWriteRecord } from "@fretik/shared/services/collection-sharing/write-access";
+import { requireRecordAudienceAllowed } from "@fretik/shared/services/collection-sharing/audience-policy";
+import {
+  assertCanDeleteRecords,
+  assertCanShareRecord,
+  assertCanWriteRecord,
+  assertCanWriteType,
+} from "@fretik/shared/services/collection-sharing/write-access";
 import { resolveCollectionId } from "@fretik/shared/services/collections/resolve";
 import type {
   ExecContext,
@@ -23,6 +29,7 @@ import {
   getRuntimeContext,
 } from "../agents/shared/runtime-context";
 import { workflowWriteBackstop } from "../agents/shared/workflow-write-backstop";
+import { liftAccessRefusal } from "../lib/access-refusal";
 import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
 
 /**
@@ -232,6 +239,21 @@ export const createManageRecordTool = () =>
               "Check the available type keys in <team_collections>.",
             );
           }
+          // A collection this team may write records into, by someone who
+          // contributes to it — asked before any card could open. A record
+          // shared on its own stays within the organization's policies.
+          await assertCanWriteType({
+            collectionId,
+            teamId: ctx.teamId,
+            organizationId: ctx.organizationId,
+            userId: ctx.userId,
+          });
+          await requireRecordAudienceAllowed({
+            userId: ctx.userId,
+            organizationId: ctx.organizationId,
+            teamId: ctx.teamId,
+            sharing: input.sharing,
+          });
           // Plain data write → rich `record_write` card (single item), same as
           // the Python bulk path. The gate writes directly at policy `auto`.
           const execCtx = toExecCtx(ctx);
@@ -331,11 +353,27 @@ export const createManageRecordTool = () =>
         }
 
         // Owner team or a write grant/share — never write another team's record.
-        await assertCanWriteRecord({
-          recordId: input.recordId,
+        // Deleting it, or changing who sees it, takes full access to the
+        // team's content unless the person created it (the team's policy).
+        const scope = {
           teamId: ctx.teamId,
           organizationId: ctx.organizationId,
-        });
+          userId: ctx.userId,
+        };
+        await assertCanWriteRecord({ recordId: input.recordId, ...scope });
+        if (input.action === "delete") {
+          await assertCanDeleteRecords({
+            recordIds: [input.recordId],
+            ...scope,
+          });
+        }
+        if (input.action === "update" && input.sharing !== undefined) {
+          await assertCanShareRecord({ recordId: input.recordId, ...scope });
+          await requireRecordAudienceAllowed({
+            ...scope,
+            sharing: input.sharing,
+          });
+        }
 
         if (input.action === "update") {
           const hasData = Object.keys(values).length > 0;
@@ -509,9 +547,12 @@ export const createManageRecordTool = () =>
         });
         return { ok: true, record: serializeRecord(record) };
       } catch (err) {
-        return toolError(
-          TOOL_ERROR_CODES.COLLECTION_QUERY_ERROR,
-          `manageRecord ${input.action} failed: ${errMsg(err)}`,
+        return (
+          liftAccessRefusal(err) ??
+          toolError(
+            TOOL_ERROR_CODES.COLLECTION_QUERY_ERROR,
+            `manageRecord ${input.action} failed: ${errMsg(err)}`,
+          )
         );
       }
     },

@@ -1,3 +1,4 @@
+import type { UserPrincipal } from "../../authz/principal";
 import db from "../../db";
 import { forbidden, notFound, throwHttpError } from "../../lib/errors";
 import type {
@@ -7,7 +8,6 @@ import type {
 import { labelDecisions } from "../decisions/journal";
 import { createWorkflowRun } from "./create-run";
 import { getWorkflowRow } from "./get";
-import type { WorkflowRequester } from "./visibility";
 
 /**
  * "Run anyway" — start a launch the gate refused.
@@ -25,15 +25,17 @@ import type { WorkflowRequester } from "./visibility";
  * the same transaction that inserts the run — so a failed launch leaves the
  * refusal in place to retry, instead of losing both. The decision survives on
  * the new run, stamped `overridden` with who and when.
+ *
+ * Starting it is running the workflow, so it takes `use` on it, like any run:
+ * a restricted workflow's filtered launches are its owner's to start.
  */
 export const overrideFilteredWorkflowRun = async (params: {
   runId: string;
+  /** The run's own team: a workflow shared from another team starts there. */
   teamId: string;
-  userId: string;
-  /** Restricts a private workflow's filtered run to its owner, exactly as it
-   * restricts that workflow's normal runs. */
-  requester?: WorkflowRequester;
+  principal: UserPrincipal;
 }): Promise<WorkflowRunResponse> => {
+  const userId = params.principal.userId;
   const filtered = await db.query.workflowRuns.findFirst({
     where: { id: params.runId, teamId: params.teamId },
     columns: {
@@ -58,7 +60,8 @@ export const overrideFilteredWorkflowRun = async (params: {
   const workflow = await getWorkflowRow({
     id: filtered.workflowId,
     teamId: params.teamId,
-    ...(params.requester !== undefined ? { requester: params.requester } : {}),
+    principal: params.principal,
+    level: "use",
   });
   if (!workflow) return throwHttpError(404, notFound("Workflow"));
 
@@ -67,14 +70,14 @@ export const overrideFilteredWorkflowRun = async (params: {
     ...(filtered.gateDecision ?? { outcome: "filtered", decidedAt: now }),
     outcome: "overridden",
     overriddenAt: now,
-    overriddenByUserId: params.userId,
+    overriddenByUserId: userId,
   };
 
   const run = await createWorkflowRun({
     workflow,
     triggerType: "event",
     triggerPayload: filtered.triggerPayload,
-    triggeredByUserId: params.userId,
+    triggeredByUserId: userId,
     ...(filtered.sourceEventId !== null
       ? { sourceEventId: filtered.sourceEventId }
       : {}),
@@ -92,7 +95,7 @@ export const overrideFilteredWorkflowRun = async (params: {
       targetId: filtered.workflowId,
       label: "true",
       source: "run_anyway",
-      userId: params.userId,
+      userId,
     });
   }
   return run;

@@ -1,5 +1,5 @@
 import { and, eq, inArray } from "drizzle-orm";
-import type { Transaction } from "../../db";
+import type { Executor, Transaction } from "../../db";
 import { aiEpisodes } from "../../db/schema";
 
 /**
@@ -31,9 +31,12 @@ export const hideEpisodesForConversations = async (
   return rows.map((r) => r.id);
 };
 
-/** The record-activity episodes anchored on any of the deleted records. */
+/**
+ * The record-activity episodes anchored on any of these records — deleted, or
+ * mirroring a file the team as a whole can no longer open (`ai-vectors/acl.ts`).
+ */
 export const hideEpisodesForRecords = async (
-  tx: Transaction,
+  tx: Executor,
   recordIds: string[],
 ): Promise<string[]> => {
   if (recordIds.length === 0) return [];

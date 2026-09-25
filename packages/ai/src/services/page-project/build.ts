@@ -1,3 +1,9 @@
+import { requireAccess } from "@fretik/shared/authz/access";
+import {
+  requirePlacement,
+  type Placement,
+} from "@fretik/shared/authz/placement";
+import type { Principal } from "@fretik/shared/authz/principal";
 import { parseApiError } from "@fretik/shared/schemas/errors";
 import type { PageDefinition } from "@fretik/shared/schemas/pages";
 import { createPage } from "@fretik/shared/services/pages/create";
@@ -11,7 +17,6 @@ import {
 } from "@fretik/shared/services/pages/lint";
 import { updatePage } from "@fretik/shared/services/pages/update";
 import type { PageVersionMeta } from "@fretik/shared/services/pages/versions";
-import type { PageRequester } from "@fretik/shared/services/pages/visibility";
 import { HTTPException } from "hono/http-exception";
 import { readAgentUsage } from "../../lib/turn-usage";
 import { PAGE_JSON_FILE, parsePageJson, type PageJson } from "./page-json";
@@ -51,7 +56,13 @@ export interface BuildPageProjectInput {
   organizationId: string;
   userId: string | null;
   conversationId: string | undefined;
-  requester: PageRequester | undefined;
+  /**
+   * Who the build writes for: saving over a page takes edit on it, creating
+   * one takes `team.content.create` — the same as in the app.
+   */
+  principal: Principal;
+  /** The project the turn works in: a new page is made in it. */
+  projectId?: string | undefined;
   /** The turn, so the version can be priced later (`PageVersionMeta.traceId`). */
   traceId?: string | undefined;
   /**
@@ -217,6 +228,28 @@ export const buildPageProject = async (
 
   const name = sections.name ?? nameFromSource(code.source) ?? "Untitled page";
 
+  // The build writes for someone, and is refused as the app would refuse
+  // them: saving over a page takes edit on it; creating one is placing it,
+  // in the turn's project when there is one (taking part in it), else in the
+  // team (`team.content.create`). Thrown, not listed: no edit to the files
+  // fixes it.
+  let placement: Placement | undefined;
+  if (state.pageId !== undefined) {
+    await requireAccess({
+      principal: input.principal,
+      type: "page",
+      id: state.pageId,
+      required: "edit",
+      notFoundMessage: "Page not found",
+    });
+  } else {
+    placement = await requirePlacement({
+      principal: input.principal,
+      activeTeamId: input.teamId,
+      projectId: input.projectId ?? null,
+    });
+  }
+
   try {
     const saved =
       state.pageId !== undefined
@@ -224,9 +257,7 @@ export const buildPageProject = async (
             pageId: state.pageId,
             teamId: input.teamId,
             actingUserId: input.userId ?? "",
-            ...(input.requester !== undefined
-              ? { requester: input.requester }
-              : {}),
+            principal: input.principal,
             input: {
               name,
               ...(sections.description !== undefined
@@ -247,7 +278,8 @@ export const buildPageProject = async (
             ...(versionMeta === undefined ? {} : { versionMeta }),
           })
         : await createPage({
-            teamId: input.teamId,
+            teamId: placement?.teamId ?? input.teamId,
+            projectId: placement?.projectId ?? null,
             organizationId: input.organizationId,
             createdByUserId: input.userId ?? "",
             input: {

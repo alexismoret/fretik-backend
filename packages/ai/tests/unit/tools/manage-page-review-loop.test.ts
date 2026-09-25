@@ -2,6 +2,7 @@ import { badRequest } from "@fretik/shared/lib/errors";
 import "@hono/zod-openapi";
 import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import { HTTPException } from "hono/http-exception";
+import { installAccessDouble } from "../../lib/access-double";
 import { mockModule } from "../../lib/mock-module";
 
 /**
@@ -46,8 +47,6 @@ const realRetrieve = await import("@fretik/shared/services/pages/retrieve");
 const realVersions = await import("@fretik/shared/services/pages/versions");
 const realRestore = await import("@fretik/shared/services/pages/restore");
 const realDryRun = await import("@fretik/shared/services/pages/dry-run");
-const realMemberRole =
-  await import("@fretik/shared/services/organization/member-role");
 
 // A render the REAL gate passes — mocking the gate instead would replace it
 // for every other test file (Bun's module mocks are process-wide).
@@ -184,9 +183,8 @@ await mockModule("@fretik/shared/services/pages/dry-run", {
   dryRunPage: async () => ({ samples: {}, warnings: [], refusals: [] }),
 });
 
-await mockModule("@fretik/shared/services/organization/member-role", {
-  isOrgAdmin: async () => false,
-});
+// Who the turn acts for, and the engine's gates: let through, recorded.
+const access = await installAccessDouble();
 
 // `mock.module` is process-wide and `mock.restore()` does not undo it: every
 // module faked above is put back so the files that run after this one see the
@@ -212,10 +210,7 @@ afterAll(() => {
   );
   void mock.module("@fretik/shared/services/pages/restore", () => realRestore);
   void mock.module("@fretik/shared/services/pages/dry-run", () => realDryRun);
-  void mock.module(
-    "@fretik/shared/services/organization/member-role",
-    () => realMemberRole,
-  );
+  access.restore();
 });
 
 const { createManagePageTool } = await import("../../../src/tools/manage-page");

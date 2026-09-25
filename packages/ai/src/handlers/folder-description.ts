@@ -1,3 +1,4 @@
+import { access } from "@fretik/shared/authz/http";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { z } from "zod";
 import { internalMiddleware } from "../middlewares/internal";
@@ -28,31 +29,37 @@ const FolderDescriptionRequestSchema = z.object({
 const folderDescriptionRoutes = new OpenAPIHono<HonoInternalAppType>();
 folderDescriptionRoutes.use("*", internalMiddleware);
 
-folderDescriptionRoutes.post("/", async (c) => {
-  const raw: unknown = await c.req.json();
-  const parsed = FolderDescriptionRequestSchema.safeParse(raw);
-  if (!parsed.success) {
-    return c.json(
-      {
-        code: "VALIDATION_ERROR",
-        message: "Invalid request body",
-        details: parsed.error.issues.map((i) => i.message),
-      },
-      400,
-    );
-  }
+folderDescriptionRoutes.post(
+  "/",
+  access.internal(
+    "The nightly folder pass sends summaries it already filtered; the text arrives in the body.",
+  ),
+  async (c) => {
+    const raw: unknown = await c.req.json();
+    const parsed = FolderDescriptionRequestSchema.safeParse(raw);
+    if (!parsed.success) {
+      return c.json(
+        {
+          code: "VALIDATION_ERROR",
+          message: "Invalid request body",
+          details: parsed.error.issues.map((i) => i.message),
+        },
+        400,
+      );
+    }
 
-  try {
-    const description = await generateFolderDescription({
-      teamId: c.get("context").teamId,
-      ...parsed.data,
-    });
-    return c.json({ description }, 200);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error("[folder-description] failed:", message);
-    return c.json({ code: "FOLDER_DESCRIPTION_ERROR", message }, 500);
-  }
-});
+    try {
+      const description = await generateFolderDescription({
+        teamId: c.get("context").teamId,
+        ...parsed.data,
+      });
+      return c.json({ description }, 200);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("[folder-description] failed:", message);
+      return c.json({ code: "FOLDER_DESCRIPTION_ERROR", message }, 500);
+    }
+  },
+);
 
 export { folderDescriptionRoutes };

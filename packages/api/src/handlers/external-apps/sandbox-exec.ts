@@ -1,3 +1,4 @@
+import { access } from "@fretik/shared/authz/http";
 import { verifySandboxJwt } from "@fretik/shared/lib/external-apps/sandbox-jwt";
 import { consumeRateLimit } from "@fretik/shared/lib/rate-limit";
 import {
@@ -58,6 +59,9 @@ const sandboxRoutes = new OpenAPIHono();
 const execRoute = createRoute({
   method: "post",
   path: "/exec",
+  middleware: access.public(
+    "Authenticated by the per-turn bearer token minted for the sandbox, not by a session.",
+  ),
   summary: "Dispatch a read or plan request from the chatbot sandbox",
   description:
     "Called exclusively by `fretik_apps._runtime` from inside the E2B sandbox. Bearer auth uses the per-turn sandbox JWT minted by the chatbot handler (HS256, 1h TTL).\n\n- `kind: 'read'` — eager execution; the response carries the mapped data.\n- `kind: 'plan'` — gated execution; the dispatcher matches the plan to an existing approval (creating one if needed) and returns either the cached result, an `approval_pending` marker, or an explicit error.",

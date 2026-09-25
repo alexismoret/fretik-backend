@@ -1,5 +1,8 @@
 import { randomUUIDv7 } from "bun";
 import { eq, sql } from "drizzle-orm";
+import { requireAccess } from "../../authz/access";
+import { driveVisibility } from "../../authz/drive-sql";
+import type { UserPrincipal } from "../../authz/principal";
 
 import db, { type Transaction } from "../../db";
 import { folders, teamSettings } from "../../db/schema";
@@ -105,6 +108,12 @@ export const createDocumentRecord = async (args: {
    * provenance is gone.
    */
   tx?: Transaction;
+  /**
+   * The project of a file filed at a root: a project's, or null for its
+   * team's. A file filed in a folder belongs to that folder's project,
+   * whatever this says (`authz/placement.ts` decided the caller may).
+   */
+  projectId?: string | null;
 }): Promise<typeof documents.$inferSelect> => {
   const { metadata, teamId, userId } = args;
 
@@ -132,7 +141,7 @@ export const createDocumentRecord = async (args: {
   const run = async (tx: Transaction) => {
     // The one insert every filing path goes through, so the folder check
     // lives here rather than with each caller (see `assertFolderInTeam`).
-    await assertFolderInTeam({
+    const folder = await assertFolderInTeam({
       folderId: metadata.folderId,
       teamId,
       executor: tx,
@@ -140,7 +149,11 @@ export const createDocumentRecord = async (args: {
 
     const result = await tx
       .insert(documents)
-      .values(documentToInsert)
+      .values({
+        ...documentToInsert,
+        projectId:
+          folder === null ? (args.projectId ?? null) : folder.projectId,
+      })
       .returning();
 
     const totalGo = metadata.fileSize / 1024 ** 3;
@@ -206,20 +219,28 @@ export interface UploadDocumentResult {
  * The original is stored on S3 BEFORE the enqueue so the worker (any
  * replica) can fetch it; no file bytes ever transit Redis.
  */
-export const uploadDocument = async (
-  file: File,
-  organizationId: string,
-  teamId: string,
-  userId: string,
-  folderId: string | undefined,
+export const uploadDocument = async (input: {
+  file: File;
+  organizationId: string;
+  teamId: string;
+  /** Who uploads: they own the file, and only what they can open collides. */
+  principal: UserPrincipal;
+  folderId: string | undefined;
+  /**
+   * The project whose root the file lands at when no folder is given; a file
+   * filed in a folder belongs to the folder's project.
+   */
+  projectId?: string | null;
   /**
    * What to do when the folder already holds a file with this name. `ask` (the
    * default) refuses with a 409 carrying the existing document's id, so the
    * caller can put the choice to the person who dropped the file — the same
    * thing every file manager does. Identical bytes never reach the question.
    */
-  onConflict: UploadConflictPolicy = "ask",
-): Promise<UploadDocumentResult> => {
+  onConflict?: UploadConflictPolicy;
+}): Promise<UploadDocumentResult> => {
+  const { file, organizationId, teamId, principal, folderId } = input;
+  const onConflict = input.onConflict ?? "ask";
   // 1. Read the file, then validate it against its actual content — the
   //    resolved MIME is what we persist.
   const documentId = randomUUIDv7();
@@ -232,14 +253,20 @@ export const uploadDocument = async (
   // 2a. The destination folder must be the team's. `createDocumentRecord`
   //     checks again at insert; checking here too refuses before any bytes
   //     reach S3, so a refused upload leaves no orphan object behind.
-  await assertFolderInTeam({ folderId, teamId });
+  const folder = await assertFolderInTeam({ folderId, teamId });
+  const projectId =
+    folder === null ? (input.projectId ?? null) : folder.projectId;
 
   // 2b. Same name, same folder — decide before any bytes move.
+  const userId = principal.userId;
+  const visibility = await driveVisibility(principal, teamId);
   const collision = await findNameCollision({
     teamId,
     folderId: folderId ?? null,
+    projectId,
     filename: file.name,
     fileHash,
+    visibility,
   });
   let filename = file.name;
 
@@ -262,6 +289,13 @@ export const uploadDocument = async (
       );
     }
     if (onConflict === "replace") {
+      // A new version of someone's file takes edit on that file.
+      await requireAccess({
+        principal,
+        type: "document",
+        id: collision.documentId,
+        required: "edit",
+      });
       const result = await replaceDocumentContent({
         documentId: collision.documentId,
         teamId,
@@ -280,7 +314,9 @@ export const uploadDocument = async (
     filename = await nextAvailableFilename({
       teamId,
       folderId: folderId ?? null,
+      projectId,
       filename: file.name,
+      visibility,
     });
   }
 
@@ -313,6 +349,7 @@ export const uploadDocument = async (
     metadata,
     teamId,
     userId,
+    projectId,
   });
 
   // 5. Enqueue background processing. If the enqueue fails (Redis

@@ -1,3 +1,9 @@
+import { requireDriveAction } from "../../authz/drive";
+import { driveVisibility } from "../../authz/drive-sql";
+import { loadPrincipal } from "../../authz/load-principal";
+import type { UserPrincipal } from "../../authz/principal";
+import { confineToProject, isTeamAgent } from "../../authz/project-agent";
+import { forbidden, throwHttpError } from "../../lib/errors";
 import { recordSharingSchema } from "../../schemas/collection-sharing";
 import {
   fieldConfigSchema,
@@ -10,7 +16,15 @@ import { createCollectionRecord } from "../collection-records/create";
 import { deleteCollectionRecord } from "../collection-records/delete";
 import { setRecordStatus } from "../collection-records/set-status";
 import { setRecordData } from "../collection-records/update";
-import { assertCanWriteType } from "../collection-sharing/write-access";
+import { requireRecordAudienceAllowed } from "../collection-sharing/audience-policy";
+import {
+  assertCanDeleteRecords,
+  assertCanManageType,
+  assertCanShareRecord,
+  assertCanWriteLink,
+  assertCanWriteRecord,
+  assertCanWriteType,
+} from "../collection-sharing/write-access";
 import { confirmFullResync } from "../collection-sync/confirm-full-resync";
 import { deleteCollection } from "../collections/delete";
 import { saveAuthoredContent } from "../documents/authored/content";
@@ -51,7 +65,18 @@ export interface ToolCallApplyContext {
   teamId: string;
   userId: string;
   conversationId: string;
+  /**
+   * The project the chat works in, as it is when the grant is applied: what
+   * the write creates at a root lands at the project's.
+   */
+  projectId: string | null;
 }
+
+/** Where something created at a root lands: the chat's project, if any. */
+const rootProjectOf = (
+  ctx: ToolCallApplyContext,
+  folderId: string | null,
+): string | null => (folderId === null ? ctx.projectId : null);
 
 export type ToolCallApplyFn = (
   ctx: ToolCallApplyContext,
@@ -95,18 +120,56 @@ const agentActor = (ctx: ToolCallApplyContext): EventActor => ({
   conversationId: ctx.conversationId,
 });
 
+/**
+ * The person the approved write acts for, as the access engine sees them NOW.
+ * The tool asked the same questions before the card opened; a grant can come
+ * hours later, after the person was made a viewer or left, so each apply asks
+ * them again (the same rules as the tool's, `authz/drive.ts` and
+ * `collection-sharing/write-access.ts`). The team's agent, in a project's
+ * run, works for the project alone, as it did when it asked
+ * (`confineToProject`).
+ */
+const principalOf = async (
+  ctx: ToolCallApplyContext,
+): Promise<UserPrincipal> => {
+  const principal = await loadPrincipal({
+    organizationId: ctx.organizationId,
+    userId: ctx.userId,
+  });
+  if (!principal) {
+    return throwHttpError(
+      403,
+      forbidden("The person this was for is no longer in the organization."),
+    );
+  }
+  return ctx.projectId !== null && isTeamAgent(principal)
+    ? confineToProject(principal, ctx.projectId)
+    : principal;
+};
+
 // ---- manageLink -----------------------------------------------------------
 
 const applyManageLink: ToolCallApplyFn = async (ctx, args) => {
   const actor = agentActor(ctx);
   const action = str(args, "action");
+  const scope = {
+    teamId: ctx.teamId,
+    organizationId: ctx.organizationId,
+    userId: ctx.userId,
+  };
   if (action === "unlink") {
+    await assertCanWriteLink({ linkId: str(args, "linkId"), ...scope });
     const link = await invalidateLink({ id: str(args, "linkId"), actor });
     return { ok: true, unlinked: link.id };
   }
+  await assertCanWriteRecord({
+    recordId: str(args, "fromRecordId"),
+    ...scope,
+  });
   const link = await createLink({
     organizationId: ctx.organizationId,
     teamId: ctx.teamId,
+    drive: await driveVisibility(await principalOf(ctx), ctx.teamId),
     linkTypeId: str(args, "linkTypeId"),
     fromRecordId: str(args, "fromRecordId"),
     toRecordId: str(args, "toRecordId"),
@@ -120,12 +183,22 @@ const applyManageLink: ToolCallApplyFn = async (ctx, args) => {
 const applyManageDrive: ToolCallApplyFn = async (ctx, args) => {
   const actor = agentActor(ctx);
   const action = str(args, "action");
+  const principal = await principalOf(ctx);
 
   if (action === "createFolder") {
+    const parentFolderId = strOrNull(args, "parentFolderId");
+    const projectId = rootProjectOf(ctx, parentFolderId);
+    await requireDriveAction(principal, {
+      kind: "createFolder",
+      teamId: ctx.teamId,
+      parentFolderId,
+      projectId,
+    });
     const description = strOrNull(args, "description");
     const folder = await createFolder({
       name: str(args, "name"),
-      parentFolderId: strOrNull(args, "parentFolderId"),
+      parentFolderId,
+      projectId,
       teamId: ctx.teamId,
       userId: ctx.userId,
       actor,
@@ -136,9 +209,11 @@ const applyManageDrive: ToolCallApplyFn = async (ctx, args) => {
     return { ok: true, folder: { id: folder.id, name: folder.name } };
   }
   if (action === "describeFolder") {
+    const folderId = str(args, "folderId");
+    await requireDriveAction(principal, { kind: "describeFolder", folderId });
     // `""` clears it, handing the folder back to the nightly generator.
     const folder = await updateFolder({
-      id: str(args, "folderId"),
+      id: folderId,
       teamId: ctx.teamId,
       updates: { description: strOrNull(args, "description") ?? "" },
       actor,
@@ -154,6 +229,10 @@ const applyManageDrive: ToolCallApplyFn = async (ctx, args) => {
     };
   }
   if (action === "renameFolder") {
+    await requireDriveAction(principal, {
+      kind: "renameFolder",
+      folderId: str(args, "folderId"),
+    });
     const folder = await updateFolder({
       id: str(args, "folderId"),
       teamId: ctx.teamId,
@@ -163,6 +242,11 @@ const applyManageDrive: ToolCallApplyFn = async (ctx, args) => {
     return { ok: true, folder: { id: folder.id, name: folder.name } };
   }
   if (action === "moveFolder") {
+    await requireDriveAction(principal, {
+      kind: "moveFolder",
+      folderId: str(args, "folderId"),
+      parentFolderId: strOrNull(args, "parentFolderId"),
+    });
     const folder = await updateFolder({
       id: str(args, "folderId"),
       teamId: ctx.teamId,
@@ -173,11 +257,13 @@ const applyManageDrive: ToolCallApplyFn = async (ctx, args) => {
   }
   if (action === "deleteFolder") {
     const folderId = str(args, "folderId");
+    await requireDriveAction(principal, { kind: "deleteFolder", folderId });
     await deleteFolders({ ids: [folderId], teamId: ctx.teamId, actor });
     return { ok: true, deleted: true, folderId };
   }
   if (action === "renameDocument") {
     const documentId = str(args, "documentId");
+    await requireDriveAction(principal, { kind: "renameDocument", documentId });
     const renamed = await updateDocument({
       id: documentId,
       teamId: ctx.teamId,
@@ -195,6 +281,11 @@ const applyManageDrive: ToolCallApplyFn = async (ctx, args) => {
   // moveDocument — the fall-through, so every action ABOVE must be handled
   // explicitly: an unmatched one would silently move the document to the root.
   const documentId = str(args, "documentId");
+  await requireDriveAction(principal, {
+    kind: "moveDocument",
+    documentId,
+    folderId: strOrNull(args, "parentFolderId"),
+  });
   const doc = await updateDocument({
     id: documentId,
     teamId: ctx.teamId,
@@ -217,14 +308,25 @@ const applyManageDocument: ToolCallApplyFn = async (ctx, args) => {
     conversationId: ctx.conversationId,
   };
 
+  const principal = await principalOf(ctx);
+
   if (action === "create") {
+    const folderId = strOrNull(args, "folderId");
+    const projectId = rootProjectOf(ctx, folderId);
+    await requireDriveAction(principal, {
+      kind: "addDocument",
+      teamId: ctx.teamId,
+      folderId,
+      projectId,
+    });
     const document = await createAuthoredDocument({
       organizationId: ctx.organizationId,
       teamId: ctx.teamId,
       userId: ctx.userId,
       title: str(args, "title"),
       content: strOrNull(args, "content") ?? "",
-      folderId: strOrNull(args, "folderId"),
+      folderId,
+      projectId,
       actorContext,
       eventActor: {
         actorType: "agent",
@@ -239,6 +341,12 @@ const applyManageDocument: ToolCallApplyFn = async (ctx, args) => {
       versionNumber: 1,
     };
   }
+
+  // Restoring or writing: both change what the document says.
+  await requireDriveAction(principal, {
+    kind: "editDocument",
+    documentId: str(args, "documentId"),
+  });
 
   if (action === "restore") {
     const result = await restoreDocumentVersion({
@@ -314,6 +422,21 @@ const applyUploadToDrive: ToolCallApplyFn = async (ctx, args) => {
   const folderId = strOrNull(args, "folderId");
   const replaceDocumentId = strOrNull(args, "replaceDocumentId");
 
+  const projectId = rootProjectOf(ctx, folderId);
+  const principal = await principalOf(ctx);
+  await requireDriveAction(principal, {
+    kind: "addDocument",
+    teamId: ctx.teamId,
+    folderId,
+    projectId,
+  });
+  if (replaceDocumentId !== null) {
+    await requireDriveAction(principal, {
+      kind: "editDocument",
+      documentId: replaceDocumentId,
+    });
+  }
+
   const saved: Record<string, unknown>[] = [];
   const failed: { file: string; reason: string }[] = [];
 
@@ -325,7 +448,9 @@ const applyUploadToDrive: ToolCallApplyFn = async (ctx, args) => {
         organizationId: ctx.organizationId,
         teamId: ctx.teamId,
         userId: ctx.userId,
+        principal,
         folderId,
+        projectId,
         ...(replaceDocumentId !== null ? { replaceDocumentId } : {}),
         actorContext: {
           actor: "agent",
@@ -357,6 +482,7 @@ const applyUploadToDrive: ToolCallApplyFn = async (ctx, args) => {
         teamId: ctx.teamId,
         userId: ctx.userId,
         folderId,
+        projectId,
       });
     for (const ok of promoted) {
       saved.push({
@@ -391,8 +517,23 @@ const serializeRecord = (r: {
 const applyManageRecord: ToolCallApplyFn = async (ctx, args) => {
   const actor = agentActor(ctx);
   const action = str(args, "action");
+  const scope = {
+    teamId: ctx.teamId,
+    organizationId: ctx.organizationId,
+    userId: ctx.userId,
+  };
+
+  const sharing =
+    args.sharing === undefined
+      ? undefined
+      : recordSharingSchema.parse(args.sharing);
 
   if (action === "create") {
+    await assertCanWriteType({
+      collectionId: str(args, "collectionId"),
+      ...scope,
+    });
+    await requireRecordAudienceAllowed({ ...scope, sharing });
     const record = await createCollectionRecord({
       organizationId: ctx.organizationId,
       teamId: ctx.teamId,
@@ -404,26 +545,28 @@ const applyManageRecord: ToolCallApplyFn = async (ctx, args) => {
         args.relations === undefined
           ? undefined
           : recordRelationInputSchema.array().parse(args.relations),
-      sharing:
-        args.sharing === undefined
-          ? undefined
-          : recordSharingSchema.parse(args.sharing),
+      sharing,
       actor,
     });
     return { ok: true, record: serializeRecord(record) };
   }
 
+  // Every other action writes one existing record.
+  const recordId = str(args, "recordId");
+  await assertCanWriteRecord({ recordId, ...scope });
+
   if (action === "update") {
+    if (sharing !== undefined) {
+      await assertCanShareRecord({ recordId, ...scope });
+      await requireRecordAudienceAllowed({ ...scope, sharing });
+    }
     const hasData = args.data !== undefined;
     const record = await setRecordData({
-      id: str(args, "recordId"),
+      id: recordId,
       data: hasData ? recordArg(args, "data") : undefined,
       merge: true,
       labelOverride: strOrNull(args, "labelOverride"),
-      sharing:
-        args.sharing === undefined
-          ? undefined
-          : recordSharingSchema.parse(args.sharing),
+      sharing,
       callerTeamId: ctx.teamId,
       actor,
     });
@@ -431,8 +574,9 @@ const applyManageRecord: ToolCallApplyFn = async (ctx, args) => {
   }
 
   if (action === "delete") {
+    await assertCanDeleteRecords({ recordIds: [recordId], ...scope });
     const result = await deleteCollectionRecord({
-      id: str(args, "recordId"),
+      id: recordId,
       actor,
     });
     return { ok: true, ...result };
@@ -476,8 +620,9 @@ const applyInstallSkill: ToolCallApplyFn = async (ctx, args) => {
 //
 // Only the destructive actions are gated, so only those apply here — anything
 // else reaching this map is a proposal/apply mismatch and throws rather than
-// guessing. Both re-assert the write grant: a proposal can sit pending for a
-// while, and a share revoked in between must not be honoured at grant time.
+// guessing. Both ask again: a proposal can sit pending for a while, and a
+// share revoked or a role lowered in between must not be honoured at grant
+// time.
 
 const applyManageCollection: ToolCallApplyFn = async (ctx, args) => {
   const action = str(args, "action");
@@ -485,10 +630,14 @@ const applyManageCollection: ToolCallApplyFn = async (ctx, args) => {
     throw new Error(`manageCollection "${action}" is not approval-gated`);
   }
   const collectionId = str(args, "collectionId");
-  await assertCanWriteType({
+  // The type is its owner's to delete, with full access to the team's
+  // content: asked again, as the proposal may have waited.
+  await assertCanManageType({
     collectionId,
     teamId: ctx.teamId,
     organizationId: ctx.organizationId,
+    userId: ctx.userId,
+    change: "delete",
   });
   const result = await deleteCollection({
     id: collectionId,
@@ -505,6 +654,7 @@ const applyManageField: ToolCallApplyFn = async (ctx, args) => {
     collectionId,
     teamId: ctx.teamId,
     organizationId: ctx.organizationId,
+    userId: ctx.userId,
   });
   const actor = agentActor(ctx);
 

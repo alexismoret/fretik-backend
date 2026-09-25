@@ -1,4 +1,5 @@
 import type { z } from "zod";
+import { requireUserCapability } from "../../authz/gates";
 import db from "../../db";
 import type { BulkOperation, BulkOperationParams } from "../../db/schema";
 import { notFound, throwHttpError } from "../../lib/errors";
@@ -55,6 +56,14 @@ export interface ApiLoadHandle {
 export const beginApiLoad = async (
   input: BeginInput,
 ): Promise<ApiLoadHandle> => {
+  // A viewer reads. Checked again on every chunk (`writable-ids.ts`), for
+  // whoever becomes one while the load runs.
+  await requireUserCapability({
+    userId: input.userId,
+    organizationId: input.organizationId,
+    capability: "team.content.create",
+    teamId: input.teamId,
+  });
   const collection = await assertTeamCollection(input);
   const fieldDefs = await getFieldDefinitionsForTeam({
     teamId: input.teamId,

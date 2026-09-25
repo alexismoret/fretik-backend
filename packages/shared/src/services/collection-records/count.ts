@@ -1,4 +1,5 @@
 import { and, count, eq } from "drizzle-orm";
+import type { DriveVisibility } from "../../authz/drive-sql";
 import db from "../../db";
 import { collectionRecords } from "../../db/schema";
 import { recordVisibilityCondition, resolveRecordTypeScope } from "./scope";
@@ -19,6 +20,8 @@ import { recordVisibilityCondition, resolveRecordTypeScope } from "./scope";
 export const countRecordsForType = async (input: {
   collectionId: string;
   teamId: string;
+  /** What the person can open in the Drive: a hidden file's mirror is out. */
+  drive: DriveVisibility;
 }): Promise<number> => {
   const scope = await resolveRecordTypeScope({
     collectionId: input.collectionId,
@@ -28,7 +31,13 @@ export const countRecordsForType = async (input: {
     eq(collectionRecords.collectionId, input.collectionId),
     eq(collectionRecords.status, "confirmed"),
   ];
-  conditions.push(recordVisibilityCondition({ teamId: input.teamId, scope }));
+  conditions.push(
+    recordVisibilityCondition({
+      teamId: input.teamId,
+      scope,
+      drive: input.drive,
+    }),
+  );
 
   const [row] = await db
     .select({ total: count() })

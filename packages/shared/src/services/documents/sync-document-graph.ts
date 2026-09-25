@@ -1,4 +1,6 @@
 import { inArray } from "drizzle-orm";
+import { driveVisibility } from "../../authz/drive-sql";
+import { SYSTEM } from "../../authz/system-principals";
 import db, { type Transaction } from "../../db";
 import { collectionRecords } from "../../db/schema";
 import { internalError, throwHttpError } from "../../lib/errors";
@@ -261,6 +263,9 @@ const linkMentions = async (input: {
     tx,
     organizationId,
     teamId,
+    // The file's own mentions, linked for the file: who may read them is
+    // decided where they are read.
+    drive: await driveVisibility(SYSTEM.documentPipeline, teamId),
     links: linkInputs,
     source: "ai_extraction",
     actor,

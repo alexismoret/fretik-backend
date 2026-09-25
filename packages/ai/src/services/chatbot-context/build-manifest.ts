@@ -4,6 +4,10 @@ import {
   type AccessibleContextFile,
   type LoadContextArgs,
 } from "./load-context";
+import {
+  buildProjectContextSection,
+  type ProjectContextArgs,
+} from "./project-context";
 
 /**
  * Build the `{{chatbotContextManifest}}` system-prompt fragment.
@@ -26,6 +30,11 @@ import {
  * Only files with `status = 'ready'`, `enabled = true`, and non-empty
  * `content` are listed — transient states stay observable in the
  * settings UI but never reach the model.
+ *
+ * In a project chat the project's own part comes right after the team's
+ * instructions: its instructions and the files it holds
+ * (`project-context.ts`). How much of the team's part is read is the
+ * turn's `teamReach` (`load-context.ts`).
  */
 
 const INLINE_THRESHOLD_CHARS = 2_000;
@@ -154,9 +163,17 @@ const renderFileEntry = (
 };
 
 export const buildChatbotContextManifest = async (
-  args: LoadContextArgs,
+  args: LoadContextArgs & {
+    /** The chat's project, when it lives in one. */
+    project?: ProjectContextArgs;
+  },
 ): Promise<ChatbotContextManifestResult> => {
-  const ctx = await loadAccessibleContext(args);
+  const [ctx, projectSection] = await Promise.all([
+    loadAccessibleContext(args),
+    args.project === undefined
+      ? Promise.resolve("")
+      : buildProjectContextSection(args.project),
+  ]);
 
   const sections: string[] = [];
 
@@ -166,6 +183,7 @@ export const buildChatbotContextManifest = async (
       sections.push(`## Team instructions\n${instr}`);
     }
   }
+  if (projectSection.length > 0) sections.push(projectSection);
   if (ctx.userProfile) {
     const instr = ctx.userProfile.instructions.trim();
     if (instr.length > 0) {

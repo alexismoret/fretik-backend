@@ -1,3 +1,4 @@
+import { requireAccess } from "@fretik/shared/authz/access";
 import {
   COLLECTION_COLOR_TOKENS,
   isValidCollectionColor,
@@ -17,7 +18,6 @@ import {
   type PageDefinition,
   type PageResponse,
 } from "@fretik/shared/schemas/pages";
-import { isOrgAdmin } from "@fretik/shared/services/organization/member-role";
 import { applyPageProjectEdits } from "@fretik/shared/services/pages/apply-code-edits";
 import { deletePage } from "@fretik/shared/services/pages/delete";
 import { dryRunPage } from "@fretik/shared/services/pages/dry-run";
@@ -27,10 +27,10 @@ import {
 } from "@fretik/shared/services/pages/publish";
 import { getPage, listPages } from "@fretik/shared/services/pages/retrieve";
 import { updatePage } from "@fretik/shared/services/pages/update";
-import type { PageRequester } from "@fretik/shared/services/pages/visibility";
 import { tool } from "ai";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
+import { actingPrincipal } from "../agents/shared/acting-principal";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
 import {
   maybePersistLargeOutput,
@@ -355,12 +355,22 @@ export const createManagePageTool = () =>
     }),
     execute: async (input, options) => {
       const ctx = getRuntimeContext(options);
-      const { teamId, organizationId, userId } = ctx;
-      // A private page is invisible to anyone but its owner (org admins see
-      // everything) — same rule as the API/UI.
-      const requester: PageRequester | undefined = userId
-        ? { userId, isAdmin: await isOrgAdmin(organizationId, userId) }
-        : undefined;
+      const { teamId, userId } = ctx;
+      // The tool reaches exactly what the person it acts for reaches — the
+      // same rules as the app (`authz/`). A write checks the level first, so a
+      // reader who asks for a change hears why not, instead of "no such page".
+      const principal = await actingPrincipal(ctx);
+      const requirePage = (
+        pageId: string,
+        required: "edit" | "full",
+      ): Promise<unknown> =>
+        requireAccess({
+          principal,
+          type: "page",
+          id: pageId,
+          required,
+          notFoundMessage: "Page not found",
+        });
       /**
        * What "this build session" means for everything Redis remembers: the
        * review budget, the standing verdict, the draft a refused write left.
@@ -389,7 +399,7 @@ export const createManagePageTool = () =>
             const page = await getPage({
               pageId: input.pageId,
               teamId,
-              requester,
+              principal,
             });
             const files = projectFromDefinition(page.definition, {
               id: page.id,
@@ -437,17 +447,18 @@ export const createManagePageTool = () =>
             }
             // Read it first so the result names what went — a bare "deleted"
             // leaves the agent unable to tell the user which page it removed.
+            await requirePage(input.pageId, "full");
             const doomed = await getPage({
               pageId: input.pageId,
               teamId,
-              requester,
+              principal,
             });
-            await deletePage({ pageId: input.pageId, teamId, requester });
+            await deletePage({ pageId: input.pageId, teamId, principal });
             return { pageId: doomed.id, name: doomed.name, deleted: true };
           }
 
           case "list": {
-            const pages = await listPages({ teamId, requester });
+            const pages = await listPages({ teamId, principal });
             return {
               pages: pages.map((page) => ({
                 pageId: page.id,
@@ -509,10 +520,11 @@ export const createManagePageTool = () =>
                 "For a targeted change send `edits` instead — [{ oldString, newString }] against the stored source. For anything larger, call buildPage with this pageId and the full request in its task.",
               );
             }
+            await requirePage(input.pageId, "edit");
             const existing = await getPage({
               pageId: input.pageId,
               teamId,
-              requester,
+              principal,
             });
             const storedSource = existing.definition.code.source;
 
@@ -564,8 +576,8 @@ export const createManagePageTool = () =>
               updated = await updatePage({
                 pageId: input.pageId,
                 teamId,
-                actingUserId: userId ?? "",
-                requester,
+                actingUserId: principal.userId,
+                principal,
                 input: {
                   ...(input.name !== undefined ? { name: input.name } : {}),
                   ...(input.description !== undefined
@@ -619,6 +631,7 @@ export const createManagePageTool = () =>
                   definition: updated.page.definition,
                   teamId,
                   userId: userId ?? null,
+                  reader: principal,
                   assumeSanitized: true,
                   assumeCompiled: true,
                 })
@@ -658,7 +671,7 @@ export const createManagePageTool = () =>
             const page = await getPage({
               pageId: input.pageId,
               teamId,
-              requester,
+              principal,
             });
             // The loop itself lives in `services/page-review/run-review.ts`:
             // the builder's `pageReview` and this call are the same review of
@@ -668,6 +681,7 @@ export const createManagePageTool = () =>
               page,
               teamId,
               userId: userId ?? null,
+              reader: principal,
               conversationId: ctx.conversationId,
               scope: turnScope,
             });
@@ -680,11 +694,12 @@ export const createManagePageTool = () =>
                 "publish needs a pageId.",
               );
             }
+            await requirePage(input.pageId, "full");
             const page = await publishPage({
               pageId: input.pageId,
               teamId,
-              publishedByUserId: userId ?? "",
-              requester,
+              publishedByUserId: principal.userId,
+              principal,
             });
             return { pageId: page.id, publicUrl: page.publicUrl };
           }
@@ -696,10 +711,11 @@ export const createManagePageTool = () =>
                 "unpublish needs a pageId.",
               );
             }
+            await requirePage(input.pageId, "full");
             const page = await unpublishPage({
               pageId: input.pageId,
               teamId,
-              requester,
+              principal,
             });
             return { pageId: page.id, published: false };
           }

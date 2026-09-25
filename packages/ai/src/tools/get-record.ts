@@ -1,6 +1,7 @@
 import { getCollectionRecord } from "@fretik/shared/services/collection-records/retrieve";
 import { tool } from "ai";
 import { z } from "zod";
+import { actingDrive } from "../agents/shared/acting-principal";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
 import {
   DOMAIN_TOOL_THRESHOLD_CHARS,
@@ -31,12 +32,14 @@ export const createGetRecordTool = () =>
       const ctx = getRuntimeContext(options);
       const { toolCallId } = options;
 
+      const drive = await actingDrive(ctx);
       let record: Awaited<ReturnType<typeof getCollectionRecord>>;
       try {
         record = await getCollectionRecord({
           id,
           teamId: ctx.teamId,
           organizationId: ctx.organizationId,
+          drive,
         });
       } catch {
         // getCollectionRecord throws 404 when absent — surface as a clean not-found.

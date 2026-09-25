@@ -1,4 +1,6 @@
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
+import { driveVisibility, teamOpenDriveItems } from "../../authz/drive-sql";
+import { SYSTEM } from "../../authz/system-principals";
 import db from "../../db";
 import { aiVectors, documents, folders, teamSettings } from "../../db/schema";
 import {
@@ -136,6 +138,8 @@ export const deleteFolders = async (data: {
         await resolveDocumentRecordIds({
           documentIds: documentsToDelete.map((d) => d.id),
           teamId,
+          // Every file going takes its mirror with it, seen or not.
+          drive: await driveVisibility(SYSTEM.documentPipeline, teamId),
           tx,
         })
       ).values(),
@@ -151,6 +155,11 @@ export const deleteFolders = async (data: {
       where: { id: teamId },
     });
     if (teamRow) {
+      const teamOpen = await teamOpenDriveItems(
+        "folder",
+        existingFolders.map((folder) => folder.id),
+        tx,
+      );
       await emitDomainEventsBulk({
         tx,
         organizationId: teamRow.organizationId,
@@ -159,7 +168,11 @@ export const deleteFolders = async (data: {
         events: existingFolders.map((folder) => ({
           type: "folder.deleted",
           subjectType: "folder",
-          payload: { folderId: folder.id, name: folder.name },
+          payload: {
+            folderId: folder.id,
+            name: folder.name,
+            teamOpen: teamOpen.has(folder.id),
+          },
           dedupKey: `folder.deleted:${folder.id}`,
         })),
       });

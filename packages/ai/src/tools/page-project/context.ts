@@ -1,10 +1,10 @@
+import type { UserPrincipal } from "@fretik/shared/authz/principal";
 import {
   PAGE_ENTRY_FILE,
   PAGE_FILE_PATH_RE,
 } from "@fretik/shared/schemas/pages";
-import { isOrgAdmin } from "@fretik/shared/services/organization/member-role";
 import { getPage } from "@fretik/shared/services/pages/retrieve";
-import type { PageRequester } from "@fretik/shared/services/pages/visibility";
+import { actingPrincipal } from "../../agents/shared/acting-principal";
 import { getRuntimeContext } from "../../agents/shared/runtime-context";
 import { renderProjectManifest } from "../../services/page-project/manifest";
 import { PAGE_JSON_FILE } from "../../services/page-project/page-json";
@@ -34,6 +34,8 @@ import {
 
 export interface PageProjectContext {
   teamId: string;
+  /** The project the turn works in: a new page is made in it. */
+  projectId: string | undefined;
   userId: string | null;
   organizationId: string;
   conversationId: string | undefined;
@@ -50,7 +52,12 @@ export interface PageProjectContext {
    * (2026-08-23).
    */
   reviewScope: string | undefined;
-  requester: PageRequester | undefined;
+  /**
+   * Who the builder works for: it reads and saves with exactly their access.
+   * Resolved on first use and kept — most calls only touch the working copy,
+   * and have no one to ask anything of.
+   */
+  principal: () => Promise<UserPrincipal>;
   /**
    * The profile serving the agent that holds these tools — the builder that
    * writes the page. `pageReview` hands it to the critic so a family-disjoint
@@ -68,14 +75,11 @@ export const loadPageProjectContext = async (
   const ctx = getRuntimeContext(options);
   const scope = ctx.traceId ?? ctx.conversationId ?? "no-run";
   const reviewScope = ctx.traceId?.split(".")[0] ?? ctx.conversationId;
-  // A private page is invisible to anyone but its owner (org admins see
-  // everything) — the same rule as the API and the UI.
-  const requester: PageRequester | undefined = ctx.userId
-    ? {
-        userId: ctx.userId,
-        isAdmin: await isOrgAdmin(ctx.organizationId, ctx.userId),
-      }
-    : undefined;
+  // The builder reaches what the person it works for reaches — the same rules
+  // as the app (`authz/`).
+  let acting: Promise<UserPrincipal> | undefined;
+  const principal = (): Promise<UserPrincipal> =>
+    (acting ??= actingPrincipal(ctx));
 
   let state = (await readPageProject(scope)) ?? emptyProjectState();
   const target = pageId ?? state.pageId;
@@ -89,7 +93,7 @@ export const loadPageProjectContext = async (
     const page = await getPage({
       pageId: target,
       teamId: ctx.teamId,
-      ...(requester !== undefined ? { requester } : {}),
+      principal: await principal(),
     });
     state = projectFromDefinition(page.definition, {
       id: page.id,
@@ -100,12 +104,13 @@ export const loadPageProjectContext = async (
 
   return {
     teamId: ctx.teamId,
+    projectId: ctx.projectId,
     userId: ctx.userId ?? null,
     organizationId: ctx.organizationId,
     conversationId: ctx.conversationId,
     scope,
     reviewScope,
-    requester,
+    principal,
     modelProfileKey: ctx.modelProfile.key,
     state,
     save: (next) => writePageProject(scope, next),

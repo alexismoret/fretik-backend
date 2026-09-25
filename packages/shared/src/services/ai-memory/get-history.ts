@@ -3,7 +3,7 @@ import type {
   AiMemoryActor,
   AiMemoryOperation,
 } from "../../db/schema/ai-memory";
-import { getMemoryContent } from "./get-content";
+import { getMemoryContent, getProjectMemoryContent } from "./get-content";
 import { parseMemoryOperation } from "./operation";
 
 /**
@@ -48,11 +48,37 @@ export const getMemoryHistory = async (args: {
     currentUserId: args.currentUserId,
   });
   if (!visible) return null;
+  return readMemoryHistory({ memoryId: args.memoryId, teamId: args.teamId });
+};
 
+/**
+ * The timeline of one of a project's notes, for someone the caller has
+ * decided reaches the project. `null` when the id is not one of its notes.
+ */
+export const getProjectMemoryHistory = async (args: {
+  memoryId: string;
+  organizationId: string;
+  projectId: string;
+}): Promise<MemoryHistoryEntry[] | null> => {
+  const visible = await getProjectMemoryContent({
+    id: args.memoryId,
+    organizationId: args.organizationId,
+    projectId: args.projectId,
+  });
+  if (!visible) return null;
+  return readMemoryHistory({ memoryId: args.memoryId });
+};
+
+/** The audit rows of a note the caller may see, most recent first. */
+const readMemoryHistory = async (args: {
+  memoryId: string;
+  /** Defence in depth for a team's note: its rows carry its team. */
+  teamId?: string;
+}): Promise<MemoryHistoryEntry[]> => {
   const rows = await db.query.aiMemoryHistory.findMany({
     where: {
       memoryId: args.memoryId,
-      teamId: args.teamId,
+      ...(args.teamId === undefined ? {} : { teamId: args.teamId }),
     },
     with: {
       byUser: { columns: { id: true, name: true } },

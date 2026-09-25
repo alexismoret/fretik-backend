@@ -42,6 +42,7 @@ import {
   RunWorkflowRequestSchema,
   UpdateWorkflowSchema,
   WorkflowActiveRunSchema,
+  WorkflowDetailResponseSchema,
   WorkflowResponseSchema,
   WorkflowRunResponseSchema,
 } from "@fretik/shared/schemas/workflows";
@@ -192,11 +193,15 @@ const getRoute = createRoute({
   path: "/{id}",
   middleware: access.resource("workflow", "view"),
   summary: "Fetch one workflow",
+  description:
+    "With the caller's `level` on it, so the page offers only what that level allows.",
   tags: ["Workflows"],
   request: { params: paramsIdSchema },
   responses: {
     200: {
-      content: { "application/json": { schema: WorkflowResponseSchema } },
+      content: {
+        "application/json": { schema: WorkflowDetailResponseSchema },
+      },
       description: "Workflow",
     },
     ...responseForbiddenSchema,
@@ -628,15 +633,15 @@ workflowRoutes.openapi(triggerCatalogRoute, async (c) => {
 });
 
 workflowRoutes.openapi(getRoute, async (c) => {
-  const teamId = teamOfResource(c.get("resource"));
+  const resource = c.get("resource");
   const { id } = c.req.valid("param");
   const workflow = await getWorkflow({
     id,
-    teamId,
+    teamId: teamOfResource(resource),
     principal: c.get("principal"),
   });
   if (!workflow) return throwHttpError(404, notFound("Workflow not found"));
-  return c.json(workflow, 200);
+  return c.json({ ...workflow, level: resource.level }, 200);
 });
 
 workflowRoutes.openapi(updateRoute, async (c) => {

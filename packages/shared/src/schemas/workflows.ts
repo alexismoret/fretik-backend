@@ -3,6 +3,7 @@ import {
   isTriggerableEventType,
   WORKFLOW_TRIGGERABLE_EVENT_TYPES,
 } from "../services/domain-events/event-types";
+import { accessLevelSchema } from "./access";
 import { reasoningLevelSchema } from "./reasoning";
 import {
   workflowFormActivationError,
@@ -945,6 +946,20 @@ export const WorkflowResponseSchema = z.object({
   updatedAt: isoDate,
 });
 export type WorkflowResponse = z.infer<typeof WorkflowResponseSchema>;
+
+/**
+ * One workflow as its page reads it, with the caller's level on it. The page
+ * offers what that level allows (running it or stopping a run takes use,
+ * changing it edit, turning it on or off, archiving or deleting it full), so
+ * it never offers what the server would refuse. A restricted workflow is at
+ * most `view` for anyone but its owner (`authz/rules.ts`).
+ */
+export const WorkflowDetailResponseSchema = WorkflowResponseSchema.extend({
+  level: accessLevelSchema,
+});
+export type WorkflowDetailResponse = z.infer<
+  typeof WorkflowDetailResponseSchema
+>;
 
 export const WorkflowRunResponseSchema = z.object({
   id: z.uuid(),

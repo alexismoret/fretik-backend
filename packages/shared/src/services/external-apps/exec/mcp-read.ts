@@ -12,6 +12,7 @@ import { normalizeMcpResult } from "../mcp/normalize";
 import { getSnapshotForConnection } from "../mcp/snapshot-store";
 import { mcpCallTool } from "../mcp/transport";
 import { extractFrameworkArgs } from "./framework-args";
+import { approvalRefusedInSubAgent } from "./sub-agent-refusal";
 
 /**
  * Read path for an MCP-sourced action — the snapshot-backed sibling of
@@ -91,6 +92,10 @@ export const dispatchMcpRead = async (
       status: "error",
       message: `ACTION_DISABLED: ${qualifiedName} is disabled on connection "${connection.displayName}" by its permission settings. ${TOOL_PERMISSIONS_REMEDIATION}`,
     };
+  }
+
+  if (level === "approval" && ctx.readOnly === true) {
+    return approvalRefusedInSubAgent(qualifiedName);
   }
 
   if (level === "approval") {

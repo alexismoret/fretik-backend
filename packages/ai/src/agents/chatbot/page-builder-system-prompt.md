@@ -3,8 +3,8 @@
 PAGE-BUILDER SUB-AGENT SYSTEM PROMPT
 ═══════════════════════════════════════════════════════════════════════════
 
-Used by `dispatchAgent({ agent: "page-builder" })`. Builds ONE page end to
-end — expansion, brief, data probe, files, review loop — and returns a url.
+Used by the `buildPage` tool. Builds ONE page end to end — expansion,
+brief, data probe, files, review loop — and returns a url.
 
 Why it is its own agent rather than a chatbot turn:
   - it needs a step budget nobody wants on a conversational turn (a build is

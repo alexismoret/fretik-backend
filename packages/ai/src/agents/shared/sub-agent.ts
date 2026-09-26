@@ -25,13 +25,11 @@ import { getRuntimeContext, type AgentRuntimeContext } from "./runtime-context";
  * `.generate()`, and the summarised result is returned as a regular
  * tool output.
  *
- * This file is **scaffolding only** — no concrete sub-agent is
- * registered in `buildDomainTools` as part of Phase 7.5. It exists
- * so the first real post-v1 sub-agent (workflow-agent,
- * extraction-agent, research-agent, …) doesn't need an additional
- * architectural refactor. Consumers keep the tight strong typing on
- * their own side (their own INPUT / OUTPUT Zod schema + their own
- * typed CALL_OPTIONS), and feed this helper's `execute` function
+ * Two tools are built on it: `dispatchAgent` (the general-purpose
+ * sub-agent, `tools/dispatch-agent.ts`) and `buildPage` (the page
+ * builder, `tools/build-page.ts`). Consumers keep the tight strong
+ * typing on their own side (their own INPUT / OUTPUT Zod schema + their
+ * own typed CALL_OPTIONS), and feed this helper's `execute` function
  * into their own `buildChatbotTool({ ..., execute })` call.
  *
  * Mirrors Claude Code's `AgentTool` pattern — the parent agent
@@ -156,7 +154,23 @@ export interface CreateSubAgentExecuteConfig<
    * runtime context. Runs on every invocation so team/user scoping
    * is always fresh.
    */
-  buildCallOptions: (input: INPUT, ctx: AgentRuntimeContext) => CALL_OPTIONS;
+  buildCallOptions: (
+    input: INPUT,
+    ctx: AgentRuntimeContext,
+    /** The parent's tool call this dispatch runs under — unique per dispatch. */
+    call: { toolCallId: string },
+  ) => CALL_OPTIONS;
+  /**
+   * Runs after every dispatch `admit` let through, however it ended — a
+   * result, a deadline, a parent abort, a throw. The seam for releasing what
+   * a run held: a concurrency slot, a scoped Python kernel. Never throws into
+   * the parent: a failure here is the caller's to log.
+   */
+  settle?: (
+    input: INPUT,
+    ctx: AgentRuntimeContext,
+    toolCallId: string,
+  ) => Promise<void>;
   /**
    * Rescue whatever a finished run produced but failed to commit, BEFORE the
    * empty-run retry decides to start over.
@@ -197,6 +211,8 @@ export interface CreateSubAgentExecuteConfig<
      * replaces `result`, and the parent paid for both.
      */
     usage?: StepUsage,
+    /** How the whole dispatch went, across every attempt — see `SubAgentRun`. */
+    run?: SubAgentRun,
   ) => OUTPUT;
   /**
    * Hard wall-clock cap on one dispatch, REQUIRED. A sub-agent runs an
@@ -213,7 +229,7 @@ export interface CreateSubAgentExecuteConfig<
    * abort) cuts the run. Tool errors are RETURNED, never thrown — a throw
    * surfaces as a 500 and hides the failure from the model.
    */
-  onDeadline: (input: INPUT) => OUTPUT;
+  onDeadline: (input: INPUT, run: SubAgentRun) => OUTPUT;
   /**
    * Turn each of the sub-agent's tool executions into a snapshot the PARENT's
    * tool card can render while the run is still going. Optional: without it
@@ -233,7 +249,55 @@ export interface CreateSubAgentExecuteConfig<
     step: number;
     toolName: string;
     input: unknown;
+    /** Epoch ms the dispatch started — what an elapsed-time readout counts from. */
+    startedAt: number;
+    /**
+     * Every tool call so far, newest last. A snapshot is also taken when a call
+     * SETTLES, so the latest entry may be done rather than running.
+     */
+    toolCalls: readonly SubAgentToolCall[];
   }) => PROGRESS | undefined;
+}
+
+/**
+ * One tool call a sub-agent made — issued, then settled. `output` is kept by
+ * reference for the caller to read what it needs (a file path, a count); it is
+ * never copied into a result as a whole.
+ */
+export interface SubAgentToolCall {
+  toolCallId: string;
+  toolName: string;
+  input: unknown;
+  state: "running" | "done" | "error";
+  output?: unknown;
+}
+
+/**
+ * How a settled call went. A tool returns `{ error, code }` for an expected
+ * failure rather than throwing, so a `tool-result` can still be a failure.
+ */
+const settledState = (toolOutput: {
+  type: string;
+  output?: unknown;
+}): "done" | "error" => {
+  if (toolOutput.type !== "tool-result") return "error";
+  const output = toolOutput.output;
+  return typeof output === "object" &&
+    output !== null &&
+    typeof Reflect.get(output, "error") === "string"
+    ? "error"
+    : "done";
+};
+
+/**
+ * What a whole dispatch did, over every attempt. `result.steps` holds only the
+ * LAST attempt's — a boundary resume or a fallback replaces it — so the calls
+ * are collected as they start instead, which is also the order the user saw
+ * them in.
+ */
+export interface SubAgentRun {
+  durationMs: number;
+  toolCalls: readonly SubAgentToolCall[];
 }
 
 /**
@@ -332,16 +396,38 @@ export const createSubAgentExecute = <
   const run = async (
     input: INPUT,
     options: ToolExecutionOptions<unknown>,
-    onToolStart: ((toolName: string, toolInput: unknown) => void) | undefined,
+    onActivity:
+      | ((toolCalls: readonly SubAgentToolCall[], startedAt: number) => void)
+      | undefined,
   ): Promise<OUTPUT> => {
     const ctx = getRuntimeContext(options);
+    const toolCalls: SubAgentToolCall[] = [];
     // Asked BEFORE anything is built or sent, because a dispatch that should
     // not happen is cheapest when it never starts: `buildMessages` alone
     // resolves collections and skills.
     const refusal = await config.admit?.(input, ctx);
     if (refusal !== undefined && refusal !== null) return refusal;
+    try {
+      return await attempt(input, options, ctx, toolCalls, onActivity);
+    } finally {
+      await config.settle?.(input, ctx, options.toolCallId);
+    }
+  };
+
+  /** The dispatch itself, once `admit` let it through. */
+  const attempt = async (
+    input: INPUT,
+    options: ToolExecutionOptions<unknown>,
+    ctx: AgentRuntimeContext,
+    toolCalls: SubAgentToolCall[],
+    onActivity:
+      | ((toolCalls: readonly SubAgentToolCall[], startedAt: number) => void)
+      | undefined,
+  ): Promise<OUTPUT> => {
     const messages = await config.buildMessages(input, ctx);
-    const callOptions = config.buildCallOptions(input, ctx);
+    const callOptions = config.buildCallOptions(input, ctx, {
+      toolCallId: options.toolCallId,
+    });
     const startedAt = Date.now();
     const primaryDeadline = AbortSignal.timeout(config.deadlineMs);
     const deadlines: AbortSignal[] = [primaryDeadline];
@@ -363,7 +449,24 @@ export const createSubAgentExecute = <
           // `[CALL_OPTIONS] extends [never]` branch and the whole call stops
           // typechecking. A no-op callback costs nothing.
           onToolExecutionStart: (event) => {
-            onToolStart?.(event.toolCall.toolName, event.toolCall.input);
+            toolCalls.push({
+              toolCallId: event.toolCall.toolCallId,
+              toolName: event.toolCall.toolName,
+              input: event.toolCall.input,
+              state: "running",
+            });
+            onActivity?.(toolCalls, startedAt);
+          },
+          onToolExecutionEnd: (event) => {
+            const call = toolCalls.findLast(
+              (entry) => entry.toolCallId === event.toolCall.toolCallId,
+            );
+            if (call === undefined) return;
+            call.state = settledState(event.toolOutput);
+            if (event.toolOutput.type === "tool-result") {
+              call.output = event.toolOutput.output;
+            }
+            onActivity?.(toolCalls, startedAt);
           },
         });
 
@@ -463,7 +566,10 @@ export const createSubAgentExecute = <
         usage = mergeUsage(usage, summarizeRunUsage(result.steps));
         salvaged = (await config.salvage?.(result, ctx)) ?? undefined;
       }
-      return config.formatResult(result, salvaged, usage);
+      return config.formatResult(result, salvaged, usage, {
+        durationMs: Date.now() - startedAt,
+        toolCalls,
+      });
     } catch (err) {
       // Only a DEADLINE is absorbed into a tool-shaped result. A parent
       // abort must keep propagating (the turn is being torn down), and any
@@ -472,7 +578,10 @@ export const createSubAgentExecute = <
         deadlines.some((deadline) => deadline.aborted) &&
         !options.abortSignal?.aborted
       ) {
-        return config.onDeadline(input);
+        return config.onDeadline(input, {
+          durationMs: Date.now() - startedAt,
+          toolCalls,
+        });
       }
       throw err;
     }
@@ -499,19 +608,28 @@ export const createSubAgentExecute = <
     input: INPUT,
     options: ToolExecutionOptions<unknown>,
   ): AsyncIterable<OUTPUT | PROGRESS> {
-    let step = 0;
     let latest: PROGRESS | undefined;
     let wake: (() => void) | undefined;
-    const onToolStart = (toolName: string, toolInput: unknown): void => {
-      step += 1;
-      const snapshot = report({ step, toolName, input: toolInput });
+    const onActivity = (
+      toolCalls: readonly SubAgentToolCall[],
+      startedAt: number,
+    ): void => {
+      const current = toolCalls.at(-1);
+      if (current === undefined) return;
+      const snapshot = report({
+        step: toolCalls.length,
+        toolName: current.toolName,
+        input: current.input,
+        startedAt,
+        toolCalls,
+      });
       if (snapshot === undefined) return;
       latest = snapshot;
       wake?.();
     };
 
     let settled = false;
-    const finished = run(input, options, onToolStart).finally(() => {
+    const finished = run(input, options, onActivity).finally(() => {
       settled = true;
       wake?.();
     });

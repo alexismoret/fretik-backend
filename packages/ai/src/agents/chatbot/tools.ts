@@ -463,7 +463,7 @@ export const buildDomainTools = () => ({
 });
 
 /**
- * `dispatchAgent` is built outside this module (in `./index.ts`,
+ * `dispatchAgent` is built outside this module (in `./delegate.ts`,
  * after the sub-agent sets it routes to are constructed). We accept
  * it as a parameter so this module never imports the sub-agent
  * factory directly — that pattern keeps `tools.ts` a pure tool
@@ -532,31 +532,47 @@ export const buildChatbotTools = (extras: {
 export type ChatbotTools = ReturnType<typeof buildChatbotTools>;
 
 /**
- * Sub-agent tool set — same as the chatbot tool set MINUS:
- *   - `dispatchAgent`: prevents recursion. A sub-agent cannot spawn
- *     another sub-agent.
- *   - `searchTools`: Progressive Disclosure is unnecessary inside a
- *     sub-agent run because every domain tool is loaded directly
- *     into the registry; the sub-agent calls them by name without
- *     having to "activate" anything first.
+ * Sub-agent tool set (`dispatchAgent`) — everything that reads or computes,
+ * nothing that changes the team's data or talks to the user. The rule lives in
+ * `isSubAgentTool` (`../shared/delegate-tool-policy.ts`); this is its concrete
+ * list, written out by name so the registry keeps its static type, and held to
+ * the rule in both directions by `sub-agent-registry.test.ts` — a new read tool
+ * fails that test until it is added here, a write tool can never be.
  *
- * Domain tools are still registered as `category: "domain"` here,
- * but the sub-agent's `buildAgentSet` config does NOT install a
- * `prepareStep` hook — so the framework's default applies (= every
- * tool name in the registry is active on every step). Net effect:
- * the sub-agent has direct access to every tool from the start.
+ * Absent on purpose, beyond the writes: `dispatchAgent` (no recursion),
+ * `searchTools` (every tool is loaded from step 0 — a sub-agent has no
+ * Progressive Disclosure to open), `askUserQuestion` / `presentFiles` (a
+ * sub-agent has no user; it hands back through its summary) and `memory`
+ * (memories are read through `read` and `searchKnowledge`; writing one is the
+ * parent's call).
  */
 export const buildSubAgentTools = () => {
-  // A generic delegate authors no page either: the door to the builder is
-  // `dispatchAgent({ agent: "page-builder" })`, which its parent already has.
   const domainTools = buildDomainTools();
-  const allCoreTools = buildCoreTools(domainTools);
-  const { searchTools: _searchTools, ...coreWithoutSearch } = allCoreTools;
+  const coreTools = buildCoreTools(domainTools);
   // Sub-agents keep the web tools like everyone else; this only honours the
   // operator's kill switch (and a missing key for a given tool's backend),
   // which the chatbot applies per step and sub-agents would otherwise ignore
   // entirely.
-  return pruneWebToolsIfUnavailable({ ...coreWithoutSearch, ...domainTools });
+  return pruneWebToolsIfUnavailable({
+    searchKnowledge: coreTools.searchKnowledge,
+    querySql: coreTools.querySql,
+    searchWeb: coreTools.searchWeb,
+    read: coreTools.read,
+    extract: coreTools.extract,
+    vision: coreTools.vision,
+    python: coreTools.python,
+    bash: coreTools.bash,
+    listDocuments: domainTools.listDocuments,
+    listFolders: domainTools.listFolders,
+    downloadDriveDocument: domainTools.downloadDriveDocument,
+    describeCollection: domainTools.describeCollection,
+    listRecords: domainTools.listRecords,
+    getRecord: domainTools.getRecord,
+    webFetch: domainTools.webFetch,
+    webMap: domainTools.webMap,
+    downloadFile: domainTools.downloadFile,
+    transform: domainTools.transform,
+  });
 };
 
 export type SubAgentTools = ReturnType<typeof buildSubAgentTools>;

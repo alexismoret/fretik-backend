@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import {
   mergeUsage,
   readAgentUsage,
+  readDelegatedUsage,
   readTurnUsage,
   recordStepUsage,
   resetTurnUsage,
@@ -269,5 +270,45 @@ describe("recordStepUsage", () => {
     expect(Object.keys(merged.providers).sort()).toEqual(["studio", "vertex"]);
     // Neither input was mutated by the merge.
     expect(Object.keys(a.providers)).toEqual(["vertex"]);
+  });
+
+  test("a parent reads what its sub-agents spent, and not itself", () => {
+    // A workflow turn's own spend arrives on its stream; what it dispatched
+    // runs inside one of its tool calls and reaches only this ledger. The
+    // budget must see both — and never the parent twice.
+    const trace = "turn-delegated";
+    recordStepUsage(
+      trace,
+      "workflow",
+      summarizeStep({ usage: usageOf({ input: 1_000, output: 100 }) }),
+    );
+    recordStepUsage(
+      `${trace}.sub.call_1`,
+      "chatbot.sub",
+      summarizeStep({
+        usage: usageOf({ input: 5_000, cacheRead: 4_000, output: 400 }),
+      }),
+    );
+    recordStepUsage(
+      `${trace}.sub.call_2`,
+      "chatbot.sub",
+      summarizeStep({ usage: usageOf({ input: 2_000, output: 200 }) }),
+    );
+    const delegated = readDelegatedUsage(trace, "workflow");
+    expect(delegated?.inputTokens).toBe(7_000);
+    expect(delegated?.outputTokens).toBe(600);
+    expect(delegated?.cacheReadTokens).toBe(4_000);
+    expect(delegated?.steps).toBe(2);
+  });
+
+  test("a turn that delegated nothing reports no delegated spend", () => {
+    const trace = "turn-solo";
+    recordStepUsage(
+      trace,
+      "workflow",
+      summarizeStep({ usage: usageOf({ input: 1_000, output: 100 }) }),
+    );
+    expect(readDelegatedUsage(trace, "workflow")).toBeUndefined();
+    expect(readDelegatedUsage("turn-never-seen", "workflow")).toBeUndefined();
   });
 });

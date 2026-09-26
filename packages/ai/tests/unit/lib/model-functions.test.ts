@@ -111,10 +111,13 @@ describe("recommendedProfileKeyForFunction", () => {
     //
     // Driven through a snapshot where the model measures FAR below the floor,
     // rather than by moving the floor: the carve-out has to hold for whatever
-    // the next bad measurement is.
+    // the next bad measurement is. The model is whatever the `assistant`
+    // function runs today — read off the chat binding, so the test follows
+    // the next rebinding instead of pinning the one it was written against.
     installBoundFleet();
+    const ownModel = ROLE_BINDINGS.chat.profileKey;
     const crawling = BOUND_ROWS.map((state) =>
-      state.profileKey === "deepseek-v4-flash"
+      state.profileKey === ownModel
         ? {
             ...state,
             endpointStats: state.endpointStats.map((stat) => ({
@@ -125,10 +128,8 @@ describe("recommendedProfileKeyForFunction", () => {
         : state,
     );
     setLiveStateDouble(crawling);
-    const profile = boundProfile("deepseek-v4-flash");
-    const live = crawling.find(
-      (state) => state.profileKey === "deepseek-v4-flash",
-    );
+    const profile = boundProfile(ownModel);
+    const live = crawling.find((state) => state.profileKey === ownModel);
 
     // The rules still say no, and the audit still reports it — the number IS
     // wrong and somebody should look at it.

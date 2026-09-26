@@ -90,12 +90,12 @@ export const openrouter = createOpenRouter({
  * them" belongs.
  *
  * This reversed on 2026-08-05. The rule used to be that `sort` must never
- * reach the chat kind, so `dispatch-cheap` would not "silently gain it" —
- * but the effect was that the agent loop, the output-heaviest caller in the
+ * reach the chat kind, so a cheap sub-agent role would not "silently gain it"
+ * — but the effect was that the agent loop, the output-heaviest caller in the
  * service, was the ONE path that could express no routing preference at all
  * beyond a hard pin, and therefore fell back to OpenRouter's default price
  * ordering. Gaining the profile's declared sort is the correct behaviour for
- * `dispatch-cheap`, not an accident to guard against.
+ * every chat-kind role, not an accident to guard against.
  */
 /**
  * Speed-first routing with a QUALITY floor for the memory-utility judges
@@ -885,7 +885,6 @@ const resolved = new Map<ModelRole, ResolvedModel>();
 export const ROLE_FALLBACK: Partial<Record<ModelRole, ModelRole>> = {
   chat: "chat-fallback",
   workflow: "chat-fallback",
-  "dispatch-cheap": "chat-fallback",
   "pre-extract": "pre-extract-fallback",
   vision: "vision-fallback",
   transform: "transform-fallback",

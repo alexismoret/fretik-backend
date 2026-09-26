@@ -314,6 +314,13 @@ export type AgentRuntimeContext = {
    * this a sub-agent silently ran at its profile's default instead.
    */
   reasoningLevel?: string;
+  /**
+   * The id of the sub-agent run this context belongs to — set by
+   * `dispatchAgent` and nowhere else, so its presence IS "this is a
+   * sub-agent". `python` runs in a kernel of its own under it, and every
+   * sandbox call it makes is read-only (`@fretik/shared/services/sandbox/exec-scope`).
+   */
+  delegateRunId?: string;
 };
 
 /**

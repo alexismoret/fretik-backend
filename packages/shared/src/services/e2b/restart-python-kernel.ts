@@ -33,11 +33,13 @@ import {
  */
 export const restartPythonKernel = async (
   conversationId: string,
+  /** A sub-agent's own kernel (see `python-context-registry.ts`). */
+  scope?: string,
 ): Promise<void> => {
-  const cached = await getPythonContextFromRegistry(conversationId);
+  const cached = await getPythonContextFromRegistry(conversationId, scope);
   // Always invalidate the cache, even on the no-op path — keeps the
   // invariant simple ("after restart, no cached context survives").
-  await clearPythonContextFromRegistry(conversationId);
+  await clearPythonContextFromRegistry(conversationId, scope);
 
   if (!cached) return;
 

@@ -28,4 +28,10 @@ export interface ExecContext {
   userId: string;
   conversationId: string;
   turnId: string;
+  /**
+   * The call comes from a sub-agent's cell (`exec-scope.ts`). Set by the
+   * dispatcher, never by the request: a read that would need an approval is
+   * refused rather than opened, since a sub-agent has no way to show one.
+   */
+  readOnly?: boolean;
 }

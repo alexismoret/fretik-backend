@@ -1,54 +1,84 @@
+import { releasePythonContext } from "@fretik/shared/services/e2b/release-python-context";
 import type { Agent, GenerateTextResult, ToolSet } from "ai";
 import { z } from "zod";
-import type { ChatbotCallOptions } from "../agents/chatbot";
+import type { ChatbotCallOptions } from "../agents/chatbot/call-options";
+import {
+  buildDelegateBrief,
+  MAX_PRELOADED_SKILLS,
+} from "../agents/chatbot/delegate-brief";
 import { buildChatbotTool } from "../agents/shared/chatbot-tool";
-import { createSubAgentExecute } from "../agents/shared/sub-agent";
+import {
+  admitDelegation,
+  delegationTurnKey,
+  releaseDelegationSlot,
+} from "../agents/shared/delegation-slots";
+import { parseIntEnv } from "../agents/shared/env";
+import {
+  createSubAgentExecute,
+  type SubAgentRun,
+  type SubAgentToolCall,
+} from "../agents/shared/sub-agent";
 import { boundedText } from "../lib/persisted-output";
+import {
+  TOOL_ERROR_CODES,
+  toolError,
+  type ToolErrorOutput,
+} from "../lib/tool-error-codes";
 
 /**
- * Cap on a delegate's returned summary. Generous for prose (~6 000 tokens) and
- * far below what 25 steps of a sub-agent can emit.
- */
-const SUB_AGENT_SUMMARY_BUDGET_CHARS = 24_000;
-
-/**
- * `dispatchAgent` tool — delegate an encapsulated sub-task to a fresh
- * sub-agent that runs in isolation and returns a tight summary as the
- * tool result. Pattern aligned with Claude Code's `Agent` (formerly
- * `Task`) tool and OpenClaw's `sessions_spawn`.
+ * `dispatchAgent` — hand one self-contained piece of work to a sub-agent.
  *
- * Two model paths are exposed via the `model` parameter:
- *   - `"primary"` (default) — same model as the main agent, for
- *     sub-tasks that need real reasoning.
- *   - `"cheap"`              — `dispatchAgentCheapModel`
- *     (`deepseek/deepseek-v4-flash-0731` by default), for well-scoped
- *     mechanical sub-tasks.
+ * The sub-agent runs its own tool loop in a fresh context and returns a short
+ * report, so its reading never enters the parent's context; several calls in
+ * one step run in parallel. The same pattern as Claude Code's `Agent` tool,
+ * OpenClaw's `sessions_spawn` and Hermes' `delegate_task`, with the settings
+ * those three converge on: one level deep, read-only, no channel to the user,
+ * the parent's own model.
  *
- * The model is selected at call time by routing through the matching
- * pre-built `AgentSet`. Both sets share:
- *   - The same sub-agent system prompt (~500-700 tokens, much
- *     shorter than the main agent prompt).
- *   - The same tool registry (chatbot core + domain tools, MINUS
- *     `dispatchAgent` to prevent recursion and `searchTools` because
- *     all domain tools are pre-loaded for the sub-agent — no
- *     Progressive Disclosure needed inside a sub-agent run).
- *   - The same `ChatbotCallOptions` shape so the parent's runtime
- *     context (teamId / userId / conversationId / …) is forwarded
- *     verbatim — the sub-agent operates on the same workspace and
- *     the same data scope as the parent.
+ * What a dispatch is made of, and where each part lives:
+ *  - the agent: `agents/chatbot/delegate.ts` — the parent's model, a static
+ *    prompt, the read-and-compute tool set (`buildSubAgentTools`);
+ *  - its opening message: `agents/chatbot/delegate-brief.ts` — the date, the
+ *    team's context, skills, collections and apps, any skill the parent
+ *    handed over, then the task;
+ *  - its limits: `agents/shared/delegation-slots.ts` (how many per turn, how
+ *    many at once), the step budget on the agent, the deadline here;
+ *  - what the user sees: a progress snapshot after every call the sub-agent
+ *    makes and settles, then the result below.
  *
- * Anti-recursion: the sub-agent tool registry intentionally OMITS
- * `dispatchAgent`, so a sub-agent cannot spawn a sub-sub-agent.
- *
- * Failure semantics: errors bubble up via the `createSubAgentExecute`
- * helper (no special swallowing). The parent agent sees the error
- * payload and decides whether to retry / give up — same contract as
- * any other tool failure.
+ * Read-only on purpose: a sub-agent's calls never reach the conversation's
+ * stream, so a write it made would be one the user never saw, and an approval
+ * it opened would have no card to answer it. The parent writes.
  */
 
 /**
- * Input schema of the `dispatchAgent` tool. Hoisted to module scope —
- * it closes over nothing in the factory — so the eval harness's
+ * Cap on the report. A summary is what the parent reads back on every later
+ * step of its turn — it does not need the sub-agent's working, and 12 000
+ * characters (~3 000 tokens) is several pages of findings.
+ */
+const SUMMARY_BUDGET_CHARS = 12_000;
+
+/** Entries of the call log carried in the final result, newest last. */
+const RESULT_ACTIVITY_ENTRIES = 12;
+/** Entries a live snapshot carries — what the card shows while it runs. */
+const PROGRESS_ACTIVITY_ENTRIES = 6;
+const CAPTION_MAX_CHARS = 90;
+
+/**
+ * Hang insurance and the bound on a turn held open. A sub-agent that has not
+ * finished in 20 minutes is either stuck or doing work that belongs in a
+ * workflow; its agent is steered to wrap up at 80% of this (`delegate.ts`).
+ */
+export const dispatchAgentDeadlineMs = (): number =>
+  parseIntEnv("DISPATCH_AGENT_DEADLINE_MS", {
+    fallback: 20 * 60 * 1000,
+    min: 60 * 1000,
+    max: 60 * 60 * 1000,
+  });
+
+/**
+ * Input schema of the `dispatchAgent` tool. Hoisted to module scope — it
+ * closes over nothing in the factory — so the eval harness's
  * `evals/tool-schemas.ts` can validate recorded tool calls without
  * constructing the sub-agent sets the factory requires.
  */
@@ -57,186 +87,305 @@ export const dispatchAgentInputSchema = z.object({
     .string()
     .min(10)
     .describe(
-      "Self-contained instruction for the sub-agent: goal + context + expected output format. The sub-agent reads no other context, so include every relevant file path, ID, and acceptance criterion verbatim.",
+      "The whole brief, in the user's language: the goal, every fact, id and file path the work needs, and what to hand back. The sub-agent sees nothing of this conversation — what you leave out, it does not know.",
     ),
   description: z
     .string()
     .min(1)
     .max(80)
     .describe(
-      "Short (3-5 word) label shown in traces and the UI. Example: 'Compare 5 invoices'.",
+      "3-6 words the user sees on the sub-agent's card, in their language. Example: 'Analyse des factures de mars'.",
     ),
-  model: z
-    .enum(["primary", "cheap"])
+  skills: z
+    .array(z.string().min(1).max(64))
+    .max(MAX_PRELOADED_SKILLS)
     .optional()
     .describe(
-      "'primary' (default): same model as the main agent — use when the sub-task needs reasoning, judgment, or complex multi-step planning. 'cheap': runs on a smaller but tool-strong model (DeepSeek V4 Flash by default) — use for well-scoped mechanical sub-tasks (summarise one document, extract a known schema, classify items).",
+      "Names from <skills> whose procedure the task follows; their full text is handed over up front.",
     ),
 });
 
+type DispatchAgentInput = z.infer<typeof dispatchAgentInputSchema>;
+
+/** One line of the sub-agent's call log, as the user reads it. */
+export interface DispatchAgentActivity {
+  tool: string;
+  caption?: string;
+  state: SubAgentToolCall["state"];
+}
+
 /**
- * Factory: build the `dispatchAgent` tool against a pair of pre-built
- * sub-agent sets. Called once from `agents/chatbot/index.ts` after
- * the sub-agent sets are constructed; the main agent's tool registry
- * then plugs the resulting tool in alongside the other core tools.
- *
- * Generic over `TTools` so the type of `subAgentPrimarySet` /
- * `subAgentCheapSet` flows through to the AI SDK without an explicit
- * cast.
+ * What the card draws while the sub-agent works. `progress` is the
+ * discriminator — every preliminary yield carries it and the result never
+ * does — so the browser tells "working" from "done" without depending on the
+ * SDK's `preliminary` flag surviving a reload.
+ */
+export interface DispatchAgentProgress {
+  progress: {
+    /** Tool calls issued so far. */
+    step: number;
+    /** Epoch ms the dispatch started — the card counts elapsed time from it. */
+    startedAt: number;
+    activity: DispatchAgentActivity[];
+  };
+}
+
+/**
+ * Why a run did not complete — facts, worded by the parent (and the card).
+ *  - `step_budget`: it was still working when its step budget ran out.
+ *  - `deadline`: it was still working when its wall clock ran out.
+ *  - `output_limit`: its last answer hit the output cap mid-sentence.
+ *  - `interrupted`: the model call ended on its own (provider cut, error).
+ *  - `empty`: it finished without writing a report.
+ */
+export type DispatchAgentStopReason =
+  "step_budget" | "deadline" | "output_limit" | "interrupted" | "empty";
+
+export interface DispatchAgentResult {
+  /**
+   * `completed` — the report is final. `partial` — the report covers what was
+   * done before it stopped (`reason`). `failed` — no report at all.
+   */
+  status: "completed" | "partial" | "failed";
+  summary: string;
+  /** Deliverables it wrote under `outputs/`, for the parent to present. */
+  files?: string[];
+  reason?: DispatchAgentStopReason;
+  toolCalls: number;
+  durationMs: number;
+  /** The last calls it made, for the card's timeline. */
+  activity: DispatchAgentActivity[];
+}
+
+export type DispatchAgentOutput = DispatchAgentResult | ToolErrorOutput;
+
+const captionOf = (input: unknown): string | undefined => {
+  if (typeof input !== "object" || input === null) return undefined;
+  const caption: unknown = Reflect.get(input, "caption");
+  if (typeof caption !== "string") return undefined;
+  const trimmed = caption.trim();
+  if (trimmed.length === 0) return undefined;
+  return trimmed.length > CAPTION_MAX_CHARS
+    ? `${trimmed.slice(0, CAPTION_MAX_CHARS - 1)}…`
+    : trimmed;
+};
+
+const activityOf = (
+  toolCalls: readonly SubAgentToolCall[],
+  entries: number,
+): DispatchAgentActivity[] =>
+  toolCalls.slice(-entries).map((call) => {
+    const caption = captionOf(call.input);
+    return {
+      tool: call.toolName,
+      ...(caption === undefined ? {} : { caption }),
+      state: call.state,
+    };
+  });
+
+const WORKSPACE_PREFIX = "/workspace/";
+
+/**
+ * Deliverables the run wrote under `outputs/` — what `python`/`bash` report as
+ * artifacts and `transform` as its output. Not `outputs/persisted/` (the
+ * overflow of oversized tool results) nor `outputs/results/` (the kernel's
+ * automatic display captures): neither is a file anyone asked for.
+ */
+const deliverablesOf = (toolCalls: readonly SubAgentToolCall[]): string[] => {
+  const paths = new Set<string>();
+  const add = (raw: unknown): void => {
+    if (typeof raw !== "string") return;
+    const path = raw.startsWith(WORKSPACE_PREFIX)
+      ? raw.slice(WORKSPACE_PREFIX.length)
+      : raw;
+    if (
+      path.startsWith("outputs/") &&
+      !path.startsWith("outputs/persisted/") &&
+      !path.startsWith("outputs/results/")
+    ) {
+      paths.add(path);
+    }
+  };
+  for (const call of toolCalls) {
+    const output = call.output;
+    if (call.state !== "done" || typeof output !== "object" || output === null)
+      continue;
+    const artifacts: unknown = Reflect.get(output, "artifacts");
+    if (Array.isArray(artifacts)) {
+      for (const artifact of artifacts) {
+        if (typeof artifact === "object" && artifact !== null) {
+          add(Reflect.get(artifact, "path"));
+        }
+      }
+    }
+    add(Reflect.get(output, "outputPath"));
+  }
+  return [...paths];
+};
+
+const stopReasonOf = (
+  finishReason: string,
+  hasText: boolean,
+): DispatchAgentStopReason | undefined => {
+  if (finishReason === "stop") return hasText ? undefined : "empty";
+  if (finishReason === "tool-calls") return "step_budget";
+  if (finishReason === "length") return "output_limit";
+  return "interrupted";
+};
+
+/** The report a run ends on, when the run wrote none. */
+const missingSummary = (reason: DispatchAgentStopReason, run: SubAgentRun) =>
+  `The sub-agent stopped (${reason}) after ${run.toolCalls.length.toString()} tool calls without writing a report. Its last steps are in \`activity\`; do the rest yourself or re-dispatch a narrower task.`;
+
+/**
+ * Build the `dispatchAgent` tool against the sub-agent sets. Called once from
+ * `agents/chatbot/delegate.ts`, which owns the agents; the chatbot and the
+ * workflow executor then register the same instance.
  */
 export const createDispatchAgentTool = <TTools extends ToolSet>(deps: {
   /**
-   * RESOLVERS, not agents. The sub-agent sets resolve their model per call
-   * (against the live registry, so a quarantine written overnight applies to
-   * the first delegation of the day); taking an instance here would capture
-   * whatever the registry held at import and never see a change again.
+   * The sub-agent pair for the model the PARENT is serving on, resolved per
+   * call — a quarantine written overnight applies to the first delegation of
+   * the day, and a team that picked another model delegates on that model.
    */
-  primary: () => Agent<ChatbotCallOptions, TTools>;
-  cheap: () => Agent<ChatbotCallOptions, TTools>;
-  /** The ceiling those agents stop at — see `SubAgentConfig.contextCeiling`. */
-  contextCeiling?: () => number;
+  resolve: (profileKey: string) => {
+    primary: Agent<ChatbotCallOptions, TTools>;
+    fallback: Agent<ChatbotCallOptions, TTools>;
+    contextCeiling: number;
+  };
 }) => {
-  const inputSchema = dispatchAgentInputSchema;
-
-  /**
-   * Format the sub-agent's `GenerateTextResult` into the
-   * `{ summary, ... }` payload returned to the parent. Adds an
-   * `incomplete` flag and a marker prefix when the run stopped
-   * because the step budget was exhausted (rather than because the
-   * sub-agent emitted a clean final text). The parent can read the
-   * flag and decide whether to retry with a tighter scope.
-   *
-   * AI SDK v6 finish reasons we care about:
-   *   - "stop"        → sub-agent produced a final text on its own. Healthy.
-   *   - "tool-calls"  → stopped mid-loop, typically because `stepCountIs(N)`
-   *                     fired between a tool-call step and the next text step.
-   *   - "length"      → output token budget hit (rare for short summaries).
-   *   - other         → provider error / content filter / etc.
-   */
-  const formatSubAgentResult = (
+  const formatResult = (
     result: GenerateTextResult<TTools, Record<string, unknown>, never>,
-  ): { summary: string; incomplete?: boolean; finishReason?: string } => {
-    // A delegate runs up to 25 steps behind one tool call and its `text` came
-    // back raw — the one result in the product with no cap at all. Bounded
-    // rather than persisted: this is the delegate's PROSE, and everything it
-    // produced lives in the sandbox under paths the summary names, so there is
-    // nothing here to re-read that is not already reachable. A summary that
-    // needs 24 000 characters has stopped being a summary.
-    const text = boundedText(
-      result.text.trim(),
-      SUB_AGENT_SUMMARY_BUDGET_CHARS,
-    );
-    const finishReason = result.finishReason;
-    if (finishReason === "stop") {
-      return { summary: text };
-    }
-    const marker = `[incomplete: sub-agent stopped with finishReason="${finishReason}" before producing a clean summary — likely max-steps reached]`;
+    _salvaged?: never,
+    _usage?: unknown,
+    run?: SubAgentRun,
+  ): DispatchAgentResult => {
+    const done: SubAgentRun = run ?? { durationMs: 0, toolCalls: [] };
+    const text = boundedText(result.text.trim(), SUMMARY_BUDGET_CHARS);
+    const reason = stopReasonOf(result.finishReason, text.length > 0);
+    const files = deliverablesOf(done.toolCalls);
     return {
-      summary: text.length > 0 ? `${marker}\n\n${text}` : marker,
-      incomplete: true,
-      finishReason,
+      status:
+        reason === undefined
+          ? "completed"
+          : text.length > 0
+            ? "partial"
+            : "failed",
+      summary: text.length > 0 ? text : missingSummary(reason ?? "empty", done),
+      ...(files.length > 0 ? { files } : {}),
+      ...(reason === undefined ? {} : { reason }),
+      toolCalls: done.toolCalls.length,
+      durationMs: done.durationMs,
+      activity: activityOf(done.toolCalls, RESULT_ACTIVITY_ENTRIES),
     };
   };
 
-  // Hang insurance, NOT a pace limit — sized ABOVE the longest work this
-  // tool should ever legitimately host, so it can only fire on a genuinely
-  // stuck step. Deliberately generous: dispatched agents are meant to grow
-  // into hour-scale intensive work, and the real bound on a healthy run is
-  // the step budget, not the clock. (Work that legitimately outgrows even
-  // this belongs in `conversationBackgroundTasks`, where a deploy or a
-  // dropped tab cannot kill it — a turn held open for hours is the wrong
-  // vehicle, not a deadline problem.)
-  const DISPATCH_DEADLINE_MS = 90 * 60 * 1000;
-  const onDeadline = (): ReturnType<typeof formatSubAgentResult> => ({
-    summary:
-      "[incomplete: the sub-agent was cut after 90 minutes — a step hung. Retry with a smaller task, or do the work directly.]",
-    incomplete: true,
-    finishReason: "deadline",
-  });
+  const onDeadline = (
+    _input: DispatchAgentInput,
+    run: SubAgentRun,
+  ): DispatchAgentResult => {
+    const files = deliverablesOf(run.toolCalls);
+    return {
+      status: run.toolCalls.length > 0 ? "partial" : "failed",
+      summary: missingSummary("deadline", run),
+      ...(files.length > 0 ? { files } : {}),
+      reason: "deadline",
+      toolCalls: run.toolCalls.length,
+      durationMs: run.durationMs,
+      activity: activityOf(run.toolCalls, RESULT_ACTIVITY_ENTRIES),
+    };
+  };
 
-  // C5 invariant: a sub-agent's message channel is the `task` STRING only —
-  // never the parent conversation history. So native image/video parts can
-  // never leak into a sub-agent (v1 excludes them by construction). See
-  // `tests/unit/tools/dispatch-agent-no-native.test.ts`.
-  const executePrimary = createSubAgentExecute<
+  const execute = createSubAgentExecute<
     ChatbotCallOptions,
     TTools,
-    z.infer<typeof inputSchema>,
-    ReturnType<typeof formatSubAgentResult>
+    DispatchAgentInput,
+    DispatchAgentOutput,
+    DispatchAgentProgress
   >({
-    subAgent: () => deps.primary(),
-    ...(deps.contextCeiling ? { contextCeiling: deps.contextCeiling } : {}),
-    buildMessages: ({ task }) => [{ role: "user", content: task }],
-    buildCallOptions: (_input, ctx) => ({
+    subAgent: (ctx) => deps.resolve(ctx.modelProfile.key).primary,
+    fallbackSubAgent: (ctx) => deps.resolve(ctx.modelProfile.key).fallback,
+    contextCeiling: (ctx) => deps.resolve(ctx.modelProfile.key).contextCeiling,
+    // Nothing a sub-agent can call changes the team's data — its writes are
+    // files in the sandbox, which a retry overwrites rather than duplicates.
+    // So an empty run is always worth the one retry the helper allows.
+    hasSideEffect: () => false,
+    admit: async (_input, ctx) => {
+      const verdict = await admitDelegation(delegationTurnKey(ctx));
+      if (verdict.admitted) return null;
+      return toolError(
+        TOOL_ERROR_CODES.DELEGATION_LIMIT,
+        `This turn already dispatched ${verdict.limit.toString()} sub-agents, the most one turn may — nothing was started.`,
+        "Do the remaining work yourself with your own tools.",
+      );
+    },
+    settle: async (_input, ctx, toolCallId) => {
+      releaseDelegationSlot(delegationTurnKey(ctx));
+      // Its kernel holds whatever it loaded. Released in the background: the
+      // parent has its answer and nothing waits on the cleanup.
+      if (ctx.conversationId !== undefined) {
+        void releasePythonContext(ctx.conversationId, toolCallId).catch(
+          (err: unknown) => {
+            console.warn(
+              "[dispatchAgent] kernel release failed:",
+              err instanceof Error ? err.message : err,
+            );
+          },
+        );
+      }
+    },
+    buildMessages: async ({ task, skills }, ctx) => [
+      {
+        role: "user",
+        content: await buildDelegateBrief({ task, skills }, ctx),
+      },
+    ],
+    buildCallOptions: (_input, ctx, { toolCallId }) => ({
       teamId: ctx.teamId,
       organizationId: ctx.organizationId,
       userId: ctx.userId,
       userName: ctx.userName,
       conversationId: ctx.conversationId,
       timeZone: ctx.timeZone,
-      traceId: ctx.traceId ? `${ctx.traceId}.sub` : undefined,
-      // Inherit the enclosing workflow run's write gate (undefined for chat).
+      // Its own trace id, hence its own OpenRouter lane (`provider-session.ts`):
+      // parallel sub-agents of one turn no longer share one pin. The turn root
+      // stays the prefix, so the cost ledger still folds it into the turn.
+      traceId: ctx.traceId ? `${ctx.traceId}.sub.${toolCallId}` : undefined,
+      delegateRunId: toolCallId,
+      // Everything that decides what it may do, inherited verbatim: a team's
+      // `blocked` tool stays blocked, a run's autonomy stays its autonomy.
+      toolPolicies: ctx.toolPolicies,
       workflowAutonomy: ctx.workflowAutonomy,
+      reasoningLevel: ctx.reasoningLevel,
+      // Which connected apps it may reach from the sandbox (egress + skills).
+      externalAppConnections: ctx.externalAppConnections,
     }),
-    formatResult: formatSubAgentResult,
-    deadlineMs: DISPATCH_DEADLINE_MS,
+    formatResult,
+    deadlineMs: dispatchAgentDeadlineMs(),
     onDeadline,
-  });
-
-  const executeCheap = createSubAgentExecute<
-    ChatbotCallOptions,
-    TTools,
-    z.infer<typeof inputSchema>,
-    ReturnType<typeof formatSubAgentResult>
-  >({
-    subAgent: () => deps.cheap(),
-    ...(deps.contextCeiling ? { contextCeiling: deps.contextCeiling } : {}),
-    buildMessages: ({ task }) => [{ role: "user", content: task }],
-    buildCallOptions: (_input, ctx) => ({
-      teamId: ctx.teamId,
-      organizationId: ctx.organizationId,
-      userId: ctx.userId,
-      userName: ctx.userName,
-      conversationId: ctx.conversationId,
-      timeZone: ctx.timeZone,
-      traceId: ctx.traceId ? `${ctx.traceId}.sub-cheap` : undefined,
-      // Inherit the enclosing workflow run's write gate (undefined for chat).
-      workflowAutonomy: ctx.workflowAutonomy,
+    progress: ({ step, startedAt, toolCalls }) => ({
+      progress: {
+        step,
+        startedAt,
+        activity: activityOf(toolCalls, PROGRESS_ACTIVITY_ENTRIES),
+      },
     }),
-    formatResult: formatSubAgentResult,
-    deadlineMs: DISPATCH_DEADLINE_MS,
-    onDeadline,
   });
 
   return buildChatbotTool({
     category: "core",
     searchHint:
-      "delegate sub-agent task encapsulated parallel synthesis isolated context analyse compare multi-source",
-    // Spawning a sub-agent has external side effects (LLM calls, tool
-    // executions in the shared sandbox). Not read-only.
+      "delegate sub-agent parallel research analyse compare documents records web isolated context",
+    // Not read-only: it runs a whole agent, sandbox files included. And its
+    // report is the parent's only copy of that work, so it is never compacted.
     isReadOnly: false,
     description: [
-      "Delegate an encapsulated sub-task to a fresh sub-agent that runs in isolation and returns a tight summary as the tool result. The sub-agent has its own short context, its own tool loop (read, searchKnowledge, querySql, python, bash, …), and does not see the main conversation.",
-      "",
-      "Usage:",
-      '- Use when a sub-task would otherwise pollute the main context with thousands of tokens of intermediate tool results — e.g. "analyse these 5 documents in parallel and compare them", "find the best matching record across 200 rows", "explore three angles of this question and bring back a synthesis".',
-      "- Use when the sub-task is well-scoped and can be expressed as a single self-contained instruction.",
-      "- For parallelism, launch multiple `dispatchAgent` calls in the same step for independent sub-tasks.",
-      "- Don't use for a single tool call — call the tool directly.",
-      "- Don't use for N similar files with the same processing — inline parallel tool calls + one `python` is faster. Sub-agents share your `/workspace/` sandbox and their `python` / `bash` calls serialize on a mutex, so N sub-agents all hitting python just queue up.",
-      "- Cap parallel dispatch at 3. Beyond 3 truly different angles, batch sequentially — extra sub-agents add ~one model call of setup + summary overhead with diminishing parallelism return.",
-      "- Don't use when you need to maintain conversation state mid-task — the sub-agent forgets after returning.",
-      "- Don't use when the user expects a live streaming answer — sub-agent results arrive as a single block.",
-      "- Don't use when the task requires asking the user for clarification — use `askUserQuestion` in the main loop instead.",
-      "- `model: 'primary'` (default): same model as the main agent — use when the sub-task needs reasoning, judgment, or complex multi-step planning.",
-      "- `model: 'cheap'`: runs on a smaller but tool-strong model — use for well-scoped mechanical sub-tasks (summarise one document, extract a known schema, classify items).",
-      "- Always make the `task` instruction self-contained: include all relevant context, file paths, IDs, and the expected output format. The sub-agent reads no other context.",
+      "Hand one self-contained piece of work to a sub-agent: it runs its own tool loop in a fresh context and returns a short report, so its reading never enters your context. Calls made in the same step run in parallel.",
+      "It is for work whose raw output you will not quote — see `<delegation>` for when. The same processing over many files is one `python` call, not a sub-agent per file.",
+      "The sub-agent has your read tools (knowledge, SQL, records, Drive, web, files, `extract`, `vision`) and `python`/`bash` on the shared `/workspace`; it knows the date and the team's context, skills, collections and apps — nothing of this conversation. It cannot change the team's data or apps, ask the user anything, or show files: it names those steps in its report for you to do.",
+      "Result: `{ status, summary, files?, reason? }`. `completed` — build on the summary. `partial` — it stopped early (`reason`); use what it found, then finish yourself or dispatch a narrower task. `failed` — do the work yourself. `files` are deliverables it wrote; show them with `presentFiles`.",
     ].join("\n"),
-    inputSchema,
-    execute: async (input, options) => {
-      const route = input.model ?? "primary";
-      if (route === "cheap") return executeCheap(input, options);
-      return executePrimary(input, options);
-    },
+    inputSchema: dispatchAgentInputSchema,
+    execute,
   });
 };

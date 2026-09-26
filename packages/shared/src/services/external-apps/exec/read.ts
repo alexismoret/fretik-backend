@@ -12,6 +12,7 @@ import { resolveConnection } from "../connections/resolve";
 import { extractFrameworkArgs } from "./framework-args";
 import { dispatchMcpRead } from "./mcp-read";
 import { executeReadAction } from "./read-executor";
+import { approvalRefusedInSubAgent } from "./sub-agent-refusal";
 import { validateActionArgs } from "./validate-args";
 
 /**
@@ -85,6 +86,10 @@ export const dispatchRead = async (
       status: "error",
       message: `ACTION_DISABLED: ${qualifiedName} is disabled on connection "${connection.displayName}" by its permission settings. ${TOOL_PERMISSIONS_REMEDIATION}`,
     };
+  }
+
+  if (level === "approval" && ctx.readOnly === true) {
+    return approvalRefusedInSubAgent(qualifiedName);
   }
 
   if (level === "approval") {

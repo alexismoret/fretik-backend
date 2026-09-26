@@ -1,7 +1,4 @@
-import { toolPolicyLevelSchema } from "@fretik/shared/schemas/tool-policies";
-import { workflowAutonomySchema } from "@fretik/shared/schemas/workflows";
 import { hasToolCall, isStepCount, type PrepareStepFunction } from "ai";
-import { z } from "zod";
 import {
   resolveChatModelForProfile,
   resolveModel,
@@ -15,12 +12,10 @@ import type { PrunePricing } from "../../services/page-project/prune-history";
 import { prunePageWriteHistory } from "../../services/page-project/prune-history";
 import { salvagePageProject } from "../../services/page-project/salvage";
 import { createBuildPageTool } from "../../tools/build-page";
-import { createDispatchAgentTool } from "../../tools/dispatch-agent";
 import {
   AGENT_STEP_MAX_OUTPUT_TOKENS,
   buildAgentSet,
   buildToolsContext,
-  type AgentRuntimeContextBase,
   type AgentSet,
 } from "../shared/agent-builder";
 import { memoizeAgentSets, stopOnPendingApproval } from "../shared/agent-set";
@@ -31,25 +26,19 @@ import {
   pickDomainRegistry,
   progressiveActiveTools,
 } from "../shared/progressive-disclosure";
-import {
-  buildPageBuilderSystemPrompt,
-  buildSubAgentSystemPrompt,
-} from "../shared/prompt-renderer";
+import { buildPageBuilderSystemPrompt } from "../shared/prompt-renderer";
 import { llmRepairToolCall } from "../shared/repair-tool-call";
 import {
   getRuntimeContext,
   type AgentRuntimeContext,
 } from "../shared/runtime-context";
 import type { RenderedAgentPrompt } from "../shared/turn-context";
-import { workflowSubAgentHiddenToolNames } from "../shared/workflow-tool-gate";
 import { buildChatbotSystemPrompt } from "./system-prompt";
 import {
   buildChatbotTools,
   buildPageBuilderTools,
-  buildSubAgentTools,
   type ChatbotTools,
   type PageBuilderTools,
-  type SubAgentTools,
 } from "./tools";
 
 /**
@@ -90,177 +79,19 @@ const isToolSuppressed = (name: string): boolean =>
  * out to tools via `toolsContext` — see `../shared/runtime-context.ts`).
  */
 
-/**
- * Typed call options accepted by `chatbotAgentSet.primary/fallback.stream()`.
- * The handler constructs this from the Hono session (user-facing
- * route) or from the trusted `X-Context-*` headers (internal route)
- * and passes it as `.stream({ options: ... })`. The schema is
- * validated by the framework on every call before `prepareCall`
- * fires.
- */
-export const ChatbotCallOptionsSchema = z.object({
-  teamId: z.uuid(),
-  organizationId: z.uuid(),
-  userId: z.uuid().optional(),
-  userName: z.string().optional(),
-  conversationId: z.uuid().optional(),
-  timeZone: z.string().optional(),
-  /**
-   * Pre-rendered fragment describing the files attached to the user
-   * message being sent. The handler computes it by joining the last
-   * user message's `file` parts against `ai_chat_files`; passed
-   * through to `AgentRuntimeContext.attachedFilesBlock` and
-   * substituted into the `{{attachedFilesBlock}}` placeholder in
-   * system-prompt.md. Empty when no files are attached.
-   */
-  attachedFilesBlock: z.string().optional(),
-  /**
-   * Which of those files ride natively on THIS request and which the model
-   * has to open with a tool — `planNativeIngestion`, the same plan
-   * `prepareModelMessages` applies. Renders `{{nativeMediaNote}}`; without it
-   * the note would state the profile's capability instead of the facts.
-   */
-  nativeIngestion: z
-    .object({ native: z.array(z.string()), toolOnly: z.array(z.string()) })
-    .optional(),
-  /**
-   * Pre-rendered manifest of the persistent chatbot-context files
-   * (Projects-style — user + team instructions and a compact catalogue
-   * of files). Computed by the handler through
-   * `buildChatbotContextManifest`. Threaded into
-   * `AgentRuntimeContext.chatbotContextManifest` and substituted into
-   * the `{{chatbotContextManifest}}` placeholder. Omitted when nothing
-   * is configured for either scope.
-   */
-  chatbotContextManifest: z.string().optional(),
-  /**
-   * Active Memory recall block — a 1-3 bullet markdown summary of
-   * memories already judged relevant for the current turn (see
-   * `services/recall/recall.ts`). Threaded into
-   * `AgentRuntimeContext.activeMemoryBlock` and substituted into the
-   * `{{activeMemoryBlock}}` placeholder at the very bottom of the
-   * dynamic suffix. Omitted when no candidate was relevant or when
-   * recall failed / timed out (active memory must never block a turn).
-   */
-  activeMemoryBlock: z.string().optional(),
-  /**
-   * Memory INDEX — the tree of `/memories/{user,team}/` paths and sizes, no
-   * content. Always present (one indexed SELECT in the fragment batch), where
-   * `activeMemoryBlock` only appears when the message matched something.
-   * Substituted into `{{memoryIndex}}`.
-   */
-  memoryIndexBlock: z.string().optional(),
-  /**
-   * The team's standing memory — content, not paths, and not retrieved. Where
-   * `activeMemoryBlock` only appears when the message matched something, this
-   * is present on every turn, which is what a question naming nothing stands
-   * on. Substituted into `{{standingMemory}}`.
-   */
-  standingMemoryBlock: z.string().optional(),
-  /**
-   * One workflow card when an existing workflow already produces what this
-   * turn asks for — the capability channel of the same recall pass, kept out
-   * of the judge's budget. Substituted into `{{availableCapabilities}}`.
-   * Omitted on the vast majority of turns.
-   */
-  availableCapabilitiesBlock: z.string().optional(),
-  /**
-   * Catalogue of the team's collections for the AI query path — one line
-   * per type (typed view + field columns + outgoing relations). The
-   * handler builds it via `describeTeamSchema`. Threaded into
-   * `AgentRuntimeContext.teamCollectionsBlock` and substituted into the
-   * `{{teamCollections}}` placeholder under `<team_collections>` in the dynamic
-   * suffix. Lets the LLM write correct typed-view + `links` queries
-   * without an extra tool call. Omitted when the team has no types.
-   */
-  teamCollectionsBlock: z.string().optional(),
-  /**
-   * Catalogue of skills enabled for this team — one line per skill
-   * (`- **name** — description`). The handler builds it via
-   * `listEnabledSkillsForTeam` and threads it through
-   * `AgentRuntimeContext.enabledSkillsBlock`, substituted into the
-   * `{{skillsCatalog}}` placeholder. Filtering by team happens
-   * upstream: disabled skills NEVER reach the prompt (Anthropic's
-   * recommended pattern, vs. instructing the model negatively).
-   * Empty / undefined renders as a placeholder line.
-   */
-  enabledSkillsBlock: z.string().optional(),
-  /**
-   * Roster of conversation participants — one line per member (`- Name`),
-   * present ONLY when the conversation is collaborative (≥2 members). The
-   * handler builds it via `buildSpeakerContext`; the same helper prefixes
-   * every user message with `[Name]:` so the model knows who said what.
-   * Omitted for solo conversations, which then render byte-identical to the
-   * single-user prompt (no participants block, no labels).
-   */
-  participantsBlock: z.string().optional(),
-  /**
-   * Per-turn trace id. The handler generates this at the start of
-   * `runChatbotTurn` (typically reusing the resumable `streamId`) and
-   * threads it through so every step / fallback / tool log carries the
-   * same identifier. Lets us reconstruct a single user turn from the
-   * container logs without correlating timestamps.
-   */
-  traceId: z.string().optional(),
-  /**
-   * Active external-app connections (Outlook, …) visible to this turn.
-   * Loaded by the handler via `listConnections(teamId, userId)` and
-   * threaded into `AgentRuntimeContext.externalAppConnections`. The
-   * sandbox bootstrap reads this list to push only the relevant SKILL.md
-   * files into `/workspace/skills/<providerKey>/`.
-   */
-  externalAppConnections: z
-    .array(
-      z.object({
-        id: z.string(),
-        providerKey: z.string(),
-        displayName: z.string(),
-        scope: z.enum(["team", "user"]),
-        categories: z.array(z.string()),
-        options: z.record(z.string(), z.unknown()).nullable(),
-      }),
-    )
-    .optional(),
-  /**
-   * Pre-rendered `{{externalAppsBlock}}` fragment for the system prompt
-   * — one line per active connection. Omitted when the team has no
-   * external apps; the prompt then shows the placeholder.
-   */
-  externalAppsBlock: z.string().optional(),
-  /**
-   * Autonomy of the enclosing workflow run, when this conversation belongs to
-   * one. Poured into dispatched sub-agents (`dispatchAgent`) so they inherit
-   * the run's write gate — same rules as the main workflow agent. Undefined for
-   * plain chat (and its sub-agents), which then expose the full tool menu.
-   */
-  workflowAutonomy: workflowAutonomySchema.optional(),
-  /**
-   * The team's builtin-tool permission overrides (`{ [toolName]: level }`),
-   * loaded per turn by the handler. Drives blocking (prune from the menu +
-   * prompt) and per-tool approval routing. Omitted = every tool at its default.
-   */
-  toolPolicies: z.record(z.string(), toolPolicyLevelSchema).optional(),
-  /**
-   * Registry profile the PAGE BUILDER runs on for this turn — the seam an A/B
-   * of page quality needs, and the one that did not exist until 2026-08-18.
-   *
-   * `X-Model-Profile-Key` only ever repointed the parent turn, so a candidate
-   * run gated the model that DECIDES to build a page while the model that
-   * actually writes it stayed on the code default. Omitted → the `page-build`
-   * role binding, which is the answer on every real request.
-   */
-  pageBuildProfileKey: z.string().optional(),
-  /**
-   * Thinking depth for delegated work. The parent turn resolves its own level
-   * through `effectiveReasoningLevel` and puts it on the wire itself; this
-   * carries the same decision INTO a sub-agent, which previously received no
-   * effort input at all — the page builder ran at its profile's default no
-   * matter how deeply the user asked the turn to think.
-   */
-  reasoningLevel: z.string().optional(),
-});
+import {
+  buildChatbotRuntimeContextBase,
+  ChatbotCallOptionsSchema,
+  type ChatbotCallOptions,
+} from "./call-options";
+import { delegateHiddenToolNames, dispatchAgentTool } from "./delegate";
 
-export type ChatbotCallOptions = z.infer<typeof ChatbotCallOptionsSchema>;
+export {
+  buildChatbotRuntimeContextBase,
+  ChatbotCallOptionsSchema,
+  type ChatbotCallOptions,
+} from "./call-options";
+export { dispatchAgentTool } from "./delegate";
 
 /**
  * System prompt renderer wrapping `buildChatbotSystemPrompt`. Called
@@ -318,118 +149,6 @@ const chatbotPrepareStep = (
 };
 
 /**
- * Map `ChatbotCallOptions` → the pure-data subset of
- * `AgentRuntimeContext`. `buildAgentSet` injects the per-request
- * managers (`dynamicToolManager`, `taskManager`) on top.
- */
-export const buildChatbotRuntimeContextBase = (
-  options: ChatbotCallOptions,
-): AgentRuntimeContextBase => ({
-  organizationId: options.organizationId,
-  teamId: options.teamId,
-  userId: options.userId,
-  userName: options.userName,
-  conversationId: options.conversationId,
-  timeZone: options.timeZone,
-  attachedFilesBlock: options.attachedFilesBlock,
-  nativeIngestion: options.nativeIngestion,
-  chatbotContextManifest: options.chatbotContextManifest,
-  activeMemoryBlock: options.activeMemoryBlock,
-  memoryIndexBlock: options.memoryIndexBlock,
-  standingMemoryBlock: options.standingMemoryBlock,
-  availableCapabilitiesBlock: options.availableCapabilitiesBlock,
-  teamCollectionsBlock: options.teamCollectionsBlock,
-  enabledSkillsBlock: options.enabledSkillsBlock,
-  participantsBlock: options.participantsBlock,
-  externalAppConnections: options.externalAppConnections,
-  externalAppsBlock: options.externalAppsBlock,
-  traceId: options.traceId,
-  // Carried so a workflow-dispatched sub-agent inherits the run's write gate;
-  // undefined for plain chat.
-  workflowAutonomy: options.workflowAutonomy,
-  toolPolicies: options.toolPolicies,
-  pageBuildProfileKey: options.pageBuildProfileKey,
-  reasoningLevel: options.reasoningLevel,
-});
-
-/**
- * Sub-agent step budget. Default 25 — comfortable headroom for a
- * realistic "analyse 5 documents and compare" pattern (~5 reads +
- * ~5 python cells + a few RAG/SQL probes + final summary) while
- * staying tight enough that genuinely runaway sub-agents stop and
- * escalate to the parent. Tunable via `CHATBOT_SUB_AGENT_MAX_STEPS`
- * (range [1, 100]).
- *
- * When the budget IS exhausted, AI SDK does NOT throw — the run
- * stops gracefully with `finishReason !== "stop"` and `result.text`
- * is whatever the sub-agent had produced so far (often empty if the
- * last step was mid tool-call). The `dispatchAgent` execute below
- * detects this and prefixes the summary with a clear "[budget
- * exhausted]" marker so the parent agent can decide whether to
- * retry with a tighter task scope or accept the partial result.
- */
-const parseSubAgentMaxSteps = (): number =>
-  parseIntEnv("CHATBOT_SUB_AGENT_MAX_STEPS", {
-    fallback: 25,
-    min: 1,
-    max: 100,
-  });
-
-/**
- * Sub-agent system prompt — pure static text, no per-turn variables.
- * The sub-agent receives every per-task signal (file paths, IDs,
- * acceptance criteria) verbatim through the `task` instruction the
- * parent passes via `dispatchAgent`. Wrapped in a callback to
- * satisfy `buildAgentSet`'s `systemPrompt` shape.
- */
-const subAgentSystemPrompt = (ctx: AgentRuntimeContext): Promise<string> =>
-  buildSubAgentSystemPrompt(ctx);
-
-/**
- * Which tools a DELEGATE may not call. Team-policy blocked tools are hidden in
- * every context (chat + workflow); a delegate dispatched INSIDE a workflow run
- * additionally prunes the writes/memory the main workflow agent would, so
- * delegation cannot bypass the run's write gate.
- */
-const delegateHiddenToolNames = (ctx: AgentRuntimeContext): Set<string> => {
-  const hidden = new Set<string>(policyHiddenToolNames(ctx));
-  if (ctx.workflowAutonomy !== undefined) {
-    for (const name of workflowSubAgentHiddenToolNames(ctx.workflowAutonomy))
-      hidden.add(name);
-  }
-  return hidden;
-};
-
-/**
- * Sub-agent tool gate. Every tool is active on every step — no Progressive
- * Disclosure inside a delegate run — minus whatever the gate above hides.
- *
- * `toolsContext` is LOAD-BEARING and was missing here until 2026-08-15: AI SDK
- * v7 hands a tool its context ONLY through `toolsContext[toolName]`, so without
- * it every tool a sub-agent called threw `Missing AgentRuntimeContext`. Nothing
- * about that failure was visible from outside: the throw came back as
- * INTERNAL_ERROR, the model read a run of them as an outage and returned a
- * fluent, entirely false "the platform is down" report instead of the work
- * (measured on the generalist sub-agent: 6 tool calls, 6 identical errors, one
- * apology). Written out per concrete tool set rather than once over a generic
- * `TTools`, because `InferToolSetContext<TTools>` only reduces to the
- * permissive `{}` at a concrete registry — see `buildToolsContext`.
- */
-const subAgentPrepareStep = (
-  tools: SubAgentTools,
-): PrepareStepFunction<SubAgentTools> => {
-  const allNames = Object.keys(tools) as (keyof SubAgentTools)[];
-  return (stepContext) => {
-    const ctx = getRuntimeContext(stepContext);
-    const hidden = delegateHiddenToolNames(ctx);
-    return {
-      activeTools: allNames.filter((name) => !hidden.has(name)),
-      toolsContext: buildToolsContext(tools, ctx),
-    };
-  };
-};
-
-/**
  * What `prunePageWriteHistory` needs to know about the model that will read
  * the pruned history. Read from the SERVING model, which `buildAgentSet` hands
  * to the factory per instance — built once from the primary's profile, the
@@ -481,93 +200,6 @@ const pageBuilderPrepareStep = (
 };
 
 /**
- * Sub-agent set on the PRIMARY model — same model as the main agent
- * with the same fallback. Used when `dispatchAgent({ model: 'primary' })`
- * (the default) is called.
- *
- * `prepareStep` (`subAgentPrepareStep`) exposes every tool for a plain-chat
- * sub-agent (no Progressive Disclosure inside a sub-agent run) but applies the
- * workflow write gate when the sub-agent runs inside a workflow.
- */
-const makeSubAgentPrimarySet = (
-  model: ResolvedModel,
-): AgentSet<ChatbotCallOptions, SubAgentTools> =>
-  buildAgentSet<ChatbotCallOptions, SubAgentTools>({
-    id: "chatbot.sub.primary",
-    // Its own lane. This set resolves the SAME model as the parent, so sharing
-    // the conversation's key would put both on one pin — and a provider error
-    // here would then re-pin the parent onto a host its prefix is cold on.
-    sessionScope: "delegate",
-    buildTools: buildSubAgentTools,
-    systemPrompt: subAgentSystemPrompt,
-    maxOutputTokens: AGENT_STEP_MAX_OUTPUT_TOKENS,
-    model,
-    fallbackModel: resolveModel("chat-fallback"),
-    stopWhen: [
-      isStepCount(parseSubAgentMaxSteps()),
-      hasToolCall("askUserQuestion"),
-    ],
-    repairToolCall: llmRepairToolCall<SubAgentTools>(),
-    prepareStep: subAgentPrepareStep,
-    buildRuntimeContextBase: buildChatbotRuntimeContextBase,
-    callOptionsSchema: ChatbotCallOptionsSchema,
-  });
-
-const memoSubAgentPrimarySet = memoizeAgentSets(makeSubAgentPrimarySet);
-
-/**
- * BUILT PER CALL, not at import — the same fix `getPageBuilderSet` documents.
- *
- * This was a module-level const until 2026-08-30, which meant `resolveModel`
- * ran while the module graph was still loading: before the live registry is
- * warmed, and before a quarantine written overnight could possibly be read. It
- * survived only because a curated TypeScript registry could answer without a
- * database; with the registry database-backed, resolving at import is resolving
- * against nothing. `memoizeAgentSets` keeps the per-call cost to a map lookup.
- */
-const subAgentPrimarySet = (): AgentSet<ChatbotCallOptions, SubAgentTools> =>
-  memoSubAgentPrimarySet(resolveModel("chat"));
-
-/**
- * Sub-agent set on the CHEAP model (the registry's `dispatch-cheap` role,
- * `deepseek/deepseek-v4-flash-0731` by default). Used when
- * `dispatchAgent({ model: 'cheap' })` is called for well-scoped
- * mechanical sub-tasks (summarise one document, extract a known
- * schema, classify items).
- *
- * Fallback escalates to the main `chat` model: if the cheap model
- * errors out (rate-limit, provider 5xx, etc.), the parent's
- * `dispatchAgent` execute returns the primary model's result rather
- * than a hard failure.
- */
-const makeSubAgentCheapSet = (
-  model: ResolvedModel,
-): AgentSet<ChatbotCallOptions, SubAgentTools> =>
-  buildAgentSet<ChatbotCallOptions, SubAgentTools>({
-    id: "chatbot.sub.cheap",
-    sessionScope: "delegate",
-    buildTools: buildSubAgentTools,
-    systemPrompt: subAgentSystemPrompt,
-    maxOutputTokens: AGENT_STEP_MAX_OUTPUT_TOKENS,
-    model,
-    fallbackModel: resolveModel("chat"),
-    stopWhen: [
-      isStepCount(parseSubAgentMaxSteps()),
-      hasToolCall("askUserQuestion"),
-    ],
-    repairToolCall: llmRepairToolCall<SubAgentTools>(),
-    prepareStep: subAgentPrepareStep,
-    buildRuntimeContextBase: buildChatbotRuntimeContextBase,
-    callOptionsSchema: ChatbotCallOptionsSchema,
-  });
-
-const memoSubAgentCheapSet = memoizeAgentSets(makeSubAgentCheapSet);
-
-/** Per call, for the reason `subAgentPrimarySet` carries. */
-const subAgentCheapSet = (): AgentSet<ChatbotCallOptions, SubAgentTools> =>
-  memoSubAgentCheapSet(resolveModel("dispatch-cheap"));
-
-/**
  * Page-builder step budget. Higher than the generic sub-agent's 25 because a
  * build is a PIPELINE, not a task: probe, brief, component APIs (up to 6 per
  * call), a write per file, a build, then the review loop. At 25 the loop would
@@ -596,7 +228,7 @@ const pageBuilderSystemPrompt = (ctx: AgentRuntimeContext): Promise<string> =>
  * file and then reads a design critique of it. Its tool registry is a short positive
  * list (`buildPageBuilderTools`), so no gating hook is needed — every tool it
  * has, it may call on every step. The team policy gate still applies, which is
- * why it shares `subAgentPrepareStep`: a team that disabled `managePage` must
+ * why it shares `delegateHiddenToolNames`: a team that disabled `managePage` must
  * not get pages through a delegate.
  *
  * DELIBERATELY WITHOUT the per-step output cap the chat and sub-agent sets
@@ -669,26 +301,6 @@ export const getPageBuilderSet = (
   );
 
 /**
- * `dispatchAgent` tool — built once against the sub-agent sets above.
- * Routed by the `model` parameter passed by the parent agent at call
- * time: `"primary"` (default) → `subAgentPrimarySet`, `"cheap"` →
- * `subAgentCheapSet`. The tool itself is registered as a `core` tool
- * in `buildChatbotTools` so it's always available to the parent
- * without going through Progressive Disclosure.
- */
-export const dispatchAgentTool = createDispatchAgentTool({
-  // RESOLVERS, not agents: the sets resolve their model per call, so handing
-  // over an instance here would pin every delegated sub-task to whatever the
-  // registry held while this module was loading.
-  primary: () => subAgentPrimarySet().primary,
-  cheap: () => subAgentCheapSet().primary,
-  // The ceiling the delegate's own stop condition uses. Read off the same set,
-  // never re-derived: the boundary loop has to recognise the stop the agent
-  // made, and two derivations drift the moment a model's window moves.
-  contextCeiling: () => subAgentPrimarySet().contextCeiling,
-});
-
-/**
  * `buildPage` tool — the page builder's only entry point. Deliberately NOT a
  * mode of `dispatchAgent`: different contract, different cost profile, and it
  * belongs next to `managePage` in the domain registry where a page request is
@@ -699,7 +311,7 @@ export const buildPageTool = createBuildPageTool({
   // turn's own options. Passing `pageBuilderSet.primary` here is what pinned
   // every page in the product to one profile for months.
   resolvePageBuilder: (profileKey) => getPageBuilderSet(profileKey).primary,
-  // Same set, same number — see `dispatchAgentTool` above. The page builder is
+  // Same set, same number — the ceiling its own stop condition uses. The page builder is
   // the biggest single exposure: up to 80 steps behind one tool call.
   resolvePageBuilderCeiling: (profileKey) =>
     getPageBuilderSet(profileKey).contextCeiling,

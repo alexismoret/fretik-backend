@@ -17,7 +17,7 @@ ARCHIVES the decurated dataset items, preserving old run comparability):
   visual-answer accuracy.
 - **`dispatch-no-recursion`** — probed a REGISTRY invariant (sub-agent toolset
   excludes `dispatchAgent`) with an expensive multi-dispatch e2e turn. Replaced by
-  the deterministic unit test `tests/integration/agents/sub-agent-registry.test.ts`.
+  the deterministic unit test `tests/unit/agents/sub-agent-registry.test.ts`.
 
 Same review: cases were split into **core** vs **`tier: "model-gate"`**
 (see `curation.ts` + RUNBOOK "Run tiers") so the everyday baseline runs ~45 cases

@@ -9,6 +9,7 @@ import {
   clearResolvedModelCache,
   createOrphanThinkStreamStripper,
   effectiveReasoningLevel,
+  getProfile,
   getProfileForRole,
   MAX_TOKENS_BUDGET_BY_LEVEL,
   openrouterReasoning,
@@ -107,11 +108,14 @@ describe("settingsForRole — parity with historical settings objects", () => {
     });
   });
 
-  test("dispatch-cheap carries the deepseek-v4-flash vetted pool + throughput sort", () => {
+  // A team may pick deepseek-v4-flash as its assistant, and its sub-agents
+  // inherit that pick — so the chat envelope must still carry the profile's
+  // vetted pool and declared sort on it.
+  test("the chat envelope carries the deepseek-v4-flash vetted pool + throughput sort", () => {
     expect(
       settingsForRole(
-        ROLE_BINDINGS["dispatch-cheap"],
-        getProfileForRole("dispatch-cheap"),
+        { ...ROLE_BINDINGS.chat, profileKey: "deepseek-v4-flash" },
+        getProfile("deepseek-v4-flash"),
       ),
     ).toEqual({
       provider: {
@@ -340,7 +344,6 @@ describe("role bindings — default model ids pinned (chat: gated M3 flip)", () 
     "chat-fallback": "openai/gpt-5.6-luna",
     // Workflow executor defaults to the chat profile (reliability first).
     workflow: "z-ai/glm-5.3-flash",
-    "dispatch-cheap": "deepseek/deepseek-v4-flash-0731",
     "pre-extract": "deepseek/deepseek-v4-flash-0731",
     "pre-extract-fallback": "openai/gpt-oss-120b",
     // P5-bis (2026-07): 120b @ medium = 16/16 recall evals; 20b unstable.
@@ -413,7 +416,6 @@ describe("role bindings — default model ids pinned (chat: gated M3 flip)", () 
       "chat",
       "chat-fallback",
       "workflow",
-      "dispatch-cheap",
       "pre-extract",
       "pre-extract-fallback",
       // The builder is a multi-step agent replaying a byte-stable system

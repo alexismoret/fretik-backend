@@ -1,49 +1,41 @@
 /**
- * `dispatchAgent` tool — sub-agent delegation pattern.
+ * `dispatchAgent` tool — sub-agent delegation.
  *
- * The chatbot can delegate an encapsulated sub-task to a fresh
- * sub-agent (`primary` = same model, `cheap` = `deepseek/deepseek-v4-flash-0731`)
- * via the `dispatchAgent` tool. The sub-agent runs its own short tool
- * loop in isolation and returns a tight summary as the tool result.
+ * The chatbot hands a many-call job to a sub-agent that runs its own tool
+ * loop in a fresh context, on the parent's model, and returns a structured
+ * report (`{ status, summary, files?, reason?, toolCalls, durationMs,
+ * activity }`). Sub-agents dispatched in the same step run in parallel.
  *
- * What we validate end-to-end here:
+ * What we validate end-to-end, in both directions:
  *
- *   - **Positive triggers**: when the user asks for multi-source
- *     synthesis, parallel analysis, or anything that would otherwise
- *     fan-out into a long sequence of intermediate tool calls
- *     polluting the parent context, the agent picks up `dispatchAgent`
- *     instead of inlining everything.
+ *   - **It fires when it should**: independent angles of one question are
+ *     dispatched as several sub-agents IN THE SAME STEP (their windows
+ *     overlap), and a multi-source synthesis covers every source.
  *
- *   - **Anti-regression**: simple one-shot lookups (a single
- *     `searchKnowledge` or `querySql` would suffice) MUST NOT route
- *     through `dispatchAgent`. Sub-agent dispatch is overhead — a
- *     single LLM call + tool call is always preferred for trivial
- *     intents.
+ *   - **It stays out of the way**: a one-fact lookup never routes through
+ *     `dispatchAgent` — delegation costs a whole agent loop.
  *
- *   - **No recursion** is NOT probed here anymore: the sub-agent tool
- *     registry structurally omits `dispatchAgent`, and that invariant
- *     is asserted by the cheap deterministic unit test
- *     `tests/integration/agents/sub-agent-registry.test.ts` — an
- *     e2e turn added nothing over it.
+ *   - **The brief is self-contained**: what the user said reaches the
+ *     sub-agent's `task`, since the sub-agent sees nothing else.
  *
- * The LLM is non-deterministic, so positive-trigger cases use a soft
- * judge rubric ("the agent should have considered delegation given the
- * scope") rather than a hard `toolUsed` requirement. Anti-regression
- * uses a hard `toolNotUsed` because the cost of a false positive
- * (dispatching for a 1-shot lookup) is concrete: extra latency +
- * extra tokens.
+ * The report being structured is what lets these cases see INSIDE a
+ * sub-agent at all: `status` says whether it finished, `activity` which
+ * tools it called. What a sub-agent may do (no writes, no recursion) is a
+ * registry property, pinned by the deterministic unit test
+ * `tests/unit/agents/sub-agent-registry.test.ts` — an e2e turn adds nothing
+ * over it.
  *
  * Tagged `dispatch-agent` for filtering / dataset-item metadata.
  */
 
-import type { EvalSuite } from "../types";
+import type { EvalSuite, ToolCallTrace } from "../types";
 
 const DISPATCH = "dispatchAgent";
 
 export const dispatchAgentSuite: EvalSuite = {
   name: "dispatch-agent",
   summary:
-    "Sub-agent delegation via dispatchAgent — fires on multi-source synthesis, stays out of the way for trivial lookups.",
+    "Sub-agent delegation via dispatchAgent — fans out independent angles in parallel, briefs self-contained tasks, stays out of the way for trivial lookups.",
   cases: [
     {
       id: "dispatch-trivial-skip",
@@ -87,14 +79,151 @@ export const dispatchAgentSuite: EvalSuite = {
     {
       id: "dispatch-explicit-instruction",
       description:
-        "Sanity check: when the user EXPLICITLY tells the agent to use dispatchAgent, it MUST invoke the tool. If this case fails the tool is not technically exposed (registry / prepareStep / activeTools issue) and no amount of prompt engineering will help. If this case passes but the soft cases below don't trigger dispatchAgent, the problem is purely prompt engineering / model bias.",
+        "Sanity check: when the user EXPLICITLY asks for a sub-agent, the agent MUST invoke the tool and the sub-agent must come back with a finished report. If this case fails the tool is not technically exposed (registry / prepareStep / activeTools) or the sub-agent cannot run; no amount of prompt engineering will help. If this passes but the soft cases don't trigger dispatchAgent, the problem is doctrine / model bias.",
       prompt:
-        "Utilise dispatchAgent (model: cheap) pour me faire un résumé en 3 bullets des 3 derniers documents que la team a importés. Le sub-agent doit récupérer la liste via listDocuments, lire chacun, puis renvoyer la synthèse.",
+        "Utilise un sous-agent pour me faire un résumé en 3 bullets des 3 derniers documents que la team a importés. Le sous-agent doit récupérer la liste, lire chacun, puis renvoyer la synthèse.",
       tags: ["dispatch-agent", "sanity"],
       assertions: [
         { type: "noError" },
-        { type: "toolUsed", tools: ["dispatchAgent"] },
+        { type: "toolUsed", tools: [DISPATCH] },
+        {
+          type: "custom",
+          name: "the sub-agent finished with a report",
+          fn: (result) => {
+            const reports = dispatchReports(result.toolCalls);
+            if (reports.length === 0) return "no dispatchAgent result observed";
+            const finished = reports.some(
+              (report) =>
+                report.status !== "failed" && report.summary.trim().length > 0,
+            );
+            return (
+              finished ||
+              `no sub-agent came back with a report (statuses: ${reports.map((r) => r.status).join(", ")})`
+            );
+          },
+        },
+      ],
+    },
+
+    {
+      id: "dispatch-parallel-angles",
+      description:
+        "Positive trigger with a hard assertion: three independent angles of one question (internal data, documents, the web) are the canonical fan-out. The agent must dispatch at least two sub-agents, and dispatch them in the SAME step — their execution windows overlap. Sequential dispatches mean the parallelism, which is most of the point, was lost.",
+      prompt:
+        "Prépare-moi un point complet sur notre principal client : ce que disent nos données (factures, montants, dates), ce que disent nos documents (contrats, comptes rendus), et ce qu'on trouve de public sur le web à son sujet. Travaille les trois pistes en parallèle, puis fais-moi une synthèse structurée.",
+      tags: ["dispatch-agent", "parallel"],
+      assertions: [
+        { type: "noError" },
+        {
+          type: "custom",
+          name: "≥2 sub-agents dispatched in parallel",
+          fn: (result) => {
+            const calls = result.toolCalls.filter((c) => c.name === DISPATCH);
+            if (calls.length < 2) {
+              return `${calls.length.toString()} dispatchAgent call(s) — expected at least 2`;
+            }
+            return (
+              windowsOverlap(calls) ||
+              "the dispatchAgent calls ran one after another, not in the same step"
+            );
+          },
+        },
+        {
+          type: "judge",
+          rubric:
+            "The answer is a structured synthesis covering three angles: internal data (figures, dates), internal documents, and public web information — each either with findings or an explicit 'nothing found'. PASS if all three angles are addressed and the synthesis reads as one answer, not three pasted reports. FAIL if an angle is missing or the answer is a raw dump.",
+        },
+      ],
+    },
+
+    {
+      id: "dispatch-brief-self-contained",
+      description:
+        "The sub-agent sees nothing of the conversation, so every constraint the user stated must travel in `task`. The prompt carries a period and an output shape; both must appear in the brief. A brief that says 'do what the user asked' sends the sub-agent in blind.",
+      prompt:
+        "Délègue à un sous-agent la recherche suivante : dans nos documents, tout ce qui concerne des pénalités de retard, en te limitant à la période de janvier à mars, et renvoie-moi le résultat sous forme de tableau (document, clause, montant).",
+      tags: ["dispatch-agent", "brief"],
+      assertions: [
+        { type: "noError" },
+        { type: "toolUsed", tools: [DISPATCH] },
+        {
+          type: "custom",
+          name: "the brief carries the period and the table shape",
+          fn: (result) => {
+            const tasks = result.toolCalls
+              .filter((c) => c.name === DISPATCH)
+              .map((c) => {
+                const task = fieldOf(c.input, "task");
+                return typeof task === "string" ? task : "";
+              })
+              .join("\n")
+              .toLowerCase();
+            const missing = ["janvier", "mars", "tableau"].filter(
+              (word) => !tasks.includes(word),
+            );
+            return (
+              missing.length === 0 ||
+              `the task never mentions: ${missing.join(", ")}`
+            );
+          },
+        },
       ],
     },
   ],
+};
+
+/** A field of an untyped tool payload, read without trusting its shape. */
+const fieldOf = (value: unknown, key: string): unknown =>
+  typeof value === "object" && value !== null
+    ? Reflect.get(value, key)
+    : undefined;
+
+interface DispatchReport {
+  status: string;
+  summary: string;
+}
+
+/** The finished reports of every `dispatchAgent` call, old shapes excluded. */
+const dispatchReports = (
+  toolCalls: readonly ToolCallTrace[],
+): DispatchReport[] =>
+  toolCalls
+    .filter((call) => call.name === DISPATCH)
+    .map((call) => {
+      const status = fieldOf(call.output, "status");
+      const summary = fieldOf(call.output, "summary");
+      return {
+        status: typeof status === "string" ? status : "",
+        summary: typeof summary === "string" ? summary : "",
+      };
+    })
+    .filter((report) => report.status.length > 0);
+
+/**
+ * Whether any two of the calls ran at the same time. A step's tool calls are
+ * issued together, so two dispatches in one step overlap; two in successive
+ * steps cannot, since the second step waits for the first's results.
+ */
+const windowsOverlap = (calls: readonly ToolCallTrace[]): boolean => {
+  const windows = calls
+    .filter(
+      (call) => call.startedAtMs !== undefined && call.latencyMs !== undefined,
+    )
+    .map((call) => ({
+      start: call.startedAtMs ?? 0,
+      end: (call.startedAtMs ?? 0) + (call.latencyMs ?? 0),
+    }))
+    .sort((a, b) => a.start - b.start);
+  for (let i = 1; i < windows.length; i += 1) {
+    const previous = windows[i - 1];
+    const current = windows[i];
+    if (
+      previous !== undefined &&
+      current !== undefined &&
+      current.start < previous.end
+    ) {
+      return true;
+    }
+  }
+  return false;
 };

@@ -1279,6 +1279,12 @@ export const runChatbotTurn = async (
     params.reasoningLevel === undefined
       ? undefined
       : reasoningParamForProfile(modelProfile, params.reasoningLevel);
+  // Carried on the call options too, where the turn's SUB-AGENTS read it: the
+  // override above reaches only this turn's own wire call, so a delegate ran at
+  // its profile's default whatever depth the user asked for. The parent's own
+  // request is unchanged — `prepareCall` applies a context level only when the
+  // caller set no reasoning of its own, and this turn always does.
+  callOptionsWithFiles.reasoningLevel = params.reasoningLevel;
 
   markSince(setupTimings, "setupTotal", setupStartedAt);
   console.info(`${params.logPrefix} [setup] ${formatTimings(setupTimings)}`);

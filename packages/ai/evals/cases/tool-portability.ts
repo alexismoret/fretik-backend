@@ -292,28 +292,31 @@ export const toolPortabilitySuite: EvalSuite = {
       ],
     },
     {
-      id: "tp-dispatch-cheap",
+      id: "tp-dispatch-report",
       description:
-        "Explicitly cheap delegation → dispatchAgent with model='cheap'",
+        "Explicit delegation → dispatchAgent, and the sub-agent's structured report comes back completed. Pins the tool contract on a given model: the call is well formed, the sub-agent runs on the parent's model and finishes.",
       prompt:
-        "Délègue à un sous-agent en mode ÉCONOMIQUE (modèle cheap) la tâche suivante, puis restitue-moi son résultat tel quel : résumer en exactement 3 puces ce texte — « Les équipes achats passent en moyenne 11 heures par semaine à ressaisir des données depuis des PDF fournisseurs. Les erreurs de ressaisie représentent 2 % des lignes et coûtent en moyenne 18 € par correction. L'automatisation de l'extraction réduit la ressaisie de 80 % dès le premier mois. »",
+        "Délègue à un sous-agent la tâche suivante, puis restitue-moi son résultat tel quel : résumer en exactement 3 puces ce texte — « Les équipes achats passent en moyenne 11 heures par semaine à ressaisir des données depuis des PDF fournisseurs. Les erreurs de ressaisie représentent 2 % des lignes et coûtent en moyenne 18 € par correction. L'automatisation de l'extraction réduit la ressaisie de 80 % dès le premier mois. »",
       tags: ["tool-portability", "dispatch"],
       assertions: [
         { type: "noError" },
         { type: "toolUsed", tools: ["dispatchAgent"], mode: "any" },
         {
           type: "custom",
-          name: "a dispatchAgent call routes to model='cheap'",
+          name: "a dispatchAgent call came back completed",
           fn: (result) => {
-            const calls = result.toolCalls.filter(
-              (c) => c.name === "dispatchAgent",
+            const statuses = result.toolCalls
+              .filter((c) => c.name === "dispatchAgent")
+              .map((c): unknown =>
+                typeof c.output === "object" && c.output !== null
+                  ? Reflect.get(c.output, "status")
+                  : undefined,
+              );
+            if (statuses.length === 0) return "no dispatchAgent call observed";
+            return (
+              statuses.includes("completed") ||
+              `no sub-agent completed (statuses: ${statuses.map(String).join(", ")})`
             );
-            if (calls.length === 0) return "no dispatchAgent call observed";
-            const cheap = calls.some((call) => {
-              const input = call.input as { model?: unknown };
-              return input?.model === "cheap";
-            });
-            return cheap || "no dispatchAgent call used model='cheap'";
           },
         },
       ],

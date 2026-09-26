@@ -1,4 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { buildDelegateBrief } from "../../../src/agents/chatbot/delegate-brief";
+import { DynamicToolManager } from "../../../src/agents/shared/dynamic-tools";
+import { wrapRuntimeContext } from "../../../src/agents/shared/runtime-context";
+import { getProfileForRole } from "../../../src/lib/model-registry/resolve";
 import { dispatchAgentInputSchema } from "../../../src/tools/dispatch-agent";
 
 /**
@@ -12,10 +16,10 @@ import { dispatchAgentInputSchema } from "../../../src/tools/dispatch-agent";
  * has to change one of these and trips the test.
  */
 describe("dispatchAgent excludes native media (C5)", () => {
-  test("input schema exposes only {task, description, model} — no media input", () => {
+  test("input schema exposes only {task, description, skills} — no media input", () => {
     expect(Object.keys(dispatchAgentInputSchema.shape).sort()).toEqual([
       "description",
-      "model",
+      "skills",
       "task",
     ]);
   });
@@ -29,10 +33,19 @@ describe("dispatchAgent excludes native media (C5)", () => {
     expect("files" in parsed).toBe(false);
   });
 
-  test("the sub-agent message channel is a plain string (no file parts)", () => {
-    // Mirrors dispatch-agent's `buildMessages: ({task}) => [{role, content: task}]`.
-    const task = "describe what the chart on page 2 shows";
-    const messages = [{ role: "user" as const, content: task }];
-    expect(typeof messages[0]?.content).toBe("string");
+  test("the sub-agent message channel is a plain string (no file parts)", async () => {
+    // The brief `buildMessages` sends is one string built from the parent's
+    // rendered context and the task — never the parent's message parts.
+    const brief = await buildDelegateBrief(
+      { task: "describe what the chart on page 2 shows" },
+      wrapRuntimeContext({
+        organizationId: "org-1",
+        teamId: "team-1",
+        modelProfile: getProfileForRole("chat"),
+        dynamicToolManager: new DynamicToolManager(),
+      }),
+    );
+    expect(typeof brief).toBe("string");
+    expect(brief).toContain("<task>");
   });
 });

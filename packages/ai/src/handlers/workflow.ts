@@ -99,6 +99,7 @@ import {
 import { resolveTeamFlagship } from "../lib/model-registry/team-model";
 import { buildSensitiveInputScrubber } from "../lib/scrub-stream";
 import { streamWithRetryThenFallback } from "../lib/stream-errors";
+import { forgetTurnUsage, readDelegatedUsage } from "../lib/turn-usage";
 import { dropNonTerminalErrorFrames } from "../lib/wire-errors";
 import { triggerCallbackMiddleware } from "../middlewares/trigger-callback";
 import {
@@ -255,6 +256,44 @@ export const addUsage = (
   cachedInputTokens:
     prev.cachedInputTokens + (turn?.inputTokenDetails.cacheReadTokens ?? 0),
   turns: turnIndex,
+});
+
+/**
+ * The tokens this turn's sub-agents spent, in the run's own units. Their
+ * steps reach the turn ledger (`lib/turn-usage.ts`) and nothing else — every
+ * agent of the turn but the executor itself is a delegate.
+ */
+const delegatedRunUsage = (
+  traceId: string,
+  executorAgentId: string,
+): Omit<WorkflowRunUsage, "turns"> => {
+  const delegated = readDelegatedUsage(traceId, executorAgentId);
+  if (delegated === undefined) {
+    return {
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      cachedInputTokens: 0,
+    };
+  }
+  return {
+    inputTokens: delegated.inputTokens,
+    outputTokens: delegated.outputTokens,
+    totalTokens: delegated.inputTokens + delegated.outputTokens,
+    cachedInputTokens: delegated.cacheReadTokens,
+  };
+};
+
+/** Fold a turn's sub-agent spend into the run's usage. */
+export const addDelegatedUsage = (
+  usage: WorkflowRunUsage,
+  delegated: Omit<WorkflowRunUsage, "turns">,
+): WorkflowRunUsage => ({
+  inputTokens: usage.inputTokens + delegated.inputTokens,
+  outputTokens: usage.outputTokens + delegated.outputTokens,
+  totalTokens: usage.totalTokens + delegated.totalTokens,
+  cachedInputTokens: usage.cachedInputTokens + delegated.cachedInputTokens,
+  turns: usage.turns,
 });
 
 /** Read an anti-stall counter persisted alongside the previous turn's
@@ -612,13 +651,25 @@ const executeTurn = async (params: {
     turnAccum.totalTokens += step.usage?.totalTokens ?? 0;
     turnAccum.cachedInputTokens +=
       step.usage?.inputTokenDetails?.cacheReadTokens ?? 0;
-    const spent = run.usage.totalTokens + turnAccum.totalTokens;
+    // The run's sub-agents spend inside one of its tool calls, where this
+    // callback never sees them; the turn ledger does. They are the run's
+    // spend like any other — before this, a run that delegated its research
+    // could spend several times its budget and read as under it.
+    const delegated = delegatedRunUsage(traceId, agentSet.agentId);
+    const spent =
+      run.usage.totalTokens + turnAccum.totalTokens + delegated.totalTokens;
     params.emitUsage({
-      inputTokens: run.usage.inputTokens + turnAccum.inputTokens,
-      outputTokens: run.usage.outputTokens + turnAccum.outputTokens,
+      inputTokens:
+        run.usage.inputTokens + turnAccum.inputTokens + delegated.inputTokens,
+      outputTokens:
+        run.usage.outputTokens +
+        turnAccum.outputTokens +
+        delegated.outputTokens,
       totalTokens: spent,
       cachedInputTokens:
-        run.usage.cachedInputTokens + turnAccum.cachedInputTokens,
+        run.usage.cachedInputTokens +
+        turnAccum.cachedInputTokens +
+        delegated.cachedInputTokens,
       turns: turnIndex,
     });
     if (!budgetWarned && spent > tokenBudget * BUDGET_WARN_FRACTION) {
@@ -646,6 +697,10 @@ const executeTurn = async (params: {
     modelProfile,
     workflow.reasoningLevel ?? storedReasoningLevel,
   );
+  // For the run's sub-agents: the executor's own request carries the level in
+  // `providerOptions` below, which reaches no delegate. Same rule as a chat
+  // turn (`runChatbotTurn`).
+  callOptions.reasoningLevel = runReasoningLevel;
 
   try {
     const modelMessages = await convertToModelMessages(
@@ -801,12 +856,12 @@ const executeTurn = async (params: {
   // ---- Turn outcome ----
   const fresh = await getWorkflowRunRow({ id: run.id });
   const freshTasks = fresh?.taskStates ?? taskStates;
-  const usage = addUsage(
-    run.usage,
-    turnUsage,
-    turnIndex,
-    turnAccum.totalTokens,
+  const usage = addDelegatedUsage(
+    addUsage(run.usage, turnUsage, turnIndex, turnAccum.totalTokens),
+    delegatedRunUsage(traceId, agentSet.agentId),
   );
+  // Every durable copy of this turn's spend is now in `usage`.
+  forgetTurnUsage(traceId);
   const approval = abortController.signal.aborted
     ? null
     : detectPendingApproval(finalMessages);

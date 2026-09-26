@@ -21,8 +21,19 @@ import { SANDBOX_REGISTRY_TTL_S } from "./client";
  * mappings die with the sandbox they reference.
  */
 
-const pythonContextRegistryKey = (conversationId: string): string =>
-  `e2b:python-ctx:${conversationId}`;
+/**
+ * `scope` names a kernel of its own inside the conversation's sandbox. A
+ * sub-agent runs in one (its run id): same `/workspace`, separate variables,
+ * so its `df` never overwrites the parent's and its restart resets only
+ * itself. Omitted — the conversation's own kernel, the key it always had.
+ */
+const pythonContextRegistryKey = (
+  conversationId: string,
+  scope?: string,
+): string =>
+  scope === undefined
+    ? `e2b:python-ctx:${conversationId}`
+    : `e2b:python-ctx:${conversationId}:${scope}`;
 
 export interface PythonContextRegistryEntry {
   contextId: string;
@@ -40,8 +51,9 @@ const isRegistryEntry = (
 
 export const getPythonContextFromRegistry = async (
   conversationId: string,
+  scope?: string,
 ): Promise<PythonContextRegistryEntry | null> => {
-  const raw = await redis.get(pythonContextRegistryKey(conversationId));
+  const raw = await redis.get(pythonContextRegistryKey(conversationId, scope));
   if (!raw) return null;
   try {
     const parsed: unknown = JSON.parse(raw);
@@ -58,9 +70,10 @@ export const setPythonContextInRegistry = async (
   conversationId: string,
   contextId: string,
   sandboxId: string,
+  scope?: string,
 ): Promise<void> => {
   await redis.set(
-    pythonContextRegistryKey(conversationId),
+    pythonContextRegistryKey(conversationId, scope),
     JSON.stringify({ contextId, sandboxId }),
     "EX",
     SANDBOX_REGISTRY_TTL_S,
@@ -69,6 +82,7 @@ export const setPythonContextInRegistry = async (
 
 export const clearPythonContextFromRegistry = async (
   conversationId: string,
+  scope?: string,
 ): Promise<void> => {
-  await redis.del(pythonContextRegistryKey(conversationId));
+  await redis.del(pythonContextRegistryKey(conversationId, scope));
 };

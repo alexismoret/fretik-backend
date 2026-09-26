@@ -2,6 +2,7 @@ import { getAppliedEgress } from "@fretik/shared/services/e2b/apply-egress";
 import { explainBlockedEgress } from "@fretik/shared/services/e2b/egress-hint";
 import { runInSandbox } from "@fretik/shared/services/e2b/run-in-sandbox";
 import type { SandboxLease } from "@fretik/shared/services/e2b/types";
+import { withSubAgentExecScope } from "@fretik/shared/services/sandbox/exec-scope";
 import { tool } from "ai";
 import { z } from "zod";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
@@ -13,8 +14,9 @@ import {
   maybePersistLargeOutput,
 } from "../lib/persisted-output";
 import { withSlot } from "../lib/rate-limit";
-import { TOOL_ERROR_CODES } from "../lib/tool-error-codes";
+import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
 import { traceExternalCall } from "../lib/trace-tool";
+import { turnRootOf } from "../lib/turn-usage";
 import { mapE2BError } from "./_e2b-errors";
 
 /**
@@ -119,10 +121,21 @@ export const createBashTool = () =>
         };
       }
       const conversationId = ctx.conversationId;
+      const isSubAgent = ctx.delegateRunId !== undefined;
 
       // User already Stopped before this call started — bail cleanly.
       if (abortSignal?.aborted) {
         return { error: "Stopped.", code: TOOL_ERROR_CODES.ABORTED };
+      }
+
+      // The sandbox is the parent's too: recreating it would wipe the
+      // `/workspace` the parent and every sibling sub-agent are working in.
+      if (restart === true && isSubAgent) {
+        return toolError(
+          TOOL_ERROR_CODES.SUB_AGENT_RESTRICTED,
+          "A sub-agent cannot restart the sandbox — it is shared with the main assistant, and a restart wipes `/workspace`.",
+          "Work around the broken state in a fresh directory, or report it in your summary.",
+        );
       }
 
       // Bootstrap (skills push, `tar -xzf`, S3 restore, context + memory
@@ -138,7 +151,9 @@ export const createBashTool = () =>
           organizationId: ctx.organizationId,
           teamId: ctx.teamId,
           userId: ctx.userId,
-          traceId: ctx.traceId,
+          // The TURN, not the agent — see the same line in `python.ts`.
+          traceId:
+            ctx.traceId === undefined ? undefined : turnRootOf(ctx.traceId),
           // Which connected apps this turn may stream bytes from, for the
           // egress policy. Already loaded for the prompt, so it costs nothing.
           providerKeys: (ctx.externalAppConnections ?? []).map(
@@ -158,26 +173,33 @@ export const createBashTool = () =>
           e2bExecMutexKey(conversationId),
           1,
           E2B_EXEC_HOLD_TIMEOUT_MS,
-          () =>
-            traceExternalCall(
-              "e2b-bash",
-              { command, restart },
-              () =>
-                runInSandbox(conversationId, {
-                  language: "bash",
-                  code: command,
-                  restart,
-                  abortSignal,
+          () => {
+            const runCommand = () =>
+              traceExternalCall(
+                "e2b-bash",
+                { command, restart },
+                () =>
+                  runInSandbox(conversationId, {
+                    language: "bash",
+                    code: command,
+                    restart,
+                    abortSignal,
+                  }),
+                (r, durationMs) => ({
+                  output: {
+                    error: r.error ? `${r.error.name}: ${r.error.value}` : null,
+                  },
+                  costUsd:
+                    ((durationMs + prepareMs) / 1000) * E2B_PRICE_PER_SECOND,
+                  metadata: { durationMs, prepareMs },
                 }),
-              (r, durationMs) => ({
-                output: {
-                  error: r.error ? `${r.error.name}: ${r.error.value}` : null,
-                },
-                costUsd:
-                  ((durationMs + prepareMs) / 1000) * E2B_PRICE_PER_SECOND,
-                metadata: { durationMs, prepareMs },
-              }),
-            ),
+              );
+            // A command can reach the Python SDK too (`python3 script.py`),
+            // so a sub-agent's is marked like its cells are.
+            return isSubAgent
+              ? withSubAgentExecScope(conversationId, runCommand)
+              : runCommand();
+          },
         );
       } catch (err) {
         return mapE2BError(err, "while running bash in sandbox");

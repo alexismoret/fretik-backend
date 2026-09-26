@@ -4,6 +4,7 @@ import { explainBlockedEgress } from "@fretik/shared/services/e2b/egress-hint";
 import { restartPythonKernel } from "@fretik/shared/services/e2b/restart-python-kernel";
 import { runInSandbox } from "@fretik/shared/services/e2b/run-in-sandbox";
 import type { SandboxLease } from "@fretik/shared/services/e2b/types";
+import { withSubAgentExecScope } from "@fretik/shared/services/sandbox/exec-scope";
 import { tool } from "ai";
 import { z } from "zod";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
@@ -17,6 +18,7 @@ import {
 import { withSlot } from "../lib/rate-limit";
 import { TOOL_ERROR_CODES } from "../lib/tool-error-codes";
 import { traceExternalCall } from "../lib/trace-tool";
+import { turnRootOf } from "../lib/turn-usage";
 import { mapE2BError } from "./_e2b-errors";
 
 /**
@@ -163,6 +165,8 @@ export const createPythonTool = () =>
         };
       }
       const conversationId = ctx.conversationId;
+      // A sub-agent runs in a kernel of its own — see `delegateRunId`.
+      const kernelScope = ctx.delegateRunId;
 
       // User already Stopped before this call started — bail cleanly.
       if (abortSignal?.aborted) {
@@ -182,7 +186,11 @@ export const createPythonTool = () =>
           organizationId: ctx.organizationId,
           teamId: ctx.teamId,
           userId: ctx.userId,
-          traceId: ctx.traceId,
+          // The TURN, not the agent: a sub-agent's trace id carries a suffix,
+          // and the sandbox's credential and hydration are per turn — keyed
+          // on the suffixed id, every sub-agent call re-minted both.
+          traceId:
+            ctx.traceId === undefined ? undefined : turnRootOf(ctx.traceId),
           // Which connected apps this turn may stream bytes from, for the
           // egress policy. Already loaded for the prompt, so it costs nothing.
           providerKeys: (ctx.externalAppConnections ?? []).map(
@@ -206,34 +214,44 @@ export const createPythonTool = () =>
           1,
           E2B_EXEC_HOLD_TIMEOUT_MS,
           async () => {
-            if (restart) {
-              try {
-                await restartPythonKernel(conversationId);
-              } catch (err) {
-                // Tag so the outer mapper attributes the failure to the
-                // kernel restart, not the (never-reached) code run.
-                throw new KernelRestartError(err);
+            const runCell = async () => {
+              if (restart) {
+                try {
+                  await restartPythonKernel(conversationId, kernelScope);
+                } catch (err) {
+                  // Tag so the outer mapper attributes the failure to the
+                  // kernel restart, not the (never-reached) code run.
+                  throw new KernelRestartError(err);
+                }
               }
-            }
-            return traceExternalCall(
-              "e2b-python",
-              { code, restart },
-              () =>
-                runInSandbox(conversationId, {
-                  language: "python",
-                  code,
-                  toolCallId,
-                  abortSignal,
+              return traceExternalCall(
+                "e2b-python",
+                { code, restart },
+                () =>
+                  runInSandbox(conversationId, {
+                    language: "python",
+                    code,
+                    toolCallId,
+                    abortSignal,
+                    ...(kernelScope === undefined
+                      ? {}
+                      : { pythonContextScope: kernelScope }),
+                  }),
+                (r, durationMs) => ({
+                  output: {
+                    error: r.error ? `${r.error.name}: ${r.error.value}` : null,
+                  },
+                  costUsd:
+                    ((durationMs + prepareMs) / 1000) * E2B_PRICE_PER_SECOND,
+                  metadata: { durationMs, prepareMs },
                 }),
-              (r, durationMs) => ({
-                output: {
-                  error: r.error ? `${r.error.name}: ${r.error.value}` : null,
-                },
-                costUsd:
-                  ((durationMs + prepareMs) / 1000) * E2B_PRICE_PER_SECOND,
-                metadata: { durationMs, prepareMs },
-              }),
-            );
+              );
+            };
+            // Inside the mutex, so the marker covers this cell and nothing
+            // else: the parent's cells cannot run until this one releases.
+            return kernelScope === undefined
+              ? runCell()
+              : withSubAgentExecScope(conversationId, runCell);
           },
         );
       } catch (err) {
@@ -263,8 +281,14 @@ export const createPythonTool = () =>
       // cell ended so a swallowed `ApprovalPending` (agent wrapped run_plan
       // in try/except, or just printed the ops) still surfaces the approval
       // card and pauses the turn. See `approvals/sandbox-signal.ts`.
+      //
+      // Never from a sub-agent's cell: `/sandbox/exec` refuses it every
+      // approval, so the signal it would read can only be the PARENT's —
+      // consuming it here would steal the parent's card.
       const dispatchedApprovalId =
-        await consumeSandboxApprovalPending(conversationId);
+        kernelScope === undefined
+          ? await consumeSandboxApprovalPending(conversationId)
+          : undefined;
 
       if (result.error) {
         // `fretik_apps.run_plan(...)` raises `ApprovalPending(approval_id)`

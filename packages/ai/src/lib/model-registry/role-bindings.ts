@@ -128,12 +128,6 @@ export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
       gatedAt: "2026-09-21",
     },
   },
-  "dispatch-cheap": {
-    role: "dispatch-cheap",
-    profileKey: "deepseek-v4-flash",
-    settingsKind: "chat",
-    wrapCache: true,
-  },
   "pre-extract": {
     role: "pre-extract",
     profileKey: "deepseek-v4-flash",
@@ -303,7 +297,7 @@ export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
     wrapCache: false,
   },
   // One-shot malformed-tool-call repair (`repair-tool-call.ts`). Split from
-  // `dispatch-cheap` (2026-07): deepseek-v4-flash hit the 20s repair timeout
+  // the former `dispatch-cheap` role (2026-07, retired 2026-09-26): deepseek-v4-flash hit the 20s repair timeout
   // in prod, turning every repair into pure wasted latency — same failure the
   // recall eval documented, same fix (gpt-oss-120b, ~6x faster). Measured on
   // the April model; the key points at 0731 since 2026-08-02, which is much

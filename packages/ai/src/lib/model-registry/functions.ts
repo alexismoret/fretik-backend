@@ -26,7 +26,6 @@ import type { ModelProfile, ModelRole } from "./types";
 export const ROLE_FUNCTION: Record<ModelRole, ModelFunctionKey | "auto"> = {
   chat: "assistant",
   workflow: "assistant",
-  "dispatch-cheap": "assistant",
 
   "pre-extract": "documents",
   transform: "documents",

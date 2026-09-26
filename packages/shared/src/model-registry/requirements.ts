@@ -139,10 +139,6 @@ export const ROLE_REQUIREMENTS: Record<string, PoolRequirements> = {
   },
   // `WORKFLOW_STEP_MAX_OUTPUT_TOKENS`, default 16 000, env-capped at 64 000.
   workflow: { minMaxOutput: 16_000 + MAX_REASONING_BUDGET, requireCache: true },
-  "dispatch-cheap": {
-    minMaxOutput: 16_000 + MAX_REASONING_BUDGET,
-    requireCache: true,
-  },
   // Writes a page's source files across many steps under an 8 000-token
   // thinking allowance (`PAGE_BUILD_REASONING_MAX_TOKENS`). Held to the same
   // floor as the other loops: a build that stops mid-file wastes the whole run.

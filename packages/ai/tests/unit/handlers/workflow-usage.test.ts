@@ -1,6 +1,6 @@
 import type { LanguageModelUsage } from "ai";
 import { describe, expect, test } from "bun:test";
-import { addUsage } from "../../../src/handlers/workflow";
+import { addDelegatedUsage, addUsage } from "../../../src/handlers/workflow";
 
 /**
  * The turn that blew the budget was the one turn missing from the total.
@@ -64,5 +64,24 @@ describe("addUsage", () => {
     expect(next.outputTokens).toBe(RUN_SO_FAR.outputTokens);
     expect(next.cachedInputTokens).toBe(RUN_SO_FAR.cachedInputTokens);
     expect(next.turns).toBe(2);
+  });
+});
+
+describe("addDelegatedUsage", () => {
+  test("a run's sub-agents are billed to the run", () => {
+    // Before this, a run that delegated its research spent those tokens
+    // outside `workflow_runs.usage` and outside its budget: the executor's
+    // stream never sees what runs inside one of its tool calls.
+    const next = addDelegatedUsage(RUN_SO_FAR, {
+      inputTokens: 300_000,
+      outputTokens: 20_000,
+      totalTokens: 320_000,
+      cachedInputTokens: 250_000,
+    });
+    expect(next.totalTokens).toBe(RUN_SO_FAR.totalTokens + 320_000);
+    expect(next.inputTokens).toBe(RUN_SO_FAR.inputTokens + 300_000);
+    expect(next.outputTokens).toBe(RUN_SO_FAR.outputTokens + 20_000);
+    expect(next.cachedInputTokens).toBe(RUN_SO_FAR.cachedInputTokens + 250_000);
+    expect(next.turns).toBe(RUN_SO_FAR.turns);
   });
 });

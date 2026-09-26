@@ -1,5 +1,5 @@
 import type { UIMessage } from "ai";
-import { buildSubAgentTools } from "../../agents/chatbot/tools";
+import { buildCoreTools, buildDomainTools } from "../../agents/chatbot/tools";
 
 /**
  * Microcompact — applicative replacement for Claude Code's
@@ -88,14 +88,16 @@ import { buildSubAgentTools } from "../../agents/chatbot/tools";
  * which needs to know which tools are state-bearing.
  */
 export const COMPACTABLE_TOOLS: ReadonlySet<string> = (() => {
-  // We use `buildSubAgentTools()` rather than `buildChatbotTools()`
-  // here on purpose: the latter requires a `dispatchAgent` argument
-  // (built in `agents/chatbot/index.ts` after the sub-agent sets are
-  // ready) which would create a circular import for this module. The
-  // two registries differ ONLY by `dispatchAgent` + `searchTools`,
-  // both of which are explicitly NOT microcompactable, so the
-  // resulting `COMPACTABLE_TOOLS` set is identical either way.
-  const registry = buildSubAgentTools();
+  // The chat registry, assembled from its two halves rather than through
+  // `buildChatbotTools()`: that one takes `dispatchAgent` and `buildPage` as
+  // arguments (both are built in `agents/chatbot/`, after their own agents),
+  // which would make this module import the agents. Neither of the two is
+  // microcompactable — each result is the parent's only copy of that work —
+  // so the set is the same. NOT `buildSubAgentTools()`: that registry leaves
+  // out every write tool, and a compactable write (`manageDocument`, …) would
+  // silently stop being compacted in the conversations that call it.
+  const domainTools = buildDomainTools();
+  const registry = { ...buildCoreTools(domainTools), ...domainTools };
   const names = new Set<string>();
   for (const [name, def] of Object.entries(registry)) {
     if (def.microcompactable) {

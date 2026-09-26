@@ -82,8 +82,9 @@ const getOrCreateWorkspacePythonContext = async (
   sbx: Sandbox,
   conversationId: string,
   sandboxId: string,
+  scope: string | undefined,
 ): Promise<Context> => {
-  const cached = await getPythonContextFromRegistry(conversationId);
+  const cached = await getPythonContextFromRegistry(conversationId, scope);
   if (cached && cached.sandboxId === sandboxId) {
     // Reconstitute a `Context`-shaped object from the registry entry
     // — `runCode` only reads `context.id` so language/cwd here are
@@ -98,7 +99,12 @@ const getOrCreateWorkspacePythonContext = async (
     language: "python",
     cwd: WORKSPACE_ROOT,
   });
-  await setPythonContextInRegistry(conversationId, created.id, sandboxId);
+  await setPythonContextInRegistry(
+    conversationId,
+    created.id,
+    sandboxId,
+    scope,
+  );
   return created;
 };
 
@@ -427,6 +433,15 @@ export interface RunInSandboxOptions extends RunOptions {
    * finishes on its own.
    */
   abortSignal?: AbortSignal;
+  /**
+   * Run python in a kernel of its own instead of the conversation's — a
+   * sub-agent passes its run id (see `python-context-registry.ts`). Same
+   * `/workspace`, separate variables. It also changes what a Stop costs: the
+   * cell is dropped by removing THAT kernel, where the conversation's kernel
+   * can only be dropped by killing the sandbox — which would wipe the
+   * parent's `/workspace` because one of its sub-agents hit a deadline.
+   */
+  pythonContextScope?: string;
 }
 
 /**
@@ -452,20 +467,20 @@ const abortedRunResult = (): RunResult => ({
  * exec promise is swallowed. When no signal is provided, or it never
  * fires, the exec resolves normally.
  *
- * `killOnAbort` is the cancellation lever for execs the SDK cannot cancel:
+ * `dropExec` is the cancellation lever for execs the SDK cannot cancel:
  * `runCode` takes no AbortSignal, so the only way to drop a running cell is
- * to kill the whole sandbox — which also wipes `/workspace` and forces a
- * cold bootstrap next turn. `commands.run` DOES take a signal, so the bash
- * branch passes `killOnAbort: false` and keeps its workspace.
+ * to take its kernel away — the whole sandbox for the conversation's kernel
+ * (which also wipes `/workspace` and forces a cold bootstrap next turn), the
+ * kernel alone for a scoped one. `commands.run` DOES take a signal, so the
+ * bash branch passes nothing and keeps its workspace.
  */
 const raceSandboxAbort = async <T>(
-  conversationId: string,
   signal: AbortSignal | undefined,
   exec: Promise<T>,
-  killOnAbort: boolean,
+  dropExec: (() => Promise<unknown>) | undefined,
 ): Promise<T | typeof ABORTED_SENTINEL> => {
   const cancel = (): void => {
-    if (killOnAbort) void killSandbox(conversationId).catch(() => undefined);
+    if (dropExec !== undefined) void dropExec().catch(() => undefined);
     void exec.catch(() => undefined);
   };
   if (!signal) return exec;
@@ -521,13 +536,14 @@ export const runInSandbox = async (
   const richResults: RichResult[] = [];
 
   if (options.language === "python") {
+    const scope = options.pythonContextScope;
     const context = await getOrCreateWorkspacePythonContext(
       sbx,
       conversationId,
       lease.sandboxId,
+      scope,
     );
     const exec = await raceSandboxAbort(
-      conversationId,
       options.abortSignal,
       sbx.runCode(options.code, {
         context,
@@ -551,9 +567,15 @@ export const runInSandbox = async (
           options.onError?.(err);
         },
       }),
-      // `runCode` takes no AbortSignal — killing the sandbox is the only
-      // way to drop a running cell.
-      true,
+      // `runCode` takes no AbortSignal — removing the kernel is the only way
+      // to drop a running cell, and for the conversation's own kernel that
+      // means the sandbox.
+      scope === undefined
+        ? () => killSandbox(conversationId)
+        : async () => {
+            await clearPythonContextFromRegistry(conversationId, scope);
+            await sbx.removeCodeContext(context);
+          },
     );
     if (exec === ABORTED_SENTINEL) return abortedRunResult();
 
@@ -619,7 +641,6 @@ export const runInSandbox = async (
     let result: CommandResult;
     try {
       const raced = await raceSandboxAbort(
-        conversationId,
         options.abortSignal,
         sbx.commands.run(options.code, {
           cwd: WORKSPACE_ROOT,
@@ -646,7 +667,7 @@ export const runInSandbox = async (
           },
         }),
         // The signal above already cancels the request — keep `/workspace`.
-        false,
+        undefined,
       );
       if (raced === ABORTED_SENTINEL) return abortedRunResult();
       result = raced;

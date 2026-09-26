@@ -59,20 +59,22 @@ export const CURATED: Record<string, CuratedCase> = {
   "edge-unicode-identifier": { capability: "generation", smoke: true },
   "qa-clarify": { capability: "generation", smoke: true },
   "qa-generalist-offtopic": { capability: "generation" },
-  // external-actions (8) — lat-sql-simple folded into multi-no-overkill
+  // external-actions (9) — lat-sql-simple folded into multi-no-overkill
   // (latencyUnder), dispatch-no-recursion replaced by the deterministic
-  // unit test tests/integration/agents/sub-agent-registry.test.ts.
+  // unit test tests/unit/agents/sub-agent-registry.test.ts.
   "bash-description-field": { capability: "external-actions" },
   "bash-list-workspace": { capability: "external-actions", smoke: true },
   "bash-no-network": { capability: "external-actions" },
   "dispatch-explicit-instruction": { capability: "external-actions" },
+  "dispatch-brief-self-contained": { capability: "external-actions" },
   "file-cross-conv-isolation": { capability: "external-actions" },
   "mem-refuse-team-opinion": { capability: "external-actions" },
   "rag-metadata-entity-only": { capability: "external-actions", smoke: true },
   "rag-metadata-excel-summary": { capability: "external-actions" },
-  // reasoning (5) — edge-empty-corpus dropped (near-duplicate of
+  // reasoning (6) — edge-empty-corpus dropped (near-duplicate of
   // rag-no-match: same fabrication-on-no-match failure mode).
   "dispatch-multi-source-synthesis": { capability: "reasoning" },
+  "dispatch-parallel-angles": { capability: "reasoning" },
   "dispatch-trivial-skip": { capability: "reasoning" },
   "multi-no-overkill": { capability: "reasoning", smoke: true },
   "qa-greet": { capability: "reasoning" },
@@ -124,7 +126,7 @@ export const CURATED: Record<string, CuratedCase> = {
   "tp-memory-view": { capability: "tool-use", tier: "model-gate" },
   "tp-searchtools-activation": { capability: "tool-use", tier: "model-gate" },
   "tp-present-files": { capability: "tool-use", tier: "model-gate" },
-  "tp-dispatch-cheap": { capability: "tool-use", tier: "model-gate" },
+  "tp-dispatch-report": { capability: "tool-use", tier: "model-gate" },
   "tp-websearch-date": { capability: "tool-use", tier: "model-gate" },
   "par-two-sql": { capability: "tool-use", tier: "model-gate" },
   "par-sql-web": { capability: "tool-use", tier: "model-gate" },

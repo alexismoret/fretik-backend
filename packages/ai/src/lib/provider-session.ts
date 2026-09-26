@@ -47,8 +47,8 @@ export const SESSION_ID_MAX_CHARS = 256;
  *
  * A delegate gets its OWN lane rather than the parent's, and the reason is a
  * regression we would otherwise have built deliberately. `dispatchAgent`
- * forwards the parent's `conversationId`, and `subAgentPrimarySet()` resolves
- * the `chat` role — the SAME model as the parent. Since stickiness is keyed per
+ * forwards the parent's `conversationId`, and its sub-agent runs on the
+ * parent's own model (`agents/chatbot/delegate.ts`). Since stickiness is keyed per
  * model, a shared key puts parent and delegate on one pin: the delegate hits a
  * provider error, OpenRouter re-routes and re-pins the session, and the
  * parent's next step follows the new host while its 100K prefix is warm on the

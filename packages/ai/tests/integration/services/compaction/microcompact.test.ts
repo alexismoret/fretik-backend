@@ -75,6 +75,14 @@ describe("COMPACTABLE_TOOLS — derived from registry metadata", () => {
     expect(COMPACTABLE_TOOLS.has("vision")).toBe(true);
   });
 
+  test("covers the whole chat registry, write tools included", () => {
+    // Derived from the chat registry, not the sub-agent one: the sub-agent set
+    // carries no write tool, and a compactable write read off it would stop
+    // being compacted in every conversation that calls it.
+    expect(COMPACTABLE_TOOLS.has("manageDocument")).toBe(true);
+    expect(COMPACTABLE_TOOLS.has("transform")).toBe(true);
+  });
+
   test("excludes searchTools (replay-critical)", () => {
     expect(COMPACTABLE_TOOLS.has("searchTools")).toBe(false);
   });

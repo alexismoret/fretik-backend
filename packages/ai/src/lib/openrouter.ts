@@ -60,14 +60,3 @@ export const activeMemoryModel = () => resolveModel("active-memory").model;
 
 export const activeMemoryModelId = () =>
   getProfileForRole("active-memory").catalog.id;
-
-/**
- * Sub-agent "cheap" model used by the `dispatchAgent` tool when the caller picks
- * `model: "cheap"` — the registry's `dispatch-cheap` role. The "primary" path of
- * `dispatchAgent` reuses the chat model directly.
- */
-export const dispatchAgentCheapModel = () =>
-  resolveModel("dispatch-cheap").model;
-
-export const dispatchAgentCheapModelId = () =>
-  getProfileForRole("dispatch-cheap").catalog.id;

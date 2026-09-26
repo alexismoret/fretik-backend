@@ -461,7 +461,6 @@ export type ModelRole =
   | "chat"
   | "chat-fallback"
   | "workflow"
-  | "dispatch-cheap"
   | "pre-extract"
   | "pre-extract-fallback"
   | "active-memory"

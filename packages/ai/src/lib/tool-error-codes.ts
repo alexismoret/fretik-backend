@@ -51,6 +51,15 @@ export const TOOL_ERROR_CODES = {
   // documents intent and keeps the failure envelope canonical.
   ABORTED: "ABORTED",
 
+  // Sub-agents (`dispatchAgent`). A sub-agent reached for something only the
+  // main assistant may do — a move that reaches past its own run, such as
+  // resetting the sandbox the parent shares. No argument fixes it, so it stays
+  // out of the input-shape family.
+  SUB_AGENT_RESTRICTED: "SUB_AGENT_RESTRICTED",
+  // The turn already dispatched as many sub-agents as one turn may. The call
+  // was refused before anything ran.
+  DELEGATION_LIMIT: "DELEGATION_LIMIT",
+
   // Catch-all for unexpected internal failures
   INTERNAL_ERROR: "INTERNAL_ERROR",
 

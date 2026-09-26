@@ -243,6 +243,28 @@ export const readAgentUsage = (
   agentId: string,
 ): StepUsage | undefined => readTurnUsage(traceId)?.byAgent[agentId];
 
+/**
+ * What every agent of the turn EXCEPT `agentId` has spent so far — a parent
+ * reading its sub-agents' bill. The parent's own spend arrives on its own
+ * stream (`onStepEnd`, `result.usage`); what it dispatched runs inside one of
+ * its tool calls and reaches only this ledger, which records every step of
+ * every agent as it happens. `undefined` when nothing else ran.
+ */
+export const readDelegatedUsage = (
+  traceId: string | undefined,
+  agentId: string,
+): StepUsage | undefined => {
+  const turn = readTurnUsage(traceId);
+  if (turn === undefined) return undefined;
+  let delegated: StepUsage | undefined;
+  for (const [id, usage] of Object.entries(turn.byAgent)) {
+    if (id === agentId) continue;
+    delegated ??= emptyUsage();
+    addInto(delegated, usage);
+  }
+  return delegated;
+};
+
 /** Drop a finished turn. Called once the durable copies are written. */
 export const forgetTurnUsage = (traceId: string | undefined): void => {
   if (traceId !== undefined) ledger.delete(turnRootOf(traceId));

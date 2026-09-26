@@ -8,7 +8,10 @@
  * registry logic remains unit-testable without Redis / Postgres.
  */
 
-import { functionProfileKey } from "@fretik/shared/model-registry/functions";
+import {
+  functionProfileKey,
+  type ModelFunctionKey,
+} from "@fretik/shared/model-registry/functions";
 import { getTeamAiSettings } from "@fretik/shared/services/team-ai-settings/get-for-team";
 import { withSoftTimeout } from "../stream-errors";
 import { ROLE_FUNCTION } from "./functions";
@@ -58,6 +61,38 @@ export const resolveModelForTeam = async (
       err,
     );
     return resolveModel(role);
+  }
+};
+
+/**
+ * The profile a team's pick for one FUNCTION resolves to — for a caller that
+ * builds its own agent on that profile rather than asking for a role's model
+ * instance (`dispatchAgent({ model: "fast" })` runs a chat-envelope sub-agent
+ * on the `documents` pick). Same degradation as `resolveModelForTeam`: no
+ * team, no pick, an unusable pick or a failed read all answer the function's
+ * code default, never an error.
+ */
+export const resolveTeamFunctionProfileKey = async (
+  fn: ModelFunctionKey,
+  teamId: string | undefined,
+): Promise<string> => {
+  if (teamId === undefined)
+    return resolveFunctionProfileKey(fn, null).profileKey;
+  try {
+    const settings = await withSoftTimeout(
+      getTeamAiSettings(teamId),
+      3000,
+      null,
+      "team-ai-settings",
+    );
+    return resolveFunctionProfileKey(fn, functionProfileKey(settings, fn))
+      .profileKey;
+  } catch (err) {
+    console.error(
+      `[team-model] settings read failed for team=${teamId} function=${fn} — using code default:`,
+      err,
+    );
+    return resolveFunctionProfileKey(fn, null).profileKey;
   }
 };
 

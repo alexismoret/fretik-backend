@@ -20,6 +20,7 @@ import { aiConversations } from "./ai";
 export const CONVERSATION_TASK_KINDS = [
   "workflow_run",
   "bulk_operation",
+  "sub_agent",
 ] as const;
 export type ConversationTaskKind = (typeof CONVERSATION_TASK_KINDS)[number];
 
@@ -32,8 +33,55 @@ export type ConversationTaskTerminalStatus =
   (typeof CONVERSATION_TASK_TERMINAL_STATUSES)[number];
 export type ConversationTaskStatus = "pending" | ConversationTaskTerminalStatus;
 
+/** One call a background sub-agent made, as its card lists it. */
+export interface SubAgentTaskActivity {
+  tool: string;
+  caption?: string;
+  state: "running" | "done" | "error";
+}
+
 /**
- * Kind-specific display/routing payload — never load-bearing for the resume.
+ * A background sub-agent's report — the shape `dispatchAgent` returns in the
+ * foreground, kept here because nothing else holds it: the task row IS the
+ * record of the run.
+ */
+export interface SubAgentTaskResult {
+  status: "completed" | "partial" | "failed";
+  summary: string;
+  files?: string[];
+  reason?: string;
+  toolCalls: number;
+  durationMs: number;
+  activity: SubAgentTaskActivity[];
+}
+
+/**
+ * Everything about a `sub_agent` task: who launched it, how far it is, and its
+ * report once it is over. Written whole on every update (one owner, the
+ * process running it), so a merge never mixes two snapshots.
+ */
+export interface SubAgentTaskState {
+  /** Whoever launched it — the acting identity for the resumed turn. */
+  launchedByUserId?: string;
+  /** The parent's tool call — what the chat card for this run is keyed on. */
+  toolCallId?: string;
+  /** Present when it runs on the team's Fast model. */
+  model?: "fast";
+  /** Tool calls issued so far. */
+  step?: number;
+  /** Epoch ms it started (after any wait for a slot). */
+  startedAt?: number;
+  /** Its last calls, oldest first. */
+  activity?: SubAgentTaskActivity[];
+  result?: SubAgentTaskResult;
+  /** What it spent, by our own ledger. Observability only. */
+  usage?: { costUsd: number; inputTokens: number; outputTokens: number };
+}
+
+/**
+ * Kind-specific display/routing payload — never load-bearing for the resume,
+ * with one exception: a `sub_agent` has no work row of its own, so its report
+ * lives in `subAgent.result` and the continuation reads it from there.
  *
  * Display fields are STRUCTURED, not a sentence: `title` is a server string and
  * the frontend translates every word it shows, so a kind whose label is generated
@@ -57,12 +105,15 @@ export interface ConversationTaskMetadata {
    */
   progressDone?: number;
   progressTotal?: number;
+  /** `sub_agent` — see `SubAgentTaskState`. */
+  subAgent?: SubAgentTaskState;
 }
 
 /**
  * Background work a chat conversation is waiting on.
  *
- * The agent launches something that outlives its turn (today: a workflow run),
+ * The agent launches something that outlives its turn (a workflow run, an
+ * import, a sub-agent sent off in the background),
  * keeps working, and ends the turn. Each launch registers a row here; each
  * terminal outcome completes it. When the LAST pending row of a conversation
  * goes terminal, the conversation is resumed exactly once — the claim is the

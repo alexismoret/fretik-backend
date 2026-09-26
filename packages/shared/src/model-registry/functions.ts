@@ -13,8 +13,13 @@
  *
  * - `assistant` — the chat and workflow loop. The model a team means when it
  *   says "our AI".
- * - `documents` — extraction, transformation and compaction. Separated by the
- *   CONTEXT it must swallow: compaction runs on a nearly full window.
+ * - `documents` — shown as "Fast": extraction, transformation, compaction, and
+ *   the sub-agents the assistant sends off with `model: "fast"` for long but
+ *   mechanical work. Separated by what that volume work needs — a large
+ *   CONTEXT (compaction runs on a nearly full window) and speed, over the
+ *   assistant's judgement. The key kept its old name: it is stored in every
+ *   team's `function_profile_keys`, and renaming it is a data migration for
+ *   no behaviour.
  * - `memory` — what writes to long-term memory. Separated because a bad write
  *   persists, while a bad answer is one turn.
  * - `recall` — the judge that decides what memory a turn sees, under a 15 s

@@ -179,6 +179,18 @@ export const ChatbotCallOptionsSchema = z.object({
    */
   reasoningLevel: z.string().optional(),
   /**
+   * The team's `documents` pick (shown as "Fast"), resolved once per turn: the
+   * model a `dispatchAgent({ model: "fast" })` runs on. Omitted → such a
+   * dispatch stays on the parent's model.
+   */
+  fastProfileKey: z.string().optional(),
+  /**
+   * Background sub-agents of this conversation are still running or have a
+   * report the agent has not read — shows `checkAgents`. Read per turn by the
+   * handler.
+   */
+  backgroundAgents: z.boolean().optional(),
+  /**
    * Set only on a sub-agent's call, by `dispatchAgent`: the id of that run.
    * Gives the run a Python kernel of its own and marks its sandbox calls as a
    * sub-agent's, which `/sandbox/exec` refuses writes and approvals to.
@@ -221,5 +233,7 @@ export const buildChatbotRuntimeContextBase = (
   toolPolicies: options.toolPolicies,
   pageBuildProfileKey: options.pageBuildProfileKey,
   reasoningLevel: options.reasoningLevel,
+  fastProfileKey: options.fastProfileKey,
+  backgroundAgents: options.backgroundAgents,
   delegateRunId: options.delegateRunId,
 });

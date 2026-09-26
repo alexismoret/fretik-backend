@@ -1,5 +1,12 @@
+import type { SubAgentTaskResult } from "@fretik/shared/db/schema";
 import { releasePythonContext } from "@fretik/shared/services/e2b/release-python-context";
-import type { Agent, GenerateTextResult, ToolSet } from "ai";
+import type {
+  Agent,
+  GenerateTextResult,
+  ToolExecutionOptions,
+  ToolSet,
+} from "ai";
+import { randomUUIDv7 } from "bun";
 import { z } from "zod";
 import type { ChatbotCallOptions } from "../agents/chatbot/call-options";
 import {
@@ -8,13 +15,21 @@ import {
 } from "../agents/chatbot/delegate-brief";
 import { buildChatbotTool } from "../agents/shared/chatbot-tool";
 import {
+  acquireDelegationSlot,
   admitDelegation,
+  backgroundSlotKey,
+  claimDispatch,
   delegationTurnKey,
   releaseDelegationSlot,
 } from "../agents/shared/delegation-slots";
 import { parseIntEnv } from "../agents/shared/env";
 import {
+  getRuntimeContext,
+  type AgentRuntimeContext,
+} from "../agents/shared/runtime-context";
+import {
   createSubAgentExecute,
+  createSubAgentRunner,
   type SubAgentRun,
   type SubAgentToolCall,
 } from "../agents/shared/sub-agent";
@@ -24,6 +39,11 @@ import {
   toolError,
   type ToolErrorOutput,
 } from "../lib/tool-error-codes";
+import {
+  backgroundTraceId,
+  startBackgroundRun,
+} from "../services/conversation-tasks/sub-agent-background";
+import { CHECK_AGENTS_TOOL } from "./check-agents";
 
 /**
  * `dispatchAgent` — hand one self-contained piece of work to a sub-agent.
@@ -33,18 +53,23 @@ import {
  * one step run in parallel. The same pattern as Claude Code's `Agent` tool,
  * OpenClaw's `sessions_spawn` and Hermes' `delegate_task`, with the settings
  * those three converge on: one level deep, read-only, no channel to the user,
- * the parent's own model.
+ * the parent's own model by default — and, like Claude Code's `model: haiku`,
+ * a lighter one on request (`model: "fast"`, the team's `documents` pick).
  *
  * What a dispatch is made of, and where each part lives:
- *  - the agent: `agents/chatbot/delegate.ts` — the parent's model, a static
- *    prompt, the read-and-compute tool set (`buildSubAgentTools`);
+ *  - the agent: `agents/chatbot/delegate.ts` — the parent's model (or the
+ *    Fast one), a static prompt, the read-and-compute tool set
+ *    (`buildSubAgentTools`);
  *  - its opening message: `agents/chatbot/delegate-brief.ts` — the date, the
  *    team's context, skills, collections and apps, any skill the parent
  *    handed over, then the task;
  *  - its limits: `agents/shared/delegation-slots.ts` (how many per turn, how
  *    many at once), the step budget on the agent, the deadline here;
  *  - what the user sees: a progress snapshot after every call the sub-agent
- *    makes and settles, then the result below.
+ *    makes and settles, then the result below;
+ *  - in the BACKGROUND (`background: true`, chat only): the tool answers at
+ *    once and the run continues on its own —
+ *    `services/conversation-tasks/sub-agent-background.ts`.
  *
  * Read-only on purpose: a sub-agent's calls never reach the conversation's
  * stream, so a write it made would be one the user never saw, and an approval
@@ -103,6 +128,18 @@ export const dispatchAgentInputSchema = z.object({
     .describe(
       "Names from <skills> whose procedure the task follows; their full text is handed over up front.",
     ),
+  model: z
+    .enum(["fast"])
+    .optional()
+    .describe(
+      "`fast` for long but mechanical work — many similar reads, bulk extraction, a checklist over many items: a faster, cheaper model. Omit when the work needs judgement.",
+    ),
+  background: z
+    .boolean()
+    .optional()
+    .describe(
+      "true to keep working while it runs: the call returns at once, and its report comes back when you end your turn (see `<delegation>`). Chat only.",
+    ),
 });
 
 type DispatchAgentInput = z.infer<typeof dispatchAgentInputSchema>;
@@ -157,7 +194,19 @@ export interface DispatchAgentResult {
   activity: DispatchAgentActivity[];
 }
 
-export type DispatchAgentOutput = DispatchAgentResult | ToolErrorOutput;
+/**
+ * What a background dispatch answers at once. `status` is not a report status
+ * on purpose: the model reads `completed` / `partial` / `failed` as an
+ * outcome, and there is none yet.
+ */
+export interface DispatchAgentLaunch {
+  status: "background";
+  agentId: string;
+  next: string;
+}
+
+export type DispatchAgentOutput =
+  DispatchAgentResult | DispatchAgentLaunch | ToolErrorOutput;
 
 const captionOf = (input: unknown): string | undefined => {
   if (typeof input !== "object" || input === null) return undefined;
@@ -238,6 +287,54 @@ const missingSummary = (reason: DispatchAgentStopReason, run: SubAgentRun) =>
   `The sub-agent stopped (${reason}) after ${run.toolCalls.length.toString()} tool calls without writing a report. Its last steps are in \`activity\`; do the rest yourself or re-dispatch a narrower task.`;
 
 /**
+ * The profile a dispatch runs on: the parent's own model, or — for
+ * `model: "fast"` — the team's `documents` pick ("Fast" in settings), which
+ * the handler resolved for the turn. A context that carries no such pick
+ * keeps the parent's model rather than guessing one.
+ */
+const profileKeyOf = (
+  input: DispatchAgentInput,
+  ctx: { modelProfile: { key: string }; fastProfileKey?: string },
+): string =>
+  input.model === "fast" && ctx.fastProfileKey !== undefined
+    ? ctx.fastProfileKey
+    : ctx.modelProfile.key;
+
+/**
+ * Whether this dispatch runs in the background. Only in a chat conversation:
+ * a workflow turn is bounded and driven from outside, with nobody to resume —
+ * there the flag is ignored and the dispatch runs as usual.
+ */
+const runsInBackground = (
+  input: DispatchAgentInput,
+  ctx: AgentRuntimeContext,
+): ctx is AgentRuntimeContext & { conversationId: string } =>
+  input.background === true &&
+  ctx.conversationId !== undefined &&
+  ctx.workflowRunId === undefined;
+
+const BACKGROUND_NEXT =
+  "Running in the background. Keep working on what does not need its report; when you need it, end your turn — you are resumed with every report once they have all finished. `checkAgents` shows where they stand.";
+
+/** A background run's outcome, as its task row stores it. */
+const toTaskResult = (output: DispatchAgentOutput): SubAgentTaskResult => {
+  if ("error" in output) {
+    return {
+      status: "failed",
+      summary: output.error,
+      toolCalls: 0,
+      durationMs: 0,
+      activity: [],
+    };
+  }
+  if (output.status === "background") {
+    // A run never launches another one (a sub-agent has no `dispatchAgent`).
+    throw new Error("a background run answered with a launch");
+  }
+  return output;
+};
+
+/**
  * Build the `dispatchAgent` tool against the sub-agent sets. Called once from
  * `agents/chatbot/delegate.ts`, which owns the agents; the chatbot and the
  * workflow executor then register the same instance.
@@ -296,21 +393,31 @@ export const createDispatchAgentTool = <TTools extends ToolSet>(deps: {
     };
   };
 
-  const execute = createSubAgentExecute<
-    ChatbotCallOptions,
-    TTools,
-    DispatchAgentInput,
-    DispatchAgentOutput,
-    DispatchAgentProgress
-  >({
-    subAgent: (ctx) => deps.resolve(ctx.modelProfile.key).primary,
-    fallbackSubAgent: (ctx) => deps.resolve(ctx.modelProfile.key).fallback,
-    contextCeiling: (ctx) => deps.resolve(ctx.modelProfile.key).contextCeiling,
+  const config: Parameters<
+    typeof createSubAgentRunner<
+      ChatbotCallOptions,
+      TTools,
+      DispatchAgentInput,
+      DispatchAgentOutput,
+      DispatchAgentProgress
+    >
+  >[0] = {
+    subAgent: (ctx, input) => deps.resolve(profileKeyOf(input, ctx)).primary,
+    fallbackSubAgent: (ctx, input) =>
+      deps.resolve(profileKeyOf(input, ctx)).fallback,
+    contextCeiling: (ctx, input) =>
+      deps.resolve(profileKeyOf(input, ctx)).contextCeiling,
     // Nothing a sub-agent can call changes the team's data — its writes are
     // files in the sandbox, which a retry overwrites rather than duplicates.
     // So an empty run is always worth the one retry the helper allows.
     hasSideEffect: () => false,
-    admit: async (_input, ctx) => {
+    admit: async (input, ctx) => {
+      // A background run was counted against its turn when it launched; here
+      // it only waits for a slot among the conversation's background runs.
+      if (runsInBackground(input, ctx)) {
+        await acquireDelegationSlot(backgroundSlotKey(ctx.conversationId));
+        return null;
+      }
       const verdict = await admitDelegation(delegationTurnKey(ctx));
       if (verdict.admitted) return null;
       return toolError(
@@ -319,8 +426,12 @@ export const createDispatchAgentTool = <TTools extends ToolSet>(deps: {
         "Do the remaining work yourself with your own tools.",
       );
     },
-    settle: async (_input, ctx, toolCallId) => {
-      releaseDelegationSlot(delegationTurnKey(ctx));
+    settle: async (input, ctx, toolCallId) => {
+      releaseDelegationSlot(
+        runsInBackground(input, ctx)
+          ? backgroundSlotKey(ctx.conversationId)
+          : delegationTurnKey(ctx),
+      );
       // Its kernel holds whatever it loaded. Released in the background: the
       // parent has its answer and nothing waits on the cleanup.
       if (ctx.conversationId !== undefined) {
@@ -340,7 +451,7 @@ export const createDispatchAgentTool = <TTools extends ToolSet>(deps: {
         content: await buildDelegateBrief({ task, skills }, ctx),
       },
     ],
-    buildCallOptions: (_input, ctx, { toolCallId }) => ({
+    buildCallOptions: (input, ctx, { toolCallId }) => ({
       teamId: ctx.teamId,
       organizationId: ctx.organizationId,
       userId: ctx.userId,
@@ -349,14 +460,24 @@ export const createDispatchAgentTool = <TTools extends ToolSet>(deps: {
       timeZone: ctx.timeZone,
       // Its own trace id, hence its own OpenRouter lane (`provider-session.ts`):
       // parallel sub-agents of one turn no longer share one pin. The turn root
-      // stays the prefix, so the cost ledger still folds it into the turn.
-      traceId: ctx.traceId ? `${ctx.traceId}.sub.${toolCallId}` : undefined,
+      // stays the prefix, so the cost ledger still folds it into the turn —
+      // except in the background, where the turn is gone before the run ends
+      // and the run keeps a ledger key of its own.
+      traceId: runsInBackground(input, ctx)
+        ? backgroundTraceId(toolCallId)
+        : ctx.traceId
+          ? `${ctx.traceId}.sub.${toolCallId}`
+          : undefined,
       delegateRunId: toolCallId,
       // Everything that decides what it may do, inherited verbatim: a team's
       // `blocked` tool stays blocked, a run's autonomy stays its autonomy.
       toolPolicies: ctx.toolPolicies,
       workflowAutonomy: ctx.workflowAutonomy,
-      reasoningLevel: ctx.reasoningLevel,
+      // A depth chosen against the parent's model; on another profile it
+      // could name a rung that model does not have.
+      ...(profileKeyOf(input, ctx) === ctx.modelProfile.key
+        ? { reasoningLevel: ctx.reasoningLevel }
+        : {}),
       // Which connected apps it may reach from the sandbox (egress + skills).
       externalAppConnections: ctx.externalAppConnections,
     }),
@@ -370,7 +491,74 @@ export const createDispatchAgentTool = <TTools extends ToolSet>(deps: {
         activity: activityOf(toolCalls, PROGRESS_ACTIVITY_ENTRIES),
       },
     }),
-  });
+  };
+
+  const foreground = createSubAgentExecute(config);
+  const { run } = createSubAgentRunner(config);
+
+  /**
+   * Launch a background run and answer at once. The dispatch is counted
+   * against the turn HERE, synchronously, so an over-budget one is refused
+   * like any other; the run then waits for its slot on its own.
+   */
+  const launch = async (
+    input: DispatchAgentInput,
+    options: ToolExecutionOptions<unknown>,
+    ctx: AgentRuntimeContext & { conversationId: string },
+  ): Promise<DispatchAgentOutput> => {
+    const verdict = claimDispatch(delegationTurnKey(ctx));
+    if (!verdict.admitted) {
+      return toolError(
+        TOOL_ERROR_CODES.DELEGATION_LIMIT,
+        `This turn already dispatched ${verdict.limit.toString()} sub-agents, the most one turn may — nothing was started.`,
+        "Do the remaining work yourself with your own tools.",
+      );
+    }
+    // Its own id, not the provider's tool-call id: the task row's ref is
+    // unique across every conversation, and a provider that numbers its calls
+    // `call_0`, `call_1` would collide the second conversation with the first.
+    const agentId = randomUUIDv7();
+    // The run must not inherit the turn's abort: the user stopping THIS
+    // answer is not a request to drop work that outlives it.
+    const { abortSignal: _turnSignal, ...detached } = options;
+    await startBackgroundRun({
+      agentId,
+      conversationId: ctx.conversationId,
+      title: input.description,
+      state: {
+        ...(ctx.userId !== undefined ? { launchedByUserId: ctx.userId } : {}),
+        toolCallId: options.toolCallId,
+        ...(input.model === "fast" ? { model: "fast" as const } : {}),
+      },
+      trace: {
+        teamId: ctx.teamId,
+        ...(ctx.userId !== undefined ? { userId: ctx.userId } : {}),
+        ...(ctx.traceId !== undefined ? { parentTraceId: ctx.traceId } : {}),
+      },
+      activityOf: (toolCalls) =>
+        activityOf(toolCalls, PROGRESS_ACTIVITY_ENTRIES),
+      execute: async ({ onActivity }) =>
+        toTaskResult(
+          await run(input, { ...detached, toolCallId: agentId }, onActivity),
+        ),
+    });
+    // `checkAgents` joins the parent's tools from its next step on — through
+    // the same activation set `searchTools` writes, which every step reads.
+    ctx.dynamicToolManager.activate([CHECK_AGENTS_TOOL]);
+    return { status: "background", agentId, next: BACKGROUND_NEXT };
+  };
+
+  const execute = (
+    input: DispatchAgentInput,
+    options: ToolExecutionOptions<unknown>,
+  ):
+    | Promise<DispatchAgentOutput>
+    | AsyncIterable<DispatchAgentOutput | DispatchAgentProgress> => {
+    const ctx = getRuntimeContext(options);
+    return runsInBackground(input, ctx)
+      ? launch(input, options, ctx)
+      : foreground(input, options);
+  };
 
   return buildChatbotTool({
     category: "core",

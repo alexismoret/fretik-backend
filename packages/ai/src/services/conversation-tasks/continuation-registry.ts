@@ -3,6 +3,7 @@ import type {
   ConversationTaskKind,
 } from "@fretik/shared/db/schema";
 import { buildBulkOperationContinuation } from "./bulk-operation-continuation";
+import { subAgentContinuation } from "./sub-agent-continuation";
 import {
   buildWorkflowRunContinuation,
   workflowRunDoctrine,
@@ -64,4 +65,5 @@ export const CONVERSATION_TASK_CONTINUATIONS: Record<
 > = {
   workflow_run: workflowRunContinuation,
   bulk_operation: buildBulkOperationContinuation,
+  sub_agent: subAgentContinuation,
 };

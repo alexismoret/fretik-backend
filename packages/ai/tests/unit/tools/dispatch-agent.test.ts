@@ -234,6 +234,39 @@ describe("dispatchAgent — what the sub-agent is given", () => {
     }
   });
 
+  test("`fast` runs it on the team's Fast pick, at that model's own depth", async () => {
+    const resolved: string[] = [];
+    const captured: Captured[] = [];
+    const tool = build(
+      stubAgent({ text: "ok", finishReason: "stop" }, captured),
+      undefined,
+      resolved,
+    );
+    await dispatch(
+      tool,
+      { model: "fast" },
+      parentCtx({ fastProfileKey: "fast-model", reasoningLevel: "high" }),
+    );
+    expect(resolved.length).toBeGreaterThan(0);
+    for (const key of resolved) expect(key).toBe("fast-model");
+    // The parent's depth was chosen against the PARENT's model; handed to
+    // another profile it could name a rung that model does not have.
+    expect(captured[0]?.options.reasoningLevel).toBeUndefined();
+  });
+
+  test("`fast` with no Fast pick in the context stays on the parent's model", async () => {
+    const resolved: string[] = [];
+    const tool = build(
+      stubAgent({ text: "ok", finishReason: "stop" }, []),
+      undefined,
+      resolved,
+    );
+    await dispatch(tool, { model: "fast" });
+    for (const key of resolved) {
+      expect(key).toBe(getProfileForRole("chat").key);
+    }
+  });
+
   test("its brief carries the date, the team's context and the task", async () => {
     const captured: Captured[] = [];
     const tool = build(

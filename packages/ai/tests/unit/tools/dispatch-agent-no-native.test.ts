@@ -16,9 +16,12 @@ import { dispatchAgentInputSchema } from "../../../src/tools/dispatch-agent";
  * has to change one of these and trips the test.
  */
 describe("dispatchAgent excludes native media (C5)", () => {
-  test("input schema exposes only {task, description, skills} — no media input", () => {
+  test("input schema carries a brief and two switches — no media input", () => {
+    // `model` and `background` are enums/booleans: neither can carry a file.
     expect(Object.keys(dispatchAgentInputSchema.shape).sort()).toEqual([
+      "background",
       "description",
+      "model",
       "skills",
       "task",
     ]);

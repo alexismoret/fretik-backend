@@ -80,3 +80,69 @@ export const hasResumableConversationTasks = async (
   if (rows.length === 0) return false;
   return rows.every((row) => row.status !== "pending");
 };
+
+/**
+ * Background sub-agents whose outcome the agent has not read yet: still
+ * running, or settled and not yet handed over (by a resume or `checkAgents`).
+ * Oldest first — the order they were launched in.
+ */
+export const listOpenSubAgentTasks = async (
+  conversationId: string,
+): Promise<ConversationBackgroundTask[]> =>
+  db
+    .select()
+    .from(conversationBackgroundTasks)
+    .where(
+      and(
+        eq(conversationBackgroundTasks.conversationId, conversationId),
+        eq(conversationBackgroundTasks.kind, "sub_agent"),
+        or(
+          eq(conversationBackgroundTasks.status, "pending"),
+          isNull(conversationBackgroundTasks.consumedAt),
+        ),
+      ),
+    )
+    .orderBy(conversationBackgroundTasks.createdAt);
+
+/**
+ * Specific background sub-agents of one conversation, by id — what a chat card
+ * asks for. Scoped to the conversation so an id from another one reads as
+ * absent, whatever the caller passes.
+ */
+export const listSubAgentTasks = async (
+  conversationId: string,
+  agentIds: readonly string[],
+): Promise<ConversationBackgroundTask[]> => {
+  if (agentIds.length === 0) return [];
+  return db
+    .select()
+    .from(conversationBackgroundTasks)
+    .where(
+      and(
+        eq(conversationBackgroundTasks.conversationId, conversationId),
+        eq(conversationBackgroundTasks.kind, "sub_agent"),
+        inArray(conversationBackgroundTasks.ref, [...agentIds]),
+      ),
+    );
+};
+
+/**
+ * Whether a background sub-agent of this conversation is still running — the
+ * turn-end sandbox pause must not freeze its Python cell mid-run.
+ */
+export const hasRunningSubAgentTasks = async (
+  conversationId: string,
+): Promise<boolean> => {
+  const rows = await db
+    .select({ id: conversationBackgroundTasks.id })
+    .from(conversationBackgroundTasks)
+    .where(
+      and(
+        eq(conversationBackgroundTasks.conversationId, conversationId),
+        eq(conversationBackgroundTasks.kind, "sub_agent"),
+        eq(conversationBackgroundTasks.status, "pending"),
+      ),
+    )
+    .limit(1);
+  return rows.length > 0;
+};

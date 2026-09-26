@@ -321,6 +321,20 @@ export type AgentRuntimeContext = {
    * sandbox call it makes is read-only (`@fretik/shared/services/sandbox/exec-scope`).
    */
   delegateRunId?: string;
+  /**
+   * Profile a `dispatchAgent({ model: "fast" })` runs on — the team's
+   * `documents` pick, shown as "Fast" in settings. Resolved once per turn by
+   * the handler; undefined keeps such a dispatch on the parent's model.
+   */
+  fastProfileKey?: string;
+  /**
+   * The conversation has background sub-agents whose outcome the agent has
+   * not read — one of the two gates on `checkAgents`, which is hidden
+   * otherwise. Read by the handler at turn start and never mutated: a
+   * background dispatch DURING the turn opens the other gate, by activating
+   * the tool through `dynamicToolManager`.
+   */
+  backgroundAgents?: boolean;
 };
 
 /**

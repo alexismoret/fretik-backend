@@ -85,6 +85,7 @@ import {
   type ChatbotCallOptions,
 } from "./call-options";
 import { delegateHiddenToolNames, dispatchAgentTool } from "./delegate";
+import { chatbotHiddenToolNames } from "./hidden-tools";
 
 export {
   buildChatbotRuntimeContextBase,
@@ -141,7 +142,7 @@ const chatbotPrepareStep = (
         ctx,
         tools,
         coreNames,
-        policyHiddenToolNames(ctx),
+        chatbotHiddenToolNames(ctx),
       ),
       toolsContext: buildToolsContext(tools, ctx),
     };

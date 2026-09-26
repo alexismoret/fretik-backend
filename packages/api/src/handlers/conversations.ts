@@ -17,6 +17,7 @@ import {
   MemberPreferencesResponseSchema,
   MembersResponseSchema,
   MessagesResponseSchema,
+  SubAgentStatesResponseSchema,
   UpdateConversationSchema,
   UpdateMemberPreferencesSchema,
 } from "@fretik/shared/schemas/ai";
@@ -39,8 +40,14 @@ import { setMemberEmailPreference } from "@fretik/shared/services/ai/members/set
 import { setMemberPinned } from "@fretik/shared/services/ai/members/set-pinned";
 import { getConversationMessages } from "@fretik/shared/services/ai/messages";
 import { updateConversation } from "@fretik/shared/services/ai/update";
-import { listConversationTasks } from "@fretik/shared/services/conversation-tasks/list";
-import { serializeConversationTask } from "@fretik/shared/services/conversation-tasks/serialize";
+import {
+  listConversationTasks,
+  listSubAgentTasks,
+} from "@fretik/shared/services/conversation-tasks/list";
+import {
+  serializeConversationTask,
+  serializeSubAgentTask,
+} from "@fretik/shared/services/conversation-tasks/serialize";
 import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 import { z } from "zod";
 
@@ -222,6 +229,44 @@ const getBackgroundTasksRoute = createRoute({
         },
       },
       description: "Background tasks retrieved successfully",
+    },
+    ...responseNotFoundSchema,
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+/** A chat card asks for the sub-agents it shows — a handful per block. */
+const MAX_SUB_AGENT_IDS = 20;
+
+const getSubAgentsRoute = createRoute({
+  method: "get",
+  path: "/{id}/sub-agents",
+  summary: "Read background sub-agents of a conversation",
+  description:
+    "The live state (step, recent calls) and, once over, the report of sub-agents the assistant sent off in the background from this conversation. `ids` are the agent ids its `dispatchAgent` calls returned; an id from another conversation reads as absent.",
+  tags: ["Conversations"],
+  request: {
+    params: paramsIdSchema,
+    query: z.object({
+      ids: z
+        .string()
+        .min(1)
+        .transform((value) =>
+          value
+            .split(",")
+            .map((id) => id.trim())
+            .filter((id) => id.length > 0),
+        )
+        .pipe(z.array(z.string().max(64)).min(1).max(MAX_SUB_AGENT_IDS)),
+    }),
+  },
+  responses: {
+    200: {
+      content: {
+        "application/json": { schema: SubAgentStatesResponseSchema },
+      },
+      description: "Sub-agent states retrieved successfully",
     },
     ...responseNotFoundSchema,
     ...responseForbiddenSchema,
@@ -468,6 +513,29 @@ conversationRoutes.openapi(getBackgroundTasksRoute, async (c) => {
   const tasks = await listConversationTasks(conversation.id);
 
   return c.json({ tasks: tasks.map(serializeConversationTask) }, 200);
+});
+
+conversationRoutes.openapi(getSubAgentsRoute, async (c) => {
+  const user = c.get("user");
+  const team = c.get("team");
+  if (!team) return throwHttpError(403, teamRequired());
+
+  const { id } = c.req.valid("param");
+  const { ids } = c.req.valid("query");
+
+  const conversation = await getConversation({
+    id,
+    teamId: team.id,
+    userId: user.id,
+  });
+
+  if (!conversation) {
+    return throwHttpError(404, notFound("Conversation not found"));
+  }
+
+  const tasks = await listSubAgentTasks(conversation.id, ids);
+
+  return c.json({ agents: tasks.map(serializeSubAgentTask) }, 200);
 });
 
 conversationRoutes.openapi(addMembersRoute, async (c) => {

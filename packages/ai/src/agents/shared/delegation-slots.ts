@@ -90,18 +90,29 @@ const slotsFor = (key: string): TurnSlots => {
   return created;
 };
 
+export type DispatchVerdict =
+  { admitted: true } | { admitted: false; limit: number };
+
 /**
- * Admit one dispatch into its turn, or refuse it over the per-turn total. An
- * admitted dispatch then waits for a slot and MUST give it back through
- * `releaseDelegationSlot`, whatever happens to the run.
+ * Count one dispatch against its turn's total, or refuse it over the limit.
+ * Takes no slot: a background dispatch is counted here, in the turn that
+ * launched it, and waits for its slot afterwards under the conversation's key
+ * (`backgroundSlotKey`), since it outlives the turn.
  */
-export const admitDelegation = async (
-  key: string,
-): Promise<{ admitted: true } | { admitted: false; limit: number }> => {
+export const claimDispatch = (key: string): DispatchVerdict => {
   const slots = slotsFor(key);
   const limit = maxPerTurn();
   if (slots.dispatched >= limit) return { admitted: false, limit };
   slots.dispatched += 1;
+  return { admitted: true };
+};
+
+/**
+ * Wait for a slot under `key`. MUST be given back through
+ * `releaseDelegationSlot`, whatever happens to the run.
+ */
+export const acquireDelegationSlot = async (key: string): Promise<void> => {
+  const slots = slotsFor(key);
   if (slots.running >= maxConcurrent()) {
     // The slot is handed over by `releaseDelegationSlot` with `running`
     // unchanged — never freed and re-taken, which would let a dispatch that
@@ -112,7 +123,29 @@ export const admitDelegation = async (
   } else {
     slots.running += 1;
   }
-  return { admitted: true };
+};
+
+/**
+ * The key background sub-agents take their slots under: the conversation, not
+ * the turn — they keep running after the turn that launched them, beside the
+ * next one's. In this process only: a conversation whose turns land on two
+ * replicas runs up to the cap on each, which is a soft limit, not a leak.
+ */
+export const backgroundSlotKey = (conversationId: string): string =>
+  `background:${conversationId}`;
+
+/**
+ * Admit one dispatch into its turn, or refuse it over the per-turn total. An
+ * admitted dispatch then waits for a slot and MUST give it back through
+ * `releaseDelegationSlot`, whatever happens to the run.
+ */
+export const admitDelegation = async (
+  key: string,
+): Promise<DispatchVerdict> => {
+  const verdict = claimDispatch(key);
+  if (!verdict.admitted) return verdict;
+  await acquireDelegationSlot(key);
+  return verdict;
 };
 
 /** Hand the slot to the next waiting dispatch of the same turn, or free it. */

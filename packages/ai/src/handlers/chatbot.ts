@@ -63,7 +63,11 @@ import {
 } from "@fretik/shared/services/ai/turn-log";
 import { recordTurnIncrementally } from "@fretik/shared/services/ai/turn-recorder";
 import { updateConversation } from "@fretik/shared/services/ai/update";
-import { hasResumableConversationTasks } from "@fretik/shared/services/conversation-tasks/list";
+import {
+  hasResumableConversationTasks,
+  hasRunningSubAgentTasks,
+  listOpenSubAgentTasks,
+} from "@fretik/shared/services/conversation-tasks/list";
 import { emitDomainEvent } from "@fretik/shared/services/domain-events/emit";
 import { releaseSandbox } from "@fretik/shared/services/e2b/release-sandbox";
 import { getTeamToolPolicies } from "@fretik/shared/services/tool-policies/get-for-team";
@@ -138,7 +142,10 @@ import {
   reasoningParamForProfile,
   resolveChatModelForProfile,
 } from "../lib/model-registry/resolve";
-import { resolveTeamFlagship } from "../lib/model-registry/team-model";
+import {
+  resolveTeamFlagship,
+  resolveTeamFunctionProfileKey,
+} from "../lib/model-registry/team-model";
 import { extractOpenRouterReport } from "../lib/model-registry/transports/openrouter";
 import type { ModelProfile, ReasoningLevel } from "../lib/model-registry/types";
 import { buildSensitiveInputScrubber } from "../lib/scrub-stream";
@@ -931,6 +938,8 @@ const buildTurnCallOptions = async (
     fragments,
     toolPolicies,
     externalApps,
+    fastProfileKey,
+    openSubAgents,
   ] = await Promise.all([
     // Conversation-scoped, NOT last-message-scoped: a file part that the
     // active profile can't ingest natively is dropped from the history by
@@ -1026,6 +1035,31 @@ const buildTurnCallOptions = async (
     // `loadExternalApps`), leaving a plain `listConnections` with no reason
     // to block anything.
     timeStage(timings, "externalApps", loadChatbotExternalApps(params)),
+    // What a `dispatchAgent({ model: "fast" })` runs on: the team's
+    // `documents` pick ("Fast" in settings). Same cached settings row the
+    // assistant pick came from, so no extra round trip in practice.
+    timeStage(
+      timings,
+      "fastProfile",
+      resolveTeamFunctionProfileKey("documents", params.callOptions.teamId),
+    ),
+    // Background sub-agents still running or with a report nobody read —
+    // what shows `checkAgents` from the first step. A failed read hides it,
+    // which only costs the agent the mid-turn check: the resume still comes.
+    params.conversationId === undefined
+      ? Promise.resolve(0)
+      : timeStage(
+          timings,
+          "openSubAgents",
+          withSoftTimeout(
+            listOpenSubAgentTasks(params.conversationId).then(
+              (rows) => rows.length,
+            ),
+            3000,
+            0,
+            "open-sub-agents",
+          ),
+        ),
   ]);
 
   timings["preTurnTotal"] = Date.now() - startedAt;
@@ -1052,6 +1086,8 @@ const buildTurnCallOptions = async (
     externalAppConnections: externalApps.externalAppConnections,
     externalAppsBlock: externalApps.externalAppsBlock,
     toolPolicies,
+    fastProfileKey,
+    backgroundAgents: openSubAgents > 0,
   };
 };
 
@@ -1789,14 +1825,23 @@ export const runChatbotTurn = async (
       // (filesystem + python kernel) is preserved across pause/resume.
       // Fire-and-forget — pause failures are logged but never block
       // returning the response. No-op when no sandbox was acquired.
+      //
+      // NOT while a background sub-agent of this conversation still runs: a
+      // pause freezes its Python cell mid-call. The sandbox then pauses itself
+      // after its idle timeout (`lifecycle.onTimeout: "pause"`), or at the end
+      // of the turn that resumes the conversation with the reports.
       if (params.conversationId) {
         const conversationId = params.conversationId;
-        void releaseSandbox(conversationId).catch((err: unknown) => {
-          console.warn(
-            `${params.logPrefix} sandbox pause failed:`,
-            err instanceof Error ? err.message : err,
-          );
-        });
+        void hasRunningSubAgentTasks(conversationId)
+          .then(async (running) => {
+            if (!running) await releaseSandbox(conversationId);
+          })
+          .catch((err: unknown) => {
+            console.warn(
+              `${params.logPrefix} sandbox pause failed:`,
+              err instanceof Error ? err.message : err,
+            );
+          });
       }
       // Drain background work that finished while this turn held the slot: a
       // resume needs a free slot, which only exists now. Goes through the

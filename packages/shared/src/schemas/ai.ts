@@ -426,6 +426,46 @@ export const ConversationBackgroundTasksResponseSchema = z.object({
   tasks: z.array(ConversationBackgroundTaskSchema),
 });
 
+const SubAgentActivitySchema = z.object({
+  tool: z.string(),
+  caption: z.string().optional(),
+  state: z.enum(["running", "done", "error"]),
+});
+
+/**
+ * One background sub-agent as its chat card draws it: live while it runs
+ * (`step`, `activity`), its report once it is over (`result`). The card of a
+ * foreground sub-agent reads the same facts off the tool's own output; a
+ * background one returned before it started working, so they live here.
+ */
+export const SubAgentStateSchema = z.object({
+  agentId: z.string(),
+  status: z.enum(["pending", "succeeded", "failed", "canceled"]),
+  model: z.enum(["fast"]).nullable(),
+  step: z.number().int().nullable(),
+  /** Epoch ms it started working, after any wait for a slot. */
+  startedAt: z.number().nullable(),
+  activity: z.array(SubAgentActivitySchema),
+  result: z
+    .object({
+      status: z.enum(["completed", "partial", "failed"]),
+      summary: z.string(),
+      files: z.array(z.string()),
+      reason: z.string().nullable(),
+      toolCalls: z.number().int(),
+      durationMs: z.number(),
+      activity: z.array(SubAgentActivitySchema),
+    })
+    .nullable(),
+  createdAt: z.date(),
+  completedAt: z.date().nullable(),
+});
+export type SubAgentStateResponse = z.infer<typeof SubAgentStateSchema>;
+
+export const SubAgentStatesResponseSchema = z.object({
+  agents: z.array(SubAgentStateSchema),
+});
+
 // ==================== //
 // Stream request       //
 // ==================== //

@@ -5,6 +5,7 @@ import type {
   ConversationTaskTerminalStatus,
 } from "../../db/schema";
 import { bulkOperations, workflowRuns } from "../../db/schema";
+import { liveSubAgents } from "../../lib/sub-agent-heartbeat";
 import type { WorkflowRunStatus } from "../../schemas/workflows";
 
 /**
@@ -108,10 +109,30 @@ const bulkOperationReconciler: ConversationTaskReconciler = {
   },
 };
 
+/**
+ * A background sub-agent has no work row: it lives in the AI process that
+ * launched it, and settles its own task when it ends. The only way it stays
+ * pending is that process dying mid-run — so a row the sweep considers (older
+ * than `RECONCILE_AFTER_MS`) whose heartbeat has lapsed is a run that will
+ * never report, and settles as failed. The continuation then tells the agent
+ * it stopped without a report, which is the truth.
+ */
+const subAgentReconciler: ConversationTaskReconciler = {
+  resolve: async (refs) => {
+    const out = new Map<string, ConversationTaskTerminalStatus>();
+    const alive = await liveSubAgents(refs);
+    for (const ref of refs) {
+      if (!alive.has(ref)) out.set(ref, "failed");
+    }
+    return out;
+  },
+};
+
 export const CONVERSATION_TASK_RECONCILERS: Record<
   ConversationTaskKind,
   ConversationTaskReconciler
 > = {
   workflow_run: workflowRunReconciler,
   bulk_operation: bulkOperationReconciler,
+  sub_agent: subAgentReconciler,
 };

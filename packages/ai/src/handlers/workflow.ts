@@ -96,7 +96,10 @@ import {
   reasoningParamForProfile,
   resolveChatModelForProfile,
 } from "../lib/model-registry/resolve";
-import { resolveTeamFlagship } from "../lib/model-registry/team-model";
+import {
+  resolveTeamFlagship,
+  resolveTeamFunctionProfileKey,
+} from "../lib/model-registry/team-model";
 import { buildSensitiveInputScrubber } from "../lib/scrub-stream";
 import { streamWithRetryThenFallback } from "../lib/stream-errors";
 import { forgetTurnUsage, readDelegatedUsage } from "../lib/turn-usage";
@@ -503,6 +506,7 @@ const executeTurn = async (params: {
     activeMemoryBlock,
     attachedFilesBlock,
     toolPolicies,
+    fastProfileKey,
   ] = await Promise.all([
     assembleContextFragments(
       {
@@ -542,6 +546,9 @@ const executeTurn = async (params: {
     // Files handed to the run (form/email trigger uploads) → `<file_attachments>`.
     buildConversationAttachedFilesBlock(conversationId),
     getTeamToolPolicies(run.teamId),
+    // What a `dispatchAgent({ model: "fast" })` runs on — the team's
+    // `documents` ("Fast") pick.
+    resolveTeamFunctionProfileKey("documents", run.teamId),
   ]);
 
   // Steering carries everything that mutates per turn (date, live statuses,
@@ -585,6 +592,7 @@ const executeTurn = async (params: {
     externalAppConnections: externalApps.externalAppConnections,
     externalAppsBlock: externalApps.externalAppsBlock,
     toolPolicies,
+    fastProfileKey,
     ...(attachedFilesBlock ? { attachedFilesBlock } : {}),
   };
 

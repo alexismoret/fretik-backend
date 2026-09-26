@@ -96,8 +96,13 @@ export interface CreateSubAgentExecuteConfig<
    * A/B can repoint the builder without rebuilding the tool. Callers with one
    * fixed agent pass `() => theAgent`, which is the same singleton it always
    * was — the point is that the choice happens at execute time, not at import.
+   * The dispatch's input is passed too, for a tool whose caller picks the
+   * model per call (`dispatchAgent({ model: "fast" })`).
    */
-  subAgent: (ctx: AgentRuntimeContext) => Agent<CALL_OPTIONS, TOOLS>;
+  subAgent: (
+    ctx: AgentRuntimeContext,
+    input: INPUT,
+  ) => Agent<CALL_OPTIONS, TOOLS>;
   /**
    * The ceiling THIS delegate's stop condition uses, read from the same set
    * that built it (`AgentSet.contextCeiling`).
@@ -111,7 +116,7 @@ export interface CreateSubAgentExecuteConfig<
    * narrower model is added, and a boundary loop asking a question its agent
    * did not answer would simply never fire.
    */
-  contextCeiling?: (ctx: AgentRuntimeContext) => number;
+  contextCeiling?: (ctx: AgentRuntimeContext, input: INPUT) => number;
   /**
    * A second agent to run ONCE when the first came back having produced
    * nothing — the reasoning-only zombie (`agent-builder.ts` logs it): the model
@@ -127,7 +132,10 @@ export interface CreateSubAgentExecuteConfig<
    * cannot duplicate a side effect or a half-written page. Optional: without it
    * the behaviour is exactly what it was.
    */
-  fallbackSubAgent?: (ctx: AgentRuntimeContext) => Agent<CALL_OPTIONS, TOOLS>;
+  fallbackSubAgent?: (
+    ctx: AgentRuntimeContext,
+    input: INPUT,
+  ) => Agent<CALL_OPTIONS, TOOLS>;
   /**
    * Which of this sub-agent's tool calls could have changed something.
    * Reads — a guide, a schema lookup, a dry run — return false, and a run that
@@ -369,13 +377,20 @@ const changedNothing = (
       : step.toolCalls.length === 0,
   );
 
+/** Called on every tool call a run starts and settles, with the whole log. */
+export type SubAgentActivityListener = (
+  toolCalls: readonly SubAgentToolCall[],
+  startedAt: number,
+) => void;
+
 /**
- * Build a strongly-typed `execute` closure that dispatches the
- * parent's tool call to the wrapped sub-agent. Consumers plug the
- * returned function into `buildChatbotTool({ execute })` — see the
- * usage example at the top of this file.
+ * The run behind a dispatch, as a plain promise — admission, every attempt
+ * (boundary resumes, the same-model resume, the fallback), the deadline, and
+ * `settle`. `createSubAgentExecute` wraps it as a tool's `execute`; a caller
+ * that runs the sub-agent OUTSIDE a tool call (`dispatchAgent` in the
+ * background) drives it directly, with options whose abort signal is its own.
  */
-export const createSubAgentExecute = <
+export const createSubAgentRunner = <
   CALL_OPTIONS,
   TOOLS extends ToolSet,
   INPUT,
@@ -391,14 +406,18 @@ export const createSubAgentExecute = <
     PROGRESS,
     SALVAGE
   >,
-) => {
+): {
+  run: (
+    input: INPUT,
+    options: ToolExecutionOptions<unknown>,
+    onActivity: SubAgentActivityListener | undefined,
+  ) => Promise<OUTPUT>;
+} => {
   /** One run, shared by both modes. Resolves to the tool-shaped result. */
   const run = async (
     input: INPUT,
     options: ToolExecutionOptions<unknown>,
-    onActivity:
-      | ((toolCalls: readonly SubAgentToolCall[], startedAt: number) => void)
-      | undefined,
+    onActivity: SubAgentActivityListener | undefined,
   ): Promise<OUTPUT> => {
     const ctx = getRuntimeContext(options);
     const toolCalls: SubAgentToolCall[] = [];
@@ -420,9 +439,7 @@ export const createSubAgentExecute = <
     options: ToolExecutionOptions<unknown>,
     ctx: AgentRuntimeContext,
     toolCalls: SubAgentToolCall[],
-    onActivity:
-      | ((toolCalls: readonly SubAgentToolCall[], startedAt: number) => void)
-      | undefined,
+    onActivity: SubAgentActivityListener | undefined,
   ): Promise<OUTPUT> => {
     const messages = await config.buildMessages(input, ctx);
     const callOptions = config.buildCallOptions(input, ctx, {
@@ -487,7 +504,7 @@ export const createSubAgentExecute = <
         return deadline;
       };
 
-      let result = await generate(config.subAgent(ctx), primaryDeadline);
+      let result = await generate(config.subAgent(ctx, input), primaryDeadline);
       let usage = summarizeRunUsage(result.steps);
       let salvaged = (await config.salvage?.(result, ctx)) ?? undefined;
       // What the dead attempt established, carried into the next one. The
@@ -511,7 +528,10 @@ export const createSubAgentExecute = <
         let boundary = 0;
         boundary < SUB_AGENT_BOUNDARY_BACKSTOP &&
         result.finishReason === "tool-calls" &&
-        contextCeilingReached(result.steps, config.contextCeiling?.(ctx));
+        contextCeilingReached(
+          result.steps,
+          config.contextCeiling?.(ctx, input),
+        );
         boundary += 1
       ) {
         const resume = await buildTurnBoundaryResume({
@@ -523,7 +543,11 @@ export const createSubAgentExecute = <
         // re-run it on a context that did not get smaller.
         if (resume === null) break;
         history = [resume.message];
-        result = await generate(config.subAgent(ctx), retryDeadline(), history);
+        result = await generate(
+          config.subAgent(ctx, input),
+          retryDeadline(),
+          history,
+        );
         usage = mergeUsage(usage, summarizeRunUsage(result.steps));
         // `?? salvaged` and not `?? undefined`: a resumed run whose salvage
         // comes back empty must not erase what the cut run had already
@@ -545,7 +569,11 @@ export const createSubAgentExecute = <
         console.error(
           `[sub-agent] run cut (finish=${result.finishReason}) — resuming once on the same model`,
         );
-        result = await generate(config.subAgent(ctx), retryDeadline(), history);
+        result = await generate(
+          config.subAgent(ctx, input),
+          retryDeadline(),
+          history,
+        );
         usage = mergeUsage(usage, summarizeRunUsage(result.steps));
         salvaged = (await config.salvage?.(result, ctx)) ?? undefined;
         history = [
@@ -559,7 +587,7 @@ export const createSubAgentExecute = <
           `[sub-agent] empty run (finish=${result.finishReason}) — retrying once on the fallback model`,
         );
         result = await generate(
-          config.fallbackSubAgent(ctx),
+          config.fallbackSubAgent(ctx, input),
           retryDeadline(),
           history,
         );
@@ -587,6 +615,33 @@ export const createSubAgentExecute = <
     }
   };
 
+  return { run };
+};
+
+/**
+ * Build a strongly-typed `execute` closure that dispatches the
+ * parent's tool call to the wrapped sub-agent. Consumers plug the
+ * returned function into `buildChatbotTool({ execute })` — see the
+ * usage example at the top of this file.
+ */
+export const createSubAgentExecute = <
+  CALL_OPTIONS,
+  TOOLS extends ToolSet,
+  INPUT,
+  OUTPUT,
+  PROGRESS = never,
+  SALVAGE = never,
+>(
+  config: CreateSubAgentExecuteConfig<
+    CALL_OPTIONS,
+    TOOLS,
+    INPUT,
+    OUTPUT,
+    PROGRESS,
+    SALVAGE
+  >,
+) => {
+  const { run } = createSubAgentRunner(config);
   const report = config.progress;
   if (!report) {
     return (input: INPUT, options: ToolExecutionOptions<unknown>) =>

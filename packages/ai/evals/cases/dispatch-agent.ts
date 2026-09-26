@@ -18,6 +18,10 @@
  *   - **The brief is self-contained**: what the user said reaches the
  *     sub-agent's `task`, since the sub-agent sees nothing else.
  *
+ *   - **The right mode**: a mechanical sweep asked for "quick" goes out with
+ *     `model: "fast"`; research asked for "in the background" goes out with
+ *     `background: true`, and the turn keeps answering instead of waiting.
+ *
  * The report being structured is what lets these cases see INSIDE a
  * sub-agent at all: `status` says whether it finished, `activity` which
  * tools it called. What a sub-agent may do (no writes, no recursion) is a
@@ -166,6 +170,54 @@ export const dispatchAgentSuite: EvalSuite = {
               `the task never mentions: ${missing.join(", ")}`
             );
           },
+        },
+      ],
+    },
+
+    {
+      id: "dispatch-fast-mechanical",
+      description:
+        'Exposure check for `model: "fast"`: the user asks for a quick sub-agent on a mechanical sweep (the same two fields out of many documents). The dispatch must carry `model: "fast"` — if it never does, the parameter is not reaching the model or the doctrine does not name the case.',
+      prompt:
+        "Envoie un sous-agent rapide relever, dans chacun des 10 derniers documents importés, la date et le montant total, et renvoie-moi un tableau (document, date, montant).",
+      tags: ["dispatch-agent", "fast"],
+      assertions: [
+        { type: "noError" },
+        { type: "toolUsed", tools: [DISPATCH] },
+        {
+          type: "custom",
+          name: "the dispatch asks for the fast model",
+          fn: (result) =>
+            result.toolCalls.some(
+              (c) =>
+                c.name === DISPATCH && fieldOf(c.input, "model") === "fast",
+            ) || 'no dispatchAgent call carried model: "fast"',
+        },
+      ],
+    },
+
+    {
+      id: "dispatch-background-keeps-working",
+      description:
+        "Background delegation: the user asks for a long piece of research to run in the background while they get an unrelated answer now. The dispatch must carry `background: true`, and the SAME turn must go on to answer the second question instead of waiting — the report comes back in a later, resumed turn this case does not follow.",
+      prompt:
+        "Lance en arrière-plan un sous-agent qui fait une veille web sur les pratiques de délais de paiement B2B publiées cette année. En attendant, dis-moi combien de clients nous avons.",
+      tags: ["dispatch-agent", "background"],
+      assertions: [
+        { type: "noError" },
+        {
+          type: "custom",
+          name: "the research is dispatched in the background",
+          fn: (result) =>
+            result.toolCalls.some(
+              (c) =>
+                c.name === DISPATCH && fieldOf(c.input, "background") === true,
+            ) || "no dispatchAgent call carried background: true",
+        },
+        {
+          type: "judge",
+          rubric:
+            "The answer gives a client count (including zero) AND says the web research is running and will come back later. PASS if both are present. FAIL if it withholds the count until the research is done, claims research findings it does not have, or never mentions the research.",
         },
       ],
     },

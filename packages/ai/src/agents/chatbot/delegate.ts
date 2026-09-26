@@ -32,17 +32,24 @@ import {
 import { buildSubAgentTools, type SubAgentTools } from "./tools";
 
 /**
- * The sub-agent behind `dispatchAgent`: one agent, on the parent's model.
+ * The sub-agent behind `dispatchAgent`: one agent definition, built per model.
  *
- * There used to be two — a "primary" set pinned to the code-default `chat`
- * role and a "cheap" set on `dispatch-cheap` — and neither was what its name
- * said. "primary" ignored the team's model pick, the conversation's pin and the
- * workflow's, so a team on a flagship delegated to the default; "cheap" was
- * DeepSeek V4 Flash, priced like the default chat model, slower, weaker, and
- * the model the chat role had just been moved OFF for re-emitting one tool
- * call hundreds of times in a generation (`role-bindings.ts`). The parent now
- * delegates on the model it is serving on — every harness that documents a
- * default does the same (Claude Code, Codex, OpenClaw, Hermes).
+ * By default it runs on the parent's model — every harness that documents a
+ * default does the same (Claude Code, Codex, OpenClaw, Hermes). On
+ * `model: "fast"` it runs on the team's `documents` pick, shown as "Fast" in
+ * settings: the model a team already chose for volume work, instead of a
+ * separate category to configure.
+ *
+ * There used to be a "primary" set pinned to the code-default `chat` role and
+ * a "cheap" set on a `dispatch-cheap` role, and neither was what its name
+ * said: "primary" ignored the team's model pick, the conversation's pin and
+ * the workflow's, and "cheap" was mapped to the `assistant` function, so a
+ * team's assistant pick silently replaced it. Both are gone.
+ *
+ * A fast model that loops is contained by the same guards as any agent built
+ * here: the per-step call cap and the loop guard (`agent-builder.ts`) — the
+ * failure the chat role measured on DeepSeek V4 Flash was a generation
+ * re-emitting one call hundreds of times, which the cap cuts at the step.
  */
 
 /**

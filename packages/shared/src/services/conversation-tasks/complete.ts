@@ -1,7 +1,8 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import db, { type Transaction } from "../../db";
 import type {
   ConversationTaskKind,
+  ConversationTaskMetadata,
   ConversationTaskTerminalStatus,
 } from "../../db/schema";
 import { conversationBackgroundTasks } from "../../db/schema";
@@ -16,12 +17,19 @@ import { conversationBackgroundTasks } from "../../db/schema";
  * `consume: true` settles AND consumes in the same write — for outcomes that
  * must never wake the conversation, namely a launch that failed at creation
  * time while the launching turn is still live and handling the error inline.
+ *
+ * `metadata` is merged into the row in the same write, for a kind whose
+ * outcome lives on the task itself (a background sub-agent's report): the
+ * outcome and the terminal status land together or not at all, so a resume
+ * can never read a settled task with no report on it.
  */
 export const completeConversationTask = async (params: {
   kind: ConversationTaskKind;
   ref: string;
   status: ConversationTaskTerminalStatus;
   consume?: boolean;
+  /** Merged (top-level keys) into `metadata` by the same UPDATE. */
+  metadata?: ConversationTaskMetadata;
   /** Settle in the SAME transaction as whatever produced the outcome. A task
    * that stays pending because its producer committed and this did not blocks
    * the conversation's fan-in for good. */
@@ -34,6 +42,11 @@ export const completeConversationTask = async (params: {
       status: params.status,
       completedAt: now,
       ...(params.consume ? { consumedAt: now } : {}),
+      ...(params.metadata
+        ? {
+            metadata: sql`coalesce(${conversationBackgroundTasks.metadata}, '{}'::jsonb) || ${JSON.stringify(params.metadata)}::jsonb`,
+          }
+        : {}),
     })
     .where(
       and(

@@ -294,25 +294,36 @@ export const toolPortabilitySuite: EvalSuite = {
     {
       id: "tp-dispatch-report",
       description:
-        "Explicit delegation → dispatchAgent, and the sub-agent's structured report comes back completed. Pins the tool contract on a given model: the call is well formed, the sub-agent runs on the parent's model and finishes.",
+        "Explicit delegation → dispatchAgent, then manageAgents `wait`, and the sub-agent's structured report comes back completed. Pins the tool contract on a given model: both calls are well formed, the sub-agent runs on the parent's model and finishes.",
       prompt:
-        "Délègue à un sous-agent la tâche suivante, puis restitue-moi son résultat tel quel : résumer en exactement 3 puces ce texte — « Les équipes achats passent en moyenne 11 heures par semaine à ressaisir des données depuis des PDF fournisseurs. Les erreurs de ressaisie représentent 2 % des lignes et coûtent en moyenne 18 € par correction. L'automatisation de l'extraction réduit la ressaisie de 80 % dès le premier mois. »",
+        "Délègue à un sous-agent la tâche suivante, attends son résultat, puis restitue-le-moi tel quel : résumer en exactement 3 puces ce texte — « Les équipes achats passent en moyenne 11 heures par semaine à ressaisir des données depuis des PDF fournisseurs. Les erreurs de ressaisie représentent 2 % des lignes et coûtent en moyenne 18 € par correction. L'automatisation de l'extraction réduit la ressaisie de 80 % dès le premier mois. »",
       tags: ["tool-portability", "dispatch"],
       assertions: [
         { type: "noError" },
-        { type: "toolUsed", tools: ["dispatchAgent"], mode: "any" },
+        {
+          type: "toolUsed",
+          tools: ["dispatchAgent", "manageAgents"],
+          mode: "all",
+        },
         {
           type: "custom",
-          name: "a dispatchAgent call came back completed",
+          name: "a sub-agent's report came back completed",
           fn: (result) => {
             const statuses = result.toolCalls
-              .filter((c) => c.name === "dispatchAgent")
-              .map((c): unknown =>
-                typeof c.output === "object" && c.output !== null
-                  ? Reflect.get(c.output, "status")
+              .filter((c) => c.name === "manageAgents")
+              .flatMap((c): unknown[] => {
+                const finished: unknown =
+                  typeof c.output === "object" && c.output !== null
+                    ? Reflect.get(c.output, "finished")
+                    : undefined;
+                return Array.isArray(finished) ? finished : [];
+              })
+              .map((report): unknown =>
+                typeof report === "object" && report !== null
+                  ? Reflect.get(report, "status")
                   : undefined,
               );
-            if (statuses.length === 0) return "no dispatchAgent call observed";
+            if (statuses.length === 0) return "no report was collected";
             return (
               statuses.includes("completed") ||
               `no sub-agent completed (statuses: ${statuses.map(String).join(", ")})`

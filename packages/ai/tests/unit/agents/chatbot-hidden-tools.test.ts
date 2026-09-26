@@ -5,10 +5,10 @@ import type { AgentRuntimeContext } from "../../../src/agents/shared/runtime-con
 import { getProfileForRole } from "../../../src/lib/model-registry/resolve";
 
 /**
- * `checkAgents` is on the chat agent's list only while there is something for
- * it to report on. Two gates, both needed: a turn that STARTS with background
- * sub-agents open (the handler reads that), and a turn that LAUNCHES one
- * (the dispatch activates the tool mid-turn).
+ * `manageAgents` is on the chat agent's list only once the conversation has a
+ * sub-agent for it to manage. Two gates, both needed: a turn that STARTS in a
+ * conversation with sub-agents (the handler reads that), and a turn that
+ * LAUNCHES one (the dispatch activates the tool mid-turn).
  */
 
 const ctx = (
@@ -21,32 +21,30 @@ const ctx = (
   ...overrides,
 });
 
-describe("checkAgents gate", () => {
-  test("hidden in a conversation with no background sub-agent", () => {
-    expect(chatbotHiddenToolNames(ctx()).has("checkAgents")).toBe(true);
+describe("manageAgents gate", () => {
+  test("hidden in a conversation with no sub-agent", () => {
+    expect(chatbotHiddenToolNames(ctx()).has("manageAgents")).toBe(true);
   });
 
-  test("shown when the turn started with one open", () => {
+  test("shown when the conversation already has sub-agents", () => {
     expect(
-      chatbotHiddenToolNames(ctx({ backgroundAgents: true })).has(
-        "checkAgents",
-      ),
+      chatbotHiddenToolNames(ctx({ hasSubAgents: true })).has("manageAgents"),
     ).toBe(false);
   });
 
   test("shown once this turn launched one", () => {
     const manager = new DynamicToolManager();
-    manager.activate(["checkAgents"]);
+    manager.activate(["manageAgents"]);
     expect(
       chatbotHiddenToolNames(ctx({ dynamicToolManager: manager })).has(
-        "checkAgents",
+        "manageAgents",
       ),
     ).toBe(false);
   });
 
   test("the team's blocked tools stay hidden either way", () => {
     const hidden = chatbotHiddenToolNames(
-      ctx({ backgroundAgents: true, toolPolicies: { webFetch: "blocked" } }),
+      ctx({ hasSubAgents: true, toolPolicies: { webFetch: "blocked" } }),
     );
     expect(hidden.has("webFetch")).toBe(true);
   });

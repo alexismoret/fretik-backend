@@ -66,8 +66,9 @@ import { updateConversation } from "@fretik/shared/services/ai/update";
 import {
   hasResumableConversationTasks,
   hasRunningSubAgentTasks,
-  listOpenSubAgentTasks,
+  hasSubAgentTasks,
 } from "@fretik/shared/services/conversation-tasks/list";
+import { requestSubAgentStop } from "@fretik/shared/services/conversation-tasks/request-sub-agent-stop";
 import { emitDomainEvent } from "@fretik/shared/services/domain-events/emit";
 import { releaseSandbox } from "@fretik/shared/services/e2b/release-sandbox";
 import { getTeamToolPolicies } from "@fretik/shared/services/tool-policies/get-for-team";
@@ -174,7 +175,7 @@ import {
   timeStage,
   type StageTimings,
 } from "../lib/turn-timings";
-import { forgetTurnUsage, readTurnUsage } from "../lib/turn-usage";
+import { forgetTurnUsage, readTurnUsage, turnRootOf } from "../lib/turn-usage";
 import { uuidv7TimestampMs } from "../lib/uuidv7-time";
 import { dropNonTerminalErrorFrames } from "../lib/wire-errors";
 import { chatbotRateLimitMiddleware } from "../middlewares/chatbot-rate-limit";
@@ -939,7 +940,7 @@ const buildTurnCallOptions = async (
     toolPolicies,
     externalApps,
     fastProfileKey,
-    openSubAgents,
+    hasSubAgents,
   ] = await Promise.all([
     // Conversation-scoped, NOT last-message-scoped: a file part that the
     // active profile can't ingest natively is dropped from the history by
@@ -1043,21 +1044,19 @@ const buildTurnCallOptions = async (
       "fastProfile",
       resolveTeamFunctionProfileKey("documents", params.callOptions.teamId),
     ),
-    // Background sub-agents still running or with a report nobody read —
-    // what shows `checkAgents` from the first step. A failed read hides it,
-    // which only costs the agent the mid-turn check: the resume still comes.
+    // Whether the conversation has had sub-agents — what shows
+    // `manageAgents` from the first step. A failed read hides it, which only
+    // costs the agent the mid-turn check: the resume still comes.
     params.conversationId === undefined
-      ? Promise.resolve(0)
+      ? Promise.resolve(false)
       : timeStage(
           timings,
-          "openSubAgents",
+          "hasSubAgents",
           withSoftTimeout(
-            listOpenSubAgentTasks(params.conversationId).then(
-              (rows) => rows.length,
-            ),
+            hasSubAgentTasks(params.conversationId),
             3000,
-            0,
-            "open-sub-agents",
+            false,
+            "has-sub-agents",
           ),
         ),
   ]);
@@ -1087,7 +1086,7 @@ const buildTurnCallOptions = async (
     externalAppsBlock: externalApps.externalAppsBlock,
     toolPolicies,
     fastProfileKey,
-    backgroundAgents: openSubAgents > 0,
+    hasSubAgents,
   };
 };
 
@@ -1119,11 +1118,29 @@ const setupAbortChannel = async (
     return { abortController, releaseAbortSubscriber: async () => undefined };
   }
   const streamId = params.resumableStreamId;
+  const { conversationId } = params;
+  const { traceId } = params.callOptions;
   const { release } = await subscribeAbort(getAbortChannel(streamId), () => {
     console.info(
       `${params.logPrefix} stop signal received streamId=${streamId}`,
     );
     abortController.abort();
+    // The user stopped THIS answer, and with it the work it set off: the
+    // sub-agents it launched stop too, quietly — nobody is waiting for the
+    // news of a stop they made. Sub-agents launched by earlier answers are
+    // not this answer's, and keep going.
+    if (conversationId !== undefined && traceId !== undefined) {
+      void requestSubAgentStop({
+        conversationId,
+        by: "turn",
+        turnId: turnRootOf(traceId),
+      }).catch((err: unknown) => {
+        console.warn(
+          `${params.logPrefix} sub-agent stop cascade failed:`,
+          err instanceof Error ? err.message : err,
+        );
+      });
+    }
   });
   return { abortController, releaseAbortSubscriber: release };
 };
@@ -1826,8 +1843,8 @@ export const runChatbotTurn = async (
       // Fire-and-forget — pause failures are logged but never block
       // returning the response. No-op when no sandbox was acquired.
       //
-      // NOT while a background sub-agent of this conversation still runs: a
-      // pause freezes its Python cell mid-call. The sandbox then pauses itself
+      // NOT while a sub-agent of this conversation still runs: a pause
+      // freezes its Python cell mid-call. The sandbox then pauses itself
       // after its idle timeout (`lifecycle.onTimeout: "pause"`), or at the end
       // of the turn that resumes the conversation with the reports.
       if (params.conversationId) {

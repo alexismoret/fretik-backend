@@ -68,7 +68,7 @@ export const CURATED: Record<string, CuratedCase> = {
   "dispatch-explicit-instruction": { capability: "external-actions" },
   "dispatch-brief-self-contained": { capability: "external-actions" },
   "dispatch-fast-mechanical": { capability: "external-actions" },
-  "dispatch-background-keeps-working": { capability: "external-actions" },
+  "dispatch-keeps-working": { capability: "external-actions" },
   "file-cross-conv-isolation": { capability: "external-actions" },
   "mem-refuse-team-opinion": { capability: "external-actions" },
   "rag-metadata-entity-only": { capability: "external-actions", smoke: true },

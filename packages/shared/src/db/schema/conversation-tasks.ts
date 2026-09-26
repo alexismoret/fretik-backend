@@ -33,7 +33,16 @@ export type ConversationTaskTerminalStatus =
   (typeof CONVERSATION_TASK_TERMINAL_STATUSES)[number];
 export type ConversationTaskStatus = "pending" | ConversationTaskTerminalStatus;
 
-/** One call a background sub-agent made, as its card lists it. */
+/**
+ * Who asked a sub-agent to stop. The difference decides what happens next:
+ * `user` (its own Stop button) still hands the outcome to the assistant when
+ * the conversation resumes; `parent` (the assistant, which already knows) and
+ * `turn` (the user stopped the answer that launched it) do not wake anyone.
+ */
+export const SUB_AGENT_STOPPERS = ["user", "parent", "turn"] as const;
+export type SubAgentStopper = (typeof SUB_AGENT_STOPPERS)[number];
+
+/** One call a sub-agent made, as its card lists it. */
 export interface SubAgentTaskActivity {
   tool: string;
   caption?: string;
@@ -41,9 +50,8 @@ export interface SubAgentTaskActivity {
 }
 
 /**
- * A background sub-agent's report — the shape `dispatchAgent` returns in the
- * foreground, kept here because nothing else holds it: the task row IS the
- * record of the run.
+ * A sub-agent's report (`packages/ai/src/services/sub-agents/report.ts`), kept
+ * here because nothing else holds it: the task row IS the record of the run.
  */
 export interface SubAgentTaskResult {
   status: "completed" | "partial" | "failed";
@@ -57,8 +65,10 @@ export interface SubAgentTaskResult {
 
 /**
  * Everything about a `sub_agent` task: who launched it, how far it is, and its
- * report once it is over. Written whole on every update (one owner, the
- * process running it), so a merge never mixes two snapshots.
+ * report once it is over. The worker running it rewrites its own fields on
+ * every update; `stopRequested` and `billed` are set from elsewhere, which is
+ * why a write merges into this object instead of replacing it
+ * (`services/conversation-tasks/metadata-merge.ts`).
  */
 export interface SubAgentTaskState {
   /** Whoever launched it — the acting identity for the resumed turn. */
@@ -67,15 +77,32 @@ export interface SubAgentTaskState {
   toolCallId?: string;
   /** Present when it runs on the team's Fast model. */
   model?: "fast";
+  /** Root trace id of the turn that launched it — what a Stop on that turn cascades by. */
+  turnId?: string;
+  /** Set when someone asked it to stop; the run settles as `canceled`. */
+  stopRequested?: SubAgentStopper;
   /** Tool calls issued so far. */
   step?: number;
-  /** Epoch ms it started (after any wait for a slot). */
+  /**
+   * Epoch ms a worker picked it up — absent while it waits in the queue,
+   * which is how the sweep tells a queued run from a dead one.
+   */
   startedAt?: number;
   /** Its last calls, oldest first. */
   activity?: SubAgentTaskActivity[];
   result?: SubAgentTaskResult;
-  /** What it spent, by our own ledger. Observability only. */
-  usage?: { costUsd: number; inputTokens: number; outputTokens: number };
+  /**
+   * What it spent, by our own ledger — live while it runs, final once
+   * settled. What a workflow run bills to its token budget.
+   */
+  usage?: {
+    costUsd: number;
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens?: number;
+  };
+  /** Set once a workflow run has folded `usage` into its own total. */
+  billed?: boolean;
 }
 
 /**

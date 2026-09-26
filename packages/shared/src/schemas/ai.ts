@@ -5,6 +5,7 @@ import {
   aiConversationMemberRoleEnum,
   aiVectorSourceTypeEnum,
   CONVERSATION_TASK_KINDS,
+  SUB_AGENT_STOPPERS,
 } from "../db/schema";
 import { cursorParamSchema, paramsListSchema } from "./common/params";
 import { reasoningLevelSchema } from "./reasoning";
@@ -433,18 +434,20 @@ const SubAgentActivitySchema = z.object({
 });
 
 /**
- * One background sub-agent as its chat card draws it: live while it runs
- * (`step`, `activity`), its report once it is over (`result`). The card of a
- * foreground sub-agent reads the same facts off the tool's own output; a
- * background one returned before it started working, so they live here.
+ * One sub-agent as its chat card draws it: live while it runs
+ * (`step`, `activity`), its report once it is over (`result`). Its tool call
+ * answers before it starts working, so none of this is on the tool's output:
+ * the task row is the one record of the run.
  */
 export const SubAgentStateSchema = z.object({
   agentId: z.string(),
   status: z.enum(["pending", "succeeded", "failed", "canceled"]),
   model: z.enum(["fast"]).nullable(),
   step: z.number().int().nullable(),
-  /** Epoch ms it started working, after any wait for a slot. */
+  /** Epoch ms a worker picked it up — null while it waits in the queue. */
   startedAt: z.number().nullable(),
+  /** Who asked it to stop, while it is stopping and once it has. */
+  stopRequested: z.enum(SUB_AGENT_STOPPERS).nullable(),
   activity: z.array(SubAgentActivitySchema),
   result: z
     .object({
@@ -465,6 +468,12 @@ export type SubAgentStateResponse = z.infer<typeof SubAgentStateSchema>;
 export const SubAgentStatesResponseSchema = z.object({
   agents: z.array(SubAgentStateSchema),
 });
+
+/** `stopped` is false when it had already finished — nothing to stop. */
+export const SubAgentStopResponseSchema = z.object({
+  stopped: z.boolean(),
+});
+export type SubAgentStopResponse = z.infer<typeof SubAgentStopResponseSchema>;
 
 // ==================== //
 // Stream request       //

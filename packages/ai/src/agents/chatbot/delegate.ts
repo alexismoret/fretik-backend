@@ -4,10 +4,8 @@ import {
   resolveModel,
   type ResolvedModel,
 } from "../../lib/model-registry/resolve";
-import {
-  createDispatchAgentTool,
-  dispatchAgentDeadlineMs,
-} from "../../tools/dispatch-agent";
+import { subAgentDeadlineMs } from "../../services/sub-agents/report";
+import { createDispatchAgentTool } from "../../tools/dispatch-agent";
 import {
   AGENT_STEP_MAX_OUTPUT_TOKENS,
   buildAgentSet,
@@ -120,10 +118,9 @@ const makeSubAgentSet = (
 ): AgentSet<ChatbotCallOptions, SubAgentTools> =>
   buildAgentSet<ChatbotCallOptions, SubAgentTools>({
     id: SUB_AGENT_ID,
-    // Its own lane, keyed on the dispatch's own trace id (`dispatchAgent`
-    // suffixes the tool call id): parallel sub-agents do not share one pin,
-    // and a provider error here cannot re-pin the parent. See
-    // `lib/provider-session.ts`.
+    // Its own lane, keyed on the dispatch's own trace id (`subagent-<id>`):
+    // parallel sub-agents do not share one pin, and a provider error here
+    // cannot re-pin the parent. See `lib/provider-session.ts`.
     sessionScope: "delegate",
     buildTools: buildSubAgentTools,
     // Static text: one cached prefix for every dispatch of every team. What
@@ -143,7 +140,7 @@ const makeSubAgentSet = (
     // that another round of reading loses the whole run. A report on what it
     // has beats an unfinished investigation that returns nothing.
     softDeadline: {
-      afterMs: Math.round(dispatchAgentDeadlineMs() * 0.8),
+      afterMs: Math.round(subAgentDeadlineMs() * 0.8),
       text: "[deadline] You are nearly out of time and will be cut off shortly. Stop investigating: write your report now from what you have, and name what you could not cover.",
     },
     repairToolCall: llmRepairToolCall<SubAgentTools>(),
@@ -166,17 +163,8 @@ export const getSubAgentSet = (
 
 /**
  * `dispatchAgent` — built once; the chat agent and the workflow executor
- * register this same instance. Its model is resolved per call from the
- * parent's own (`ctx.modelProfile`), so it follows the team's pick, the
- * conversation's pin, the workflow's, and a parent that fell back.
+ * register this same instance. It only launches: the run is a queue job
+ * (`services/sub-agents/worker.ts`), which resolves its agent through
+ * `getSubAgentSet` above on whichever replica picks it up.
  */
-export const dispatchAgentTool = createDispatchAgentTool({
-  resolve: (profileKey) => {
-    const set = getSubAgentSet(profileKey);
-    return {
-      primary: set.primary,
-      fallback: set.fallback,
-      contextCeiling: set.contextCeiling,
-    };
-  },
-});
+export const dispatchAgentTool = createDispatchAgentTool();

@@ -35,6 +35,7 @@ import {
 } from "@fretik/shared/db/schema";
 import { EXT_TO_MIME, isImageMime } from "@fretik/shared/file-types";
 import { resolveFileType } from "@fretik/shared/file-types/detect";
+import { requestSubAgentStop } from "@fretik/shared/services/conversation-tasks/request-sub-agent-stop";
 import { writeExtractionSidecar } from "@fretik/shared/services/file-extraction/storage";
 import { SHA256 } from "bun";
 import { eq } from "drizzle-orm";
@@ -387,7 +388,20 @@ export const destroyEphemeralConversation = async (
     }
   }
 
-  // 2. Delete the conversation row. FK cascade cleans up ai_messages
+  // 2. Stop its sub-agents. They run on queue workers, not in the turn the
+  //    case drove, and deleting their rows would not stop them: a case that
+  //    dispatched one and did not wait would leave it running — and paid —
+  //    for up to its whole deadline.
+  try {
+    await requestSubAgentStop({ conversationId, by: "parent", all: true });
+  } catch (err) {
+    console.warn(
+      `[evals] sub-agent stop failed for ${conversationId}:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
+
+  // 3. Delete the conversation row. FK cascade cleans up ai_messages
   //    AND ai_chat_files via their FK constraints.
   try {
     await db

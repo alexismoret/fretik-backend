@@ -18,6 +18,7 @@ import {
   MembersResponseSchema,
   MessagesResponseSchema,
   SubAgentStatesResponseSchema,
+  SubAgentStopResponseSchema,
   UpdateConversationSchema,
   UpdateMemberPreferencesSchema,
 } from "@fretik/shared/schemas/ai";
@@ -44,6 +45,7 @@ import {
   listConversationTasks,
   listSubAgentTasks,
 } from "@fretik/shared/services/conversation-tasks/list";
+import { requestSubAgentStop } from "@fretik/shared/services/conversation-tasks/request-sub-agent-stop";
 import {
   serializeConversationTask,
   serializeSubAgentTask,
@@ -242,9 +244,9 @@ const MAX_SUB_AGENT_IDS = 20;
 const getSubAgentsRoute = createRoute({
   method: "get",
   path: "/{id}/sub-agents",
-  summary: "Read background sub-agents of a conversation",
+  summary: "Read sub-agents of a conversation",
   description:
-    "The live state (step, recent calls) and, once over, the report of sub-agents the assistant sent off in the background from this conversation. `ids` are the agent ids its `dispatchAgent` calls returned; an id from another conversation reads as absent.",
+    "The live state (step, recent calls) and, once over, the report of sub-agents the assistant started from this conversation. `ids` are the agent ids its `dispatchAgent` calls returned; an id from another conversation reads as absent.",
   tags: ["Conversations"],
   request: {
     params: paramsIdSchema,
@@ -267,6 +269,29 @@ const getSubAgentsRoute = createRoute({
         "application/json": { schema: SubAgentStatesResponseSchema },
       },
       description: "Sub-agent states retrieved successfully",
+    },
+    ...responseNotFoundSchema,
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const stopSubAgentRoute = createRoute({
+  method: "post",
+  path: "/{id}/sub-agents/{agentId}/stop",
+  summary: "Stop a sub-agent",
+  description:
+    "Stop a running sub-agent of this conversation. It settles as canceled with what it had done, and the assistant hears of it when the conversation resumes. A sub-agent that already finished is left as it is (`stopped: false`).",
+  tags: ["Conversations"],
+  request: {
+    params: z.object({ id: z.uuid(), agentId: z.string().min(1).max(64) }),
+  },
+  responses: {
+    200: {
+      content: {
+        "application/json": { schema: SubAgentStopResponseSchema },
+      },
+      description: "Stop requested",
     },
     ...responseNotFoundSchema,
     ...responseForbiddenSchema,
@@ -536,6 +561,32 @@ conversationRoutes.openapi(getSubAgentsRoute, async (c) => {
   const tasks = await listSubAgentTasks(conversation.id, ids);
 
   return c.json({ agents: tasks.map(serializeSubAgentTask) }, 200);
+});
+
+conversationRoutes.openapi(stopSubAgentRoute, async (c) => {
+  const user = c.get("user");
+  const team = c.get("team");
+  if (!team) return throwHttpError(403, teamRequired());
+
+  const { id, agentId } = c.req.valid("param");
+
+  const conversation = await getConversation({
+    id,
+    teamId: team.id,
+    userId: user.id,
+  });
+
+  if (!conversation) {
+    return throwHttpError(404, notFound("Conversation not found"));
+  }
+
+  const asked = await requestSubAgentStop({
+    conversationId: conversation.id,
+    by: "user",
+    agentIds: [agentId],
+  });
+
+  return c.json({ stopped: asked.length > 0 }, 200);
 });
 
 conversationRoutes.openapi(addMembersRoute, async (c) => {

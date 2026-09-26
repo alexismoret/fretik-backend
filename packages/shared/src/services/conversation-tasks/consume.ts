@@ -14,9 +14,9 @@ import {
  * them itself.
  *
  * The resume exists for outcomes nobody has seen. When the agent collects a
- * background sub-agent's report during its own turn (`checkAgents`), waking
- * the conversation again with the same report would hand it over twice — so
- * the collection consumes the row, exactly as a resume's claim does.
+ * sub-agent's report during its own turn (`manageAgents`), waking the
+ * conversation again with the same report would hand it over twice — so the
+ * collection consumes the row, exactly as a resume's claim does.
  *
  * Guarded on `consumed_at IS NULL` and a terminal status in the UPDATE itself:
  * racing a resume's claim, exactly one of the two gets each row, and the rows
@@ -25,9 +25,10 @@ import {
 export const consumeConversationTasks = async (params: {
   conversationId: string;
   kind: ConversationTaskKind;
-  refs: readonly string[];
+  /** Which ones; every settled one of the kind when omitted. */
+  refs?: readonly string[];
 }): Promise<ConversationBackgroundTask[]> => {
-  if (params.refs.length === 0) return [];
+  if (params.refs !== undefined && params.refs.length === 0) return [];
   return db
     .update(conversationBackgroundTasks)
     .set({ consumedAt: new Date() })
@@ -35,7 +36,9 @@ export const consumeConversationTasks = async (params: {
       and(
         eq(conversationBackgroundTasks.conversationId, params.conversationId),
         eq(conversationBackgroundTasks.kind, params.kind),
-        inArray(conversationBackgroundTasks.ref, [...params.refs]),
+        params.refs !== undefined
+          ? inArray(conversationBackgroundTasks.ref, [...params.refs])
+          : undefined,
         inArray(conversationBackgroundTasks.status, [
           ...CONVERSATION_TASK_TERMINAL_STATUSES,
         ]),

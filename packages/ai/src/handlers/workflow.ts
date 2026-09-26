@@ -31,6 +31,15 @@ import {
   openTurnLog,
   pumpChunksToTurnLog,
 } from "@fretik/shared/services/ai/turn-log";
+import {
+  claimSubAgentSpend,
+  type SubAgentSpend,
+} from "@fretik/shared/services/conversation-tasks/claim-sub-agent-spend";
+import {
+  hasRunningSubAgentTasks,
+  hasSubAgentTasks,
+} from "@fretik/shared/services/conversation-tasks/list";
+import { readUnbilledSubAgentSpend } from "@fretik/shared/services/conversation-tasks/read-sub-agent-spend";
 import { releaseSandbox } from "@fretik/shared/services/e2b/release-sandbox";
 import { getTeamToolPolicies } from "@fretik/shared/services/tool-policies/get-for-team";
 import { createWorkflowRun } from "@fretik/shared/services/workflows/create-run";
@@ -87,6 +96,7 @@ import {
   buildPlaybookBlock,
   buildSteeringMessage,
 } from "../agents/workflow/playbook-block";
+import { buildRunSubAgentsBlock } from "../agents/workflow/sub-agents-block";
 import type { WorkflowTools } from "../agents/workflow/tools";
 import { recallForWorkflowTurnOne } from "../agents/workflow/turn-one-memory";
 import { subscribeAbort } from "../lib/abort-subscriber";
@@ -262,9 +272,11 @@ export const addUsage = (
 });
 
 /**
- * The tokens this turn's sub-agents spent, in the run's own units. Their
+ * The tokens this turn's in-process delegates spent, in the run's own units —
+ * anything that runs a model inside one of the executor's tool calls. Their
  * steps reach the turn ledger (`lib/turn-usage.ts`) and nothing else — every
- * agent of the turn but the executor itself is a delegate.
+ * agent of the turn but the executor itself is a delegate. Sub-agents are
+ * not among them: they run on queue workers (`runUsageOfSubAgentSpend`).
  */
 const delegatedRunUsage = (
   traceId: string,
@@ -287,7 +299,23 @@ const delegatedRunUsage = (
   };
 };
 
-/** Fold a turn's sub-agent spend into the run's usage. */
+const NO_SUB_AGENT_SPEND: SubAgentSpend = {
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheReadTokens: 0,
+};
+
+/** Sub-agent spend, from their task rows, in the run's own units. */
+export const runUsageOfSubAgentSpend = (
+  spend: SubAgentSpend,
+): Omit<WorkflowRunUsage, "turns"> => ({
+  inputTokens: spend.inputTokens,
+  outputTokens: spend.outputTokens,
+  totalTokens: spend.inputTokens + spend.outputTokens,
+  cachedInputTokens: spend.cacheReadTokens,
+});
+
+/** Fold a turn's delegated spend into the run's usage. */
 export const addDelegatedUsage = (
   usage: WorkflowRunUsage,
   delegated: Omit<WorkflowRunUsage, "turns">,
@@ -335,6 +363,8 @@ const ensureSteeringMessage = async (params: {
   activeMemoryBlock?: string;
   memoryIndexBlock?: string;
   standingMemoryBlock?: string;
+  /** Read only when the message is written: it hands reports over. */
+  subAgentsBlock: () => Promise<string | undefined>;
   nudge: boolean;
   wrapUp: boolean;
 }): Promise<UIMessage[]> => {
@@ -355,6 +385,7 @@ const ensureSteeringMessage = async (params: {
     activeMemoryBlock: params.activeMemoryBlock,
     memoryIndexBlock: params.memoryIndexBlock,
     standingMemoryBlock: params.standingMemoryBlock,
+    subAgentsBlock: await params.subAgentsBlock(),
     nudge: params.nudge,
     wrapUp: params.wrapUp,
   });
@@ -507,6 +538,7 @@ const executeTurn = async (params: {
     attachedFilesBlock,
     toolPolicies,
     fastProfileKey,
+    hasSubAgents,
   ] = await Promise.all([
     assembleContextFragments(
       {
@@ -549,6 +581,8 @@ const executeTurn = async (params: {
     // What a `dispatchAgent({ model: "fast" })` runs on — the team's
     // `documents` ("Fast") pick.
     resolveTeamFunctionProfileKey("documents", run.teamId),
+    // Sub-agents an earlier turn started — what shows `manageAgents`.
+    hasSubAgentTasks(conversationId),
   ]);
 
   // Steering carries everything that mutates per turn (date, live statuses,
@@ -572,6 +606,7 @@ const executeTurn = async (params: {
       isFirstTurn && (activeMemoryBlock ?? "").trim().length === 0
         ? fragments.standingMemoryBlock
         : undefined,
+    subAgentsBlock: () => buildRunSubAgentsBlock(conversationId),
     nudge,
     wrapUp: params.wrapUp,
   });
@@ -593,6 +628,7 @@ const executeTurn = async (params: {
     externalAppsBlock: externalApps.externalAppsBlock,
     toolPolicies,
     fastProfileKey,
+    hasSubAgents,
     ...(attachedFilesBlock ? { attachedFilesBlock } : {}),
   };
 
@@ -649,6 +685,30 @@ const executeTurn = async (params: {
   };
   let budgetAborted = false;
   let budgetWarned = false;
+
+  // The run's sub-agents are its spend like any other — before they were
+  // counted, a run that delegated its research could spend several times its
+  // budget and read as under it. They run on queue workers, outside this
+  // turn, so their spend reaches it only through their task rows: read
+  // between steps without holding one (a step sees a figure at most one step
+  // old), and claimed into the run's total at the end of the turn
+  // (`claimSubAgentSpend`), each sub-agent once. Nothing is read in a run
+  // that has none.
+  let delegating = hasSubAgents;
+  let subAgentSpend: SubAgentSpend = NO_SUB_AGENT_SPEND;
+  let spendRead: Promise<void> | undefined;
+  const refreshSubAgentSpend = (): void => {
+    if (!delegating || spendRead !== undefined) return;
+    spendRead = readUnbilledSubAgentSpend(conversationId)
+      .then((spend) => {
+        subAgentSpend = spend;
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        spendRead = undefined;
+      });
+  };
+
   const onWorkflowStepEnd = (step: {
     toolCalls: readonly unknown[];
     usage?: LanguageModelUsage;
@@ -659,11 +719,19 @@ const executeTurn = async (params: {
     turnAccum.totalTokens += step.usage?.totalTokens ?? 0;
     turnAccum.cachedInputTokens +=
       step.usage?.inputTokenDetails?.cacheReadTokens ?? 0;
-    // The run's sub-agents spend inside one of its tool calls, where this
-    // callback never sees them; the turn ledger does. They are the run's
-    // spend like any other — before this, a run that delegated its research
-    // could spend several times its budget and read as under it.
-    const delegated = delegatedRunUsage(traceId, agentSet.agentId);
+    delegating ||= step.toolCalls.some(
+      (call) =>
+        typeof call === "object" &&
+        call !== null &&
+        Reflect.get(call, "toolName") === "dispatchAgent",
+    );
+    refreshSubAgentSpend();
+    // Delegates that run INSIDE one of its tool calls reach the turn ledger;
+    // its sub-agents reach their rows.
+    const delegated = addDelegatedUsage(
+      { ...delegatedRunUsage(traceId, agentSet.agentId), turns: 0 },
+      runUsageOfSubAgentSpend(subAgentSpend),
+    );
     const spent =
       run.usage.totalTokens + turnAccum.totalTokens + delegated.totalTokens;
     params.emitUsage({
@@ -852,21 +920,42 @@ const executeTurn = async (params: {
     await clearConversationActiveStream(conversationId, streamId).catch(
       () => undefined,
     );
-    // Pause the sandbox between turns — same billing discipline as chat.
-    void releaseSandbox(conversationId).catch((err: unknown) => {
-      console.warn(
-        `${logPrefix} sandbox pause failed:`,
-        err instanceof Error ? err.message : err,
-      );
-    });
+    // Pause the sandbox between turns — same billing discipline as chat, and
+    // the same exception: not while one of the run's sub-agents still works
+    // in it, since a pause freezes its Python cell mid-call.
+    void hasRunningSubAgentTasks(conversationId)
+      .then(async (running) => {
+        if (!running) await releaseSandbox(conversationId);
+      })
+      .catch((err: unknown) => {
+        console.warn(
+          `${logPrefix} sandbox pause failed:`,
+          err instanceof Error ? err.message : err,
+        );
+      });
   }
 
   // ---- Turn outcome ----
   const fresh = await getWorkflowRunRow({ id: run.id });
   const freshTasks = fresh?.taskStates ?? taskStates;
+  // Sub-agents still running are claimed by the turn during which they end;
+  // one still running when the run ends is stopped, and its spend stays on
+  // its own row and trace.
+  const claimedSpend = delegating
+    ? await claimSubAgentSpend(conversationId).catch((err: unknown) => {
+        console.warn(
+          `${logPrefix} sub-agent spend claim failed:`,
+          err instanceof Error ? err.message : err,
+        );
+        return NO_SUB_AGENT_SPEND;
+      })
+    : NO_SUB_AGENT_SPEND;
   const usage = addDelegatedUsage(
-    addUsage(run.usage, turnUsage, turnIndex, turnAccum.totalTokens),
-    delegatedRunUsage(traceId, agentSet.agentId),
+    addDelegatedUsage(
+      addUsage(run.usage, turnUsage, turnIndex, turnAccum.totalTokens),
+      delegatedRunUsage(traceId, agentSet.agentId),
+    ),
+    runUsageOfSubAgentSpend(claimedSpend),
   );
   // Every durable copy of this turn's spend is now in `usage`.
   forgetTurnUsage(traceId);

@@ -66,6 +66,7 @@ import { warmModelRegistry } from "./lib/model-registry/resolve";
 import { aiReleaseTasks } from "./release-tasks";
 import { registerOrphanCleanupCron } from "./services/chat-files/orphan-cron";
 import { subscribeConversationTaskResumes } from "./services/conversation-tasks/subscribe-resume";
+import { registerSubAgentWorker } from "./services/sub-agents/worker";
 import {
   loadSkillCatalog,
   vectorizeAllBundledSkills,
@@ -214,6 +215,11 @@ void vectorizeAllBundledSkills().catch((err) => {
 // deduplicates the repeatable-job key, so calling it from every
 // replica is safe and exactly one wins the nightly run.
 await registerOrphanCleanupCron();
+
+// Consume the sub-agent queue. Every replica runs a worker: a sub-agent
+// needs nothing of the replica that launched it, and a replica that dies
+// mid-run hands its jobs to the others (`services/sub-agents/worker.ts`).
+registerSubAgentWorker();
 
 // Listen for conversations whose background work (workflow runs) has
 // finished, so they get resumed here — the only process able to drive a

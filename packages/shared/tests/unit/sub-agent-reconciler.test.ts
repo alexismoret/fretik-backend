@@ -2,14 +2,16 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { mockModule } from "../lib/mock-module";
 
 /**
- * The sweep's verdict on a background sub-agent that never reported back.
+ * The sweep's verdict on a sub-agent that never reported back.
  *
- * Such a run lives only in the AI process that launched it; its task row stays
- * `pending` from launch to completion. The one way it stays pending for good is
- * that process dying mid-run — and then the conversation's resume, which waits
- * for EVERY pending task, never comes. The reconciler reads the run's
- * heartbeat: gone means dead, settled as failed so the conversation resumes
- * and the agent can re-dispatch. A Redis failure must NOT kill live runs.
+ * A sub-agent runs as a queue job on an AI replica and settles its own task.
+ * Its row stays `pending` for good only if that never happens — its worker
+ * died and the queue gave up, or the job was lost — and then the
+ * conversation's resume, which waits for EVERY pending task, never comes. The
+ * reconciler fails such a row. The ways to get it wrong are all silent:
+ * killing a job merely waiting for a worker (no heartbeat yet), killing one a
+ * dead worker held that the queue is about to hand to another replica, and
+ * killing live runs because Redis hiccupped.
  *
  * Doubled at the process boundary (Redis).
  */
@@ -30,36 +32,58 @@ await mockModule("../../src/lib/redis", {
   },
 });
 
-const { beatSubAgent, clearSubAgentHeartbeat } =
+const { beatSubAgent, clearSubAgentHeartbeat, liveSubAgents } =
   await import("../../src/lib/sub-agent-heartbeat");
-const { CONVERSATION_TASK_RECONCILERS } =
+const { deadSubAgents } =
   await import("../../src/services/conversation-tasks/kinds");
 
-const reconcile = (refs: string[]) =>
-  CONVERSATION_TASK_RECONCILERS.sub_agent.resolve(refs);
+const NOW = Date.parse("2026-09-26T12:00:00Z");
+const row = (ref: string, ageMinutes: number) => ({
+  ref,
+  createdAt: new Date(NOW - ageMinutes * 60_000),
+});
+const none = new Set<string>();
 
 beforeEach(() => {
   store.clear();
   redisDown = false;
 });
 
-describe("background sub-agent reconciliation", () => {
-  test("a run still beating is left alone; one that stopped is failed", async () => {
+describe("sub-agent reconciliation", () => {
+  test("a run no worker holds and the queue no longer owes is dead; one still beating is not", async () => {
     await beatSubAgent("alive");
-    const verdicts = await reconcile(["alive", "dead"]);
-    expect([...verdicts]).toEqual([["dead", "failed"]]);
+    const alive = await liveSubAgents(["alive", "dead"]);
+    expect(
+      deadSubAgents(
+        [row("alive", 12), row("dead", 12)],
+        { alive, owed: none },
+        NOW,
+      ),
+    ).toEqual(["dead"]);
   });
 
-  test("a run that finished cleanly leaves no heartbeat to wait out", async () => {
+  test("a job the queue still owes is not dead — until it has been owed absurdly long", () => {
+    const owed = new Set(["queued", "lost"]);
+    expect(
+      deadSubAgents(
+        [row("queued", 25), row("lost", 75)],
+        { alive: none, owed },
+        NOW,
+      ),
+    ).toEqual(["lost"]);
+  });
+
+  test("a run that finished cleanly leaves no heartbeat behind", async () => {
     await beatSubAgent("done");
     await clearSubAgentHeartbeat("done");
-    // Its row is already settled, so the sweep never asks — but if it did,
-    // the answer would be immediate rather than two minutes late.
-    expect([...(await reconcile(["done"]))]).toEqual([["done", "failed"]]);
+    expect((await liveSubAgents(["done"])).has("done")).toBe(false);
   });
 
   test("Redis down reads as alive, never as a batch of deaths", async () => {
     redisDown = true;
-    expect((await reconcile(["a", "b"])).size).toBe(0);
+    const alive = await liveSubAgents(["a", "b"]);
+    expect(
+      deadSubAgents([row("a", 20), row("b", 20)], { alive, owed: none }, NOW),
+    ).toEqual([]);
   });
 });

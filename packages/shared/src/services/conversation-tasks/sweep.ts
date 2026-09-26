@@ -126,7 +126,10 @@ export const sweepConversationTasks = async (params?: {
   }
 
   // (b) Conversations owed a resume: everything settled, nothing consumed,
-  //     and no turn in flight to be interrupted.
+  //     and no turn in flight to be interrupted. Chat conversations only —
+  //     the only kind a resume drives. A workflow run's conversation holds
+  //     sub-agent rows its own turns hand over, and signalling it every
+  //     sweep would be a no-op forever.
   const owed = await db
     .selectDistinct({
       conversationId: conversationBackgroundTasks.conversationId,
@@ -143,6 +146,7 @@ export const sweepConversationTasks = async (params?: {
         ]),
         isNull(conversationBackgroundTasks.consumedAt),
         isNull(aiConversations.activeStreamId),
+        eq(aiConversations.agentType, "chatbot"),
         lt(conversationBackgroundTasks.completedAt, cutoff),
         sql`NOT EXISTS (
           SELECT 1 FROM ${conversationBackgroundTasks} AS still_pending

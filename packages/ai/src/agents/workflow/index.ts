@@ -5,6 +5,7 @@ import {
   resolveModel,
   type ResolvedModel,
 } from "../../lib/model-registry/resolve";
+import { MANAGE_AGENTS_TOOL } from "../../tools/manage-agents";
 import {
   buildChatbotRuntimeContextBase,
   ChatbotCallOptionsSchema,
@@ -30,6 +31,7 @@ import {
   getRuntimeContext,
   type AgentRuntimeContext,
 } from "../shared/runtime-context";
+import { manageAgentsHidden } from "../shared/sub-agent-tool-gate";
 import type { RenderedAgentPrompt } from "../shared/turn-context";
 import { workflowMainHiddenToolNames } from "../shared/workflow-tool-gate";
 import { buildWorkflowTools, type WorkflowTools } from "./tools";
@@ -171,6 +173,7 @@ const workflowPrepareStep = (
       for (const n of workflowMainHiddenToolNames(ctx.workflowAutonomy))
         hidden.add(n);
     }
+    if (manageAgentsHidden(ctx)) hidden.add(MANAGE_AGENTS_TOOL);
     const activeTools = progressiveActiveTools(ctx, tools, coreNames, hidden);
     // Append-only re-anchor every K steps — a byte-stable prefix (the real
     // accumulated messages) plus a tiny tail the model re-reads this step

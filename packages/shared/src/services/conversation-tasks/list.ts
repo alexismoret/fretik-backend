@@ -83,7 +83,7 @@ export const hasResumableConversationTasks = async (
 
 /**
  * Background sub-agents whose outcome the agent has not read yet: still
- * running, or settled and not yet handed over (by a resume or `checkAgents`).
+ * running, or settled and not yet handed over (by a resume or `manageAgents`).
  * Oldest first — the order they were launched in.
  */
 export const listOpenSubAgentTasks = async (
@@ -105,7 +105,7 @@ export const listOpenSubAgentTasks = async (
     .orderBy(conversationBackgroundTasks.createdAt);
 
 /**
- * Specific background sub-agents of one conversation, by id — what a chat card
+ * Specific sub-agents of one conversation, by id — what a chat card
  * asks for. Scoped to the conversation so an id from another one reads as
  * absent, whatever the caller passes.
  */
@@ -127,7 +127,27 @@ export const listSubAgentTasks = async (
 };
 
 /**
- * Whether a background sub-agent of this conversation is still running — the
+ * Whether this conversation has ever had a sub-agent — what puts
+ * `manageAgents` on the agent's tool list at turn start.
+ */
+export const hasSubAgentTasks = async (
+  conversationId: string,
+): Promise<boolean> => {
+  const rows = await db
+    .select({ id: conversationBackgroundTasks.id })
+    .from(conversationBackgroundTasks)
+    .where(
+      and(
+        eq(conversationBackgroundTasks.conversationId, conversationId),
+        eq(conversationBackgroundTasks.kind, "sub_agent"),
+      ),
+    )
+    .limit(1);
+  return rows.length > 0;
+};
+
+/**
+ * Whether a sub-agent of this conversation is still running — the
  * turn-end sandbox pause must not freeze its Python cell mid-run.
  */
 export const hasRunningSubAgentTasks = async (

@@ -1,5 +1,6 @@
 import type { ModelMessage } from "ai";
 import { describe, expect, test } from "bun:test";
+import { chatbotHiddenToolNames } from "../../../src/agents/chatbot/hidden-tools";
 import { defaultChatbotAgentSet } from "../../../src/agents/chatbot/index";
 import { type ChatbotTools } from "../../../src/agents/chatbot/tools";
 import {
@@ -49,7 +50,11 @@ const EXPECTED_CORE_TOOL_NAMES: readonly string[] = [
   "memory",
   "askUserQuestion",
   "dispatchAgent",
+  "manageAgents",
 ];
+
+/** Core tools hidden until the conversation has something for them. */
+const GATED_CORE_TOOL_NAMES: readonly string[] = ["manageAgents"];
 
 const EXPECTED_DOMAIN_TOOL_NAMES: readonly string[] = [
   "listDocuments",
@@ -81,17 +86,19 @@ const EXPECTED_DOMAIN_TOOL_NAMES: readonly string[] = [
 ];
 
 /**
- * Mirrors `chatbot/index.ts::chatbotPrepareStep` exactly. Returns the
- * same `activeTools` array the AI SDK would filter the tools map with
- * on each step.
+ * Mirrors `chatbot/index.ts::chatbotPrepareStep`: core tools minus those the
+ * chat gate hides (`chatbotHiddenToolNames`), plus the activated domain
+ * tools. Returns the same `activeTools` array the AI SDK would filter the
+ * tools map with on each step.
  */
 const computeActiveTools = (
   tools: ChatbotTools,
   manager: DynamicToolManager,
 ): string[] => {
+  const hidden = chatbotHiddenToolNames(buildCtx(manager).ctx);
   const coreNames: string[] = [];
   for (const [name, t] of Object.entries(tools)) {
-    if (t.category === "core") coreNames.push(name);
+    if (t.category === "core" && !hidden.has(name)) coreNames.push(name);
   }
   const activated = manager.getSnapshot().filter((n) => n in tools);
   return [...coreNames, ...activated];
@@ -155,7 +162,7 @@ describe("Chatbot Progressive Disclosure — end-to-end", () => {
   // typecheck and CI: `webMap`, `manageDocument` and `buildPage` were added to
   // the registry and nothing here noticed. That is what the list is FOR — a
   // registry change should show up as a diff on this file.
-  test("tool registry: 13 core tools + 25 domain tools, categories correct", () => {
+  test("tool registry: 14 core tools + 25 domain tools, categories correct", () => {
     const tools = defaultChatbotAgentSet().primary.tools;
     const coreNames = Object.entries(tools)
       .filter(([, t]) => t.category === "core")
@@ -171,7 +178,13 @@ describe("Chatbot Progressive Disclosure — end-to-end", () => {
     const tools = defaultChatbotAgentSet().primary.tools;
     const manager = new DynamicToolManager();
     const active = computeActiveTools(tools, manager);
-    expect(new Set(active)).toEqual(new Set(EXPECTED_CORE_TOOL_NAMES));
+    expect(new Set(active)).toEqual(
+      new Set(
+        EXPECTED_CORE_TOOL_NAMES.filter(
+          (name) => !GATED_CORE_TOOL_NAMES.includes(name),
+        ),
+      ),
+    );
     for (const domainName of EXPECTED_DOMAIN_TOOL_NAMES) {
       expect(active).not.toContain(domainName);
     }
@@ -200,6 +213,7 @@ describe("Chatbot Progressive Disclosure — end-to-end", () => {
     const stepOne = computeActiveTools(tools, manager);
     expect(stepOne).toContain("listDocuments");
     for (const coreName of EXPECTED_CORE_TOOL_NAMES) {
+      if (GATED_CORE_TOOL_NAMES.includes(coreName)) continue;
       expect(stepOne).toContain(coreName);
     }
     // Other domain tools remain hidden until explicitly activated.

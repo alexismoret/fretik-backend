@@ -1,14 +1,13 @@
 import { redis } from "./redis";
 
 /**
- * Proof of life for a sub-agent running in the background.
+ * Proof of life for a running sub-agent.
  *
- * A background sub-agent runs inside the AI process that launched it, and
- * nothing else records that it is running: its task row says `pending` from
- * launch to completion. A process that dies mid-run (a deploy, a crash) leaves
- * that row pending forever — and with it the conversation's resume, which
- * waits for every pending task. The run therefore beats a short-lived key while
- * it works, and the maintenance sweep reads its absence as death
+ * A sub-agent runs on an AI replica's queue worker, and its task row says
+ * `pending` from launch to completion whether it is working, waiting for a
+ * worker, or lost with a process that died mid-run. The run therefore beats a
+ * short-lived key while it works; the maintenance sweep reads its absence,
+ * together with the queue no longer owing the job a run, as death
  * (`conversation-tasks/kinds.ts`).
  *
  * Expires on its own rather than being trusted to be deleted: the process that

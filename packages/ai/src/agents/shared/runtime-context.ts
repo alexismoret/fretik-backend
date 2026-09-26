@@ -328,13 +328,13 @@ export type AgentRuntimeContext = {
    */
   fastProfileKey?: string;
   /**
-   * The conversation has background sub-agents whose outcome the agent has
-   * not read — one of the two gates on `checkAgents`, which is hidden
-   * otherwise. Read by the handler at turn start and never mutated: a
-   * background dispatch DURING the turn opens the other gate, by activating
-   * the tool through `dynamicToolManager`.
+   * The conversation has had sub-agents — one of the two gates on
+   * `manageAgents`, which is hidden otherwise (`sub-agent-tool-gate.ts`).
+   * Read by the handler at turn start and never mutated: a dispatch DURING
+   * the turn opens the other gate, by activating the tool through
+   * `dynamicToolManager`.
    */
-  backgroundAgents?: boolean;
+  hasSubAgents?: boolean;
 };
 
 /**

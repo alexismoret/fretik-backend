@@ -185,11 +185,10 @@ export const ChatbotCallOptionsSchema = z.object({
    */
   fastProfileKey: z.string().optional(),
   /**
-   * Background sub-agents of this conversation are still running or have a
-   * report the agent has not read — shows `checkAgents`. Read per turn by the
-   * handler.
+   * The conversation has had sub-agents — shows `manageAgents`. Read per turn
+   * by the handler.
    */
-  backgroundAgents: z.boolean().optional(),
+  hasSubAgents: z.boolean().optional(),
   /**
    * Set only on a sub-agent's call, by `dispatchAgent`: the id of that run.
    * Gives the run a Python kernel of its own and marks its sandbox calls as a
@@ -234,6 +233,6 @@ export const buildChatbotRuntimeContextBase = (
   pageBuildProfileKey: options.pageBuildProfileKey,
   reasoningLevel: options.reasoningLevel,
   fastProfileKey: options.fastProfileKey,
-  backgroundAgents: options.backgroundAgents,
+  hasSubAgents: options.hasSubAgents,
   delegateRunId: options.delegateRunId,
 });

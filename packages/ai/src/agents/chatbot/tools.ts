@@ -2,7 +2,6 @@ import { pruneWebToolsIfUnavailable } from "../../lib/web-egress";
 import { createAskUserQuestionTool } from "../../tools/ask-user/chat";
 import { createBashTool } from "../../tools/bash";
 import type { createBuildPageTool } from "../../tools/build-page";
-import { createCheckAgentsTool } from "../../tools/check-agents";
 import { createCreateSkillTool } from "../../tools/create-skill";
 import { createDescribeCollectionTool } from "../../tools/describe-collection";
 import type { createDispatchAgentTool } from "../../tools/dispatch-agent";
@@ -14,6 +13,7 @@ import { createInstallSkillTool } from "../../tools/install-skill";
 import { createListDocumentsTool } from "../../tools/list-documents";
 import { createListFoldersTool } from "../../tools/list-folders";
 import { createListRecordsTool } from "../../tools/list-records";
+import { createManageAgentsTool } from "../../tools/manage-agents";
 import { createManageCollectionTool } from "../../tools/manage-collection";
 import { createManageDocumentTool } from "../../tools/manage-document";
 import { createManageDriveTool } from "../../tools/manage-drive";
@@ -524,13 +524,13 @@ export const buildChatbotTools = (extras: {
   // 2026-09-21 on one 31-step turn: five steps served an input cache of zero.
   // Here it closes a core block that is byte-identical on every step.
   //
-  // `checkAgents` follows it, for the same reason, and is hidden by
-  // `prepareStep` unless the conversation has background sub-agents — so on
-  // the turns it is absent the core block is the one it always was.
+  // `manageAgents` follows it, for the same reason, and is hidden by
+  // `prepareStep` until the conversation has sub-agents — so on the turns it
+  // is absent the core block is the one it always was.
   return {
     ...coreTools,
     dispatchAgent: extras.dispatchAgent,
-    checkAgents: createCheckAgentsTool(),
+    manageAgents: createManageAgentsTool(),
     ...domainTools,
   };
 };

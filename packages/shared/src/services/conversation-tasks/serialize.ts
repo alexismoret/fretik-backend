@@ -45,6 +45,7 @@ export const serializeSubAgentTask = (
     model: state?.model ?? null,
     step: state?.step ?? null,
     startedAt: state?.startedAt ?? null,
+    stopRequested: state?.stopRequested ?? null,
     activity: state?.activity ?? [],
     result: result
       ? {

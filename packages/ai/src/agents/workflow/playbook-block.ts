@@ -125,6 +125,8 @@ export const buildSteeringMessage = (params: {
   memoryIndexBlock?: string;
   /** Bare lines — tagged here. */
   standingMemoryBlock?: string;
+  /** The run's sub-agents: still running, or reports since the last turn. */
+  subAgentsBlock?: string;
   nudge: boolean;
   wrapUp: boolean;
 }): string => {
@@ -157,6 +159,9 @@ export const buildSteeringMessage = (params: {
   if (outcomes.length > 0) {
     lines.push("Outcomes:");
     for (const t of outcomes) lines.push(`- \`${t.key}\`: ${t.summary ?? ""}`);
+  }
+  if (params.subAgentsBlock !== undefined && params.subAgentsBlock.length > 0) {
+    lines.push("", "<sub_agents>", params.subAgentsBlock, "</sub_agents>");
   }
   if (params.nudge && current) {
     lines.push(

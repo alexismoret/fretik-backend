@@ -3,21 +3,22 @@ import { describe, expect, test } from "bun:test";
 import { buildSubAgentContinuation } from "../../../src/services/conversation-tasks/sub-agent-continuation";
 
 /**
- * What the resumed agent reads about a finished background sub-agent. The
- * report has no other home — the tool call that launched it returned before
- * the work began — so the line must carry it whole, and a run that died
- * without one must say so rather than come back empty.
+ * What the resumed agent reads about a finished sub-agent. The report has no
+ * other home — the tool call that launched it returned before the work began
+ * — so the line must carry it whole, a run that died without one must say so
+ * rather than come back empty, and one the user stopped must say who did.
  */
 
 const task = (
   subAgent: NonNullable<ConversationBackgroundTask["metadata"]>["subAgent"],
+  status: ConversationBackgroundTask["status"] = "succeeded",
 ): ConversationBackgroundTask => ({
   id: "task-1",
   conversationId: "conv-1",
   kind: "sub_agent",
   ref: "agent-1",
   title: "Payment terms watch",
-  status: "succeeded",
+  status,
   metadata: { subAgent },
   completedAt: new Date(),
   consumedAt: null,
@@ -52,5 +53,28 @@ describe("sub-agent continuation", () => {
       'Sub-agent "Payment terms watch" (agent-1) failed: it stopped before finishing and wrote no report.',
     );
     expect(built.actingUserId).toBeNull();
+  });
+
+  test("a run the user stopped says so, and keeps what it had written", () => {
+    const built = buildSubAgentContinuation(
+      task(
+        {
+          stopRequested: "user",
+          result: {
+            status: "failed",
+            reason: "stopped",
+            summary: "The sub-agent was stopped after 6 tool calls.",
+            files: ["outputs/draft.md"],
+            toolCalls: 6,
+            durationMs: 60_000,
+            activity: [],
+          },
+        },
+        "canceled",
+      ),
+    );
+    expect(built.line).toBe(
+      'Sub-agent "Payment terms watch" (agent-1) was stopped by the user after 6 tool calls; it wrote no report.\nFiles: outputs/draft.md',
+    );
   });
 });

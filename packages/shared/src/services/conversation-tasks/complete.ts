@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import db, { type Transaction } from "../../db";
 import type {
   ConversationTaskKind,
@@ -6,6 +6,7 @@ import type {
   ConversationTaskTerminalStatus,
 } from "../../db/schema";
 import { conversationBackgroundTasks } from "../../db/schema";
+import { mergeTaskMetadata } from "./metadata-merge";
 
 /**
  * Settle a background task the conversation was waiting on.
@@ -19,7 +20,7 @@ import { conversationBackgroundTasks } from "../../db/schema";
  * time while the launching turn is still live and handling the error inline.
  *
  * `metadata` is merged into the row in the same write, for a kind whose
- * outcome lives on the task itself (a background sub-agent's report): the
+ * outcome lives on the task itself (a sub-agent's report): the
  * outcome and the terminal status land together or not at all, so a resume
  * can never read a settled task with no report on it.
  */
@@ -28,7 +29,7 @@ export const completeConversationTask = async (params: {
   ref: string;
   status: ConversationTaskTerminalStatus;
   consume?: boolean;
-  /** Merged (top-level keys) into `metadata` by the same UPDATE. */
+  /** Merged into `metadata` by the same UPDATE (`metadata-merge.ts`). */
   metadata?: ConversationTaskMetadata;
   /** Settle in the SAME transaction as whatever produced the outcome. A task
    * that stays pending because its producer committed and this did not blocks
@@ -44,7 +45,7 @@ export const completeConversationTask = async (params: {
       ...(params.consume ? { consumedAt: now } : {}),
       ...(params.metadata
         ? {
-            metadata: sql`coalesce(${conversationBackgroundTasks.metadata}, '{}'::jsonb) || ${JSON.stringify(params.metadata)}::jsonb`,
+            metadata: mergeTaskMetadata(params.metadata),
           }
         : {}),
     })

@@ -1,10 +1,15 @@
-import { inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import db from "../../db";
 import type {
   ConversationTaskKind,
   ConversationTaskTerminalStatus,
 } from "../../db/schema";
-import { bulkOperations, workflowRuns } from "../../db/schema";
+import {
+  bulkOperations,
+  conversationBackgroundTasks,
+  workflowRuns,
+} from "../../db/schema";
+import { owedSubAgentJobs } from "../../lib/queue/sub-agents";
 import { liveSubAgents } from "../../lib/sub-agent-heartbeat";
 import type { WorkflowRunStatus } from "../../schemas/workflows";
 
@@ -110,23 +115,67 @@ const bulkOperationReconciler: ConversationTaskReconciler = {
 };
 
 /**
- * A background sub-agent has no work row: it lives in the AI process that
- * launched it, and settles its own task when it ends. The only way it stays
- * pending is that process dying mid-run — so a row the sweep considers (older
- * than `RECONCILE_AFTER_MS`) whose heartbeat has lapsed is a run that will
- * never report, and settles as failed. The continuation then tells the agent
- * it stopped without a report, which is the truth.
+ * The bound on a sub-agent the queue still says it owes. Far above any real
+ * backlog (a worker picks a job up in milliseconds) and above a run's own
+ * 20-minute deadline; what it catches is a queue with no worker left to drain
+ * it, which would otherwise hold the conversation's resume forever.
+ */
+const SUB_AGENT_OWED_MAX_MS = 60 * 60 * 1000;
+
+/**
+ * A sub-agent has no work row: its job runs on an AI replica's queue worker,
+ * which settles its own task. It stays pending for good only if that never
+ * happens. So a row the sweep asks about settles as failed when nothing still
+ * answers for it: no heartbeat (no worker is running it now) AND no job the
+ * queue owes (none will). A job waiting for a worker has no heartbeat by
+ * construction, and one whose worker died waits for the queue to hand it to
+ * another replica — neither reads as dead until it has been owed absurdly
+ * long. The continuation then tells the agent it stopped without a report,
+ * which is the truth.
  */
 const subAgentReconciler: ConversationTaskReconciler = {
   resolve: async (refs) => {
     const out = new Map<string, ConversationTaskTerminalStatus>();
-    const alive = await liveSubAgents(refs);
-    for (const ref of refs) {
-      if (!alive.has(ref)) out.set(ref, "failed");
+    if (refs.length === 0) return out;
+    const [rows, alive, owed] = await Promise.all([
+      db
+        .select({
+          ref: conversationBackgroundTasks.ref,
+          createdAt: conversationBackgroundTasks.createdAt,
+        })
+        .from(conversationBackgroundTasks)
+        .where(
+          and(
+            eq(conversationBackgroundTasks.kind, "sub_agent"),
+            inArray(conversationBackgroundTasks.ref, refs),
+          ),
+        ),
+      liveSubAgents(refs),
+      owedSubAgentJobs(refs),
+    ]);
+    for (const ref of deadSubAgents(rows, { alive, owed }, Date.now())) {
+      out.set(ref, "failed");
     }
     return out;
   },
 };
+
+/**
+ * The verdict itself, apart from the reads: which of these pending sub-agents
+ * will never report. Exported for its test.
+ */
+export const deadSubAgents = (
+  rows: readonly { ref: string; createdAt: Date }[],
+  seen: { alive: ReadonlySet<string>; owed: ReadonlySet<string> },
+  now: number,
+): string[] =>
+  rows
+    .filter((row) => {
+      if (seen.alive.has(row.ref)) return false;
+      if (!seen.owed.has(row.ref)) return true;
+      return now - row.createdAt.getTime() > SUB_AGENT_OWED_MAX_MS;
+    })
+    .map((row) => row.ref);
 
 export const CONVERSATION_TASK_RECONCILERS: Record<
   ConversationTaskKind,

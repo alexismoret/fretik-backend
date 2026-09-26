@@ -2,6 +2,7 @@ import { pruneWebToolsIfUnavailable } from "../../lib/web-egress";
 import { createAskUserQuestionWorkflowTool } from "../../tools/ask-user/workflow";
 import { createCompleteTaskTool } from "../../tools/complete-task";
 import type { createDispatchAgentTool } from "../../tools/dispatch-agent";
+import { createManageAgentsTool } from "../../tools/manage-agents";
 import { buildCoreTools, buildDomainTools } from "../chatbot/tools";
 import { buildChatbotTool } from "../shared/chatbot-tool";
 
@@ -55,6 +56,8 @@ export const buildWorkflowTools = (extras: {
   return {
     ...pruneWebToolsIfUnavailable({ ...coreTools, ...domainTools }),
     dispatchAgent: extras.dispatchAgent,
+    // Hidden by `prepareStep` until the run has sub-agents.
+    manageAgents: createManageAgentsTool(),
     // Blocking variant — creates a `question` approval and pauses the run.
     askUserQuestion: buildChatbotTool({
       ...createAskUserQuestionWorkflowTool(),
